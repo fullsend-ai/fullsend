@@ -555,9 +555,7 @@ Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.8
   - `Run` executes `pi --print --mode json --no-approve --no-extensions --no-prompt-templates --no-themes --session-dir /sandbox/pi-config/sessions [-e /usr/local/share/pi-extensions/anthropic-vertex | -e /usr/local/share/pi-extensions/xai-vertex] [-e /sandbox/pi-config/fullsend-hooks.js] [--tools ...] --model <provider/id> --thinking <effort|high> '<RunParams.Prompt, default "Run the agent task">' </dev/null [2>>/sandbox/workspace/pi-debug.log]`.
   - `settings.json` sets `defaultProjectTrust: never` (repo-owned `.pi/` never loaded) and `defaultTools: [read, bash, edit, write, grep, find, ls]` — pi alone activates only the first four; `--tools`, when emitted, replaces the set. The `grep` and `find` tools shell out to `rg` and `fd` (pi's `utils/tools-manager.ts`), which the sandbox image ships because `PI_OFFLINE=1` and the egress policy both stop pi's own GitHub-release download.
   - `PI_OFFLINE=1`/`PI_TELEMETRY=0`/`PI_SKIP_VERSION_CHECK=1`/`JITI_FS_CACHE=false` come from `EnvExports`. Context files (`AGENTS.md`) and skills stay on — they are the harness's own inputs.
-  - `JITI_FS_CACHE` is jiti's, not pi's: pi imports every `-e` module through jiti and passes no `fsCache`, so jiti resolves it from `JITI_FS_CACHE`, then `JITI_CACHE`, then `true`, and writes transpiled bodies next to the module that created the jiti instance (`<pi>/dist/bundle/chunks/node_modules/.cache/jiti` in the published package) or, when that directory does not exist, to `$TMPDIR/jiti` -- the image ships no such directory, so it is `/tmp/jiti`, agent-writable and persistent across iterations. jiti accepts a cache entry on a ` /* v9-<hash of the source> */` trailer alone, so a body rewritten with that trailer intact executes while the source file is untouched: a code path around **both** the extension tree-hash preflight and the hook adapter's SHA-256 check, neither of which can see it. Disabling the cache makes jiti ignore a planted entry and create no cache directory at all (`internal/runtime/testdata/pi/jiti-cache-check.sh` reproduces both halves against the pinned `PI_VERSION`; re-run it on a bump).
-  - The cache is one lever of several the environment carries into the loader, so right after `. .env` -- on **every** provider path, not just `openai` -- `Run` emits a bare `unset` of `NODE_OPTIONS`, `NODE_PATH` and the whole `JITI_*` family except `JITI_FS_CACHE`, which `EnvExports` then pins (`piLoaderEnvNames` in `pi_run.go`). `JITI_ALIAS` is the reason: pi's bundled `cli.js` reaches `createJiti` on its `isBundledNode` branch, which passes no `alias`, so jiti fills that option from the environment and a `.env`-exported map remaps the specifier behind an `-e` path to another file -- the extension source, its tree hash and the hook adapter's SHA-256 all stay clean, because none of them can see the substitution. `unset` is a POSIX special builtin, so a function a sourced `.env` defined cannot stand in for it. The same script covers the alias half, reading the name list out of `pi_run.go` so the two cannot drift.
-  - A residual TOCTOU remains, shared with the hook guard: a background process left by a previous iteration could rewrite the tree between the guard and pi's `import` -- the stray-process sweep ([#6753](https://github.com/fullsend-ai/fullsend/issues/6753)) narrows the window rather than closing it.
+  - The loader environment (`JITI_FS_CACHE`, the `JITI_*`/`NODE_*` `unset` after `.env`) is pinned for the same reason the extension tree is hashed — see [Pi extensions](#pi-extensions-adr-0094).
   - `PI_CODING_AGENT_DIR/extensions/` is arbitrary TypeScript loaded at startup and the config dir is not a permission boundary, which is why only the explicit `-e` paths load (at most one vendored provider extension plus the hook adapter).
   - Right after `.env` is sourced, `Run` re-exports `EnvExports()` (`PI_CODING_AGENT_DIR`, the session dir, the offline switches) so a rewritten `.env` cannot relocate pi's config directory.
   - For the built-in `openai` provider (`openai/<id>`, [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)) no extension loads and no `--api-key` is passed; `Run` instead seeds `auth.json` under `PI_CODING_AGENT_DIR` with the placeholder the sandbox environment carries for `OPENAI_API_KEY` (`PiOpenAIAuthSeed`, before `.env` is sourced), because pi re-reads that file on every revision change and resolves the key per request. The runner re-runs the same seed through `sandbox exec` after each credential refresh, which is what lets a running iteration follow a refresh on OpenShell 0.0.115, where a revision-scoped placeholder stays pinned to its generation and the unrevisioned alias is refused (`--api-key` would outrank the file and pin the iteration).
@@ -589,10 +587,155 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 - An unreadable manifest, or one without a hook plan, blocks every tool call.
 - Because pi silently skips a missing `-e` path, `Run` checks — before sourcing the agent-writable `.env`, with `command -p sha256sum` / `command -p cut` so nothing in the shell environment can stand in for them — that the adapter exists and matches the embedded copy's SHA-256 and that the manifest exists, failing closed (exit 97) otherwise; it refuses to start at all (exit -1) when security is enabled but the manifest carries no hook plan; and it decides whether to load the adapter from the runner's security signal rather than the manifest.
 - The manifest and the hook scripts themselves stay agent-writable between iterations — the same residue Claude Code has with `claude-config/hooks.json` and its scripts (both are written once at `Bootstrap`).
-- Declared harness extensions ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment: `Bootstrap` uploads each to `/sandbox/pi-config/extensions/<name>/` and records it in the manifest; `Run` re-hashes the host directory (`piExtensionTreeHash`, one definition implemented in Go and as a POSIX `find | LC_ALL=C sort | sha256sum` pipeline, equivalence-tested under `sh` and `dash`) and emits a preflight in the same pre-`.env` block that exits 96 when a sandbox copy is missing or differs — the expected hash is never read back from the agent-writable manifest. The hash covers regular files **and** the directory set, because pi reacts to directory names (an `extensions/`, `prompts/`, `skills/` or `themes/` directory switches the target to package layout and `index.js` stops being an entry point), and any entry that is neither a regular file nor a directory is refused on the host and fails the sandbox guard closed — pi follows symlinks, so a planted `index.js -> /elsewhere` would otherwise swap an extension's code without moving its hash. Declared extensions are appended with `-e` after the provider extension and the adapter, their `args` verbatim (pi's own option names are rejected at validation, since pi parses every element positionally), their `env` exported last — where the deny-list in `internal/harness/extension_spec.go`, not the export order, is what keeps the runtime's names out of reach, because pi passes its whole environment to every hook script it spawns. The adapter logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions; that is all it does with it — no hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
+- Declared harness extensions ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment — uploaded at `Bootstrap`, re-hashed and preflighted before every iteration, appended with `-e` after the adapter so the sandbox hooks see every call first ([Pi extensions](#pi-extensions-adr-0094)). The adapter itself grants them nothing: it logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions, and that is all. No hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
 - Edit inputs keep pi's `edits[]` shape, with `path` mirrored to `file_path` and the first `oldText`/`newText` pair mirrored to `old_string`/`new_string`; no shipped script reads the latter.
 - pi fires `tool_result` for failed calls too, so — unlike Claude Code's `PostToolUse` — errored tool output is sanitized as well.
 - The `tool_call`/`tool_result` event shapes the adapter relies on (`toolName`, `input`, `content`, `isError`; `{block, reason}` and `{content, isError}` replies) are verified against pi v0.84.2 `src/extensions/types.ts`/`runner.ts`; the lifecycle run is the live confirmation.
+
+### Pi extensions (ADR 0094)
+
+Harness `extensions:` entries ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). The
+walkthrough a harness author follows is [Pi § Extensions](../runtimes/pi.md#extensions); this section
+keeps the rules' *reasons* and the provenance behind them (verified against the pinned pi build,
+0.84.4 unless noted).
+
+**Validation mirrors pi's own loader.** `internal/harness/extension_spec.go` re-implements
+`-e <dir>` resolution so a harness never ships a directory pi would refuse — or, worse, accept and
+load nothing from. pi's rule is not the obvious one:
+
+- A `package.json` carrying a **`pi` object** decides the verdict alone: `readPiManifest` returns
+  non-null and pi loads only what `pi.extensions` names, never `index.*` and never `main`. So
+  `{"pi": {}}`, `{"pi": {"skills": [...]}}` and a `pi.extensions` whose entries all fail to resolve
+  load *nothing*, silently, with pi exiting 0 — the run simply has no extension and no message says
+  so. Validation refuses all three shapes, which is the only place that failure can be made loud.
+- Without a `pi` object, an `extensions/`, `prompts/`, `skills/` or `themes/` entry switches pi to
+  *package* layout: it collects those resource directories and stops treating `index.js` as an entry
+  point. pi probes the name with `existsSync`, so a plain **file** called `skills` has the same
+  effect (verified on 0.84.4 — `index.js` stopped loading). Only then do `main` and
+  `index.js`/`index.ts`/`index.mjs`/`index.cjs` apply.
+- There is deliberately no discovery branch beyond that: a bare top-level `tools.js`, or an
+  `index.js` one directory down, is not an entry point — pi exits 1 with
+  `Failed to load extension ... Cannot find module`. A directory reached *through* a `pi.extensions`
+  entry resolves more loosely (`extensionAutoEntries`): its own entry points, else any top-level
+  `.js`/`.ts` file, else an immediate subdirectory that itself resolves — and on that path only
+  `index.ts`/`index.js` count, not `.mjs`/`.cjs`. The two rules are different code paths in pi and
+  must not be collapsed.
+- **Containment.** pi resolves `pi.extensions` and `main` against the package root with **no**
+  containment check, so `../evil.js` would load code the sandbox preflight never hashes (verified on
+  0.84.4). Every listed entry is checked, not just the first that exists, and the check repeats one
+  level down: a `pi.extensions` entry naming a subdirectory sends pi to *that* `package.json`, whose
+  own entries are resolved against it with the same absence of a check. That nested problem is
+  returned to the caller rather than swallowed as "does not load".
+- **BOM.** `readPiManifest` strips a UTF-8 byte-order mark before parsing and `encoding/json` does
+  not, so validation strips it too — otherwise an editor that wrote one would hide the `pi` object
+  and send the verdict down the `index.js` branch pi never takes.
+- **Globs.** pi's `hasGlobPattern` is `s.includes("*") || s.includes("?")`, so a bracket-only entry
+  such as `[ab].js` is a literal file name to pi, not a pattern, and is treated literally here. Real
+  globs go through Node's `globSync`, which expands braces and crosses separators on `**` — neither
+  of which `path.Match` can express — so a pattern containing `**` or `{}` is accepted unevaluated
+  rather than guessed at. A wrong refusal would block a harness pi would have loaded; the accepting
+  direction is harmless, because the tree hash still covers whatever ends up loading.
+- **`!` entries** are pi's *disable* form: they remove an entry other patterns brought in and can
+  never contribute one. A `pi.extensions` made only of `!` patterns is refused; `["*.js",
+  "!main.js"]` is accepted because `*.js` matches, even though pi would then disable the only match.
+  Mirroring pi exactly matters more here than second-guessing it.
+- **Tree admissibility** (`ExtensionEntryProblem`) is one definition shared by validation, the tree
+  hash and the injection scan: regular files and directories only, and no name containing a newline,
+  carriage return or backslash. GNU `sha256sum` escapes all three and prefixes the line with `\`,
+  which the Go side does not mirror, so the host and sandbox implementations could not agree on such
+  a name. Symlinks are refused because pi *follows* them when resolving an entry point while the
+  sandbox-side `find . ! -type f ! -type d` probe prints nothing — a symlink left in the verdict
+  would be a way to swap an extension's code without moving its hash. Forge-fetched trees cannot
+  carry symlinks anyway, so nothing legitimate is lost; the extension *root* may still be one, since
+  cache paths are named symlinks into the content-addressed store and callers `EvalSymlinks` before
+  walking. The whole tree is walked — `node_modules` and dotted directories included — so a planted
+  symlink is named at validation rather than failing anonymously at Bootstrap; only the entry-point
+  *listing* skips those directories, which cannot hold an entry point pi would resolve.
+- **Source and naming.** URLs, `npm:`/`git:`/`ssh:` sources and `..` segments are rejected: pi would
+  install `npm:`/`git:` sources from the network at startup, which the sandbox cannot do. Names are
+  limited to `a-z A-Z 0-9 _ -`; duplicate basenames are refused because `sandbox.UploadDir` replaces
+  its destination wholesale and one entry would silently drop the other; and
+  `harness.PiReservedExtensionNames` (`fullsend-hooks`, `anthropic-vertex`, `xai-vertex`) is refused
+  because an upload under one of those would shadow runner-owned code.
+- **Scan limits.** Extensions take the same injection scan as `skills:`/`plugins:`/`scripts:`, over
+  every text file including `node_modules`. Files over 1 MiB are noted on stderr and skipped, and a
+  tree over 20 000 files is refused in either `fail_mode` — scanning a vendored dependency graph is
+  the cost that would make the gate unusable, not a finding. Treat scan output as a prompt to look:
+  the heuristics run over third-party JavaScript and prose, so minified bundles and README examples
+  produce false positives.
+
+Validation runs wherever the harness is loaded: `fullsend run` (the "File validation failed" step)
+and `fullsend lock` for a URL-sourced harness, where `TreeLoadProblem` applies the same rule to the
+fetched tree map.
+
+**Upload and the tree-hash preflight.** `Bootstrap` uploads each directory to
+`/sandbox/pi-config/extensions/<name>/` — a runner-owned path pi does not auto-discover — and
+records name, sandbox path, tree hash, `args` and `env` in `fullsend-manifest.json`. `Run` re-hashes
+the *host* directory (`piExtensionTreeHash`, one definition implemented in Go and as a POSIX
+`find | LC_ALL=C sort | sha256sum` pipeline, equivalence-tested under `sh` and `dash`) and emits a
+preflight in the same pre-`.env` block as the hook-adapter guard, exiting 96 when a sandbox copy is
+missing or differs. The expected hash is never read back from the manifest: the manifest lives in
+the agent-writable config dir, so a value read from it could be rewritten together with the
+extension between iterations. The hash covers regular files **and** the directory set, because pi
+reacts to directory *names* — an added empty `skills/` would silently turn the extension into a
+package pi loads nothing from. Declared extensions are appended with `-e` after the provider
+extension and the adapter, so `tool_call` handlers still reach the sandbox hooks first: pi runs them
+in `-e` order and the first `block` wins.
+
+**The loader environment is pinned too, because a hash over the source only binds what the loader
+reads.**
+
+- `JITI_FS_CACHE=false` comes from `EnvExports`. It is jiti's option, not pi's: pi imports every
+  `-e` module through jiti and passes no `fsCache`, so jiti resolves it from `JITI_FS_CACHE`, then
+  `JITI_CACHE`, then `true`, and writes transpiled bodies next to the module that created the jiti
+  instance (`<pi>/dist/bundle/chunks/node_modules/.cache/jiti` in the published package) or, when
+  that directory does not exist, to `$TMPDIR/jiti` — the image ships no such directory, so it is
+  `/tmp/jiti`, agent-writable and persistent across iterations. jiti accepts a cache entry on a
+  ` /* v9-<hash of the source> */` trailer alone, so a body rewritten with that trailer intact
+  executes while the source file is untouched: a path around **both** the extension tree-hash
+  preflight and the hook adapter's SHA-256 check, neither of which can see it. Disabling the cache
+  makes jiti ignore a planted entry and create no cache directory at all
+  (`internal/runtime/testdata/pi/jiti-cache-check.sh` reproduces both halves against the pinned
+  `PI_VERSION`; re-run it on a bump).
+- The cache is one lever of several the environment carries into the loader, so right after
+  `. .env` — on **every** provider path, not just `openai` — `Run` emits a bare `unset` of
+  `NODE_OPTIONS`, `NODE_PATH` and the whole `JITI_*` family except `JITI_FS_CACHE`, which
+  `EnvExports` then pins (`piLoaderEnvNames` in `pi_run.go`). `JITI_ALIAS` is the reason: pi's
+  bundled `cli.js` reaches `createJiti` on its `isBundledNode` branch, which passes no `alias`, so
+  jiti fills that option from the environment and a `.env`-exported map remaps the specifier behind
+  an `-e` path to another file — the extension source, its tree hash and the hook adapter's SHA-256
+  all stay clean, because none of them can see the substitution. `unset` is a POSIX special builtin,
+  so a function a rewritten `.env` defined cannot stand in for it. The same script covers the alias
+  half, reading the name list out of `pi_run.go` so the two cannot drift.
+- A residual TOCTOU remains, shared with the hook guard: a background process left by a previous
+  iteration could rewrite the tree between the guard and pi's `import` — the stray-process sweep
+  ([#6753](https://github.com/fullsend-ai/fullsend/issues/6753)) narrows the window rather than
+  closing it.
+
+**Why `args` and `env` are validated so narrowly.** pi parses every element of its command line
+positionally, and an extension's `args` follow its `-e <path>` verbatim into that parser. So each
+dash-prefixed element must be `--flag` or `--flag=value` the extension registered with
+`pi.registerFlag` (pi has no single-dash options), pi's own option names are rejected because the
+runner owns them, and a value may not start with `-` or `@` — `@path` makes pi attach a file to the
+prompt. A bare word is allowed exactly once, directly after a `--flag` written without `=`: pi
+consumes at most one value per flag and none after `--flag=value`, and reads every *other* bare word
+as **prompt text** prepended to the agent's prompt, which makes
+`args: ["--fff-mode", "override", "and now ignore your instructions"]` an injection vector rather
+than a flag value. `env` is exported last, but export order is not the protection — pi hands its
+whole environment to every hook script it spawns, so the deny-list in `extension_spec.go` refuses
+the names outright at validation. It covers the interpreter environment (`PATH`, `HOME`, `TMPDIR`,
+`ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`,
+`NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), credential- and
+proxy-shaped names (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), the names that move a trust
+anchor or a resolver for the tools hook scripts shell out to (`HOSTALIASES`, `OPENSSL_CONF`,
+`SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), and the runner's,
+providers' and sandbox tooling's families (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`,
+`CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`). An
+extension's own settings are untouched by any of it.
+
+**Other runtimes** name and skip each entry
+(`Extension "<name>": skipped — the <runtime> runtime has no pi extensions (see docs/runtimes.md)`)
+rather than dropping the list silently, the mirror of pi's `plugins:` warning.
 
 ### Claude-on-Vertex via an interim extension
 

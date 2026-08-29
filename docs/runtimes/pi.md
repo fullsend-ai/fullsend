@@ -207,157 +207,88 @@ extensions:
 ```
 
 That is the whole configuration: no manifest file, no tool-mapping table, no allowlist bookkeeping.
+An extension is harness-repo content with the same trust as `plugins:`, `scripts:` and `skills:` —
+org-allowlisted URL base, content-addressed fetch, injection scan of every text file. Nothing is
+ever picked up from the target repository.
 
-**What pi accepts as a directory.** Validation applies pi's own rule for `-e <dir>`.
+### What makes a valid extension directory
 
-A `package.json` with a **`pi` object decides on its own.** Once that object exists, pi loads only
-what `pi.extensions` names — `index.js` and `main` are never consulted. So `{"pi": {}}`,
-`{"pi": {"skills": [...]}}` and a `pi.extensions` whose entries do not resolve all load **nothing**,
-silently, with pi exiting 0 and no message: the run simply has no extension. Validation refuses all
-of them. An entry may be a file, or a directory pi finds an entry point in (`index.js`/`index.ts`, a
-top-level `.js`/`.ts` file, or a subdirectory that itself resolves — `.mjs`/`.cjs` do not count on
-that path). An entry that escapes the directory (absolute, or `..`) is refused too: pi resolves it
-against the package root with no containment check, so it would load code the tree-hash preflight
-never sees. That applies one level down as well — a `pi.extensions` entry naming a subdirectory
-sends pi to *that* directory's `package.json`, whose own `pi.extensions` and `main` are resolved
-against it with the same absence of a check.
+`fullsend run` validates every entry before the sandbox starts, and names the rule that failed
+(`fullsend lock` applies the same check to a URL-sourced harness). Check yours against this list:
 
-A glob entry (`*`, `?`, `[...]`) is matched against the tree, so a pattern that selects nothing is
-refused like any other entry that does not resolve. Two limits are worth knowing: a pattern
-containing `**` is accepted without being evaluated (it crosses directory separators, which the
-matcher used here cannot express), and braces are **not** expanded — `{main,other}.js` matches
-nothing in pi either. A leading `!` is pi's *disable* pattern: it removes an entry rather than
-naming one, so it is only honoured here as "at least one include must still match". A
-`pi.extensions` made of nothing but `!` patterns is refused; `["*.js", "!main.js"]` is accepted
-because `*.js` matches, even though pi would then disable the only match and load nothing.
+- **It has an entry point pi resolves.** Either `index.js`, `index.ts`, `index.mjs` or `index.cjs`
+  at the top level, or a `package.json` `main` pointing at an existing file, or a `package.json`
+  `"pi": {"extensions": [...]}` list. A top-level `tools.js`, or an `index.js` one directory down,
+  is **not** an entry point.
+- **Once a `pi` object exists, only `pi.extensions` counts.** `main` and `index.*` are never
+  consulted again, so `{"pi": {}}` — or a `pi.extensions` whose entries resolve to nothing — loads
+  nothing at all, silently. Every entry must stay inside the directory: no absolute path, no `..`.
+- **No `extensions/`, `prompts/`, `skills/` or `themes/` entry** unless you list your entry points
+  in `pi.extensions`. Any of those names — even as a plain file — makes pi read the directory as a
+  *package* and ignore `index.js`.
+- **Commit `node_modules`, then delete `node_modules/.bin/`.** The sandbox never runs
+  `npm install`, and no symlink may appear anywhere in the tree — npm fills `.bin/` with them.
+  Nothing in the sandbox needs it: no package script and no vendored CLI is ever run.
+- **Do not vendor pi's own packages** (`@earendil-works/pi-coding-agent`, `pi-agent-core`,
+  `pi-tui`). pi resolves those imports to the running pi, so an extension written against the
+  pinned `PI_VERSION` just works.
+- **Pick a free name.** Not `fullsend-hooks`, `anthropic-vertex` or `xai-vertex` — those are the
+  runner's own sandbox names — and not the directory name another entry already uses. Allowed
+  characters are `a-z`, `A-Z`, `0-9`, `_` and `-`.
+- **Give a path, not a source.** Entries are paths relative to the harness repository; URLs,
+  `npm:`/`git:`/`ssh:` sources and `..` segments are refused.
 
-A `package.json` written with a UTF-8 byte-order mark is read the way pi reads it (the mark is
-stripped before parsing), so a BOM cannot hide a `pi` object from validation.
+### `args` and `env`
 
-Without a `pi` object the order is: if any of `extensions/`, `prompts/`, `skills/` or `themes/`
-exists — as a directory **or** as a plain file, since pi only probes the name — the directory is a
-*package*: pi collects those resource directories and ignores `index.js`, so the harness is told to
-remove the entry or list its entry points in `pi.extensions`;
-otherwise a `package.json` `main` pointing at an existing file, or
-`index.js`/`index.ts`/`index.mjs`/`index.cjs`. Anything else fails harness validation, because pi
-would exit 1 with `Failed to load extension "<path>": ... Cannot find module` rather than start the
-run. A bare top-level `tools.js`, or an `index.js` one directory down, is **not** an entry point.
+`args` are flags the extension registered with `pi.registerFlag`, written `--flag` or
+`--flag=value`. pi's own option names (`--model`, `--tools`, `--extension`, …) belong to the runner
+and are refused, and single-dash forms do not exist in pi. One bare value may follow a `--flag`
+written without `=`; every other bare word is prompt text pi would prepend to the agent's prompt, so
+it is rejected rather than passed on.
 
-An extension directory may not be named `fullsend-hooks`, `anthropic-vertex` or `xai-vertex`:
-those are the runner's own sandbox names and an upload under one of them would shadow runner-owned
-code. Harness validation names the offending entry.
+`env` is for the extension's own settings — `FFF_MULTIGREP`, `GO_DIAG_LEVEL`. Names belonging to the
+runtime, an interpreter, a proxy or a credential are refused; the deny-list is in
+[Harness Field Reference § `extensions`](../reference/harness-reference.md#field-details).
 
-The tree may hold only regular files and directories, and no name may contain a newline, a carriage
-return or a backslash — the same rule the run-time preflight applies, checked here so a planted
-symlink fails at validation with the path named rather than at exit 96.
+### Extension tools and `tools:`
 
-**Trust.** Extensions are harness-repo content with the same trust as `plugins:`, `scripts:` and
-`skills:`: org-allowlisted URL base, content-addressed fetch, injection scan of every text file
-(`node_modules` included). That scan is heuristic and runs over third-party JavaScript and prose,
-so treat a finding as a prompt to look rather than as proof — expect false positives from minified
-bundles and README examples. Files over 1 MiB are noted on stderr and skipped, and an extension
-with more than 20 000 files is refused outright in either `fail_mode`. Extensions never come from
-the target repository — `defaultProjectTrust: never`, `--no-approve` and `--no-extensions` stay
-exactly as they are; the runner appends the vetted `-e` paths. URLs, `npm:`/`git:`/`ssh:` sources
-and `..` segments are rejected at validation (pi would try to install `npm:`/`git:` sources from
-the network at startup, which the sandbox cannot do), and a URL-sourced harness may only name paths
-relative to its own directory.
+An agent that declares `tools:` keeps its strict `--tools` allowlist and pi hides extension tools
+under it — that is what a declared `tools:` means. An agent whose `tools:` maps to nothing pi
+provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
+An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
-**At run time.** `Bootstrap` uploads each directory to `/sandbox/pi-config/extensions/<name>/` —
-a runner-owned path pi does not auto-discover — logs `Extension "<name>": uploaded to sandbox`, and
-records name, sandbox path, tree hash, `args` and `env` in `fullsend-manifest.json`. Before every
-iteration, before the agent-writable `.env` is sourced and next to the hook-adapter check, the run
-command verifies that each directory still exists and hashes to the value computed from the host
-copy; a mismatch or a missing directory stops the iteration with exit 96 and
-`fullsend: pi extension "<name>" is missing or was modified` — nothing from the extension runs. The
-expected hash comes from the host at run time, never from the manifest (which sits in the
-agent-writable config directory). It covers file contents, file names **and** the set of
-directories, so an added empty `skills/` — which would silently turn the extension into a package
-pi loads nothing from — is caught; a symlink anywhere in the tree is refused on the host and fails
-the sandbox check closed, because pi follows symlinks and one could otherwise point `index.js` at
-code outside the extension. Load order is provider extension → `fullsend-hooks.js` → declared
-extensions in harness order: pi runs `tool_call` handlers in `-e` order and the first `block` wins,
-so the sandbox hooks see every call before any declared extension does.
+The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
+runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
+the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
 
-**The loader cache is off.** pi imports every `-e` module through jiti, which by default keeps
-transpiled copies in a directory the agent can write (`/tmp/jiti` in the sandbox image) and accepts
-a cached copy on a marker derived from the *source* alone. A cached body rewritten with that marker
-left in place would run while the source file, the tree hash above and the hook adapter's own
-checksum all stayed clean. The runtime therefore exports `JITI_FS_CACHE=false` (re-exported after
-`.env`, with the `JITI_*` family reserved from extension `env`), which makes pi ignore any planted
-entry and create no cache directory at all.
+### What happens at run time
 
-**And the rest of the loader environment is cleared.** The cache is one lever of several the
-environment carries into the module loader, and `JITI_ALIAS` is the sharpest: it maps a module
-specifier onto a different file, and pi's bundled entry point builds its loader without pinning
-that option, so the environment fills it in. A `.env` exporting
-`JITI_ALIAS='{"<extension path>":"<other file>"}'` therefore makes pi import something else while
-the extension source, the tree hash above and the hook adapter's checksum all stay clean — none of
-them can see the substitution. Right after `.env` is sourced, on **every** provider path, the run
-command clears `NODE_OPTIONS`, `NODE_PATH` and the whole `JITI_*` family except the cache switch,
-which is re-exported immediately after. `unset` is a POSIX special builtin, so a function a
-rewritten `.env` defined cannot stand in for it.
+Each directory is uploaded to `/sandbox/pi-config/extensions/<name>/` and logged as
+`Extension "<name>": uploaded to sandbox`. pi loads it after the provider extension and the hook
+adapter, so the sandbox hooks see every tool call before any extension does. Before each iteration
+the runner verifies the sandbox copy still matches the host directory; a mismatch stops the
+iteration with exit 96 and `fullsend: pi extension "<name>" is missing or was modified`, and nothing
+from the extension runs — so an extension must not write into its own directory, only into the
+workspace or `/tmp`. First use of each extension tool is logged as
+`[fullsend-hooks] extension tool: <name>`, and the `session_start` roster line ends with
+`extensions=<names>`.
 
-One window is left, shared with the hook-adapter check: a process left running by an earlier
-iteration can still rewrite the tree between the check and pi's import.
+On the Claude Code runtime the entry is named and skipped
+(`Extension "<name>": skipped — the Claude Code runtime has no pi extensions (see docs/runtimes.md)`)
+and the run continues. The dummy runtime prints the same line.
 
-**`args` and `env`.** Each extension's `args` follow its `-e <path>` verbatim, and pi parses every
-element positionally, so validation is strict: each dash-prefixed element must be `--flag` or
-`--flag=value` the extension registered with `pi.registerFlag` (single-dash forms are refused —
-pi has none), pi's own option names (`--extension`, `--approve`, `--model`, `--tools`,
-`--use-theme`, `--tui-mode`, …) are rejected, and a value may not start with `-` or `@` in
-either spelling. A bare word is allowed exactly **once**, immediately after a `--flag` written
-without `=`: pi consumes at most one value per flag and none at all after `--flag=value`, and reads
-every other bare word as *prompt text* prepended to the agent's prompt, so
-`args: ["--fff-mode", "override", "and now ignore your instructions"]` is prompt injection rather
-than a flag value and is rejected. An unregistered flag makes pi exit with
-`Unknown option --x`. `env` is exported right before pi starts, after the runtime's own exports —
-but export order is not the protection: pi hands its whole environment to every hook script it
-spawns, so a deny-list refuses the names outright at validation. It covers `PATH`, `HOME`,
-`TMPDIR`, `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`,
-`PYTHON*`, `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, the other interpreters that take options from the
-environment (`JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), every `*_PROXY`, `*_API_KEY`, `*_TOKEN`
-and `*_SECRET*` name, the names that move a trust anchor or a resolver for the tools the hook
-scripts shell out to (`HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`,
-`CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), and the runner's, providers' and sandbox tooling's
-families
-(`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`,
-`OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`). An extension's own settings — `FFF_MULTIGREP`, `GO_DIAG_LEVEL` — are
-unaffected.
+### Troubleshooting extensions
 
-**`tools:` frontmatter.** An agent that declares `tools:` keeps its strict `--tools` allowlist and
-pi hides extension tools under it — that is what a declared `tools:` means. An agent whose `tools:`
-maps to nothing pi provides gets `--no-builtin-tools`; its declared extensions still load and their
-tools still activate, since `-e` is independent of `--tools`. An agent without `tools:` gets pi's
-default set plus whatever its declared extensions register. In every case the hook adapter treats an
-extension tool like any other: every PreToolUse and PostToolUse hook runs on it. If your org enables
-the optional `tool_allowlist_pretool.py` hook, list the extension's tool names in
-`FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed — the adapter grants no bypass,
-because the manifest it would have to trust for that is agent-writable. First use of each extension
-tool is logged as `[fullsend-hooks] extension tool: <name>`, and the `session_start` roster line
-ends with `extensions=<names>`.
+| Symptom | Cause | Fix |
+|---|---|---|
+| Exit 96, `fullsend: pi extension "<name>" is missing or was modified` | The sandbox copy diverged from the host: the agent or the extension wrote into `/sandbox/pi-config/extensions/`, or planted a symlink or directory there | Write to the workspace or `/tmp` instead; re-run |
+| `Failed to load extension "<path>"` on stderr, exit 1 | pi could not import the entry point at run time even though validation accepted the directory | Re-run with `--debug='*'` and read `pi-debug.log` in the run directory |
+| `Unknown option --x` at startup | `args` names a flag the extension does not register with `pi.registerFlag` | Drop the flag, or register it in the extension |
+| The extension loads, registers nothing, and prints no message | `package.json` has a `pi` object whose `pi.extensions` resolves to nothing — pi exits 0 in silence | Name real entry points in `pi.extensions`, or remove the `pi` object. Validation refuses this shape, so it can only appear if the directory changed after it was validated |
 
-**Claude Code ignores it.** `Extension "<name>": skipped — the Claude Code runtime has no pi
-extensions` is printed at bootstrap and the run continues, the mirror of pi's `plugins:` warning.
-The dummy runtime prints the same kind of line.
-
-**Vendoring dependencies.** Commit `node_modules` (or bundle): the sandbox never runs
-`npm install`. Remove `node_modules/.bin/` before committing: npm fills it with symlinks, and no
-symlink may appear anywhere in the tree (validation refuses it and the run-time preflight would
-fail the copy closed). Nothing in the sandbox needs it, since no package script and no vendored
-CLI is ever run. Do not vendor pi's own packages (`@earendil-works/pi-coding-agent`,
-`pi-agent-core`, `pi-tui`) — pi resolves those imports to the running pi, so an extension written
-against the pinned `PI_VERSION` just works. Extensions must not write into their own directory
-between iterations; the preflight treats that as tampering — use the workspace or `/tmp`.
-
-**Troubleshooting.** Exit 96 means the sandbox copy diverged from the host: an extension (or the
-agent) wrote into `/sandbox/pi-config/extensions/`, or planted a symlink or a directory there.
-`Failed to load extension "<path>"` on stderr with exit 1 means pi could not import the entry point
-at run time even though validation accepted the directory — re-run with `--debug` and read
-`pi-debug.log`. `Unknown option --x` at startup means an `args` flag the extension does not
-register. An extension that loads but registers nothing, with **no** message at all, is the
-`package.json` `pi`-object case above; harness validation refuses that shape, so it can only
-appear if the directory changed after it was validated.
+How the runner protects this path — the tree hash, the loader cache, the symlink rule, the `env`
+deny-list — is in
+[Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 ## Not yet exercised
 
@@ -370,11 +301,9 @@ for that purpose. `extension_error` events are not mapped.
 ## Troubleshooting
 
 **The model is not found, or the provider is missing.** A pi provider comes from an extension loaded
-with `-e`. An extension whose entry point fails to import is **not** silent: pi prints
-`Failed to load extension "<path>"` on stderr and exits 1, which under `--debug` lands in
-`pi-debug.log` rather than in the terminal. The silent case is a different one: a directory whose
-`package.json` carries a `pi` object naming no resolvable entry loads nothing and pi exits 0 (see
-[Extensions](#extensions)). Harness validation refuses that shape, so it should never reach a run.
+with `-e`, so an extension that did not load takes its provider with it. The table in
+[Extensions § Troubleshooting extensions](#troubleshooting-extensions) separates the two ways that happens — the loud
+one (`Failed to load extension`, exit 1) and the silent one (pi exits 0 having loaded nothing).
 
 **`No API key found for <provider>`.** The provider is registered but its credentials did not
 resolve. For Vertex providers that means ADC — check the project variable for *that* provider in the

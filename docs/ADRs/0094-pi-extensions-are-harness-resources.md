@@ -77,9 +77,12 @@ directory, a tree-hash preflight before each iteration that fails closed,
 `args` restricted to flags the extension itself registers, and an `env`
 deny-list — not the export order — keeping the runtime's and the providers'
 variables out of an extension's reach, since pi passes its environment to
-every hook script it spawns. They are documented in
-[pi runtime: extensions](../runtimes/pi.md#extensions). Claude Code and the
-dummy runtime name and skip the list rather than dropping it silently.
+every hook script it spawns. The harness author's walkthrough is
+[pi runtime: extensions](../runtimes/pi.md#extensions); the mechanics and
+their reasoning are in [Runtime Implementation: Pi
+extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
+Claude Code and the dummy runtime name and skip the list rather than
+dropping it silently.
 
 ## Options
 
