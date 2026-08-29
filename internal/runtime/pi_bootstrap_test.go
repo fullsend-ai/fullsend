@@ -36,6 +36,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     "pi --version") echo "0.84.2"; exit 0 ;;
+    "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
     *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
   esac
@@ -414,6 +415,141 @@ exit 0
 	require.NoError(t, err)
 	assert.Contains(t, string(log), "find '/sandbox/pi-config/sessions' -name '*.jsonl'")
 	assert.Empty(t, PiRuntime{}.ParseTranscriptErrors(out), "clean sessions produce no error annotations")
+}
+
+// TestPiAgentTool_ManifestBlock covers the `agent` manifest block Bootstrap
+// writes for the fullsend-agent.js extension: enabled/disabled cases, the
+// model alias table, the extension list from the sandbox probe, and the
+// thinking default plus its env override.
+func TestPiAgentTool_ManifestBlock(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piAgentThinkingEnv, "")
+	cfg := PiRuntime{}.ConfigDir()
+
+	bootstrap := func(t *testing.T, agentDef string, hooks bool) (*piManifest, string, string) {
+		t.Helper()
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		base := bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, agentDef), agentName: "review"}
+		var in BootstrapInput = base
+		if hooks {
+			h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{}}}
+			in = piHooksBootstrapInput{bootstrapInput: base, hooks: security.SandboxHookConfigFromHarness(h)}
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		return &m, store, string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
+	}
+
+	t.Run("enabled without tools frontmatter, hooks on", func(t *testing.T) {
+		m, store, appendSystem := bootstrap(t, "---\nname: review\nmodel: opus\n---\nReview the PR.", true)
+		require.NotNil(t, m.Agent)
+		assert.True(t, m.Agent.Enabled)
+		assert.Equal(t, "/usr/bin/pi", m.Agent.PiBin, "resolved by the sandbox probe")
+		assert.Equal(t, cfg+"/sessions", m.Agent.SessionsDir)
+		assert.Equal(t, []string{piVertexExtensionPath, cfg + "/fullsend-hooks.js"}, m.Agent.Extensions,
+			"only the provider extensions the image has (the probe found anthropic-vertex, not xai-vertex), then the hook adapter")
+		assert.Equal(t, map[string]string{
+			"default": "anthropic-vertex/claude-opus-4-6",
+			"opus":    "anthropic-vertex/claude-opus-4-6",
+			"sonnet":  "anthropic-vertex/claude-sonnet-4-6",
+			"haiku":   "anthropic-vertex/claude-haiku-4-5",
+			"fable":   "anthropic-vertex/claude-fable-5-1",
+		}, m.Agent.Models)
+		assert.Equal(t, map[string][]string{
+			"google-vertex":     piGoogleVertexModels,
+			piXaiVertexProvider: piXaiVertexModels,
+		}, m.Agent.ProviderModels,
+			"the extension needs a closed id list for every provider a run can serve with no model-table entry")
+		assert.Contains(t, m.Agent.ProviderModels["google-vertex"], "gemini-3.7-flash", "the spec documented in docs/runtimes/pi.md")
+		assert.Equal(t, []string{"xai/grok-4.6"}, m.Agent.ProviderModels[piXaiVertexProvider],
+			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
+		hooksExt := cfg + "/fullsend-hooks.js"
+		require.Len(t, m.Agent.ExtensionDigests, 1,
+			"the one child -e entry Bootstrap wrote into the config dir is digest-covered, so the extension can re-check it before every dispatch")
+		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
+		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
+			"and against the same digest the launch guard checks, so the two cannot drift")
+		assert.NotContains(t, m.Agent.ExtensionDigests, piVertexExtensionPath,
+			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
+		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
+		assert.Equal(t, piDefaultTools, m.Agent.Tools, "no tools: frontmatter → the default built-in set")
+		assert.Equal(t, piExploreTools, m.Agent.ExploreTools)
+		assert.Equal(t, piAgentMaxConcurrent, m.Agent.MaxConcurrent)
+		assert.Equal(t, piAgentTimeoutSeconds, m.Agent.TimeoutSeconds)
+		assert.Equal(t, cfg+"/subagents/usage.jsonl", m.Agent.UsageFile)
+		assert.Nil(t, m.Tools, "the parent's --tools stays the default set")
+		require.NotNil(t, m.Hooks)
+		assert.Equal(t, "Agent", m.Hooks.ToolNames["Agent"], "the adapter reports Agent calls in Claude vocabulary")
+		assert.Equal(t, "Task", m.Hooks.ToolNames["Task"])
+
+		ext := string(storedUpload(t, store, cfg+"/fullsend-agent.js"))
+		assert.Contains(t, ext, "export default function")
+		assert.Contains(t, appendSystem, "## Runtime note")
+		assert.Contains(t, appendSystem, "The Agent tool (alias Task)")
+		assert.Contains(t, appendSystem, "several Agent calls in one message")
+		assert.NotContains(t, appendSystem, "No sub-agent tool")
+	})
+
+	t.Run("enabled by a tools list naming Task, hooks off", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Grep, Task\n---\nbody", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
+		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
+		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
+		assert.Empty(t, m.Agent.ExtensionDigests, "and so nothing in the child -e list that Bootstrap wrote, hence no digests")
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["default"], "the agent's own model, @suffix stripped, is the default for children")
+		assert.Nil(t, m.Hooks)
+	})
+
+	t.Run("disabled by a tools list without Agent or Task", func(t *testing.T) {
+		// Same shape as testAgentDef, named to match the requested agent so
+		// Bootstrap's name-mismatch check does not fire first.
+		m, store, appendSystem := bootstrap(t, "---\nname: review\ntools: Bash(gh,jq),Skill\nmodel: opus\n---\nbody", true)
+		assert.Nil(t, m.Agent)
+		assert.NotContains(t, m.Hooks.ToolNames, "Agent")
+		_, err := os.Stat(filepath.Join(store, strings.ReplaceAll(cfg+"/fullsend-agent.js", "/", "_")))
+		assert.True(t, os.IsNotExist(err), "no Agent extension upload when the tool is off")
+		assert.Contains(t, appendSystem, "No sub-agent tool (Agent/Task) is available", "the single-context note stays for agents that opted out")
+	})
+
+	t.Run("thinking env override", func(t *testing.T) {
+		t.Setenv(piAgentThinkingEnv, "low")
+		m, _, _ := bootstrap(t, "---\nname: review\n---\nbody", false)
+		assert.Equal(t, "low", m.Agent.Thinking)
+		t.Setenv(piAgentThinkingEnv, "turbo")
+		m, _, _ = bootstrap(t, "---\nname: review\n---\nbody", false)
+		assert.Equal(t, "medium", m.Agent.Thinking, "an unknown level falls back to the default")
+	})
+
+	t.Run("provider env sets the default but not the Claude aliases", func(t *testing.T) {
+		t.Setenv(piProviderEnv, piXaiVertexProvider)
+		m, _, _ := bootstrap(t, "---\nname: review\nmodel: grok-4.6\n---\nbody", false)
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["default"])
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
+	})
+}
+
+func TestPiAgentProbeCommand(t *testing.T) {
+	t.Parallel()
+	cmd := piAgentProbeCommand()
+	assert.True(t, strings.HasPrefix(cmd, "command -v pi"), cmd)
+	assert.Contains(t, cmd, shellQuote(piVertexExtensionPath))
+	assert.Contains(t, cmd, shellQuote(piXaiVertexExtensionPath))
+	assert.Contains(t, cmd, `test -d "$d" && echo "$d"`)
+
+	bin, exts := parsePiAgentProbe("/usr/bin/pi\n/usr/local/share/pi-extensions/xai-vertex\n")
+	assert.Equal(t, "/usr/bin/pi", bin)
+	assert.Equal(t, []string{piXaiVertexExtensionPath}, exts)
+	bin, exts = parsePiAgentProbe("")
+	assert.Equal(t, "pi", bin, "no probe output (the exec failed silently) falls back to PATH lookup at spawn time")
+	assert.Empty(t, exts)
+	bin, exts = parsePiAgentProbe("/nonsense\n/etc/passwd\n")
+	assert.Equal(t, "/nonsense", bin)
+	assert.Empty(t, exts, "only the known extension paths are accepted")
 }
 
 func TestPiRuntimeClearIterationArtifacts(t *testing.T) {

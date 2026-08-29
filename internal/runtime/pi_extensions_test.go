@@ -442,7 +442,9 @@ func TestPiRuntimeBootstrap_Extensions(t *testing.T) {
 	assert.Contains(t, string(raw), `"extensions"`)
 	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{sandboxName: "sb", agentPath: in.agentPath, agentName: "code"}))
 	raw = storedUpload(t, store, cfg+"/fullsend-manifest.json")
-	assert.NotContains(t, string(raw), `"extensions"`)
+	var top map[string]any
+	require.NoError(t, json.Unmarshal(raw, &top))
+	assert.NotContains(t, top, "extensions", "top-level key omitted (the agent block has its own extensions list)")
 
 	// Name collisions with the runner's own extensions and between entries
 	// fail before anything is uploaded.
