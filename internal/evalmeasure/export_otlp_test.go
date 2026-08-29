@@ -225,6 +225,18 @@ func TestExportOTLPScores_EmptySpanIDSkipped(t *testing.T) {
 	assert.Empty(t, sink.allSpans())
 }
 
+func TestExportOTLPScores_AllSuppressedSkipsExporter(t *testing.T) {
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("TRACEPARENT", "00-84d470ba2451ffeccfe09022d9b2aebd-77f8c0902eaeedcb-00")
+
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass,
+		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+}
+
 func TestExportOTLPScores_EmptySpanIDPassReportsFailure(t *testing.T) {
 	sink := newScoreOTLPSink(t)
 	clearOTLPEnv(t)

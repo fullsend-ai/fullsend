@@ -98,6 +98,24 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	if !telemetry.OTLPEnabled() {
 		return nil
 	}
+	suppressTID, suppressUnsampled := inboundUnsampledTRACEPARENT()
+	exportable := make([]EvaluationResult, 0, len(results))
+	for _, r := range results {
+		if suppressUnsampled && scoreTraceIDEquals(r.TraceID, suppressTID) {
+			// Inbound parent for this TraceID was unsampled — agent OTLP
+			// suppressed; do not orphan a score span on that TraceID.
+			continue
+		}
+		if r.Label == LabelSkip && (strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "") {
+			// EM-001 can legitimately skip when it cannot find the root run
+			// span. There is no parent to correlate remotely.
+			continue
+		}
+		exportable = append(exportable, r)
+	}
+	if len(exportable) == 0 {
+		return nil
+	}
 	if err := telemetry.ValidateOTLPEndpoints(); err != nil {
 		return fmt.Errorf("otlp endpoint validation: %w", err)
 	}
@@ -116,12 +134,11 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	// SDK's default queue is 2,048 and drops spans once full; blocking instead
 	// would use context.TODO internally and could violate this function's
 	// fail-open wall-clock budget.
-	queueSize := len(results)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(telemetry.BuildResource(serviceVersion)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithRawSpanLimits(telemetry.SpanLimits()),
-		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp, sdktrace.WithMaxQueueSize(queueSize))),
+		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp, sdktrace.WithMaxQueueSize(len(exportable)))),
 	)
 	// Shutdown shares the same export budget (remaining deadline on ctx),
 	// not an extra Background timeout stacked on top.
@@ -131,25 +148,12 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 		}
 	}()
 
-	suppressTID, suppressUnsampled := inboundUnsampledTRACEPARENT()
 	tr := tp.Tracer(otlpScopeName)
 	var (
-		errs      []error
-		attempted int
-		failed    int
+		errs   []error
+		failed int
 	)
-	for _, r := range results {
-		if suppressUnsampled && scoreTraceIDEquals(r.TraceID, suppressTID) {
-			// Inbound parent for this TraceID was unsampled — agent OTLP
-			// suppressed; do not orphan a score span on that TraceID.
-			continue
-		}
-		if r.Label == LabelSkip && (strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "") {
-			// EM-001 can legitimately skip when it cannot find the root run
-			// span. There is no parent to correlate remotely.
-			continue
-		}
-		attempted++
+	for _, r := range exportable {
 		if err := exportOneScore(ctx, tr, r); err != nil {
 			failed++
 			errs = append(errs, err)
@@ -171,10 +175,10 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	// Transport failure: nothing is known to have landed — do not claim N/M
 	// success from spans that were only constructed locally.
 	if flushErr != nil || expErr != nil {
-		return fmt.Errorf("otlp export failed for all %d scores: %w", attempted, errors.Join(errs...))
+		return fmt.Errorf("otlp export failed for all %d scores: %w", len(exportable), errors.Join(errs...))
 	}
-	exported := attempted - failed
-	return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, attempted, failed, errors.Join(errs...))
+	exported := len(exportable) - failed
+	return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, len(exportable), failed, errors.Join(errs...))
 }
 
 // inboundUnsampledTRACEPARENT parses TRACEPARENT with the same W3C
