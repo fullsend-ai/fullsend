@@ -37,6 +37,7 @@
 // Everything it needs is the `agent` block of the manifest
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -424,7 +425,7 @@ function signalChild(child, signal) {
 // `now` are injectable for tests. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
@@ -478,6 +479,56 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     if (i < 0) return;
     waiters.splice(i, 1);
     waiter.evict();
+  };
+
+  // extensionDigests are the digests Bootstrap recorded for the files it
+  // wrote into agent.extensions that live in the config dir — today only
+  // the hook adapter, and the same bytes the launch guard checks. They
+  // travel inside the manifest, so the manifest digest covers them: a
+  // rewrite that drops or edits them is itself a manifest drift, caught
+  // first below. The vendored provider extensions under
+  // /usr/local/share/pi-extensions carry none on purpose — they are
+  // root-owned and read-only in the image, outside anything the agent can
+  // write, so there is nothing there to re-check.
+  const extensionDigests = Object.entries(agent.extensionDigests ?? {}).filter(
+    ([file, want]) => typeof file === "string" && file !== "" && typeof want === "string" && want !== "",
+  );
+
+  // manifestDrift re-reads the manifest and the config-dir extensions it
+  // names, and reports whether they still hash to what this extension
+  // loaded. The launch guards in buildPiRunCommand check both once, before
+  // pi starts; an iteration then runs for minutes with those files sitting
+  // in a config dir the agent can write to, and between them they name the
+  // binary a child runs, the -e list it loads, its tool allowlist and where
+  // its usage is recorded.
+  //
+  // The hook adapter is the sharper half: nothing re-verifies it after the
+  // launch guard, a parent with `write` can replace it mid-iteration, and a
+  // rewritten adapter simply omits its own manifest-digest check — so every
+  // child dispatched afterwards would come up unhooked. Both are therefore
+  // re-checked immediately before every dispatch, inside the slot this
+  // dispatch holds. The manifest half is skipped when the caller supplied
+  // no digest — the unit tests build a tool from an object, not a file.
+  const manifestDrift = () => {
+    if (manifestPath && manifestSum) {
+      let sum;
+      try {
+        sum = createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+      } catch (err) {
+        return `cannot re-read ${manifestPath} before dispatching: ${err.message}`;
+      }
+      if (sum !== manifestSum) return "manifest changed since load; refusing to dispatch";
+    }
+    for (const [file, want] of extensionDigests) {
+      let sum;
+      try {
+        sum = createHash("sha256").update(readFileSync(file)).digest("hex");
+      } catch (err) {
+        return `cannot re-read ${file} before dispatching: ${err.message}`;
+      }
+      if (sum !== want) return "hook adapter changed since load; refusing to dispatch";
+    }
+    return "";
   };
 
   const recordUsage = (record) => {
@@ -629,7 +680,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         return early;
       }
       try {
-        log(`${LOG_PREFIX} #${id} ${modelSpec} start "${description}"`);
+        const drift = manifestDrift();
+        if (drift) {
+          return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
+        }
+        log(`${LOG_PREFIX} #${id} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
         outcome = await runChild(id, params, modelSpec, tools, ticket);
       } finally {
         release();
@@ -697,9 +752,16 @@ export default function (pi) {
     console.error(`${LOG_PREFIX} ${DEPTH_ENV} is set: this is a sub-agent, the Agent tool is not registered (no recursion)`);
     return;
   }
+  const manifestPath = process.env.FULLSEND_PI_MANIFEST || DEFAULT_MANIFEST_PATH;
   let manifest;
+  let manifestSum;
   try {
-    manifest = loadManifest();
+    // The bytes are read once and both hashed and parsed from that one
+    // read, so the digest kept for manifestDrift describes exactly the
+    // configuration in use.
+    const bytes = readFileSync(manifestPath);
+    manifestSum = createHash("sha256").update(bytes).digest("hex");
+    manifest = JSON.parse(bytes.toString("utf8"));
   } catch (err) {
     console.error(`${LOG_PREFIX} cannot read manifest: ${err.message}; the Agent tool is not registered`);
     return;
@@ -708,7 +770,7 @@ export default function (pi) {
     console.error(`${LOG_PREFIX} the Agent tool is not enabled for this agent; nothing registered`);
     return;
   }
-  const tool = createAgentTool(manifest);
+  const tool = createAgentTool(manifest, { manifestPath, manifestSum });
 
   const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
     const m = ctx?.model;

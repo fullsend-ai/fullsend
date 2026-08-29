@@ -228,6 +228,18 @@ func piThinkingFor(effort string) (string, bool) {
 // extension would give a hookless iteration that looks healthy.
 const piHooksMissingExit = 97
 
+// piAgentTamperedExit is the exit code of the Agent extension's integrity
+// guard. Distinct from piHooksMissingExit so Run can name the artifact that
+// actually failed: both guards can be in the command line at once, and one
+// code for two of them made the message a list of three things to go and
+// check ("hook adapter, Agent extension or manifest").
+const piAgentTamperedExit = 94
+
+// piManifestTamperedExit is the exit code of the manifest integrity guard:
+// the manifest is not byte-identical to the one Bootstrap wrote. Distinct
+// from piHooksMissingExit so Run can name the actual cause.
+const piManifestTamperedExit = 95
+
 // piConfigTamperedExit is the exit code of the config-dir integrity guard
 // for the openai provider (auth.json or models.json present). Distinct from
 // piHooksMissingExit so Run can name the actual cause instead of reporting a
@@ -245,11 +257,23 @@ const piConfigTamperedExit = 98
 // the adapter or manifest file is missing. exts are the declared harness
 // extensions resolved from the host by Run (piResolveRunPlugins): their
 // preflight hash, -e entries and env exports come from there, not from m.
-func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension) string {
+// manifestSum is the digest Bootstrap recorded for the manifest; when it is
+// non-empty the command refuses to start pi on a manifest that no longer
+// matches it.
+func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension, manifestSum string) string {
 	r := PiRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
 	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
+	// The Agent tool is decided from the manifest Bootstrap wrote for this
+	// agent definition. Both the extension's code and the manifest it reads
+	// are hash-checked below: the manifest names the binary children run,
+	// the -e list they load, their tool allowlists and where their usage is
+	// recorded, and the config dir is agent-writable between iterations —
+	// so an unchecked manifest would let an agent with Write but no Bash
+	// (which cannot start pi itself) launch children of its own choosing.
+	agentEnabled := m.Agent != nil && m.Agent.Enabled
+	agentExt := r.ConfigDir() + "/" + piAgentExtensionFile
 
 	// The agent definition's model is the fallback when the runner resolved
 	// none; EffectiveModel is shared with NeedsOpenAIProvider so the launch
@@ -275,6 +299,17 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Before .env: that file is agent-writable and could otherwise
 		// shadow the guard's tools with functions or a PATH entry.
 		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
+	}
+	if agentEnabled {
+		// Same block: the Agent extension must be byte-identical to the
+		// embedded copy before .env can shadow the tools that check it.
+		parts = append(parts, "&& "+piAgentGuard(agentExt))
+	}
+	if manifestSum != "" {
+		// Same block, same reason. The hooks guard above only checks that
+		// the manifest exists; this checks that it is the one Bootstrap
+		// wrote, and it runs whether or not hooks are enabled.
+		parts = append(parts, "&& "+piManifestGuard(r.piManifestPath(), manifestSum))
 	}
 	if guard := piExtensionsGuard(exts); guard != "" {
 		// Same block, same reason: the extension trees are checked against
@@ -366,6 +401,28 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// credential leak, not tool misuse.
 		parts = append(parts, "&& unset -f test command grep tr sed printf pi", "&& "+piOpenAIConfigGuard(r.ConfigDir()))
 	}
+	if manifestSum != "" {
+		// Second pass, the way piOpenAIConfigGuard has one: .env is
+		// agent-writable and could have rewritten the manifest just now,
+		// after the first check. `unset -f` is a special builtin, so a
+		// function sourced from .env cannot shadow it or survive it.
+		//
+		// `[` is in the unset list because the guard uses it. Under bash 4.x
+		// `unset -f [` is a syntax error, but the sandbox's `sh` is dash
+		// (which accepts it) and this line is only ever run through `sh -c`.
+		parts = append(parts,
+			"&& unset -f test [ command sha256sum cut",
+			"&& "+piManifestGuard(r.piManifestPath(), manifestSum),
+			// Exported after .env so .env cannot set it (or clear it) and
+			// after the guard above so it can only ever carry the digest the
+			// guard just matched. The hook adapter checks the manifest
+			// against it when it loads — which for a sub-agent is minutes
+			// into the iteration, long after this guard ran: without it a
+			// parent with `write` could empty hooks.groups mid-iteration and
+			// dispatch children whose adapter loads a hookless plan.
+			"&& export "+piManifestSumEnv+"="+shellQuote(manifestSum),
+		)
+	}
 	// Declared extensions' env goes last, which protects nothing on its
 	// own: it is exported after the runtime's pins and the provider
 	// hygiene, and pi hands its whole environment to every hook script it
@@ -398,6 +455,12 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// would pin the iteration to the placeholder it launched with.
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
+	}
+	if agentEnabled {
+		// After the adapter, so its PreToolUse hooks see Agent calls
+		// (Claude Code runs the same hooks on its Agent tool). Children
+		// get their own -e list from the manifest, never this file.
+		parts = append(parts, "-e "+shellQuote(agentExt))
 	}
 	// Declared extensions come after the hook adapter: pi runs tool_call
 	// handlers in -e order and the first block wins, so the adapter's
@@ -442,6 +505,14 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 
 // piManifestEnv tells the hook extension where the manifest is.
 const piManifestEnv = "FULLSEND_PI_MANIFEST"
+
+// piManifestSumEnv carries the digest of the manifest Bootstrap wrote to
+// every process that loads fullsend-hooks.js — the parent and, through the
+// environment the Agent extension hands its children, each sub-agent. The
+// shell guard only fires once, before pi starts; a child reads the manifest
+// at its own start, so this is what keeps a mid-iteration rewrite from
+// producing a hookless sub-agent.
+const piManifestSumEnv = "FULLSEND_PI_MANIFEST_SHA256"
 
 // piBinaryVar holds the absolute path of the pi binary, resolved before
 // .env is sourced and marked read-only.
@@ -594,6 +665,30 @@ func piHooksGuard(hooksExt, manifestPath string) string {
 		shellQuote(hooksExt), shellQuote(manifestPath), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), piHooksMissingExit)
 }
 
+// piAgentGuard is the Agent extension's counterpart of piHooksGuard: the
+// file must exist and match the embedded copy, else piAgentTamperedExit —
+// its own code, so Run names this extension instead of listing every
+// runner-owned artifact the iteration carries.
+func piAgentGuard(agentExt string) string {
+	sum := sha256.Sum256(piAgentExtensionJS)
+	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi Agent extension missing or modified; refusing to run' >&2; exit %d; }; }`,
+		shellQuote(agentExt), shellQuote(agentExt), shellQuote(hex.EncodeToString(sum[:])), piAgentTamperedExit)
+}
+
+// piManifestGuard is the POSIX sh fragment that refuses to start pi when
+// fullsend-manifest.json is not byte-identical to the one Bootstrap wrote.
+// The manifest is the extensions' whole configuration — the hook plan the
+// adapter enforces and, when the Agent tool is on, the binary, -e list and
+// tool allowlists of every child — and the config dir is writable by the
+// agent between iterations, so it gets the same treatment as the extension
+// code itself.
+func piManifestGuard(manifestPath, sum string) string {
+	// `command -p` bypasses shell functions and uses the system default
+	// PATH; test, [ and echo are builtins.
+	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi manifest missing or modified since Bootstrap wrote it; refusing to run' >&2; exit %d; }; }`,
+		shellQuote(manifestPath), shellQuote(manifestPath), shellQuote(sum), piManifestTamperedExit)
+}
+
 // Run executes one agent iteration and normalizes pi's --mode json stream
 // into AgentEvents. pi exits 0 on model error in json mode, so the stream's
 // verdict overrides the exit code (#2786/#5361).
@@ -626,7 +721,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if err != nil {
 		return -1, err
 	}
-	cmd := buildPiRunCommand(params, m, exts)
+	cmd := buildPiRunCommand(params, m, exts, piManifestHash(params.SandboxName))
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -698,6 +793,12 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
 		return exitCode, fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piAgentTamperedExit && m.Agent != nil && m.Agent.Enabled {
+		return exitCode, fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piManifestTamperedExit {
+		return exitCode, fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())
 	}
 	if exitCode == piConfigTamperedExit {
 		return exitCode, fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())

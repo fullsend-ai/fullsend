@@ -5,8 +5,9 @@
 // deterministic control over process lifetime, an injected spawn.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -428,6 +429,119 @@ test("run: the usage record's description is capped", async () => {
   // The whole record has to stay under PIPE_BUF for concurrent appends to
   // be atomic.
   assert.ok(Buffer.byteLength(JSON.stringify(rec) + "\n") < 4096);
+});
+
+test("run: a manifest rewritten after load stops the next dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const path = join(dir, "manifest.json");
+  writeFileSync(path, JSON.stringify(manifest));
+  const bytes = readFileSync(path);
+  const manifestSum = createHash("sha256").update(bytes).digest("hex");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(JSON.parse(bytes.toString("utf8")), { ...quiet, spawn, manifestPath: path, manifestSum });
+
+  const first = tool.run({ prompt: "p1" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the unmodified manifest dispatches");
+  children[0].child.finish(okStream("one"));
+  assert.equal((await first).text, "one");
+
+  // The manifest names the binary children run, their -e list (the hook
+  // adapter among them) and their tool allowlist, and it sits in a dir the
+  // agent can write to: the launch guard checked it once, minutes ago.
+  writeFileSync(path, JSON.stringify({ ...manifest, agent: { ...manifest.agent, extensions: [], tools: ["bash"] } }));
+  const res = await tool.run({ prompt: "p2" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "manifest changed since load; refusing to dispatch");
+  assert.equal(res.stopReason, "rejected");
+  assert.equal(children.length, 1, "nothing was spawned on the rewritten configuration");
+  assert.equal(tool.inFlight(), 0);
+
+  // Restoring the bytes restores dispatch: the check is on content, not on
+  // having seen a write.
+  writeFileSync(path, bytes);
+  const third = tool.run({ prompt: "p3" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 2, "and the refused dispatch did not leak its slot");
+  children[1].child.finish(okStream("three"));
+  assert.equal((await third).text, "three");
+});
+
+test("run: a manifest that vanishes after load stops the next dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const path = join(dir, "gone.json");
+  writeFileSync(path, JSON.stringify(manifest));
+  const manifestSum = createHash("sha256").update(readFileSync(path)).digest("hex");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, manifestPath: path, manifestSum });
+  rmSync(path);
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.match(res.error, /cannot re-read .*gone\.json before dispatching/);
+  assert.equal(children.length, 0);
+});
+
+test("run: a hook adapter rewritten after load stops the next dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const adapter = join(dir, "fullsend-hooks.js");
+  const bytes = "// the hook adapter Bootstrap wrote\n";
+  writeFileSync(adapter, bytes);
+  const agent = {
+    ...manifest.agent,
+    // The vendored provider extension carries no digest: it is root-owned
+    // and read-only in the image. Only the config-dir file does.
+    extensions: ["/usr/local/share/pi-extensions/anthropic-vertex", adapter],
+    extensionDigests: { [adapter]: createHash("sha256").update(bytes).digest("hex") },
+  };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn });
+
+  const first = tool.run({ prompt: "p1" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the adapter Bootstrap wrote dispatches");
+  children[0].child.finish(okStream("one"));
+  assert.equal((await first).text, "one");
+
+  // The launch guard checked this file once, minutes ago. A parent with
+  // `write` can replace it mid-iteration, and a replacement simply omits
+  // the adapter's own manifest-digest check — so every child dispatched
+  // after it would come up with no hooks in it.
+  writeFileSync(adapter, "// no hooks here\n");
+  const res = await tool.run({ prompt: "p2" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "hook adapter changed since load; refusing to dispatch");
+  assert.equal(res.stopReason, "rejected");
+  assert.equal(children.length, 1, "nothing was spawned against the rewritten adapter");
+  assert.equal(tool.inFlight(), 0);
+
+  // Restoring the bytes restores dispatch: the check is on content, not on
+  // having seen a write. maxConcurrent dispatches at once then prove the
+  // refusal handed its slot back rather than keeping it.
+  writeFileSync(adapter, bytes);
+  const rest = [];
+  for (let i = 0; i < agent.maxConcurrent; i++) rest.push(tool.run({ prompt: `p${i}` }, {}));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1 + agent.maxConcurrent, "the refused dispatch leaked no slot");
+  for (let i = 1; i <= agent.maxConcurrent; i++) children[i].child.finish(okStream(`done-${i}`));
+  assert.deepEqual((await Promise.all(rest)).map((r) => r.text), ["done-1", "done-2", "done-3", "done-4"]);
+});
+
+test("run: a hook adapter that vanishes after load stops the next dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const adapter = join(dir, "gone-hooks.js");
+  writeFileSync(adapter, "// adapter\n");
+  const agent = {
+    ...manifest.agent,
+    extensions: [adapter],
+    extensionDigests: { [adapter]: createHash("sha256").update(readFileSync(adapter)).digest("hex") },
+  };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn });
+  rmSync(adapter);
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.match(res.error, /cannot re-read .*gone-hooks\.js before dispatching/);
+  assert.equal(children.length, 0);
 });
 
 test("run: model rejection is an error before anything is spawned", async () => {

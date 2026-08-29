@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -312,6 +314,47 @@ exit 0
 	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
 	assert.Equal(t, piHooksMissingExit, exit)
 	require.ErrorContains(t, err, "hook adapter or manifest missing")
+	assert.NotContains(t, err.Error(), "Agent extension",
+		"the Agent guard has its own exit code; naming it here would send the operator looking at the wrong artifact")
+}
+
+// TestPiRuntimeRun_TamperedAgentExtensionFailsClosed is the counterpart of
+// the hook-adapter case: the Agent extension's guard exits with its own
+// code, so Run names that extension instead of the hook adapter. Hooks are
+// off here, which is exactly the run where the old shared code was
+// ambiguous — nothing else in the command line exits 97.
+func TestPiRuntimeRun_TamperedAgentExtensionFailsClosed(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	forgetPiManifestHash(t, "sb")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+	// No tools: frontmatter means the default set, which carries the Agent
+	// tool — so Run emits the extension's -e and its guard.
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."), agentName: "review",
+	}))
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + store + `'/"$f"; exit $? ;;
+    *"exit 94"*) echo 'fullsend: pi Agent extension missing or modified' >&2; exit 94 ;;
+  esac
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second,
+		OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
+	assert.Equal(t, piAgentTamperedExit, exit)
+	require.ErrorContains(t, err, "Agent extension missing or modified")
+	assert.NotContains(t, err.Error(), "hook adapter")
 }
 
 func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
@@ -429,6 +472,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 
 	bootstrap := func(t *testing.T, agentDef string, hooks bool) (*piManifest, string, string) {
 		t.Helper()
+		forgetPiManifestHash(t, "sb")
 		work := t.TempDir()
 		store := filepath.Join(work, "store")
 		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
@@ -604,4 +648,33 @@ func TestPiDefaultTools_CoversToolMap(t *testing.T) {
 		_, ok := claudeToolForPi[name]
 		assert.Truef(t, ok, "default pi tool %q has no claudeToolForPi entry", name)
 	}
+}
+
+// forgetPiManifestHash drops the digest Bootstrap recorded for a sandbox,
+// before and after the test. piManifestHashes is a package-level map keyed
+// by sandbox name and the tests reuse a handful of names, so without this a
+// Bootstrap in one test decides whether a later test's buildPiRunCommand
+// emits the manifest guard - and against which digest.
+func forgetPiManifestHash(t *testing.T, sandboxName string) {
+	t.Helper()
+	piManifestHashes.Delete(sandboxName)
+	t.Cleanup(func() { piManifestHashes.Delete(sandboxName) })
+}
+
+// TestPiManifestHash covers the Bootstrap-to-Run seam: the digest is
+// recorded per sandbox and read back by name, and a sandbox this process
+// never bootstrapped yields "" so Run emits no guard rather than failing a
+// caller that bootstrapped elsewhere.
+func TestPiManifestHash(t *testing.T) {
+	forgetPiManifestHash(t, "sb-hash")
+	assert.Empty(t, piManifestHash("sb-hash"), "not bootstrapped in this process")
+
+	body := []byte(`{"agentName":"triage"}`)
+	recordPiManifestHash("sb-hash", body)
+	sum := sha256.Sum256(body)
+	assert.Equal(t, hex.EncodeToString(sum[:]), piManifestHash("sb-hash"))
+	assert.Empty(t, piManifestHash("another-sandbox"), "the digest is per sandbox")
+
+	forgetPiManifestHash(t, "sb-hash")
+	assert.Empty(t, piManifestHash("sb-hash"), "and the test helper clears it again")
 }

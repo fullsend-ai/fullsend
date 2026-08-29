@@ -345,7 +345,7 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 		{Name: "pi-fff", Path: "/sandbox/pi-config/extensions/pi-fff", SHA256: strings.Repeat("b", 64),
 			Args: []string{"--fff-mode", "over'ride"}, Env: map[string]string{"FFF_MULTIGREP": "1", "FFF_ROOT": "/sandbox/work space"}},
 	}
-	cmd := buildPiRunCommand(params, m, exts)
+	cmd := buildPiRunCommand(params, m, exts, "")
 
 	// Preflight: after the pi pin and the hook guard, before .env is sourced.
 	guard := piExtensionsGuard(exts)
@@ -377,17 +377,17 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 	// Without extensions nothing is added, and a declared tools: list is
 	// still rendered as before (extension tools are then hidden by pi).
 	m.Tools = []string{"bash", "read"}
-	plain := buildPiRunCommand(params, m, nil)
+	plain := buildPiRunCommand(params, m, nil, "")
 	assert.NotContains(t, plain, "pi-config/extensions/")
 	assert.NotContains(t, plain, "exit 96")
 	assert.Contains(t, plain, "--tools 'bash,read'")
-	withTools := buildPiRunCommand(params, m, exts)
+	withTools := buildPiRunCommand(params, m, exts, "")
 	assert.Contains(t, withTools, "--tools 'bash,read'")
 
 	// Hooks disabled: extension guard still runs (it is independent of the
 	// hook adapter) and the adapter is not loaded.
 	params.HooksSettingsPath = ""
-	noHooks := buildPiRunCommand(params, m, exts)
+	noHooks := buildPiRunCommand(params, m, exts, "")
 	assert.Contains(t, noHooks, guard)
 	assert.NotContains(t, noHooks, "fullsend-hooks.js")
 	assert.Contains(t, noHooks, `-e '/usr/local/share/pi-extensions/anthropic-vertex' -e '/sandbox/pi-config/extensions/go-diagnostics'`)
@@ -584,7 +584,7 @@ func TestPiRuntimeEnvExports_DisablesJitiCache(t *testing.T) {
 	// The export has to survive `. .env`: buildPiRunCommand re-emits
 	// EnvExports() after sourcing it, so the agent cannot turn the cache
 	// back on for the next iteration.
-	cmd := buildPiRunCommand(RunParams{RepoDir: "/sandbox/workspace/repo"}, &piManifest{}, nil)
+	cmd := buildPiRunCommand(RunParams{RepoDir: "/sandbox/workspace/repo"}, &piManifest{}, nil, "")
 	env := strings.Index(cmd, ". '/sandbox/workspace/.env'")
 	jiti := strings.Index(cmd, "export JITI_FS_CACHE=false")
 	require.GreaterOrEqual(t, env, 0)
