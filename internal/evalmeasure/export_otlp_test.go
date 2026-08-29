@@ -83,6 +83,7 @@ func clearOTLPEnv(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("TRACEPARENT", "")
+	t.Setenv("TRACESTATE", "")
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "")
