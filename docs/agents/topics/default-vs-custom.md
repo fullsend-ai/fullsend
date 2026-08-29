@@ -4,7 +4,7 @@ Fullsend ships a set of default agents in
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Each can be
 configured and extended.
 At some point, enough modification turns a configured default into something
-different. This document defines three tiers:
+different. This document defines three categories:
 
 1. **Configured default agent** — uses only documented extension points
    (env vars, skills, `AGENTS.md`, plugins, host files, sandbox image layers).
@@ -68,7 +68,7 @@ agent is custom by definition — regardless of how similar it looks.
 | Set a documented configuration variable (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`) | Configured default | Documented extension point. The agent was designed for this. |
 | Add environment variables via `env:` | Configured default | Env vars augment behavior without changing identity. |
 | Add skills via `skills:` | Configured default | Skills extend knowledge. The agent's core behavior is unchanged. |
-| Add repo-level skills in `.agents/skills/` | Configured default | Repo skills are discovered automatically; no harness change needed. |
+| Add repo-level skills in `.agents/skills/` | Configured default | Discovered automatically under the Claude Code runtime; a basename matching a built-in skill is silently shadowed, and `runtime: pi` does not read `.agents/skills` (see [Repo Skill](../../glossary.md#repo-skill)). |
 | Add project instructions via `AGENTS.md` | Configured default | All agents read `AGENTS.md`. This is the standard customization path. |
 | Override a built-in skill via config-driven registration | Configured default | Documented extension point ([Configuring with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
 | Replace the sandbox image with one based on the default image | Configured default | The agent's behavior is unchanged; the environment is augmented. |

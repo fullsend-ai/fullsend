@@ -4,7 +4,8 @@ Shared vocabulary for the fullsend project. Terms are defined in the context of 
 
 This is a living document. PRs that introduce new terminology should add to this glossary as part of the change.
 
-## Customization vocabulary
+<a id="customization-vocabulary"></a>
+**Customization vocabulary**
 
 When someone says they "customized an agent," ask which of these they mean — colloquial **"customized agent"** is ambiguous; prefer a precise term below.
 
@@ -69,8 +70,10 @@ Project-wide instructions for humans and agents (conventions, testing, architect
 
 ### Always-on Skill
 
-A harness [skill](#skill) load mode decided in [ADR 0092](ADRs/0092-always-on-harness-skills.md): frontmatter `metadata.apply: always` (legacy top-level `apply: always` also accepted) opts the skill into always-on. Under the Claude Code runtime, after upload, bootstrap injects a short directive naming those skills so the model opens each with the Skill tool before relying on them — it does not paste `SKILL.md` bodies into the agent file; that path requires `Skill` in the agent's `tools:`. (pi has no Skill tool — skills are prompt-driven via `read` of `SKILL.md`; see [runtimes](runtimes.md).) Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill).
-See [Configuring with skills](guides/user/customizing-with-skills.md) and [#6380](https://github.com/fullsend-ai/fullsend/issues/6380).
+> **Planned:** The always-on load mode is decided but not yet wired in the runtime — see [ADR 0092](ADRs/0092-always-on-harness-skills.md) and [#6380](https://github.com/fullsend-ai/fullsend/issues/6380).
+
+A harness [skill](#skill) load mode decided in [ADR 0092](ADRs/0092-always-on-harness-skills.md): frontmatter `metadata.apply: always` (legacy top-level `apply: always` also accepted) opts the skill into always-on. Under the Claude Code runtime, after upload, bootstrap will inject a short directive naming those skills so the model opens each with the Skill tool before relying on them — it does not paste `SKILL.md` bodies into the agent file; that path requires `Skill` in the agent's `tools:`. (pi has no Skill tool — skills are prompt-driven via `read` of `SKILL.md`; see [runtime implementation](contributing/runtime-implementation.md).) Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill).
+See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Automerge
 
@@ -91,7 +94,7 @@ See [security-threat-model.md](problems/security-threat-model.md) and [architect
 
 ### Built-in Skill
 
-A [skill](#skill) that ships with a [default agent](#default-agent) (for example `code-implementation`, `code-review`, `issue-labels`). Listed in that agent's harness and documented under [Agents reference](agents/). Teams typically [add](#additive-skill) alongside built-ins; replacing one by basename via [base composition](#base-composition) or the historical overlay is a [skill override](#skill-override).
+A [skill](#skill) listed in a [default agent](#default-agent)'s harness in `fullsend-ai/agents`. Documented under [Agents reference](agents/) (each agent page carries a `Source` link to its harness YAML). Teams typically [add](#additive-skill) alongside built-ins; replacing one by basename via [base composition](#base-composition) or the historical overlay is a [skill override](#skill-override).
 See [Configuring with skills](guides/user/customizing-with-skills.md#built-in-skills).
 
 ### BYOA
@@ -232,7 +235,9 @@ See [Distributed Tracing](guides/infrastructure/distributed-tracing.md) and [ADR
 
 ### On-demand Skill
 
-A [skill](#skill) load mode: uploaded and listed for the run, but under the Claude Code runtime the full body loads only when the model opens it (Skill tool). Default when frontmatter omits `metadata.apply` / `apply`, or sets `on-demand` ([ADR 0092](ADRs/0092-always-on-harness-skills.md)). Contrast with [always-on skill](#always-on-skill).
+> **Planned:** The on-demand / always-on distinction is decided but not yet wired in the runtime — see [ADR 0092](ADRs/0092-always-on-harness-skills.md) and [#6380](https://github.com/fullsend-ai/fullsend/issues/6380).
+
+A [skill](#skill) load mode: uploaded and listed for the run, but under the Claude Code runtime the full body loads only when the model opens it (Skill tool). Default when frontmatter omits `metadata.apply` / `apply`, or sets `on-demand` ([ADR 0092](ADRs/0092-always-on-harness-skills.md)). This matches today's upload-and-list behavior; contrast with [always-on skill](#always-on-skill).
 
 ## P
 
@@ -260,7 +265,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 
 ### Repo Skill
 
-A [skill](#skill) committed under the target repo (typically `.agents/skills/`, often symlinked as `.claude/skills`). Under the Claude Code runtime, discovered for agents on that repo. Novel names are [additive](#additive-skill). A repo skill whose name matches a [built-in skill](#built-in-skill) is **shadowed**: built-ins upload to the personal-level config dir (`CLAUDE_CONFIG_DIR/skills/`), while repo skills stay at the project level (`.claude/skills/`); Claude Code's personal-over-project precedence silently ignores the repo copy — there is no bootstrap error. That silent shadowing is not a [skill override](#skill-override). Use a unique name, or replace intentionally via [base composition](#base-composition) (same basename on the child harness `skills:` list). With `runtime: pi`, project trust is disabled (`--no-approve` / `defaultProjectTrust: never`), so repo-committed skills under `.agents/skills` are not discovered at all — see [runtimes](runtimes.md).
+A [skill](#skill) committed under the target repo (typically `.agents/skills/`, often symlinked as `.claude/skills`). Under the Claude Code runtime, discovered for agents on that repo. Novel names are [additive](#additive-skill). A repo skill whose name matches a [built-in skill](#built-in-skill) is **shadowed**: built-ins upload to the personal-level config dir (`CLAUDE_CONFIG_DIR/skills/`), while repo skills stay at the project level (`.claude/skills/`); Claude Code's personal-over-project precedence silently ignores the repo copy — there is no bootstrap error. That silent shadowing is not a [skill override](#skill-override). Use a unique name, or replace intentionally via [base composition](#base-composition) (same basename on the child harness `skills:` list). With `runtime: pi`, project trust is disabled (`--no-approve` / `defaultProjectTrust: never`), so repo-committed skills under `.agents/skills` are not discovered at all — see [runtime implementation](contributing/runtime-implementation.md).
 See [Configuring with skills — Skill precedence](guides/user/customizing-with-skills.md#skill-precedence).
 
 ### Rework Rate
