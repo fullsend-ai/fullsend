@@ -4,9 +4,50 @@ Shared vocabulary for the fullsend project. Terms are defined in the context of 
 
 This is a living document. PRs that introduce new terminology should add to this glossary as part of the change.
 
+<a id="customization-vocabulary"></a>
+**Customization vocabulary**
+
+When someone says they "customized an agent," ask which of these they mean — colloquial **"customized agent"** is ambiguous; prefer a precise term below.
+
+**Agent classification** (pick the most specific that applies — these are categories, not ordered steps):
+
+- [Default agent](#default-agent) — unmodified shipped agent
+- [Configured default agent](#configured-default-agent) — same identity; allowed configuration only
+- [Derived agent](#derived-agent) — `base:` lineage from a default, but identity-defining fields replaced
+- [Custom agent](#custom-agent) — no default `base` lineage (built from scratch)
+
+**Skills** (how instructions are added or replaced):
+
+- [Additive skill](#additive-skill) vs [Skill override](#skill-override)
+- [Always-on skill](#always-on-skill) vs [On-demand skill](#on-demand-skill) (load modes; see [ADR 0092](ADRs/0092-always-on-harness-skills.md))
+- [Built-in skill](#built-in-skill), [Repo skill](#repo-skill), [Extension point](#extension-point)
+
+**Scripts** (host-side pre/post hooks):
+
+- [Pre-script](#pre-script) / [Post-script](#post-script) changes are [script overrides](#script-override) — replace, not add
+
+**Platform:**
+
+- [BYOA](#byoa) is the capability to bring your own agents and config — **not** a synonym for [custom agent](#custom-agent)
+
+| Goal | Resource |
+|------|----------|
+| Classify your change | [Default, derived, and custom agents](agents/topics/default-vs-custom.md) |
+| Configure a harness | [Configuring agents](guides/user/customizing-agents.md) |
+| Bring your own agent | [Bring Your Own Agent](guides/user/bring-your-own-agent.md) |
+| Add skills | [Configuring with skills](guides/user/customizing-with-skills.md) |
+| Project-wide instructions | [Configuring with AGENTS.md](guides/user/customizing-with-agents-md.md) |
+| `base:` merge rules | [Base composition](#base-composition), [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) |
+| Always-on skill load mode | [ADR 0092](ADRs/0092-always-on-harness-skills.md) |
+
 ---
 
 ## A
+
+### Additive Skill
+
+A [skill](#skill) that **extends** an agent's skill set without replacing a [built-in skill](#built-in-skill). Typical paths: list a new unique name under harness `skills:` via [base composition](#base-composition), or add a uniquely named [repo skill](#repo-skill). The default agent's identity is unchanged — this yields a [configured default agent](#configured-default-agent), not a [custom agent](#custom-agent). Example pattern: a team brevity or house-style skill composed alongside existing skills.
+See [Configuring with skills](guides/user/customizing-with-skills.md) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Agent Infrastructure
 
@@ -23,6 +64,17 @@ See [architecture.md](architecture.md).
 The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) is available as an opt-in second runtime (`runtime: pi`), and OpenCode is a stub. See [runtimes.md](runtimes.md).
 See [architecture.md](architecture.md) and [agent-infrastructure.md](problems/agent-infrastructure.md).
 
+### AGENTS.md
+
+Project-wide instructions for humans and agents (conventions, testing, architecture). Fullsend agents operating on a checked-out target repo read it there ([Configuring with AGENTS.md](guides/user/customizing-with-agents-md.md)). Using `AGENTS.md` keeps you in [configured default](#configured-default-agent) territory; it is not a [custom agent](#custom-agent). Prefer `AGENTS.md` for rules that apply to every agent; use a [skill](#skill) when behavior is agent- or task-specific.
+
+### Always-on Skill
+
+> **Planned:** The always-on load mode is decided but not yet wired in the runtime — see [ADR 0092](ADRs/0092-always-on-harness-skills.md) and [#6380](https://github.com/fullsend-ai/fullsend/issues/6380).
+
+A harness [skill](#skill) load mode decided in [ADR 0092](ADRs/0092-always-on-harness-skills.md): frontmatter `metadata.apply: always` (legacy top-level `apply: always` also accepted) opts the skill into always-on. Under the Claude Code runtime, after upload, bootstrap will inject a short directive naming those skills so the model opens each with the Skill tool before relying on them — it does not paste `SKILL.md` bodies into the agent file; that path requires `Skill` in the agent's `tools:`. (pi has no Skill tool — skills are prompt-driven via `read` of `SKILL.md`; see [runtime implementation](contributing/runtime-implementation.md).) Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill).
+See [Configuring with skills](guides/user/customizing-with-skills.md).
+
 ### Automerge
 
 The end-state goal where PRs that pass all agent review and CI checks are merged to the target branch without human intervention. Automerge is gated by the [autonomy spectrum](problems/autonomy-spectrum.md) — most workflows start with human-in-the-loop approval and graduate toward automerge as confidence increases. The team has explicitly decided not to implement automerge in the MVP; agents will comment that they approve, but a human must merge.
@@ -32,7 +84,7 @@ See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ### Base Composition
 
-The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, `openshell.profiles`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaced the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field.
+The mechanism for customizing an agent's harness: a thin harness file sets `base:` to a local path or URL pointing at an upstream harness, then declares only the fields that differ. Scalars override the base value; `skills` merges with deduplication by basename (child overrides); `plugins`, `providers`, `openshell.profiles`, and `api_servers` concatenate (base + child, no dedup at composition time); `env.runner` and `env.sandbox` merge as independent maps (child keys win); `runner_env` is deprecated in favor of `env.runner`. Replaced the deprecated [`customized/` directory](#customized-directory) overlay, which required copying and maintaining an entire upstream YAML file to change a single field. Same mechanism as colloquial "harness composition."
 See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0055](ADRs/0055-unified-env-var-delivery.md), [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md), and [Configuring Agent Behavior](guides/user/customizing-agents.md).
 
 ### Blast Radius
@@ -40,17 +92,31 @@ See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [ADR 0055](ADRs/0055
 The scope of damage a compromised or misbehaving agent can cause. A core design constraint: every architectural decision about sandboxing, identity scoping, and network policy is evaluated by asking "what is the blast radius if this agent is compromised?" Minimizing blast radius is the primary goal of the sandbox layer.
 See [security-threat-model.md](problems/security-threat-model.md) and [architecture.md](architecture.md).
 
+### Built-in Skill
+
+A [skill](#skill) listed in a [default agent](#default-agent)'s harness in `fullsend-ai/agents`. Documented under [Agents reference](agents/) (each agent page carries a `Source` link to its harness YAML). Teams typically [add](#additive-skill) alongside built-ins; replacing one by basename via [base composition](#base-composition) or the historical overlay is a [skill override](#skill-override).
+See [Configuring with skills](guides/user/customizing-with-skills.md#built-in-skills).
+
+### BYOA
+
+**Bring Your Own Agent** — the platform capability to register, compose, and run agents and harness config you own (config.yaml registration and `base:` [base composition](#base-composition)). BYOA covers [configured default](#configured-default-agent), [derived](#derived-agent), and [custom](#custom-agent) agents. Saying "we use BYOA" does **not** mean "we built a custom agent"; many BYOA users only add skills or env on a default harness.
+See [Bring Your Own Agent](guides/user/bring-your-own-agent.md), [ADR 0058](ADRs/0058-agent-registration.md), and [ADR 0045](ADRs/0045-forge-portable-harness-schema.md).
+
 ## C
 
 ### Configured Default Agent
 
-A [default agent](#default-agent) whose behavior has been adjusted using documented extension points or general-purpose harness fields that do not alter the agent's identity — environment variables, skills, `AGENTS.md` instructions, sandbox image layers, plugins, or host files. The agent's identity (system prompt, scripts, slug, validation loop) is unchanged; it is still recognizably the same default agent.
+A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields (`agent:`, [pre-script](#pre-script) / [post-script](#post-script), slug, validation loop). Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override), [AGENTS.md](#agentsmd), env vars, plugins, host files, sandbox image layers, and policy composition. The slug normally stays too — treat a slug change as [derived](#derived-agent) unless that agent's own docs recommend a specific slug override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
 
-An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
+An agent whose `base` chain does **not** trace back to a default agent harness in `fullsend-ai/agents`, or that has no `base` at all. Built from scratch — even if it resembles triage, code, or review. Adding skills to triage is not a custom agent; that is a [configured default](#configured-default-agent). Contrast with [derived agent](#derived-agent) (starts from a default via `base:` but replaces identity).
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
+
+### Customized Agent
+
+Colloquial phrase — avoid in precise discussion. It may mean a [configured default](#configured-default-agent), a [derived agent](#derived-agent), or a [custom agent](#custom-agent). Prefer one of those terms (see [Customization vocabulary](#customization-vocabulary)).
 
 ### Customized Directory
 
@@ -66,12 +132,12 @@ See [architecture.md](architecture.md) (building block 1).
 
 ### Default Agent
 
-An agent shipped by fullsend, defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when configured through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [derived agent](#derived-agent) when modifications go beyond those points.
+An agent shipped by fullsend: harness files and agent definitions in `fullsend-ai/agents`. Unmodified, it is simply a default agent. Documented configuration yields a [configured default agent](#configured-default-agent). Replacing identity-defining fields on a `base:` of that harness yields a [derived agent](#derived-agent). An agent with no default `base` lineage is a [custom agent](#custom-agent).
 See [Agents reference](agents/) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Derived Agent
 
-An agent that uses `base` inheritance from a default agent harness but replaces identity-defining components (system prompt, pre/post scripts, slug, or validation loop) beyond the documented extension points. It re-uses parts of a default agent but is no longer recognizably that agent. Contrast with [configured default agent](#configured-default-agent) (stays within extension points) and [custom agent](#custom-agent) (built from scratch).
+An agent that uses `base` [base composition](#base-composition) from a [default agent](#default-agent) but replaces identity-defining components — system prompt (`agent:`), [pre-script](#pre-script) / [post-script](#post-script), slug (unless that agent's docs recommend a specific override), or validation loop — beyond documented [extension points](#extension-point). It reuses default lineage but is no longer recognizably that default. Example: changing the post-script so the agent can call a forge API the stock script does not support. Contrast with [configured default](#configured-default-agent) and [custom agent](#custom-agent).
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ## E
@@ -99,6 +165,11 @@ See [ADR 0051](ADRs/0051-agent-eval-harness-for-test-infrastructure.md) and [tes
 ### Evergreen
 
 A workflow concept where a repository automatically stays up-to-date with dependency updates (e.g., Renovate PRs) by automerging changes that consist solely of known-safe dependency bumps. Named by analogy with evergreen browsers that silently self-update. Proposed as a stretch-goal supplementary workflow.
+
+### Extension Point
+
+A documented hook on a [default agent](#default-agent) that teams are expected to use — for example a named optional skill (`customer-research` on prioritize) or a published configuration variable (`REVIEW_FINDING_SEVERITY_THRESHOLD` on review). Using an extension point keeps the result a [configured default agent](#configured-default-agent). Each agent lists its extension points in [`docs/agents/<agent>.md`](agents/).
+See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Configuring with skills](guides/user/customizing-with-skills.md#extension-points).
 
 ## F
 
@@ -162,6 +233,12 @@ See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) and [Eval Me
 What **actually happened** on an agent run, recorded as OpenTelemetry (OTEL) spans. The local source of truth is `run-telemetry.jsonl`; when `OTEL_EXPORTER_OTLP_*` is set, the same spans also export live over OTLP ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)). Agent identity, work item, tokens, cost, span tree, and `exit_code` belong here. Sibling files (including [eval measurements](#eval-measurement)) must not become a second source of run truth.
 See [Distributed Tracing](guides/infrastructure/distributed-tracing.md) and [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md).
 
+### On-demand Skill
+
+> **Planned:** The on-demand / always-on distinction is decided but not yet wired in the runtime — see [ADR 0092](ADRs/0092-always-on-harness-skills.md) and [#6380](https://github.com/fullsend-ai/fullsend/issues/6380).
+
+A [skill](#skill) load mode: uploaded and listed for the run, but under the Claude Code runtime the full body loads only when the model opens it (Skill tool). Default when frontmatter omits `metadata.apply` / `apply`, or sets `on-demand` ([ADR 0092](ADRs/0092-always-on-harness-skills.md)). This matches today's upload-and-list behavior; contrast with [always-on skill](#always-on-skill).
+
 ## P
 
 ### Policy Store
@@ -169,12 +246,27 @@ See [Distributed Tracing](guides/infrastructure/distributed-tracing.md) and [ADR
 Where agent behavioral rules live — autonomy levels, review requirements, allowed operations, and escalation rules. Policy is distinct from the harness (which configures *how* an agent works) and from intent (which defines *what* work is authorized). Policy defines the *boundaries* of agent behavior — what an agent is allowed to do regardless of what it's asked to do. The adopting organization's `.fullsend` repository is the natural home for policy configuration.
 See [architecture.md](architecture.md) and [governance.md](problems/governance.md).
 
+### Post-script
+
+A host-side script declared as `post_script` in the harness. Runs **outside** the sandbox **after** the agent exits, with credentials, to apply untrusted agent output (labels, comments, pushes, board updates). Credential isolation depends on this boundary ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)). Changing `post_script` on a default `base:` is a [script override](#script-override) and makes the agent [derived](#derived-agent) — skills cannot replace post-script API actions the stock script does not perform.
+See [ADR 0024](ADRs/0024-harness-definitions.md) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+
+### Pre-script
+
+A host-side script declared as `pre_script` in the harness. Runs **outside** the sandbox **before** the agent starts, with credentials, to fetch inputs and write them into the workspace for the sandbox. Changing `pre_script` on a default `base:` is a [script override](#script-override) and makes the agent [derived](#derived-agent).
+See [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), [ADR 0024](ADRs/0024-harness-definitions.md), and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+
 ## R
 
 ### Ready to Code
 
 A label indicating an issue has passed triage and is cleared for the code agent to begin work. It is a key transition point in the [label state machine](#label-state-machine) — the triage agent sets it after confirming the issue is not a duplicate, is reproducible (if applicable), is a bug (not a feature, unless features are in scope), and has sufficient detail for the code agent. The code agent watches for this label as its trigger to begin work.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
+
+### Repo Skill
+
+A [skill](#skill) committed under the target repo (typically `.agents/skills/`, often symlinked as `.claude/skills`). Under the Claude Code runtime, discovered for agents on that repo. Novel names are [additive](#additive-skill). A repo skill whose name matches a [built-in skill](#built-in-skill) is **shadowed**: built-ins upload to the personal-level config dir (`CLAUDE_CONFIG_DIR/skills/`), while repo skills stay at the project level (`.claude/skills/`); Claude Code's personal-over-project precedence silently ignores the repo copy — there is no bootstrap error. That silent shadowing is not a [skill override](#skill-override). Use a unique name, or replace intentionally via [base composition](#base-composition) (same basename on the child harness `skills:` list). With `runtime: pi`, project trust is disabled (`--no-approve` / `defaultProjectTrust: never`), so repo-committed skills under `.agents/skills` are not discovered at all — see [runtime implementation](contributing/runtime-implementation.md).
+See [Configuring with skills — Skill precedence](guides/user/customizing-with-skills.md#skill-precedence).
 
 ### Rework Rate
 
@@ -192,10 +284,19 @@ See [architecture.md](architecture.md) and [security-threat-model.md](problems/s
 An external process running alongside (but outside) the agent's sandbox that mediates access to resources the sandbox cannot natively constrain. Example: an ephemeral Git server that receives `git push` from the agent and forwards it only to the one branch the agent is authorized to write to. Unlike an MCP server (which the agent explicitly calls as a tool), a sidecar can be transparent — the agent may not know it's interacting with a mediator rather than the real service.
 See [architecture.md](architecture.md) and [#101](https://github.com/fullsend-ai/fullsend/issues/101).
 
+### Script Override
+
+Setting `pre_script` or `post_script` on a child harness so it **replaces** the base script. Under [base composition](#base-composition) these are scalars: override only — not additive concatenation (unlike unique skill names). Replacing scripts on a default `base:` yields a [derived agent](#derived-agent). Details: [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [Default, derived, and custom agents](agents/topics/default-vs-custom.md), [Configuring agents](guides/user/customizing-agents.md).
+
 ### Skill
 
-A directory containing a `SKILL.md` file and optional companion files (scripts, sub-agents, assets) that gives an agent context and tool authorizations for a specific task. Skills are not general "agent capabilities" — they are concrete, scoped instruction sets. A skill can declare which tools it is authorized to use; when a user or system approves the skill, they implicitly authorize those tools. Skills are assembled by the [harness](#harness) and are the primary mechanism for encoding agent behavior.
-See [architecture.md](architecture.md) and [codebase-context.md](problems/codebase-context.md).
+A directory containing a `SKILL.md` file and optional companions (scripts, sub-agents, references, assets) that gives an agent scoped instructions for a task. Skills are assembled by the [harness](#harness). A skill may declare tools it is authorized to use; approving the skill implicitly authorizes those tools. Skills change *how* an agent reasons; they do not replace host-side [pre-script](#pre-script) / [post-script](#post-script) forge actions. Adding skills → usually [configured default](#configured-default-agent); see also [additive skill](#additive-skill), [skill override](#skill-override), [always-on](#always-on-skill), [on-demand](#on-demand-skill).
+See [architecture.md](architecture.md), [codebase-context.md](problems/codebase-context.md), and [Configuring with skills](guides/user/customizing-with-skills.md).
+
+### Skill Override
+
+Intentionally **replacing** a [built-in skill](#built-in-skill) so the agent does not load the shipped version. Distinct from an [additive skill](#additive-skill) (new unique name). Under [base composition](#base-composition), `skills` merges with **deduplication by basename** — a child entry with the same basename overrides the base. Historically also done via `customized/skills/` ([ADR 0035](ADRs/0035-layered-content-resolution.md)), now deprecated ([ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md) / [Customized Directory](#customized-directory)). Classification: still [configured default](#configured-default-agent) when you only replace the skill (not `agent:` or scripts). Do not rely on a same-named [repo skill](#repo-skill) for override — that path is silently shadowed (see [Repo Skill](#repo-skill) / [Skill precedence](guides/user/customizing-with-skills.md#skill-precedence)). Fail-fast on duplicate basenames applies only when two harness-listed skills collide in `SkillDirs()`, not to repo-vs-built-in collisions.
+See [Base composition](#base-composition), [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Stage
 
