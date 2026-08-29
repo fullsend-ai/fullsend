@@ -810,6 +810,7 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
+          FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           # Reaches the harness pre-script inside fullsend run, which reads it
           # for its --force override of the existing-PR check (pre-script
@@ -1769,12 +1770,20 @@ jobs:
             echo "::error::event_payload missing issue or pull_request html_url"
             exit 1
           fi
+          WORK_ITEM_KEY=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '._normalized_event.entity.key // .issue.number // .pull_request.number // empty')
+          if [[ -z "${WORK_ITEM_KEY}" ]]; then
+            echo "::error::event_payload missing normalized entity key, issue number, or pull request number"
+            exit 1
+          fi
+          ISSUE_NUMBER=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r 'if ._normalized_event.source.system == "jira" then empty else (.issue.number // .pull_request.number // empty) end')
           DELIM="ISSUE_URL_$(openssl rand -hex 8)"
           {
             echo "issue_url<<${DELIM}"
             printf '%s' "${URL}"
             echo
             echo "${DELIM}"
+            echo "work_item_key=${WORK_ITEM_KEY}"
+            echo "issue_number=${ISSUE_NUMBER}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
@@ -1782,6 +1791,8 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
           FULLSEND_WORK_ITEM_URL: ${{ steps.dispatch-env.outputs.issue_url }}
+          FULLSEND_WORK_ITEM_KEY: ${{ steps.dispatch-env.outputs.work_item_key }}
+          ISSUE_NUMBER: ${{ steps.dispatch-env.outputs.issue_number }}
           REPO_FULL_NAME: ${{ matrix.source_repo }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}

@@ -90,14 +90,16 @@ When `source.system` is `jira`, projection supplements the GitHub-shaped
 | `FULLSEND_WORK_ITEM_URL` | `entity.url` |
 | `FULLSEND_WORK_ITEM_SOURCE` | `jira` |
 | `FULLSEND_WORK_ITEM_KEY` | `entity.key` |
+| `ISSUE_NUMBER` | Omit or empty — a Jira key is not a GitHub issue number |
 | `event_payload.comment` | `transition.comment` when present |
 | `GITHUB_ISSUE_URL` | Omit or empty — not a GitHub issue |
 | `status-number` | `entity.id` (numeric Jira id) |
 
 Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
 `FULLSEND_WORK_ITEM_*` rather than forge-specific variables like
-`GITHUB_ISSUE_URL`. The dispatch workflow sets `FULLSEND_WORK_ITEM_URL` to
-`entity.url` for both GitHub and Jira events.
+`GITHUB_ISSUE_URL`. The dispatch workflow sets `FULLSEND_WORK_ITEM_URL` and
+`FULLSEND_WORK_ITEM_KEY` from the normalized entity for Jira events. For
+forge-native events, the generic key and `ISSUE_NUMBER` carry the same value.
 
 ## Example
 

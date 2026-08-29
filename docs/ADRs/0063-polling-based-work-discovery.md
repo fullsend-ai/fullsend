@@ -420,7 +420,8 @@ execution-ref projection from `NormalizedEvent`
 | `FULLSEND_POLL_LOCK_PROPERTY` | Entity-property key for the lock |
 
 `GITHUB_ISSUE_URL` and related forge fields remain populated when
-`entity` maps to a GitHub issue for backward compatibility.
+`entity` maps to a GitHub issue for backward compatibility. `ISSUE_NUMBER`
+remains empty for external trackers whose keys do not identify GitHub issues.
 
 ### Concurrency model
 

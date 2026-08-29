@@ -178,6 +178,8 @@ jobs:
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          FULLSEND_WORK_ITEM_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(inputs.event_payload).issue.number }}
           ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
           # Reaches the harness pre-script inside fullsend run, which reads it
           # for its --force override of the existing-PR check (pre-script

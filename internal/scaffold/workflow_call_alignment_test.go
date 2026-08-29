@@ -810,6 +810,46 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	})
 }
 
+// TestWorkItemKeyEnvCompatibility validates that legacy code dispatch and the
+// common harness-dispatch path expose the forge-neutral key alongside the
+// backwards-compatible GitHub issue number (#6760).
+func TestWorkItemKeyEnvCompatibility(t *testing.T) {
+	t.Run("legacy reusable code", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-code.yml")(t))
+		section := extractStepSection(t, content, "Run code agent")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(inputs.event_payload).issue.number }}")
+		assert.Contains(t, section,
+			"ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}")
+	})
+
+	t.Run("route based code", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		section := extractStepSection(t, content, "Run code agent")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}")
+		assert.Contains(t, section,
+			"ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}")
+	})
+
+	t.Run("harness dispatch", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		exportSection := extractStepSection(t, content, "Export dispatch context env")
+		assert.Contains(t, exportSection,
+			`._normalized_event.entity.key // .issue.number // .pull_request.number // empty`)
+		assert.Contains(t, exportSection,
+			`if ._normalized_event.source.system == "jira" then empty`)
+
+		runSection := extractStepSection(t, content, "Run harness agent")
+		assert.Contains(t, runSection,
+			"FULLSEND_WORK_ITEM_KEY: ${{ steps.dispatch-env.outputs.work_item_key }}")
+		assert.Contains(t, runSection,
+			"ISSUE_NUMBER: ${{ steps.dispatch-env.outputs.issue_number }}")
+	})
+}
+
 // TestReusableDispatchStatusCommentPassthrough validates that all agent jobs in
 // reusable-dispatch.yml pass run-url, status-repo, and status-number to the
 // action, enabling status comments for every stage (#6397).
