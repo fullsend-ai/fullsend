@@ -147,12 +147,37 @@ func TestPiToolsFor(t *testing.T) {
 	assert.Nil(t, unsupported)
 
 	tools, unsupported = piToolsFor([]string{"Read", "Edit", "MultiEdit", "Glob", "WebFetch", "Task", "LS"})
-	assert.Equal(t, []string{"read", "edit", "find", "ls"}, tools)
-	assert.Equal(t, []string{"WebFetch", "Task"}, unsupported)
+	assert.Equal(t, []string{"read", "edit", "find", "Agent", "Task", "ls"}, tools, "Task is the legacy alias of Agent; both pi tool names are activated, in place")
+	assert.Equal(t, []string{"WebFetch"}, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"Agent", "Task", "Bash"})
+	assert.Equal(t, []string{"Agent", "Task", "bash"}, tools, "Agent and Task activate the same pair once")
+	assert.Nil(t, unsupported)
 
 	tools, unsupported = piToolsFor([]string{"Skill"})
 	assert.Equal(t, []string{}, tools, "restriction with no pi tools stays non-nil")
 	assert.Nil(t, unsupported)
+}
+
+func TestPiAgentToolEnabled(t *testing.T) {
+	t.Parallel()
+	assert.True(t, piAgentToolEnabled(&piAgentDef{}), "no tools: frontmatter means the default set, which includes the Agent tool")
+	assert.True(t, piAgentToolEnabled(&piAgentDef{Tools: []string{"Bash", "Agent"}}))
+	assert.True(t, piAgentToolEnabled(&piAgentDef{Tools: []string{"Task"}}))
+	assert.False(t, piAgentToolEnabled(&piAgentDef{Tools: []string{"Bash", "Skill"}}))
+	assert.False(t, piAgentToolEnabled(&piAgentDef{Tools: []string{}}))
+}
+
+// The Explore tool set the extension hands read-only children must stay
+// inside pi's built-in set the sandbox activates.
+func TestPiExploreTools_SubsetOfDefaults(t *testing.T) {
+	t.Parallel()
+	for _, name := range piExploreTools {
+		assert.Contains(t, piDefaultTools, name)
+	}
+	assert.NotContains(t, piExploreTools, "bash")
+	assert.NotContains(t, piExploreTools, "write")
+	assert.NotContains(t, piExploreTools, "edit")
 }
 
 func TestPiToolNameMapsAreInverse(t *testing.T) {
