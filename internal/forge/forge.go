@@ -403,6 +403,11 @@ var botNoreplyRe = regexp.MustCompile(
 // must not carry a Signed-off-by trailer; human-authored commits
 // require sign-off and their trailers must be preserved.
 //
+// This is a CI-internal heuristic based on email pattern matching.
+// Because committer email is user-controlled, this function must not
+// be the sole DCO enforcement gate — the Probot DCO app and GitHub
+// branch protection status checks provide independent enforcement.
+//
 // Post-scripts and validation scripts should use this classification
 // (or the equivalent shell pattern) instead of branch-wide operations
 // like git filter-branch --msg-filter, which destroy valid human

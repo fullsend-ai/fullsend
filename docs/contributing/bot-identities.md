@@ -45,7 +45,7 @@ if forge.IsBotCommitEmail(committerEmail) {
 ```bash
 # Use GIT_BOT_EMAIL (set by the "Resolve bot identity" workflow step)
 # for exact match, or the regex pattern for general detection.
-committer_email=$(git log -1 --format='%ae' "$sha")
+committer_email=$(git log -1 --format='%ce' "$sha")
 
 # Exact match against the resolved bot identity:
 if [[ "$committer_email" == "${GIT_BOT_EMAIL}" ]]; then
