@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -376,6 +377,38 @@ func FormatSignOffTrailer(name, email string) (string, error) {
 		return "", fmt.Errorf("sign-off identity must have non-empty name and email after sanitization (got name=%q, email=%q)", name, email)
 	}
 	return fmt.Sprintf("Signed-off-by: %s <%s>", name, email), nil
+}
+
+// botNoreplyRe matches GitHub App bot noreply emails:
+// <digits>+<slug>[bot]@users.noreply.github.com
+//
+// GitHub generates this address from the App's database ID and slug when
+// the App authenticates via an installation token. The Probot DCO app
+// auto-skips commits from authors whose email matches this pattern
+// (user.type == "Bot"), so bot-authored commits must NOT carry a
+// Signed-off-by trailer and human-authored commits on the same branch
+// must NOT have their trailers stripped.
+//
+// See docs/contributing/bot-identities.md for the authoritative identity
+// table and DCO classification guidance.
+var botNoreplyRe = regexp.MustCompile(
+	`^\d+\+.+\[bot\]@users\.noreply\.github\.com$`,
+)
+
+// IsBotCommitEmail reports whether email matches the GitHub App bot
+// noreply pattern (<id>+<slug>[bot]@users.noreply.github.com).
+//
+// Use this to classify commits by author type for per-commit DCO
+// decisions: bot-authored commits are exempt from DCO sign-off and
+// must not carry a Signed-off-by trailer; human-authored commits
+// require sign-off and their trailers must be preserved.
+//
+// Post-scripts and validation scripts should use this classification
+// (or the equivalent shell pattern) instead of branch-wide operations
+// like git filter-branch --msg-filter, which destroy valid human
+// trailers on mixed-author branches. See #6688.
+func IsBotCommitEmail(email string) bool {
+	return botNoreplyRe.MatchString(email)
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.

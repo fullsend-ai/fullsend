@@ -59,3 +59,72 @@ func TestUserIdentity_SignOffTrailer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Signed-off-by: Test User <test@example.com>", got)
 }
+
+func TestIsBotCommitEmail(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		want  bool
+	}{
+		{
+			name:  "coder bot noreply",
+			email: "278716306+fullsend-ai-coder[bot]@users.noreply.github.com",
+			want:  true,
+		},
+		{
+			name:  "review bot noreply",
+			email: "123456+fullsend-ai-review[bot]@users.noreply.github.com",
+			want:  true,
+		},
+		{
+			name:  "triage bot noreply",
+			email: "999+fullsend-ai-triage[bot]@users.noreply.github.com",
+			want:  true,
+		},
+		{
+			name:  "renovate bot noreply",
+			email: "456789+renovate-fullsend[bot]@users.noreply.github.com",
+			want:  true,
+		},
+		{
+			name:  "human noreply",
+			email: "12345+alice@users.noreply.github.com",
+			want:  false,
+		},
+		{
+			name:  "human email",
+			email: "alice@example.com",
+			want:  false,
+		},
+		{
+			name:  "human corporate email",
+			email: "ascerra@redhat.com",
+			want:  false,
+		},
+		{
+			name:  "empty string",
+			email: "",
+			want:  false,
+		},
+		{
+			name:  "bot suffix without noreply domain",
+			email: "123+myapp[bot]@example.com",
+			want:  false,
+		},
+		{
+			name:  "noreply domain without bot suffix",
+			email: "123+myapp@users.noreply.github.com",
+			want:  false,
+		},
+		{
+			name:  "bot suffix without numeric id",
+			email: "abc+myapp[bot]@users.noreply.github.com",
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsBotCommitEmail(tt.email))
+		})
+	}
+}

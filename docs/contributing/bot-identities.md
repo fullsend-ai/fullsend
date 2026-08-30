@@ -19,3 +19,43 @@ When referencing bot identities in code (e.g., trusted actor lists, dispatch fil
 **REST vs. GraphQL login format:** the `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits it — a bot author's `login` field comes back as `fullsend-ai-coder`, not `fullsend-ai-coder[bot]`, with `__typename: "Bot"`. Comparing a GraphQL-sourced login against a literal `"...[bot]"` string never matches (see #5575) — match on `__typename == "Bot"` plus the un-suffixed login instead.
 
 **`gh pr view --json` format:** the `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
+
+## Per-commit DCO classification
+
+DCO (Developer Certificate of Origin) eligibility must be classified **per commit**, using the commit author/committer email — never by the fact that a bot-triggered run is operating on the branch. Mixed-author branches (human commits + bot commits) are common on fix-agent PRs.
+
+**Rules:**
+
+1. **Bot-authored commits** (committer email matches `<digits>+<slug>[bot]@users.noreply.github.com`) are exempt from DCO. They must **not** carry a `Signed-off-by` trailer. The Probot DCO app auto-skips them.
+2. **Human-authored commits** require valid `Signed-off-by` trailers. These trailers must be **preserved** through any rebase, amend, or history rewrite performed by post-scripts or validation logic.
+3. **Never use branch-wide `git filter-branch --msg-filter`** to strip `Signed-off-by` trailers. This destroys valid human attestations on mixed-author branches. See #6688 for the incident this caused.
+
+**Identifying bot commits in Go code:**
+
+```go
+import "github.com/fullsend-ai/fullsend/internal/forge"
+
+if forge.IsBotCommitEmail(committerEmail) {
+    // Bot commit — exempt from DCO, must not have Signed-off-by
+}
+```
+
+**Identifying bot commits in shell (post-scripts):**
+
+```bash
+# Use GIT_BOT_EMAIL (set by the "Resolve bot identity" workflow step)
+# for exact match, or the regex pattern for general detection.
+committer_email=$(git log -1 --format='%ae' "$sha")
+
+# Exact match against the resolved bot identity:
+if [[ "$committer_email" == "${GIT_BOT_EMAIL}" ]]; then
+    # Bot commit
+fi
+
+# Pattern match for any GitHub App bot:
+if [[ "$committer_email" =~ ^[0-9]+\+.*\[bot\]@users\.noreply\.github\.com$ ]]; then
+    # Bot commit
+fi
+```
+
+**Post-script guidance:** When a post-script needs to validate or modify DCO trailers, it must iterate over commits individually and classify each by its committer email. Only bot-authored commits should be inspected or modified. Human-authored commits must pass through unmodified.
