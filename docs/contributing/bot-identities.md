@@ -53,7 +53,7 @@ if [[ "$committer_email" == "${GIT_BOT_EMAIL}" ]]; then
 fi
 
 # Pattern match for any GitHub App bot:
-if [[ "$committer_email" =~ ^[0-9]+\+.+\[bot\]@users\.noreply\.github\.com$ ]]; then
+if [[ "$committer_email" =~ ^[0-9]+\+[^@]+\[bot\]@users\.noreply\.github\.com$ ]]; then
     # Bot commit
 fi
 ```

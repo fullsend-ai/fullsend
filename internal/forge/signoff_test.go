@@ -121,6 +121,11 @@ func TestIsBotCommitEmail(t *testing.T) {
 			email: "abc+myapp[bot]@users.noreply.github.com",
 			want:  false,
 		},
+		{
+			name:  "embedded at-sign in slug",
+			email: "123+foo@bar[bot]@users.noreply.github.com",
+			want:  false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

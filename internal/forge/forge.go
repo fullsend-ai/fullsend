@@ -392,7 +392,7 @@ func FormatSignOffTrailer(name, email string) (string, error) {
 // See docs/contributing/bot-identities.md for the authoritative identity
 // table and DCO classification guidance.
 var botNoreplyRe = regexp.MustCompile(
-	`^\d+\+.+\[bot\]@users\.noreply\.github\.com$`,
+	`^\d+\+[^@]+\[bot\]@users\.noreply\.github\.com$`,
 )
 
 // IsBotCommitEmail reports whether email matches the GitHub App bot
