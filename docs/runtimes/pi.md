@@ -32,7 +32,8 @@ through fullsend's table, and a bare id gets the provider from `FULLSEND_PI_PROV
 > canonical spec.
 
 > **GPT via OpenAI** needs no API key in CI: the runner exchanges the job's GitHub identity for a
-> short-lived OpenAI token (set three repository variables — see [OpenAI Workload
+> short-lived OpenAI token (give fullsend three identifiers with `fullsend github setup --openai-*`
+> or repository variables — see [OpenAI Workload
 > Identity](../guides/infrastructure/openai-workload-identity.md); GitHub Actions only) and keeps it
 > in a provider that belongs to this run, refreshed before it expires and removed when the run
 > ends. Locally, put `OPENAI_API_KEY` in an env file for the runner ([Running agents
