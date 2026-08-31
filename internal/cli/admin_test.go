@@ -2280,6 +2280,75 @@ func TestRunPerRepoInstall_AlreadyInstalledUpgrade(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRunPerRepoInstall_FreshInstall_LayeredConfig verifies that a fresh
+// per-repo install generates both config.base.yaml (scaffold defaults)
+// and config.yaml (minimal overlay) per the layered config model.
+func TestRunPerRepoInstall_FreshInstall_LayeredConfig(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Verify scaffold files include both config.base.yaml and config.yaml.
+	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed")
+	paths := make(map[string]string)
+	for _, f := range client.CommittedFiles[0].Files {
+		paths[f.Path] = string(f.Content)
+	}
+
+	assert.Contains(t, paths, ".fullsend/config.base.yaml",
+		"fresh install should generate config.base.yaml")
+	assert.Contains(t, paths, ".fullsend/config.yaml",
+		"fresh install should generate config.yaml overlay")
+
+	// config.base.yaml should contain scaffold defaults (roles).
+	assert.Contains(t, paths[".fullsend/config.base.yaml"], "roles:",
+		"config.base.yaml should contain roles")
+
+	// config.yaml should be a minimal overlay (no roles baked in).
+	assert.NotContains(t, paths[".fullsend/config.yaml"], "roles:",
+		"config.yaml overlay should not contain roles")
+}
+
+// TestRunPerRepoInstall_ReOnboarding_PreservesUserConfig verifies that
+// re-onboarding generates config.base.yaml with new defaults but does
+// NOT overwrite config.yaml (the user-owned overlay).
+func TestRunPerRepoInstall_ReOnboarding_PreservesUserConfig(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.VariableValues = map[string]string{
+		"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
+	}
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Verify scaffold files include config.base.yaml but NOT config.yaml.
+	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed")
+	paths := make(map[string]bool)
+	for _, f := range client.CommittedFiles[0].Files {
+		paths[f.Path] = true
+	}
+
+	assert.True(t, paths[".fullsend/config.base.yaml"],
+		"re-onboarding should generate config.base.yaml")
+	assert.False(t, paths[".fullsend/config.yaml"],
+		"re-onboarding should NOT overwrite config.yaml — it is user-owned")
+}
+
 func TestRunPerRepoInstall_DryRun(t *testing.T) {
 	client := forge.NewFakeClient()
 

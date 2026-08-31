@@ -862,6 +862,10 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		// VendorBinary, UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
 		// with the non-dry-run installCfg; Skip* flags are omitted because
 		// they control Install() flow, not scaffold file generation.
+		dryRunConfigLayout := repos.ConfigLayoutLayered
+		if alreadyInstalled {
+			dryRunConfigLayout = repos.ConfigLayoutUpgrade
+		}
 		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{
 			Owner:            owner,
 			Repo:             repo,
@@ -876,6 +880,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			WIFProvider:      inferenceWIFProvider,
 			VendorBinary:     vendor,
 			Direct:           c.Direct,
+			ConfigLayout:     dryRunConfigLayout,
 		})
 		if dryRunErr != nil {
 			return fmt.Errorf("generating scaffold files for dry run: %w", dryRunErr)
@@ -1084,6 +1089,11 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	// Resolve review app client ID for provenance validation.
 	reviewAppClientID := resolveReviewAppClientID(ctx, client, c.AppSet)
 
+	configLayout := repos.ConfigLayoutLayered
+	if alreadyInstalled {
+		configLayout = repos.ConfigLayoutUpgrade
+	}
+
 	installCfg := repos.InstallConfig{
 		Owner:                 owner,
 		Repo:                  repo,
@@ -1101,6 +1111,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
 		SkipScaffoldAndConfig: vendor,
+		ConfigLayout:          configLayout,
 	}
 
 	progressFn := func(_ string, phase, msg string) {

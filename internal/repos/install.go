@@ -24,6 +24,44 @@ var WIFProviderPattern = regexp.MustCompile(
 	`^projects/\d+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
 )
 
+// ConfigLayout controls how BuildScaffoldFiles generates per-repo config
+// files. The default (empty string) preserves backward-compatible behavior.
+type ConfigLayout string
+
+const (
+	// ConfigLayoutDefault generates .fullsend/config.yaml with full
+	// scaffold defaults baked in. This is the backward-compatible default
+	// used by callers that have not opted into the layered config model
+	// (e.g. converge/drift detection).
+	ConfigLayoutDefault ConfigLayout = ""
+
+	// ConfigLayoutLayered generates .fullsend/config.base.yaml with
+	// scaffold defaults and .fullsend/config.yaml as a minimal user-owned
+	// overlay. Used for fresh installs via admin install.
+	ConfigLayoutLayered ConfigLayout = "layered"
+
+	// ConfigLayoutUpgrade generates only .fullsend/config.base.yaml with
+	// scaffold defaults. config.yaml is user-owned and left untouched.
+	// Used for re-onboarding via admin install.
+	ConfigLayoutUpgrade ConfigLayout = "upgrade"
+)
+
+// minimalOverlayYAML is the stub config.yaml overlay committed on fresh
+// installs when ConfigLayoutLayered is active. Scaffold defaults live in
+// config.base.yaml; this file is user-owned for customization.
+const minimalOverlayYAML = `# fullsend per-repo configuration (overlay)
+# https://github.com/fullsend-ai/fullsend
+#
+# This file is the per-repo overlay for fullsend configuration.
+# Scaffold defaults are provided by config.base.yaml.
+# Values set here override the base layer. Omitted fields inherit
+# from config.base.yaml, then from compiled-in code defaults.
+#
+# See https://fullsend.sh/docs/guides/infrastructure/layered-config-reference
+
+version: "1"
+`
+
 // InstallConfig is a pure data struct holding all inputs needed for a
 // per-repo installation. CLI flags, environment variables, and interactive
 // prompts are resolved by the caller before constructing this struct.
@@ -82,6 +120,10 @@ type InstallConfig struct {
 	// RunnerTags is a list of GitLab CI runner tags to embed in scaffold
 	// pipeline YAML so that agent jobs are routed to specific runners.
 	RunnerTags []string
+
+	// ConfigLayout controls how BuildScaffoldFiles generates per-repo
+	// config files. See the ConfigLayout* constants.
+	ConfigLayout ConfigLayout
 
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
@@ -402,11 +444,49 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Mode:    f.Mode,
 		})
 	}
-	files = append(files, forge.TreeFile{
-		Path:    ".fullsend/config.yaml",
-		Content: cfgYAML,
-		Mode:    "100644",
-	})
+
+	// When PerRepoConfig is set, the caller provided an explicit config
+	// (e.g. migration path). Always write it as config.yaml regardless
+	// of ConfigLayout. When PerRepoConfig is nil, ConfigLayout controls
+	// the file strategy.
+	if cfg.PerRepoConfig != nil {
+		files = append(files, forge.TreeFile{
+			Path:    ".fullsend/config.yaml",
+			Content: cfgYAML,
+			Mode:    "100644",
+		})
+	} else {
+		switch cfg.ConfigLayout {
+		case ConfigLayoutLayered:
+			// Fresh install with layered config: write scaffold defaults
+			// to config.base.yaml and a minimal overlay to config.yaml.
+			files = append(files, forge.TreeFile{
+				Path:    ".fullsend/config.base.yaml",
+				Content: cfgYAML,
+				Mode:    "100644",
+			})
+			files = append(files, forge.TreeFile{
+				Path:    ".fullsend/config.yaml",
+				Content: []byte(minimalOverlayYAML),
+				Mode:    "100644",
+			})
+		case ConfigLayoutUpgrade:
+			// Re-onboarding: regenerate config.base.yaml with new
+			// defaults. config.yaml is user-owned and left untouched.
+			files = append(files, forge.TreeFile{
+				Path:    ".fullsend/config.base.yaml",
+				Content: cfgYAML,
+				Mode:    "100644",
+			})
+		default:
+			// Legacy/default: single config.yaml with full defaults.
+			files = append(files, forge.TreeFile{
+				Path:    ".fullsend/config.yaml",
+				Content: cfgYAML,
+				Mode:    "100644",
+			})
+		}
+	}
 
 	return files, nil
 }

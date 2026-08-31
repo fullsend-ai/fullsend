@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -895,6 +896,160 @@ func TestBuildScaffoldFiles_UnsupportedForge(t *testing.T) {
 	_, err := BuildScaffoldFiles(cfg)
 	if err == nil {
 		t.Fatal("expected error for unsupported forge")
+	}
+}
+
+// TestBuildScaffoldFiles_LayeredFreshInstall verifies that a fresh install
+// with ConfigLayoutLayered generates both config.base.yaml (scaffold
+// defaults) and config.yaml (minimal overlay).
+func TestBuildScaffoldFiles_LayeredFreshInstall(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ConfigLayout = ConfigLayoutLayered
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	paths := make(map[string][]byte)
+	for _, f := range files {
+		paths[f.Path] = f.Content
+	}
+
+	// config.base.yaml must exist with scaffold defaults.
+	baseContent, hasBase := paths[".fullsend/config.base.yaml"]
+	if !hasBase {
+		t.Fatal("expected .fullsend/config.base.yaml in scaffold files")
+	}
+	if !strings.Contains(string(baseContent), "roles:") {
+		t.Error("config.base.yaml should contain roles")
+	}
+
+	// config.yaml must exist as a minimal overlay.
+	overlayContent, hasOverlay := paths[".fullsend/config.yaml"]
+	if !hasOverlay {
+		t.Fatal("expected .fullsend/config.yaml in scaffold files")
+	}
+	if !strings.Contains(string(overlayContent), "version:") {
+		t.Error("config.yaml overlay should contain version")
+	}
+	// The overlay must NOT contain scaffold defaults like roles.
+	if strings.Contains(string(overlayContent), "roles:") {
+		t.Error("config.yaml overlay should not contain roles (those belong in config.base.yaml)")
+	}
+}
+
+// TestBuildScaffoldFiles_UpgradeSkipsConfigYAML verifies that re-onboarding
+// with ConfigLayoutUpgrade generates config.base.yaml but does NOT generate
+// config.yaml, leaving the user's existing overlay untouched.
+func TestBuildScaffoldFiles_UpgradeSkipsConfigYAML(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ConfigLayout = ConfigLayoutUpgrade
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var hasBase, hasConfig bool
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			hasBase = true
+			if !strings.Contains(string(f.Content), "roles:") {
+				t.Error("config.base.yaml should contain roles")
+			}
+		case ".fullsend/config.yaml":
+			hasConfig = true
+		}
+	}
+	if !hasBase {
+		t.Fatal("expected .fullsend/config.base.yaml in scaffold files")
+	}
+	if hasConfig {
+		t.Error("config.yaml should NOT be generated on upgrade — it is user-owned")
+	}
+}
+
+// TestBuildScaffoldFiles_UpgradeRuntime verifies that --runtime on
+// re-onboarding writes the runtime to config.base.yaml.
+func TestBuildScaffoldFiles_UpgradeRuntime(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ConfigLayout = ConfigLayoutUpgrade
+	cfg.Runtime = "pi"
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	for _, f := range files {
+		if f.Path == ".fullsend/config.base.yaml" {
+			if !strings.Contains(string(f.Content), "runtime: pi") {
+				t.Errorf("config.base.yaml should contain runtime: pi:\n%s", f.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("expected .fullsend/config.base.yaml in scaffold files")
+}
+
+// TestBuildScaffoldFiles_DefaultLayoutBackwardCompat verifies that the
+// default ConfigLayout (empty string) preserves backward-compatible
+// behavior: a single config.yaml with full defaults, no config.base.yaml.
+func TestBuildScaffoldFiles_DefaultLayoutBackwardCompat(t *testing.T) {
+	cfg := baseCfg()
+	// ConfigLayout is zero value (ConfigLayoutDefault).
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var hasConfig, hasBase bool
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			hasConfig = true
+		case ".fullsend/config.base.yaml":
+			hasBase = true
+		}
+	}
+	if !hasConfig {
+		t.Error("expected .fullsend/config.yaml with default layout")
+	}
+	if hasBase {
+		t.Error("config.base.yaml should NOT be generated with default layout")
+	}
+}
+
+// TestBuildScaffoldFiles_PerRepoConfigOverrideIgnoresLayout verifies that
+// when PerRepoConfig is set (migration/override path), ConfigLayout is
+// ignored and config.yaml is generated from the provided config.
+func TestBuildScaffoldFiles_PerRepoConfigOverrideIgnoresLayout(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ConfigLayout = ConfigLayoutUpgrade
+	cfg.PerRepoConfig = config.NewPerRepoConfig([]string{"triage"}, "acme/widgets")
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var hasConfig, hasBase bool
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			hasConfig = true
+		case ".fullsend/config.base.yaml":
+			hasBase = true
+		}
+	}
+	if !hasConfig {
+		t.Error("expected .fullsend/config.yaml when PerRepoConfig is set")
+	}
+	if hasBase {
+		t.Error("config.base.yaml should NOT be generated when PerRepoConfig is set")
 	}
 }
 
