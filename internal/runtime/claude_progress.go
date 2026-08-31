@@ -149,6 +149,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		onEvent(ResultEvent{
 			NumTurns:                 numTurns,
 			IsError:                  true,
+			ErrorMessage:             "stream ended without result event",
 			Subtype:                  "stream_incomplete",
 			InputTokens:              cumulInput,
 			OutputTokens:             cumulOutput,

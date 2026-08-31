@@ -698,6 +698,10 @@ func TestParseClaudeStreamFallbackResultOnIncompleteStream(t *testing.T) {
 	if r.CacheCreationInputTokens != 1000 {
 		t.Errorf("expected 1000 cache creation tokens, got %d", r.CacheCreationInputTokens)
 	}
+	// ErrorMessage should describe the fallback condition.
+	if r.ErrorMessage != "stream ended without result event" {
+		t.Errorf("expected error message %q, got %q", "stream ended without result event", r.ErrorMessage)
+	}
 	// TotalCostUSD cannot be derived without pricing data.
 	if r.TotalCostUSD != 0 {
 		t.Errorf("expected 0 total cost (not derivable), got %f", r.TotalCostUSD)
@@ -806,6 +810,9 @@ func TestParseClaudeStreamFallbackOnReadError(t *testing.T) {
 	}
 	if results[0].OutputTokens != 1000 {
 		t.Errorf("expected 1000 output tokens, got %d", results[0].OutputTokens)
+	}
+	if results[0].ErrorMessage != "stream ended without result event" {
+		t.Errorf("expected error message %q, got %q", "stream ended without result event", results[0].ErrorMessage)
 	}
 }
 
