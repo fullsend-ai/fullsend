@@ -658,7 +658,7 @@ func TestFindInstallation_ContextDeadline(t *testing.T) {
 	require.Error(t, err)
 	// The error should stem from context deadline, not from the
 	// server response.
-	assert.ErrorIs(t, context.DeadlineExceeded, context.DeadlineExceeded)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestFindOrgInstallation_ContextDeadline(t *testing.T) {
@@ -678,6 +678,7 @@ func TestFindOrgInstallation_ContextDeadline(t *testing.T) {
 
 	_, err := FindOrgInstallation(ctx, mockGH.URL, "fake-jwt", "myorg")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestGitHubUserAgent(t *testing.T) {

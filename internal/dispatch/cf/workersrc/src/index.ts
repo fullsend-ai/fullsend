@@ -302,14 +302,44 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
 class GoWasm {
   private initPromise: Promise<void> | null = null;
   private _needsRecovery = false;
+  private _consecutiveTimeouts = 0;
+
+  /**
+   * Maximum number of consecutive timeout recoveries before the
+   * instance reverts to permanent 503. Each recovery leaks one Go
+   * WASM runtime (blocked goroutine + memory); capping the count
+   * bounds leaked runtimes per isolate lifetime.
+   */
+  static readonly MAX_CONSECUTIVE_RECOVERIES = 3;
 
   /**
    * Whether this instance needs recovery after a timeout. Unlike
    * the previous permanent-poison approach, the next request will
-   * re-initialize the Go WASM runtime automatically.
+   * re-initialize the Go WASM runtime automatically — up to
+   * MAX_CONSECUTIVE_RECOVERIES times.
    */
   get needsRecovery(): boolean {
     return this._needsRecovery;
+  }
+
+  /**
+   * Whether consecutive timeout recoveries have been exhausted.
+   * Once exhausted, the instance refuses all requests with 503
+   * until the Workers runtime recycles the isolate.
+   */
+  get exhausted(): boolean {
+    return (
+      this._consecutiveTimeouts >= GoWasm.MAX_CONSECUTIVE_RECOVERIES
+    );
+  }
+
+  /**
+   * Reset the consecutive timeout counter. Called after a request
+   * completes successfully, proving the current Go runtime is
+   * healthy.
+   */
+  resetTimeoutCounter(): void {
+    this._consecutiveTimeouts = 0;
   }
 
   /**
@@ -317,11 +347,16 @@ class GoWasm {
    * times out so that the next request re-initializes the Go WASM
    * runtime instead of permanently refusing all traffic.
    *
+   * Increments the consecutive timeout counter. After
+   * MAX_CONSECUTIVE_RECOVERIES consecutive timeouts, the instance
+   * is considered exhausted and reverts to permanent 503.
+   *
    * Clears the cached initPromise so that init() re-runs doInit on
    * the next call, booting a fresh Go runtime.
    */
   markTimedOut(): void {
     this._needsRecovery = true;
+    this._consecutiveTimeouts++;
     this.initPromise = null;
   }
 
@@ -513,9 +548,10 @@ class GoWasm {
 
 // Module-scoped singleton: one Go WASM instance per warm Worker isolate.
 // See GoWasm class comment for the architectural rationale.
-// Declared `const`: the singleton is never replaced. On timeout, the
-// instance is recovered in place — see markTimedOut() and the recovery
-// strategy comment on the GoWasm class.
+// Declared `const`: the object reference is never reassigned, but the
+// instance internally boots a fresh Go WASM runtime after timeout
+// recovery — see markTimedOut() and the recovery strategy comment on
+// the GoWasm class.
 const goWasm = new GoWasm();
 
 /**
@@ -546,6 +582,17 @@ export default {
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<Response> {
+    // After MAX_CONSECUTIVE_RECOVERIES consecutive timeouts, stop
+    // attempting recovery to bound leaked Go WASM runtimes. The
+    // Workers runtime must recycle the isolate to recover.
+    if (goWasm.exhausted) {
+      return errorResponse(
+        503,
+        "mint instance exhausted after repeated timeouts — " +
+          "awaiting isolate recycle",
+      );
+    }
+
     // After a prior timeout, log a recovery notice. The next init()
     // call will boot a fresh Go WASM runtime automatically — unlike
     // the old permanent-poison approach, the mint recovers without
@@ -623,6 +670,11 @@ export default {
           console.error("failed to parse response headers JSON:", msg);
         }
       }
+
+      // Request completed without timeout — the current Go runtime
+      // is healthy. Reset the consecutive timeout counter so that a
+      // future transient timeout gets the full recovery budget.
+      goWasm.resetTimeoutCounter();
 
       return new Response(result.body, {
         status: result.status,

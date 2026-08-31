@@ -152,7 +152,8 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 		// GitHub API calls (FindInstallation, CreateInstallationToken)
 		// return a clean Go-side error before the JS-side
 		// HANDLE_FETCH_TIMEOUT_MS (25 s) fires. Without this, a single
-		// slow API call permanently poisons the GoWasm singleton.
+		// slow API call blocks the GoWasm singleton until the JS-side
+		// timeout triggers recovery.
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
 
