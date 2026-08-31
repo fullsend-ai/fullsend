@@ -58,7 +58,7 @@ curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSI
 openshell --version
 ```
 
-> **macOS Apple Silicon:** OpenShell 0.0.115 binaries are broken on Apple Silicon ([NVIDIA/OpenShell#2977](https://github.com/NVIDIA/OpenShell/pull/2977)); use `OPENSHELL_VERSION=0.0.113` until a fixed release ships.
+**macOS Apple Silicon:** OpenShell 0.0.115 binaries are broken on Apple Silicon ([NVIDIA/OpenShell#2977](https://github.com/NVIDIA/OpenShell/pull/2977)); use `OPENSHELL_VERSION=0.0.113` until a fixed release ships.
 
 ## Get Google Cloud Platform credentials
 
