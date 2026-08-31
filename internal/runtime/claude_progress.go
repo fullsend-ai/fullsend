@@ -108,6 +108,13 @@ type resultEvent struct {
 // emits normalized AgentEvent values via the onEvent callback. It processes
 // system events, stream_event deltas (thinking, text, tool input JSON),
 // result events, errors, and assistant message fallback.
+//
+// When the stream ends (EOF or read error) without a "result" event and at
+// least one conversation turn was observed, a fallback ResultEvent is emitted
+// with the best-available token counts accumulated from message_start and
+// message_delta events. This ensures metrics are non-zero when the agent
+// process terminates abnormally after doing work but before emitting its
+// final result line. See #6806.
 func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
@@ -121,14 +128,43 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		totalCacheRead   int
 		totalCacheWrite  int
 		lastEmittedTotal int
+		// Cumulative tracking for fallback ResultEvent when the stream
+		// ends without a "result" line (agent crash / signal kill).
+		numTurns        int
+		sawResult       bool
+		cumulInput      int
+		cumulOutput     int
+		cumulCacheRead  int
+		cumulCacheWrite int
 	)
+
+	// emitFallbackResult sends a synthetic ResultEvent from accumulated
+	// per-turn data when the real result event is missing. The last
+	// turn's output tokens must be folded in before calling.
+	emitFallbackResult := func() {
+		if sawResult || numTurns == 0 {
+			return
+		}
+		cumulOutput += totalOutput
+		onEvent(ResultEvent{
+			NumTurns:                 numTurns,
+			IsError:                  true,
+			Subtype:                  "stream_incomplete",
+			InputTokens:              cumulInput,
+			OutputTokens:             cumulOutput,
+			CacheCreationInputTokens: cumulCacheWrite,
+			CacheReadInputTokens:     cumulCacheRead,
+		})
+	}
 
 	for {
 		line, isPrefix, err := br.ReadLine()
 		if err == io.EOF {
+			emitFallbackResult()
 			return nil
 		}
 		if err != nil {
+			emitFallbackResult()
 			return err
 		}
 		if isPrefix {
@@ -236,10 +272,19 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					} `json:"message"`
 				}
 				if err := json.Unmarshal(wrapper.Event, &msg); err == nil {
+					// Accumulate previous turn's output before resetting.
+					cumulOutput += totalOutput
+
 					totalInput = msg.Message.Usage.InputTokens
 					totalOutput = 0
 					totalCacheRead = msg.Message.Usage.CacheReadInputTokens
 					totalCacheWrite = msg.Message.Usage.CacheCreationInputTokens
+
+					// Accumulate this turn's input and cache tokens.
+					cumulInput += totalInput
+					cumulCacheRead += totalCacheRead
+					cumulCacheWrite += totalCacheWrite
+					numTurns++
 				}
 
 			case "message_delta":
@@ -264,6 +309,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			}
 
 		case "result":
+			sawResult = true
 			var re resultEvent
 			if err := json.Unmarshal(line, &re); err != nil {
 				continue
