@@ -18,15 +18,25 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"syscall/js"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
+
+// requestTimeout is the per-request context deadline applied by the
+// WASM handler. It must be shorter than the JS-side
+// HANDLE_FETCH_TIMEOUT_MS (25 s) so that slow GitHub API calls surface
+// as clean Go-side errors (HTTP 502/504) before the JS timeout fires
+// and triggers the isolate recovery path. The 5 s margin accounts for
+// goroutine scheduling and Promise settlement overhead.
+const requestTimeout = 20 * time.Second
 
 var handler *mintcore.Handler
 
@@ -138,6 +148,14 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 			}
 		}()
 
+		// Apply a per-request context deadline so that slow outbound
+		// GitHub API calls (FindInstallation, CreateInstallationToken)
+		// return a clean Go-side error before the JS-side
+		// HANDLE_FETCH_TIMEOUT_MS (25 s) fires. Without this, a single
+		// slow API call permanently poisons the GoWasm singleton.
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+
 		// Build an http.Request from the Fetch arguments.
 		var bodyReader *bytes.Reader
 		if body != "" {
@@ -146,7 +164,7 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 			bodyReader = bytes.NewReader(nil)
 		}
 
-		req, err := http.NewRequest(method, reqURL, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
 		if err != nil {
 			reject.Invoke(js.Global().Get("Error").New(
 				fmt.Sprintf("failed to create request: %v", err)))

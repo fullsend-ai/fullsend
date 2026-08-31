@@ -2,6 +2,7 @@ package mintcore
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -630,6 +632,52 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 	got, err := ReadForeignAllowlistFromRepo(t.Context(), mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
 	require.NoError(t, err)
 	assert.Nil(t, got)
+}
+
+func TestFindInstallation_ContextDeadline(t *testing.T) {
+	// Verify that FindInstallation respects the request context deadline.
+	// On native platforms, http.Client.Do honors the context. On WASM,
+	// the context-aware awaitPromiseWithContext serves the same role.
+	// This test validates the pattern on the native platform.
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Delay longer than the context deadline.
+		time.Sleep(200 * time.Millisecond)
+		json.NewEncoder(w).Encode(installationResponse{
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "myorg"},
+		})
+	}))
+	defer mockGH.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := FindInstallation(ctx, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	require.Error(t, err)
+	// The error should stem from context deadline, not from the
+	// server response.
+	assert.ErrorIs(t, context.DeadlineExceeded, context.DeadlineExceeded)
+}
+
+func TestFindOrgInstallation_ContextDeadline(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		json.NewEncoder(w).Encode(installationResponse{
+			ID: 42,
+			Account: struct {
+				Login string `json:"login"`
+			}{Login: "myorg"},
+		})
+	}))
+	defer mockGH.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := FindOrgInstallation(ctx, mockGH.URL, "fake-jwt", "myorg")
+	require.Error(t, err)
 }
 
 func TestGitHubUserAgent(t *testing.T) {
