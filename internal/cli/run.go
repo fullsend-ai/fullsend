@@ -4803,8 +4803,22 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	displayRef, gitRef := resolveAgentsRef()
 	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
-		return "", none, false
+		// When a version-tagged ref (e.g. tags/v0.38.0) is missing,
+		// fall back to heads/main so release builds whose tag has not
+		// been published in the agents repo can still resolve agents.
+		if strings.HasPrefix(gitRef, "tags/") {
+			printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v — falling back to main", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
+			fallbackSHA, fbErr := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, "heads/main")
+			if fbErr != nil {
+				printer.StepWarn(fmt.Sprintf("Fallback to main also failed: %v", fbErr))
+				return "", none, false
+			}
+			resolvedSHA = fallbackSHA
+			displayRef = "main (fallback from " + displayRef + ")"
+		} else {
+			printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
+			return "", none, false
+		}
 	}
 	if !commitSHAPattern.MatchString(resolvedSHA) {
 		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, resolvedSHA))

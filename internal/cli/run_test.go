@@ -1441,6 +1441,100 @@ func TestTryAgentsRepoFallback_SuccessPath_ReleaseBuild(t *testing.T) {
 	assert.Contains(t, deps[0].URL, fakeSHA)
 }
 
+func TestTryAgentsRepoFallback_ReleaseBuild_MissingTagFallsBackToMain(t *testing.T) {
+	origVersion := version
+	origSHA := commitSHA
+	version = "0.38.0"
+	commitSHA = "abc123def456"
+	t.Cleanup(func() { version = origVersion; commitSHA = origSHA })
+
+	harnessContent := []byte("agent: agents/fix.md\nrole: test\n")
+	mainSHA := "1234567890abcdef1234567890abcdef12345678"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + mainSHA + "/harness/fix.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	workDir := t.TempDir()
+
+	fakeClient := forge.NewFakeClient()
+	// No tags/v0.38.0 ref — only heads/main exists
+	fakeClient.Refs["fullsend-ai/agents/heads/main"] = mainSHA
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, deps, ok := tryAgentsRepoFallback(context.Background(), "fix", fakeClient, opts, printer)
+	require.True(t, ok, "expected tag-missing fallback to main to succeed")
+	assert.NotEmpty(t, path)
+	assert.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, mainSHA)
+	assert.Contains(t, buf.String(), "falling back to main")
+}
+
+func TestTryAgentsRepoFallback_ReleaseBuild_MissingTagAndMainFails(t *testing.T) {
+	origVersion := version
+	origSHA := commitSHA
+	version = "0.38.0"
+	commitSHA = "abc123def456"
+	t.Cleanup(func() { version = origVersion; commitSHA = origSHA })
+
+	// No refs at all — both tag and main will fail
+	fakeClient := forge.NewFakeClient()
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "fix", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+	assert.Contains(t, buf.String(), "falling back to main")
+	assert.Contains(t, buf.String(), "Fallback to main also failed")
+}
+
+func TestTryAgentsRepoFallback_DevBuild_NoFallback(t *testing.T) {
+	origVersion := version
+	origSHA := commitSHA
+	version = "dev"
+	commitSHA = "dev"
+	t.Cleanup(func() { version = origVersion; commitSHA = origSHA })
+
+	// Dev builds use heads/main directly; no tag-fallback path should
+	// be exercised. A missing heads/main ref should fail without retrying.
+	fakeClient := forge.NewFakeClient()
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+	// The warning should NOT mention "falling back to main" because
+	// the ref was already heads/main.
+	assert.NotContains(t, buf.String(), "falling back to main")
+}
+
 func TestTryAgentsRepoMeasurementManifest_Success(t *testing.T) {
 	manifest := []byte("agent: triage\nmeasurements:\n  - id: em-001\n    scorer: trace_fitness\n    version: 1\n")
 	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
