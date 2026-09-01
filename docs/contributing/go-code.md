@@ -246,6 +246,34 @@ goroutines as a **medium-severity** finding, and recommend collecting a
 `[]error` and returning `errors.Join`. Do not flag intentional fail-fast
 cancellation patterns.
 
+## httptest handler-invocation assertions
+
+When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — `httptest`'s default mux returns 404 for unregistered routes, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
+
+### Pattern: `handlerCalled` boolean
+
+Declare a `handlerCalled` boolean before the handler, set it to `true` inside the handler, and assert it after the test action:
+
+```go
+handlerCalled := false
+mux.HandleFunc("/expected/path", func(w http.ResponseWriter, r *http.Request) {
+    handlerCalled = true
+    assert.Equal(t, http.MethodGet, r.Method)
+    writeJSON(t, w, http.StatusOK, response)
+})
+
+result, err := client.DoSomething(ctx, "arg")
+require.NoError(t, err)
+assert.Equal(t, expected, result)
+assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+```
+
+This applies to every handler registration in httptest-based tests — not just error cases. A handler that is never called means the test is not exercising the code path it claims to test.
+
+### Why this matters
+
+The coincidental-pass bug class is well-understood in Go httptest usage. A real instance occurred in this repo: `TestGetCommentProperty_NotFound` registered its handler at `/rest/api/3/issue/PROJ-1/comment/10001/properties/missing`, but the production code constructed the path `/rest/api/3/comment/10001/properties/missing` (no issue prefix). The handler was never invoked, yet the test passed because the default 404 matched the expected `forge.ErrNotFound`. The fix was a one-line `handlerCalled` assertion — see [`internal/forge/jira/client_test.go`](../../internal/forge/jira/client_test.go) for the canonical example.
+
 ## Context-aware blocking
 
 Functions that accept `context.Context` must not use `time.Sleep` or other
