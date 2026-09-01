@@ -1,0 +1,81 @@
+// Package pluginformat decides which runtime loads a `plugins:` entry.
+//
+// A plugin directory belongs to one of two families (ADR 0094): a manifest
+// bundle a runtime reads at startup (Claude Code's plugin.json layout), or
+// a code module the runtime loads and executes (pi's `-e <dir>`
+// extensions). One harness key lists both, so something has to tell them
+// apart per entry — that is this package.
+//
+// It is a leaf: it imports neither internal/harness nor internal/runtime,
+// because both import it (harness validates entries with it, the runtime
+// filters the entries of its own kind with it).
+package pluginformat
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// Kind is the runtime family a plugin directory belongs to. The zero value
+// is the undetected kind: Detect and DetectTree return it together with the
+// problem string that says why neither family claimed the directory.
+type Kind string
+
+const (
+	// KindClaude is a Claude Code plugin: a directory with plugin.json at
+	// its root, uploaded into the runtime's plugins/ directory.
+	KindClaude Kind = "claude"
+	// KindPi is a pi extension: a directory pi's `-e <dir>` loader resolves
+	// an entry point in, uploaded and loaded as code.
+	KindPi Kind = "pi"
+)
+
+// pluginManifestFile is the Claude marker: fullsend has always required
+// plugin.json at the directory root (fetchBasePlugin refuses a base plugin
+// without one), so it stays the marker here.
+const pluginManifestFile = "plugin.json"
+
+// Detect reports the kind of a local plugin directory. The second return is
+// empty on success and, when no family claims the directory, says why —
+// both halves of the verdict, so the harness author does not have to guess
+// which one was meant. The error is reserved for a directory that cannot be
+// read or holds an entry no runtime may load (a symlink, a special file, a
+// name the sandbox preflight could not reproduce).
+//
+// plugin.json is checked first, and a directory that has it is never put
+// through pi's rule: a Claude plugin that bundles a Node MCP server ships a
+// package.json whose "main" resolves, which would otherwise make it look
+// like a pi extension as well.
+func Detect(dir string) (Kind, string, error) {
+	info, err := os.Stat(filepath.Join(dir, pluginManifestFile))
+	if err == nil && !info.IsDir() {
+		return KindClaude, "", nil
+	}
+	problem, err := piDirLoadProblem(dir)
+	if err != nil {
+		return "", "", err
+	}
+	if problem == "" {
+		return KindPi, "", nil
+	}
+	return "", notAKindProblem(problem), nil
+}
+
+// DetectTree is Detect for a fetched tree (relative slash path → content),
+// the form base composition and the forge fetchers work in. It applies the
+// same precedence and returns the same verdict; a tree carries no symlinks
+// or special files, so there is no error return.
+func DetectTree(files map[string][]byte) (Kind, string) {
+	if _, ok := files[pluginManifestFile]; ok {
+		return KindClaude, ""
+	}
+	if problem := PiTreeLoadProblem(files); problem != "" {
+		return "", notAKindProblem(problem)
+	}
+	return KindPi, ""
+}
+
+func notAKindProblem(piProblem string) string {
+	return fmt.Sprintf("not a Claude plugin (no %s) and not a pi extension (%s)", pluginManifestFile, piProblem)
+}

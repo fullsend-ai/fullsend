@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
@@ -821,11 +822,14 @@ func (h *Harness) ValidateFilesExist() error {
 		// resolve an entry point, and loads nothing at all from a directory
 		// that turned into package layout, so the harness author learns here
 		// rather than from a failed run or a missing tool.
-		problem, err := extensionDirLoadProblem(e.Path)
+		kind, problem, err := pluginformat.Detect(e.Path)
 		if err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
-		if problem != "" {
+		if kind != pluginformat.KindPi {
+			if problem == "" {
+				problem = "it is a Claude plugin (plugin.json), which pi does not load"
+			}
 			return extensionNotLoadableError(field, e.Path, problem)
 		}
 	}

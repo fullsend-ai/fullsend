@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -120,7 +120,7 @@ func scanExtensionDir(pipeline *security.Pipeline, extPath string, failClosed bo
 			// or a special file is a refusal, not something to walk past.
 			// Skipping it silently here would let a tree the Run-time
 			// preflight rejects sail through bootstrap unscanned.
-			if problem := harness.ExtensionEntryProblem(rel, d.Type()); problem != "" {
+			if problem := pluginformat.ExtensionEntryProblem(rel, d.Type()); problem != "" {
 				return fmt.Errorf("extension %q: %w: %s", extPath, errExtensionScanRefused, problem)
 			}
 			if d.IsDir() {

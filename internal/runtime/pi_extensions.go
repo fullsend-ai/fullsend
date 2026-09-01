@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 )
 
 // Declared pi extensions (harness `extensions:`, ADR 0094). Bootstrap
@@ -37,9 +37,9 @@ const piExtensionTamperedExit = 96
 // the hook adapter's file basename and the vendored provider extensions
 // Run loads by path. A declared extension with one of these names would
 // shadow (or be mistaken for) runner-owned code. The list is defined in
-// internal/harness so validateExtensions can refuse such an entry at
+// internal/pluginformat so harness validation can refuse such an entry at
 // harness load, with the offending index named, instead of only here.
-var piReservedExtensionNames = harness.PiReservedExtensionNames
+var piReservedExtensionNames = pluginformat.PiReservedExtensionNames
 
 // piManifestExtension is one `extensions` entry in fullsend-manifest.json
 // and the resolved form Run renders the command line from.
@@ -141,7 +141,7 @@ func cloneStringMap(m map[string]string) map[string]string {
 //     line with "\", which the Go side does not mirror, and a newline would
 //     break the directory listing too.
 //
-// Both refusals are harness.ExtensionEntryProblem, shared with harness
+// Both refusals are pluginformat.ExtensionEntryProblem, shared with harness
 // validation and the bootstrap injection scan.
 
 // piExtensionTreeHash computes the tree hash of dir on the host. The root
@@ -163,10 +163,10 @@ func piExtensionTreeHash(dir string) (string, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		// One rule, three call sites: harness validation
-		// (harness.ExtensionDirLoadProblem) and the bootstrap injection scan
+		// (pluginformat.PiLoadProblem) and the bootstrap injection scan
 		// apply the same predicate, so an author learns about a symlink or an
 		// unreproducible name at validation instead of here.
-		if problem := harness.ExtensionEntryProblem(rel, d.Type()); problem != "" {
+		if problem := pluginformat.ExtensionEntryProblem(rel, d.Type()); problem != "" {
 			return errors.New(problem)
 		}
 		if d.IsDir() {

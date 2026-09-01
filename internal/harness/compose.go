@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1933,7 +1934,10 @@ var (
 		keyFile: "/",
 		validate: func(field, dirPath string, files map[string][]byte) error {
 			// Same rule ValidateFilesExist applies to a local directory.
-			if problem := TreeLoadProblem(files); problem != "" {
+			if kind, problem := pluginformat.DetectTree(files); kind != pluginformat.KindPi {
+				if problem == "" {
+					problem = "it is a Claude plugin (plugin.json), which pi does not load"
+				}
 				return extensionNotLoadableError("base "+field, dirPath, problem)
 			}
 			return nil
