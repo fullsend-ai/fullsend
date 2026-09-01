@@ -98,10 +98,7 @@ export function pageSeoHead({
 
 /**
  * Whether a page should advertise a canonical / OG URL to crawlers.
- * VitePress emits `404.html` as a directly reachable asset, while the deployed
- * Worker's SPA fallback handles unknown paths separately. The 404 asset and
- * non-content files must not advertise canonical content URLs. Tag omission by
- * itself is not a `noindex` signal; {@link pageRobotsHead} supplies that for 404.
+ * VitePress injects a custom 404.md that can't be disabled.
  */
 export function isIndexablePage(page: string): boolean {
   return page !== "404.md" && !isNonContentPath(page);
