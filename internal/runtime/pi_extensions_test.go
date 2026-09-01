@@ -370,7 +370,7 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 	assert.Contains(t, cmd, envExports, cmd)
 	assert.Less(t, strings.Index(cmd, `export GOOGLE_CLOUD_PROJECT=`), strings.Index(cmd, "export FFF_MULTIGREP="), "runtime exports come first")
 
-	// --tools is untouched by extensions: nil tools keeps pi's defaults.
+	// --tools is untouched by a declared extension; nil tools keeps pi's defaults.
 	assert.NotContains(t, cmd, "--tools")
 	assert.NotContains(t, cmd, "--no-builtin-tools")
 

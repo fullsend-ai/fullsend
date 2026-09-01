@@ -15,7 +15,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 )
 
-// Declared pi extensions (harness `extensions:`, ADR 0094). Bootstrap
+// Declared pi extensions (the pi-format entries of the harness's
+// `plugins:` list, ADR 0094). Bootstrap
 // uploads each directory to ConfigDir/extensions/<name>/ and records it in
 // the manifest; Run re-hashes the host directory, preflights the sandbox
 // copy against that hash (piExtensionsGuard) and loads it with `-e`.
@@ -232,8 +233,8 @@ func piTreeHashCommand(dir, shaTool string) string {
 }
 
 // piExtensionsGuard is the POSIX sh fragment run before pi, and before the
-// agent-writable .env is sourced, when the harness declares extensions:
-// every extension directory must exist in the sandbox and hash to the
+// agent-writable .env is sourced, when the harness declared pi
+// extensions: every extension directory must exist in the sandbox and hash to the
 // value computed from the host copy, else the iteration stops with
 // piExtensionTamperedExit before any extension code can run. Empty when
 // there are no extensions.

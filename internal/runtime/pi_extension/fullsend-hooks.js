@@ -43,7 +43,8 @@ export function claudeToolName(manifest, piName) {
 const PI_BUILTIN_TOOLS_OUTSIDE_MAP = new Set(["powershell"]);
 
 // isExtensionTool reports whether piName looks like a tool registered by
-// one of the harness's declared extensions (ADR 0094): the manifest lists
+// one of the pi extensions the harness declared under plugins: (ADR 0094):
+// the manifest lists
 // extensions and the name is neither a pi built-in (a toolNames key or one
 // of PI_BUILTIN_TOOLS_OUTSIDE_MAP) nor a Claude vocabulary name (a
 // toolNames value).
@@ -204,7 +205,7 @@ function replaceText(content, text) {
 export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.error(m) } = {}) {
   const wired = Boolean(manifest && manifest.hooks && Array.isArray(manifest.hooks.groups));
   // Extension tool names logged at first use, so the transcript shows what
-  // the model gained from the declared extensions.
+  // the model gained from the declared plugins.
   const seenExtensionTools = new Set();
   const onToolCall = (event) => {
     if (!wired) {
@@ -227,7 +228,7 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
     }
 
     // First use of an extension tool is logged so the transcript shows what
-    // the model gained from the declared extensions. No hook is skipped for
+    // the model gained from the declared plugins. No hook is skipped for
     // it: every PreToolUse group, the optional tool allowlist included,
     // decides on an extension tool exactly as on any other.
     if (!seenExtensionTools.has(piName) && isExtensionTool(manifest, piName)) {
