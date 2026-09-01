@@ -1,4 +1,4 @@
-title: "Role request: [tier] — [your GitHub handle]"
+title: "Role request: [role] — [your GitHub username]"
 labels: []
 body:
   - type: markdown
@@ -6,17 +6,17 @@ body:
       value: |
         ## Role Request
 
-        Use this form to request a contributor tier upgrade. See
+        Use this form to request a contributor role upgrade. See
         [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md)
-        for tier definitions, criteria, and approval requirements.
+        for role definitions, criteria, and approval requirements.
 
         **Write in your own words.** Do not have an AI generate this request.
 
   - type: dropdown
     id: tier
     attributes:
-      label: Requested tier
-      description: Which tier are you requesting?
+      label: Requested role
+      description: Which role are you requesting?
       options:
         - triage
         - write
@@ -41,7 +41,7 @@ body:
   - type: textarea
     id: motivation
     attributes:
-      label: Why do you need this tier?
+      label: Why do you need this role?
       description: >
         Explain what you plan to do with the additional capabilities
         (e.g., triaging issues, using mutation agents, reviewing PRs).
@@ -56,5 +56,5 @@ body:
       options:
         - label: I wrote this request myself (not AI-generated)
           required: true
-        - label: I have read [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md) and meet the criteria for this tier
+        - label: I have read [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md) and meet the criteria for this role
           required: true

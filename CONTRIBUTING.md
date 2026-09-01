@@ -154,8 +154,8 @@ To find open issues for human contribution, use the [contributor issue search](h
 
 ## Contributor ladder
 
-This project defines four contributor tiers — vouched, triage, write,
-and maintainer — each granting additional capabilities. See
+This project defines four contributor roles — Vouched, Triage, Write,
+and Maintainer — each granting additional capabilities. See
 [LADDER.md](LADDER.md) for the full ladder and how to request each role.
 
 For the maintainer role specifically, see
