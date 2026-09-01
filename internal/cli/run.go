@@ -2049,6 +2049,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				lastExitCode = 1
 				transcriptErrorOverride = true
 				printer.StepWarn("Agent exited with code 0 but transcript contains error: " + transcriptErrMsg)
+			} else {
+				// Non-behavioral transcript error with a non-zero exit
+				// code (e.g., error_unknown). The exit code already
+				// signals failure; the transcript error enriches the
+				// span telemetry with additional context. See #6877.
+				printer.StepWarn("Transcript contains error: " + transcriptErrMsg)
 			}
 		}
 
@@ -3289,8 +3295,8 @@ func finalizeSandboxSpan(span trace.Span, err error) {
 	span.End()
 }
 
-// isBehavioralExitSubtype returns true for transcript error subtypes that
-// indicate a behavioral limit (the agent was interrupted mid-work) rather
+// isBehavioralExitSubtype reports whether a transcript error subtype
+// indicates a behavioral limit (the agent was interrupted mid-work) rather
 // than an infrastructure or API failure. Behavioral exits pass context to
 // the post-script via FULLSEND_AGENT_EXIT_REASON rather than skipping it
 // entirely, so the post-script can report accurately instead of emitting
