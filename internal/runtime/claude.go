@@ -67,7 +67,7 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	// Inject harness-listed skill names into the agent frontmatter so
 	// the runtime loads them without requiring an explicit Skill tool
 	// call in the prompt body (#6681).
-	agentData, err = InjectFrontmatterSkills(agentData, input.SkillDirs())
+	agentData, err = injectFrontmatterSkills(agentData, input.SkillDirs())
 	if err != nil {
 		return fmt.Errorf("injecting frontmatter skills: %w", err)
 	}
