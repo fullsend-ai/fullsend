@@ -51,6 +51,11 @@ type ensurer interface {
 	// post-install validation) it runs the per-repo install flow
 	// (inference provision + github setup).
 	EnsureRepo(ctx context.Context, org, repoName string) error
+
+	// InvalidateCache removes the cached "ensured" entry for org/repoName
+	// so the next EnsureRepo call re-runs the create+install flow.
+	// Called by DeallocateRepo after deleting an ephemeral repo.
+	InvalidateCache(org, repoName string)
 }
 
 // SettleFunc is called after a repo is freshly created or installed to
@@ -59,13 +64,14 @@ type ensurer interface {
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
 type repoEnsurer struct {
-	e2eCfg e2etest.EnvConfig
-	client forge.Client
-	token  string
-	binary string
-	logf   func(string, ...any)
-	runCLI CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
-	settle SettleFunc    // injectable; defaults to awaitWorkflowReady
+	e2eCfg      e2etest.EnvConfig
+	client      forge.Client
+	token       string
+	binary      string
+	fullsendRef string // when set, use repos install --fullsend-ref instead of github setup --vendor
+	logf        func(string, ...any)
+	runCLI      CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
+	settle      SettleFunc    // injectable; defaults to awaitWorkflowReady
 
 	mu       sync.Mutex
 	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
@@ -91,6 +97,37 @@ func newRepoEnsurer(
 		settle:  awaitWorkflowReady,
 		ensured: make(map[string]struct{}),
 	}
+}
+
+// newRepoEnsurerWithRef returns an ensurer that uses repos install
+// --fullsend-ref instead of github setup --vendor. The ref-pinned path
+// avoids vendoring a 50 MB binary per ephemeral repo.
+func newRepoEnsurerWithRef(
+	e2eCfg e2etest.EnvConfig,
+	client forge.Client,
+	token, binary, fullsendRef string,
+	logf func(string, ...any),
+) ensurer {
+	return &repoEnsurer{
+		e2eCfg:      e2eCfg,
+		client:      client,
+		token:       token,
+		binary:      binary,
+		fullsendRef: fullsendRef,
+		logf:        logf,
+		runCLI:      e2etest.TryRunCLI,
+		settle:      awaitWorkflowReady,
+		ensured:     make(map[string]struct{}),
+	}
+}
+
+// InvalidateCache removes the cached "ensured" entry for org/repoName
+// so the next EnsureRepo call re-runs the full create+install flow.
+func (e *repoEnsurer) InvalidateCache(org, repoName string) {
+	key := org + "/" + repoName
+	e.mu.Lock()
+	delete(e.ensured, key)
+	e.mu.Unlock()
 }
 
 func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) error {
@@ -156,13 +193,19 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 	// install flow and settle for Actions readiness.
 	e.logf("[ensure] %s needs install (fresh repo)", target)
 
-	// Step 4: run github setup --vendor to install fullsend and push
-	// the current binary.
+	// Step 4: install fullsend — repos install --fullsend-ref (ref-pinned)
+	// or github setup --vendor (vendored binary).
 	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
 		return err
 	}
-	if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
-		return fmt.Errorf("post-install validation for %s: %w", target, err)
+	if e.fullsendRef != "" {
+		if err := ValidatePerRepoPostInstallRefPinned(ctx, e.client, org, repoName); err != nil {
+			return fmt.Errorf("post-install validation (ref-pinned) for %s: %w", target, err)
+		}
+	} else {
+		if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
+			return fmt.Errorf("post-install validation for %s: %w", target, err)
+		}
 	}
 
 	// Step 5: wait for Actions to recognise the workflow file.
@@ -324,8 +367,12 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 }
 
 // installFullsend runs inference provision (when a GCP project is
-// configured) and fullsend github setup for the target repo.
+// configured) and either fullsend repos install --fullsend-ref (when
+// fullsendRef is set) or fullsend github setup --vendor for the target repo.
 func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) error {
+	if e.fullsendRef != "" {
+		return common.RunReposInstall(e.binary, e.token, target, e.fullsendRef, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.runCLI, e.logf)
+	}
 	return common.RunGitHubSetup(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.runCLI, e.logf)
 }
 

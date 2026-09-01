@@ -150,3 +150,13 @@ func TestTokenForOrg_WithoutMint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "local-token", token)
 }
+
+func TestTokenForBehaviourOrg_UsesLocalToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "behaviour-token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	cfg := EnvConfig{UseMint: false}
+	token, err := TokenForBehaviourOrg(cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "behaviour-token", token)
+}

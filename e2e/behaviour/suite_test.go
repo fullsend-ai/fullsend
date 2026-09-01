@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cucumber/godog"
-	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
@@ -35,21 +34,15 @@ func TestBehaviourSuite(t *testing.T) {
 	}
 
 	e2eCfg := e2etest.LoadEnvConfig(t)
-	ctx := context.Background()
 
-	runID := uuid.New().String()
-	org, token, err := e2etest.AcquireOrg(ctx, e2eCfg, runID, e2etest.OrgPool(), e2eCfg.LockTimeout, t.Logf)
+	org := e2etest.BehaviourTestOrg
+	token, err := e2etest.TokenForBehaviourOrg(e2eCfg)
 	if err != nil {
-		t.Fatalf("acquiring org: %v", err)
+		t.Fatalf("getting token for %s: %v", org, err)
 	}
 	client := e2etest.NewLiveClient(token)
-	t.Cleanup(func() {
-		e2etest.ReleaseLock(context.Background(), client, org, runID, t)
-	})
 
 	binary := e2etest.BuildCLIBinary(t)
-
-	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
 	// Call the Factory to get the unified driver. The factory deploys
 	// the preview mint and constructs all internal pieces (pool, ensurer).

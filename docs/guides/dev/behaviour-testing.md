@@ -77,7 +77,7 @@ And the agent will output issues.out with:
 Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
 - **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection. Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
-- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with `And a pi agent "<name>" defined as:` and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)).
+- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with `And a pi agent "<name>" defined as:` and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the leased repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the test org repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)).
 - **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
 Do not add runtime coverage to `e2e/admin` (org-mode install, deprecated per ADR 0044) or behind new `fullsend admin` flags.
@@ -188,17 +188,18 @@ The first row proves execution via an auxiliary file; the second row emits the s
 ## Running locally
 
 ```bash
-# Local: gh auth login or export GH_TOKEN/GITHUB_TOKEN with access to halfsend org pool
+# Local: gh auth login or export GH_TOKEN/GITHUB_TOKEN with access to fullsend-ai-test org
 make behaviour-test
 ```
 
 ### Parallel execution
 
 The suite runs scenarios in parallel by default (`GODOG_CONCURRENCY=12`,
-matching the repo pool size). Each scenario gets its own `World` clone and
-leases a unique `test-repo-NN` from the pool, so no cross-scenario state
-is shared. The `behaviour-test` Make target includes `-race` to catch
-data races under concurrent execution.
+matching the driver pool size). Each scenario gets its own `World` clone
+and leases a unique ephemeral `bt-{uuid}-{slot}` repo in the single
+`fullsend-ai-test` org, so no cross-scenario state is shared and
+concurrent CI runs never collide. The `behaviour-test` Make target
+includes `-race` to catch data races under concurrent execution.
 
 To adjust concurrency:
 
@@ -216,22 +217,37 @@ GODOG_CONCURRENCY=1 make behaviour-test
 Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
 scenario or when `-v` output from multiple scenarios would interleave.
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+Set `E2E_KEEP_REPOS=true` to preserve ephemeral repos after deallocation
+for post-mortem debugging. Without this, repos are deleted when each
+scenario's After hook calls `DeallocateRepo`.
+
+When `BEHAVIOUR_FULLSEND_REF` is set (falls back to `GITHUB_HEAD_REF` then
+`GITHUB_REF_NAME`), the install driver uses `repos install --fullsend-ref`
+instead of `github setup --vendor`. This avoids vendoring a ~50 MB binary
+per ephemeral repo — `action.yml` resolves the SHA and builds from source.
+
+In CI, the test runner mints a `e2e` installation token for the
+`fullsend-ai-test` org via OIDC. Triage workflows on ephemeral repos mint
+same-org `triage` tokens from reusable workflows; those require per-repo
+mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. The
+install driver provisions repo-scoped inference WIF via
+`fullsend inference provision` before install. See
+[e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Repo allocation via unified Driver
 
-The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns pool leasing and lazy create+install internally:
+The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns slot leasing and lazy create+install internally:
 
-1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
+1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled). Slot names are unique per run: `bt-{uuid}-{slot}`.
 2. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
-3. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
+3. Installs fullsend via `repos install --fullsend-ref` (when configured) or `github setup --vendor`.
 4. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
 
-The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
+The After hook calls `Driver.DeallocateRepo` to return the slot and delete the ephemeral repo (unless `E2E_KEEP_REPOS=true`). `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
 
-Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
+Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait.
 
-**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each leased repo pays create + inference provision + install on first use in a run, serial godog suites take longer than a pre-provisioned model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -239,9 +255,11 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
+BEHAVIOUR_FULLSEND_REF=<sha>      # head SHA for repos install --fullsend-ref (CI: pr head sha)
+E2E_KEEP_REPOS=false              # set true to preserve ephemeral repos for debugging
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
-E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
-E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
+E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per ephemeral repo
+E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to ephemeral test-org repo secrets)
 TEST_ACTOR_WRITE_PAT=...      # write-level human-like actor PAT (CI: same-named repo secret)
 TEST_ACTOR_TRIAGE_PAT=...     # triage-level human-like actor PAT
 TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on base)
@@ -260,15 +278,15 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | fullsend-ai org member | No | No | No |
 | Permission on `fullsend-ai/fullsend` | Read | Read | Read |
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
-| Write access | Pool-org `test-repo-NN` repos only | Pool-org `test-repo-NN` repos only | None (outsider) |
+| Write access | Ephemeral `bt-{uuid}-{slot}` repos in `fullsend-ai-test` only | Ephemeral `bt-{uuid}-{slot}` repos in `fullsend-ai-test` only | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the pool org, which is ephemeral and rebuilt each CI run.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to ephemeral `bt-{uuid}-{slot}` repos in `fullsend-ai-test`, which are created per scenario and deleted on deallocation.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 
 - A new test actor account is added
 - An existing account is granted additional repository or org access
-- The pool-org infrastructure changes (new orgs, new repo naming)
+- The test-org infrastructure changes (org settings, repo naming)
 
 To verify, check org membership and repository permissions via the GitHub API:
 
@@ -292,13 +310,13 @@ Fork dispatch scenarios test `pull_request_target` harness triggering from cross
 
 ### Logical fork name → leased base
 
-Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin.
+Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased an ephemeral base (for example leased `bt-a1b2c3d4-01` → actual fork repo `bt-a1b2c3d4-01-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code repo names in Gherkin.
 
-### Pool-org prerequisites
+### Test-org prerequisites
 
-Fork scenarios require the pool org to have:
+Fork scenarios require the `fullsend-ai-test` org to have:
 
-- **Permission to create forks** of the leased enrolled base (`test-repo-NN`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
+- **Permission to create forks** of the leased enrolled base (`bt-{uuid}-{slot}`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
 - **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
 
 ### Fork lifecycle
@@ -361,7 +379,7 @@ Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensur
 
 ### Fork name derivation depends on `World.RepoName`
 
-The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
+The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `bt-a1b2c3d4-01` resolves to `bt-a1b2c3d4-01-fork`.
 
 When modifying repo naming, leasing, or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because leasing logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
 
@@ -389,9 +407,9 @@ URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose 
 
 ### Harness-hosting repository
 
-The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
+The `Given a harness-hosting repository "<name>"` step creates a public repository in the `fullsend-ai-test` org to host harness YAML files. The repo is:
 
-- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"test-repo-07"` → `"test-repo-07-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
+- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"bt-a1b2c3d4-01"` → `"bt-a1b2c3d4-01-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
 - **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
 
 ### URL-sourced custom harness
@@ -422,7 +440,7 @@ Background:
 
 URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
 
-The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
+When `BEHAVIOUR_FULLSEND_REF` is set, the install driver uses `repos install --fullsend-ref` to install from the current checkout's ref — `action.yml` resolves the SHA and builds from source, avoiding the ~50 MB vendored binary per repo. When `BEHAVIOUR_FULLSEND_REF` is not set, the driver falls back to `github setup --vendor`, re-vendoring the CLI binary even when a prior install's post-install validation passes. This guarantees leased ephemeral repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-install, ephemeral repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
 The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
 
@@ -435,7 +453,7 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 ```
 
 - Import `github.com/fullsend-ai/fullsend/pkg/behaviourtest/...` for world, steps, drivers, and `suite.InitScenario`.
-- Import `github.com/fullsend-ai/fullsend/pkg/e2etest` for org pool acquisition, env config, CLI build/run, and cleanup.
+- Import `github.com/fullsend-ai/fullsend/pkg/e2etest` for org/token resolution, env config, CLI build/run, and cleanup.
 - Set `world.FixturesRoot` to the module-relative fixtures directory (e.g. `"behaviour"` in the agents repo).
 - Build the fullsend CLI with `e2etest.BuildModuleBinary(t, "github.com/fullsend-ai/fullsend")` — not `BuildCLIBinary`, which resolves the **current** module root.
 - Run with `-tags behaviour` and the same env vars as CI (see above).

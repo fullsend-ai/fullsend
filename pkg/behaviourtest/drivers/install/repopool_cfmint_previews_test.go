@@ -375,11 +375,6 @@ func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "teardown boom")
 }
 
-func TestBuildRepoList(t *testing.T) {
-	list := buildRepoList("my-org", 3)
-	assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02,my-org/test-repo-03", list)
-}
-
 func TestSetupCFMintPEMDir_NoPEMVars(t *testing.T) {
 	// When no TEST_*_PEM env vars are set, returns ("", nil).
 	dir, err := setupCFMintPEMDir()
@@ -450,6 +445,47 @@ func TestEnvSuiteName_Default(t *testing.T) {
 func TestEnvSuiteName_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_SUITE_NAME", "custom-suite")
 	assert.Equal(t, "custom-suite", envSuiteName())
+}
+
+func TestEnvFullsendRef_PrefersBehaviourEnv(t *testing.T) {
+	t.Setenv("BEHAVIOUR_FULLSEND_REF", "abc123")
+	t.Setenv("GITHUB_HEAD_REF", "feature/branch")
+	t.Setenv("GITHUB_REF_NAME", "main")
+	assert.Equal(t, "abc123", envFullsendRef())
+}
+
+func TestEnvFullsendRef_FallsBackToEventPayload(t *testing.T) {
+	eventFile := filepath.Join(t.TempDir(), "event.json")
+	os.WriteFile(eventFile, []byte(`{"pull_request":{"head":{"sha":"deadbeef123"}}}`), 0o644)
+	t.Setenv("BEHAVIOUR_FULLSEND_REF", "")
+	t.Setenv("GITHUB_EVENT_PATH", eventFile)
+	t.Setenv("GITHUB_HEAD_REF", "agent/slash-branch")
+	t.Setenv("GITHUB_REF_NAME", "main")
+	assert.Equal(t, "deadbeef123", envFullsendRef())
+}
+
+func TestEnvFullsendRef_FallsBackToHeadRef(t *testing.T) {
+	t.Setenv("BEHAVIOUR_FULLSEND_REF", "")
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	t.Setenv("GITHUB_HEAD_REF", "feature/branch")
+	t.Setenv("GITHUB_REF_NAME", "main")
+	assert.Equal(t, "feature/branch", envFullsendRef())
+}
+
+func TestEnvFullsendRef_FallsBackToRefName(t *testing.T) {
+	t.Setenv("BEHAVIOUR_FULLSEND_REF", "")
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	t.Setenv("GITHUB_HEAD_REF", "")
+	t.Setenv("GITHUB_REF_NAME", "main")
+	assert.Equal(t, "main", envFullsendRef())
+}
+
+func TestEnvFullsendRef_EmptyWhenNoneSet(t *testing.T) {
+	t.Setenv("BEHAVIOUR_FULLSEND_REF", "")
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	t.Setenv("GITHUB_HEAD_REF", "")
+	t.Setenv("GITHUB_REF_NAME", "")
+	assert.Equal(t, "", envFullsendRef())
 }
 
 func TestEnvAppSet_Default(t *testing.T) {

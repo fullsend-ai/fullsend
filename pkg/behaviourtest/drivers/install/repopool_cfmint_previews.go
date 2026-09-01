@@ -11,6 +11,7 @@ package install
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,9 +64,9 @@ func NewRepoPoolCFMintPreviews(
 	cfg := cfmintConfig{
 		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
-		allowedOrgs:       "", // per-repo mode — no org-level allowlist
-		perRepoWIFRepos:   buildRepoList(org, poolSize),
-		workflowHostRepos: buildRepoList(org, poolSize),
+		allowedOrgs:       "",  // per-repo mode — no org-level allowlist
+		perRepoWIFRepos:   "*", // accept any repo; names are generated dynamically
+		workflowHostRepos: "*",
 		appSet:            envAppSet(),
 	}
 
@@ -102,10 +103,18 @@ func buildCFMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+
+	fullsendRef := envFullsendRef()
+	var ens ensurer
+	if fullsendRef != "" {
+		logf("[cfmint] using repos install --fullsend-ref %s", fullsendRef)
+		ens = newRepoEnsurerWithRef(e2eCfg, client, token, binary, fullsendRef, logf)
+	} else {
+		ens = newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	}
 
 	// Construct and return the composed driver.
-	d, err := newComposedDriver(org, md, ens, poolSize, logf)
+	d, err := newComposedDriver(org, md, ens, client, "", poolSize, logf)
 	if err != nil {
 		return nil, err
 	}
@@ -336,13 +345,52 @@ func envPoolSize(logf func(string, ...any)) int {
 	return DefaultPoolSize
 }
 
-// buildRepoList constructs a comma-separated list of org/test-repo-NN.
-func buildRepoList(org string, poolSize int) string {
-	repos := make([]string, poolSize)
-	for i := range poolSize {
-		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
+// envFullsendRef returns the fullsend ref for repos install --fullsend-ref.
+// Falls back through BEHAVIOUR_FULLSEND_REF → PR head SHA from event
+// payload → GITHUB_HEAD_REF → GITHUB_REF_NAME. The event-payload
+// fallback is needed because pull_request_target runs the base-branch
+// workflow file, which may not set BEHAVIOUR_FULLSEND_REF. Branch
+// names with slashes (e.g. "agent/xxx") are rejected by IsValidRef,
+// so a SHA is preferred.
+func envFullsendRef() string {
+	if v := os.Getenv("BEHAVIOUR_FULLSEND_REF"); v != "" {
+		return v
 	}
-	return strings.Join(repos, ",")
+	if sha := prHeadSHAFromEvent(); sha != "" {
+		return sha
+	}
+	if v := os.Getenv("GITHUB_HEAD_REF"); v != "" {
+		return v
+	}
+	if v := os.Getenv("GITHUB_REF_NAME"); v != "" {
+		return v
+	}
+	return ""
+}
+
+// prHeadSHAFromEvent reads the PR head commit SHA from the GitHub
+// Actions event payload (GITHUB_EVENT_PATH). Returns "" outside CI
+// or for non-PR events.
+func prHeadSHAFromEvent() string {
+	path := os.Getenv("GITHUB_EVENT_PATH")
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var event struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if json.Unmarshal(data, &event) != nil {
+		return ""
+	}
+	return event.PullRequest.Head.SHA
 }
 
 // --- PEM materialization (cfmint-specific) ---

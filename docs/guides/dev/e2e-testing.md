@@ -38,7 +38,7 @@ Optional environment variables:
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
-Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
+Behaviour tests use a dedicated `fullsend-ai-test` org with ephemeral `bt-{uuid}-{slot}` repos and install via `repos install --fullsend-ref`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-12`) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
@@ -86,11 +86,11 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 ### Behaviour tests and per-repo mint enrollment
 
-Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
+Behaviour tests install fullsend in **per-repo** mode using `repos install --fullsend-ref` (or `github setup --vendor` as fallback). They run in the dedicated `fullsend-ai-test` org with ephemeral `bt-{uuid}-{slot}` repos that are created on demand and deleted after each scenario. Triage workflows on ephemeral repos mint same-org `triage` tokens from reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — per-repo enrollment for ephemeral repo names must be pre-provisioned by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests use the `fullsend-ai-test` org with unique `bt-{uuid}-{slot}` repo names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Concurrent CI runs never collide because each run generates a unique UUID prefix. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
-Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/<repo>` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to install. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to test-org repo secrets.
 
 The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 
@@ -99,17 +99,13 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
+One-time enrollment for admin e2e pool orgs (idempotent):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
   go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
-  for j in $(seq -w 1 12); do
-    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
-      --project="$GCP_PROJECT" --region=us-central1
-  done
 done
 ```
 

@@ -32,14 +32,14 @@ func TestNewComposedDriver_OK(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 3, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 3, d.Capacity())
 }
 
 func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
-	_, err := newComposedDriver("org", nil, nil, 0, t.Logf)
+	_, err := newComposedDriver("org", nil, nil, nil, "", 0, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
@@ -48,7 +48,7 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, e, 3, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 3, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -56,7 +56,7 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	// Allocate a repo.
 	name, err := d.AllocateRepo(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, name, "test-repo-")
+	assert.Contains(t, name, "bt-")
 
 	// Deallocate the repo.
 	err = d.DeallocateRepo(ctx, name)
@@ -72,7 +72,7 @@ func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.DeallocateRepo(context.Background(), "unknown-repo")
@@ -84,7 +84,7 @@ func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -105,7 +105,7 @@ func TestComposedDriver_AllocateBlocksUntilDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -138,7 +138,7 @@ func TestComposedDriver_AllocateEnsureError_ReturnsNameToPool(t *testing.T) {
 	failEnsurer := &failingEnsurer{err: fmt.Errorf("ensure failed")}
 	mint := &fakeMintDriver{}
 
-	d, err := newComposedDriver("org", mint, failEnsurer, 1, t.Logf)
+	d, err := newComposedDriver("org", mint, failEnsurer, nil, "", 1, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -166,7 +166,7 @@ func TestComposedDriver_FinalizeNoOutstanding(t *testing.T) {
 	mint := &fakeMintDriver{}
 	e := newFakeEnsurer()
 
-	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 2, t.Logf)
 	require.NoError(t, err)
 
 	err = d.Finalize(context.Background())
@@ -178,7 +178,7 @@ func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 	mint := &fakeMintDriver{}
 	e := newFakeEnsurer()
 
-	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -196,7 +196,7 @@ func TestComposedDriver_FinalizeJoinsErrors(t *testing.T) {
 	mint := &fakeMintDriver{teardownErr: fmt.Errorf("teardown boom")}
 	e := newFakeEnsurer()
 
-	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", 2, t.Logf)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -215,7 +215,7 @@ func TestComposedDriver_ConcurrentAllocateDeallocate(t *testing.T) {
 	mint := &fakeMintDriver{}
 
 	const poolSize = 4
-	d, err := newComposedDriver("org", mint, e, poolSize, t.Logf)
+	d, err := newComposedDriver("org", mint, e, nil, "", poolSize, t.Logf)
 	require.NoError(t, err)
 
 	const goroutines = 8
@@ -257,6 +257,8 @@ func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) error {
 	return f.err
 }
 
+func (f *failingEnsurer) InvalidateCache(_, _ string) {}
+
 // rateReportingClient is a forge.Client that also reports a fixed
 // rate-limit observation.
 type rateReportingClient struct {
@@ -271,7 +273,7 @@ func TestComposedDriver_SamplesRateLimitOnAllocateAndDeallocate(t *testing.T) {
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	e := newFakeEnsurer()
-	d, err := newComposedDriver("org", &fakeMintDriver{}, e, 2, logf)
+	d, err := newComposedDriver("org", &fakeMintDriver{}, e, nil, "", 2, logf)
 	require.NoError(t, err)
 
 	// A client without a reporter, or one that has observed nothing yet, samples nothing.
@@ -290,4 +292,101 @@ func TestComposedDriver_SamplesRateLimitOnAllocateAndDeallocate(t *testing.T) {
 	require.NoError(t, d.DeallocateRepo(context.Background(), name))
 	assert.Contains(t, lines, "[driver] rate limit after allocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
 	assert.Contains(t, lines, "[driver] rate limit after deallocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
+}
+
+// fakeForgeClient is a test double for forge.Client that records
+// DeleteRepo calls, exercising the DeallocateRepo deletion path.
+type fakeForgeClient struct {
+	forge.Client // embed to satisfy interface
+	deleteCalls  []string
+	deleteErr    error
+}
+
+func (f *fakeForgeClient) DeleteRepo(_ context.Context, org, repo string) error {
+	f.deleteCalls = append(f.deleteCalls, org+"/"+repo)
+	return f.deleteErr
+}
+
+func TestComposedDriver_DeallocateDeletesRepo(t *testing.T) {
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+	fc := &fakeForgeClient{}
+
+	d, err := newComposedDriver("org", mint, e, fc, "", 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+	require.Len(t, fc.deleteCalls, 2, "should call DeleteRepo for fork and main repo")
+	assert.Equal(t, "org/"+name+"-fork", fc.deleteCalls[0], "fork deleted first")
+	assert.Equal(t, "org/"+name, fc.deleteCalls[1], "main repo deleted second")
+}
+
+func TestComposedDriver_DeallocateKeepRepos(t *testing.T) {
+	t.Setenv("E2E_KEEP_REPOS", "true")
+
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+	fc := &fakeForgeClient{}
+
+	d, err := newComposedDriver("org", mint, e, fc, "", 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+	assert.Empty(t, fc.deleteCalls, "should NOT call DeleteRepo when E2E_KEEP_REPOS=true")
+}
+
+func TestComposedDriver_DeallocateDeleteNotFoundIgnored(t *testing.T) {
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+	fc := &fakeForgeClient{deleteErr: forge.ErrNotFound}
+
+	d, err := newComposedDriver("org", mint, e, fc, "", 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	// Should not return error for ErrNotFound.
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+}
+
+func TestComposedDriver_DeallocateInvalidatesCache(t *testing.T) {
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+	fc := &fakeForgeClient{}
+
+	d, err := newComposedDriver("org", mint, e, fc, "", 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	// Verify that the ensurer cached the key.
+	key := "org/" + name
+	e.mu.Lock()
+	_, cached := e.cache[key]
+	e.mu.Unlock()
+	assert.True(t, cached, "ensurer should cache key after AllocateRepo")
+
+	// Deallocate should invalidate the cache via the forge client path.
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+
+	e.mu.Lock()
+	_, stillCached := e.cache[key]
+	e.mu.Unlock()
+	assert.False(t, stillCached, "ensurer cache should be invalidated after DeallocateRepo")
 }

@@ -83,6 +83,47 @@ func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	assert.Contains(t, err.Error(), "want dummy")
 }
 
+func TestValidatePerRepoPostInstallRefPinned_OK(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallRefPinned(context.Background(), client, org, repo)
+	require.NoError(t, err)
+}
+
+func TestValidatePerRepoPostInstallRefPinned_MissingShim(t *testing.T) {
+	speedUpValidateRetries(t)
+	client := forge.NewFakeClient()
+	err := ValidatePerRepoPostInstallRefPinned(context.Background(), client, "acme", "test-repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fullsend.yaml")
+}
+
+func TestValidatePerRepoPostInstallRefPinned_WrongRuntime(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	cfg, err := config.NewPerRepoConfig(nil, org+"/"+repo).Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallRefPinned(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want dummy")
+}
+
 func TestParseInferenceStatusWIFProvider_OK(t *testing.T) {
 	out := `{
   "status": "healthy",

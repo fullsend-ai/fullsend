@@ -535,6 +535,10 @@ func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string,
 	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
 }
 
+// BehaviourTestOrg is the single org used for behaviour tests with
+// ephemeral per-scenario repos.
+const BehaviourTestOrg = "fullsend-ai-test"
+
 // OrgPool returns the halfsend org names used for parallel e2e runs.
 func OrgPool() []string {
 	return orgPool

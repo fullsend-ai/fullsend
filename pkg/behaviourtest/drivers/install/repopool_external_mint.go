@@ -43,8 +43,17 @@ func NewRepoPoolExternalMint(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(ensCfg, client, token, binary, logf)
-	d, err := newComposedDriver(org, md, ens, poolSize, logf)
+
+	fullsendRef := envFullsendRef()
+	var ens ensurer
+	if fullsendRef != "" {
+		logf("[external-mint] using repos install --fullsend-ref %s", fullsendRef)
+		ens = newRepoEnsurerWithRef(ensCfg, client, token, binary, fullsendRef, logf)
+	} else {
+		ens = newRepoEnsurer(ensCfg, client, token, binary, logf)
+	}
+
+	d, err := newComposedDriver(org, md, ens, client, "", poolSize, logf)
 	if err != nil {
 		return nil, err
 	}

@@ -3,7 +3,7 @@ package install
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"path"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -47,6 +47,39 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 	return nil, lastErr
 }
 
+// ValidatePerRepoPostInstallRefPinned checks that a ref-pinned install
+// (repos install --fullsend-ref) left the expected files and configuration
+// in the target repo. Unlike the vendored validation, it does not check
+// for the vendored binary or marker — ref-pinned installs resolve the
+// binary at runtime via action.yml.
+func ValidatePerRepoPostInstallRefPinned(ctx context.Context, client forge.Client, org, repo string) error {
+	shimPath := ".github/workflows/fullsend.yaml"
+	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
+		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
+	}
+
+	cfgPath := path.Join(".fullsend", "config.yaml")
+	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
+	if err != nil {
+		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
+	}
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
+	}
+	if err := cfgW.Validate(); err != nil {
+		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
+	}
+	cfg, ok := cfgW.(config.PerRepoConfigReader)
+	if !ok {
+		return fmt.Errorf("post-install: %s config does not implement PerRepoConfigReader", cfgPath)
+	}
+	if cfg.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
+	}
+	return nil
+}
+
 // ValidatePerRepoPostInstall checks that a per-repo install left the
 // expected files and configuration in the target repo.
 func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, repo string) error {
@@ -55,7 +88,7 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
 	}
 
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)

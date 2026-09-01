@@ -49,6 +49,13 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) error 
 	return nil
 }
 
+func (f *fakeEnsurer) InvalidateCache(org, repoName string) {
+	key := org + "/" + repoName
+	f.mu.Lock()
+	delete(f.cache, key)
+	f.mu.Unlock()
+}
+
 var _ ensurer = (*fakeEnsurer)(nil)
 
 func TestFakeEnsurer_Succeeds(t *testing.T) {
@@ -397,6 +404,47 @@ func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	assert.Equal(t, "setup", cliCalls[2][1])
 	assert.Contains(t, cliCalls[2], "--inference-project")
 	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
+}
+
+func TestNewRepoEnsurerWithRef_ReturnsNonNil(t *testing.T) {
+	sc := &stubClient{}
+	e := newRepoEnsurerWithRef(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "my-branch", t.Logf)
+	require.NotNil(t, e)
+	var _ ensurer = e
+}
+
+func TestEnsurer_DoEnsure_RefPinned(t *testing.T) {
+	speedUpValidateRetries(t)
+	sc := &stubClient{
+		getRepoErr: forge.ErrNotFound,
+		installed:  false,
+	}
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      sc,
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		fullsendRef: "feature-branch",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if len(args) >= 2 && args[0] == "repos" && args[1] == "install" {
+				sc.installed = true
+			}
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-ref")
+	require.NoError(t, err)
+	require.Len(t, cliCalls, 1)
+	assert.Equal(t, "repos", cliCalls[0][0])
+	assert.Equal(t, "install", cliCalls[0][1])
+	assert.Contains(t, cliCalls[0], "--fullsend-ref")
+	assert.Contains(t, cliCalls[0], "feature-branch")
 }
 
 func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {

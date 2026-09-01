@@ -115,6 +115,13 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 	return result.Token, nil
 }
 
+// TokenForBehaviourOrg returns an API token for the dedicated behaviour
+// test org (fullsend-ai-test). It uses the same token resolution logic
+// as pool org acquisition.
+func TokenForBehaviourOrg(cfg EnvConfig) (string, error) {
+	return tokenForOrg(context.Background(), cfg.internal(), BehaviourTestOrg)
+}
+
 // tokenForOrg returns an API token for operating on a pool org.
 func tokenForOrg(ctx context.Context, cfg envConfig, org string) (string, error) {
 	if cfg.useMint {

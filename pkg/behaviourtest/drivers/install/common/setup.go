@@ -3,6 +3,8 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,6 +37,59 @@ func RunGitHubSetup(
 	logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := runCLI(binary, token, args...); err != nil {
 		return fmt.Errorf("github setup %s: %w", target, err)
+	}
+	return nil
+}
+
+// RunReposInstall runs fullsend repos install with --fullsend-ref for
+// ref-pinned installs. This replaces github setup --vendor for ephemeral
+// repos that resolve the CLI binary at runtime via action.yml.
+func RunReposInstall(
+	binary, token, target, fullsendRef, mintURL, gcpProjectID string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) error {
+	if fullsendRef == "" {
+		return fmt.Errorf("repos install %s: --fullsend-ref is required", target)
+	}
+	// Each install uses an isolated temp manifest so concurrent
+	// allocations don't race on a shared repos.yaml.
+	tmpManifest, err := os.CreateTemp("", "bt-manifest-*.yaml")
+	if err != nil {
+		return fmt.Errorf("repos install %s: creating temp manifest: %w", target, err)
+	}
+	if _, err := tmpManifest.WriteString("version: 1\n"); err != nil {
+		tmpManifest.Close()
+		return fmt.Errorf("repos install %s: writing temp manifest: %w", target, err)
+	}
+	manifestPath := tmpManifest.Name()
+	tmpManifest.Close()
+	defer os.Remove(manifestPath)
+
+	args := []string{
+		"repos", "install", target,
+		"--fullsend-ref", fullsendRef,
+		"--runtime", "dummy",
+		"--direct",
+		"--forge", "github",
+		"-f", filepath.Clean(manifestPath),
+	}
+	if project := strings.TrimSpace(gcpProjectID); project != "" {
+		// Provision the WIF provider before repos install runs — repos install
+		// auto-derives the WIF provider from --inference-project internally,
+		// so only --inference-project is passed (not --inference-wif-provider,
+		// which repos install does not accept).
+		if _, err := ProvisionInference(binary, token, target, project, runCLI, logf); err != nil {
+			return err
+		}
+		args = append(args, "--inference-project", project)
+	}
+	if mintURL != "" {
+		args = append(args, "--mint-url", mintURL)
+	}
+	logf("[install] running fullsend %s", strings.Join(args, " "))
+	if _, err := runCLI(binary, token, args...); err != nil {
+		return fmt.Errorf("repos install %s: %w", target, err)
 	}
 	return nil
 }

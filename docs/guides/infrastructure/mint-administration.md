@@ -76,7 +76,9 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Admin e2e pool orgs:** Enroll `halfsend-NN/test-repo` on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+
+  **Behaviour tests:** Behaviour tests use the `fullsend-ai-test` org with ephemeral `bt-{uuid}-{slot}` repos. Per-repo mint enrollment for these dynamic names is handled via wildcard allowlisting during the CF preview mint deploy — no static enrollment of numbered repo names is needed. See [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver).
 
   An administrator can grant all required roles with a single script:
 

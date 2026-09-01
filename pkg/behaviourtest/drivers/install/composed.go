@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -18,7 +21,12 @@ type composedDriver struct {
 	org     string
 	mint    mintDriver
 	ensurer ensurer
+	client  forge.Client
 	logf    func(string, ...any)
+
+	// keepRepos, when true (E2E_KEEP_REPOS=true), preserves ephemeral
+	// repos after deallocation for post-mortem debugging.
+	keepRepos bool
 
 	// rate, when set, samples the shared installation token's primary
 	// rate-limit budget on every allocation and release, so a suite
@@ -34,27 +42,35 @@ type composedDriver struct {
 }
 
 // newComposedDriver constructs a unified Driver from its constituent
-// parts. It pre-fills the internal pool with repo names in the form
-// "test-repo-01" … "test-repo-NN". The caller (Factory) is responsible
-// for deploying the mint and creating the ensurer before calling this.
+// parts. It pre-fills the internal pool with unique repo names in the
+// form "bt-{uuid4}-{slot}" so concurrent CI runs in the same org never
+// collide. The caller (Factory) is responsible for deploying the mint
+// and creating the ensurer before calling this.
 func newComposedDriver(
 	org string,
 	mint mintDriver,
 	ensurer ensurer,
+	client forge.Client,
+	prefix string,
 	capacity int,
 	logf func(string, ...any),
 ) (Driver, error) {
 	if capacity <= 0 {
 		return nil, fmt.Errorf("composed driver: capacity must be positive, got %d", capacity)
 	}
+	if prefix == "" {
+		prefix = uuid.New().String()[:4]
+	}
 	names := make(chan string, capacity)
 	for i := 1; i <= capacity; i++ {
-		names <- fmt.Sprintf("test-repo-%02d", i)
+		names <- fmt.Sprintf("bt-%s-%02d", prefix, i)
 	}
 	return &composedDriver{
 		org:         org,
 		mint:        mint,
 		ensurer:     ensurer,
+		client:      client,
+		keepRepos:   os.Getenv("E2E_KEEP_REPOS") == "true",
 		logf:        logf,
 		names:       names,
 		capacity:    capacity,
@@ -94,18 +110,45 @@ func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
 }
 
 // DeallocateRepo returns a previously allocated repo to the pool.
-// Errors on unknown name or double-release.
-func (d *composedDriver) DeallocateRepo(_ context.Context, repoName string) error {
+// Unless E2E_KEEP_REPOS=true, the repo is deleted from the forge so
+// concurrent CI runs never collide on stale repos. Errors on unknown
+// name or double-release.
+func (d *composedDriver) DeallocateRepo(ctx context.Context, repoName string) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	if _, ok := d.outstanding[repoName]; !ok {
+		d.mu.Unlock()
 		return fmt.Errorf("DeallocateRepo: %q is not an outstanding lease (possible double-release)", repoName)
 	}
 	delete(d.outstanding, repoName)
-	// Send inside the lock: the channel buffer equals capacity and this
-	// name was removed during AllocateRepo, so the send is guaranteed
-	// non-blocking.
+	d.mu.Unlock()
+
+	// Delete the ephemeral repo BEFORE returning the slot to the pool.
+	// The channel send is what makes the slot available to other
+	// goroutines — delaying it until after deletion completes prevents
+	// a race where a new allocator begins EnsureRepo on a repo that is
+	// still being deleted.
+	if d.keepRepos {
+		d.logf("[driver] keeping %s/%s (E2E_KEEP_REPOS=true)", d.org, repoName)
+	} else if d.client != nil {
+		forkName := repoName + "-fork"
+		d.logf("[driver] deleting ephemeral fork %s/%s (if exists)", d.org, forkName)
+		if err := d.client.DeleteRepo(ctx, d.org, forkName); err != nil && !forge.IsNotFound(err) {
+			d.logf("[driver] warning: failed to delete fork %s/%s: %v", d.org, forkName, err)
+		}
+		d.logf("[driver] deleting ephemeral repo %s/%s", d.org, repoName)
+		if err := d.client.DeleteRepo(ctx, d.org, repoName); err != nil {
+			if !forge.IsNotFound(err) {
+				d.logf("[driver] warning: failed to delete %s/%s: %v", d.org, repoName, err)
+			}
+		}
+	}
+	// Invalidate the ensurer's cache so re-allocation of this slot
+	// triggers a fresh create+install cycle, even when keepRepos is
+	// true (the repo exists but needs a clean install).
+	d.ensurer.InvalidateCache(d.org, repoName)
+
+	// Return the slot to the pool only after deletion is complete.
 	d.names <- repoName
 	d.logf("[driver] deallocated %s/%s", d.org, repoName)
 	d.logRateLimit("after deallocating " + d.org + "/" + repoName)

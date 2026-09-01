@@ -84,7 +84,7 @@ const (
 	// PerRepoAgentArtifact is the upload-artifact name for triage output.
 	PerRepoAgentArtifact = "fullsend-triage"
 
-	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
-	// Drivers use this as the default capacity when no override is set.
+	// DefaultPoolSize is the default number of concurrent ephemeral repo
+	// slots. Drivers use this as the default capacity when no override is set.
 	DefaultPoolSize = 12
 )
