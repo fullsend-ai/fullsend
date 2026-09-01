@@ -1,13 +1,14 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestInjectFrontmatterSkills_ExistingSkillsDedup(t *testing.T) {
+func Test_injectFrontmatterSkills_ExistingSkillsDedup(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: triage
@@ -19,7 +20,7 @@ tools: Bash(gh),Skill
 
 You are the triage agent.
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/skill-a",
 		"/path/to/skill-b", // already present — should be deduplicated
 	})
@@ -27,7 +28,7 @@ You are the triage agent.
 
 	got := string(result)
 	// skill-b must appear exactly once (not duplicated).
-	assert.Equal(t, 1, countOccurrences(got, "skill-b"), "skill-b should appear exactly once")
+	assert.Equal(t, 1, strings.Count(got, "skill-b"), "skill-b should appear exactly once")
 	// skill-a must be added.
 	assert.Contains(t, got, "  - skill-a")
 	// skill-c must be preserved.
@@ -38,7 +39,7 @@ You are the triage agent.
 	assertValidFrontmatter(t, result)
 }
 
-func TestInjectFrontmatterSkills_NoExistingSkills(t *testing.T) {
+func Test_injectFrontmatterSkills_NoExistingSkills(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: code
@@ -47,7 +48,7 @@ model: opus
 
 You are the code agent.
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/skill-a",
 	})
 	require.NoError(t, err)
@@ -60,13 +61,13 @@ You are the code agent.
 	assertValidFrontmatter(t, result)
 }
 
-func TestInjectFrontmatterSkills_NoFrontmatter(t *testing.T) {
+func Test_injectFrontmatterSkills_NoFrontmatter(t *testing.T) {
 	t.Parallel()
 	src := `# Just a prompt
 
 Do things.
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/my-skill",
 	})
 	require.NoError(t, err)
@@ -77,23 +78,23 @@ Do things.
 	assert.Contains(t, got, "Do things.")
 }
 
-func TestInjectFrontmatterSkills_EmptySkillDirs(t *testing.T) {
+func Test_injectFrontmatterSkills_EmptySkillDirs(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
 ---
 Body
 `
-	result, err := InjectFrontmatterSkills([]byte(src), nil)
+	result, err := injectFrontmatterSkills([]byte(src), nil)
 	require.NoError(t, err)
 	assert.Equal(t, src, string(result))
 
-	result, err = InjectFrontmatterSkills([]byte(src), []string{})
+	result, err = injectFrontmatterSkills([]byte(src), []string{})
 	require.NoError(t, err)
 	assert.Equal(t, src, string(result))
 }
 
-func TestInjectFrontmatterSkills_AllAlreadyPresent(t *testing.T) {
+func Test_injectFrontmatterSkills_AllAlreadyPresent(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -103,7 +104,7 @@ skills:
 ---
 Body
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/cache/skill-a",
 		"/cache/skill-b",
 	})
@@ -111,7 +112,7 @@ Body
 	assert.Equal(t, src, string(result), "no change when all skills already present")
 }
 
-func TestInjectFrontmatterSkills_PreservesOtherFrontmatter(t *testing.T) {
+func Test_injectFrontmatterSkills_PreservesOtherFrontmatter(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: review
@@ -127,7 +128,7 @@ disallowedTools: >-
 
 Review the PR.
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/security-review",
 	})
 	require.NoError(t, err)
@@ -143,14 +144,14 @@ Review the PR.
 	assertValidFrontmatter(t, result)
 }
 
-func TestInjectFrontmatterSkills_DeterministicOrder(t *testing.T) {
+func Test_injectFrontmatterSkills_DeterministicOrder(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
 ---
 Body
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/zebra",
 		"/path/to/alpha",
 		"/path/to/middle",
@@ -158,14 +159,14 @@ Body
 	require.NoError(t, err)
 
 	got := string(result)
-	alphaIdx := indexOf(got, "alpha")
-	middleIdx := indexOf(got, "middle")
-	zebraIdx := indexOf(got, "zebra")
+	alphaIdx := strings.Index(got, "alpha")
+	middleIdx := strings.Index(got, "middle")
+	zebraIdx := strings.Index(got, "zebra")
 	assert.True(t, alphaIdx < middleIdx && middleIdx < zebraIdx,
 		"added skills should be sorted alphabetically")
 }
 
-func TestInjectFrontmatterSkills_EmptyStringDirs(t *testing.T) {
+func Test_injectFrontmatterSkills_EmptyStringDirs(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -173,12 +174,12 @@ name: test
 Body
 `
 	// Empty strings in skillDirs should be ignored.
-	result, err := InjectFrontmatterSkills([]byte(src), []string{"", ""})
+	result, err := injectFrontmatterSkills([]byte(src), []string{"", ""})
 	require.NoError(t, err)
 	assert.Equal(t, src, string(result))
 }
 
-func TestInjectFrontmatterSkills_SkillsAfterBody(t *testing.T) {
+func Test_injectFrontmatterSkills_SkillsAfterBody(t *testing.T) {
 	t.Parallel()
 	// The skills: section comes before other fields.
 	src := `---
@@ -189,7 +190,7 @@ model: opus
 ---
 Body text here.
 `
-	result, err := InjectFrontmatterSkills([]byte(src), []string{
+	result, err := injectFrontmatterSkills([]byte(src), []string{
 		"/path/to/new-skill",
 	})
 	require.NoError(t, err)
@@ -202,38 +203,71 @@ Body text here.
 	assertValidFrontmatter(t, result)
 }
 
-func TestInjectFrontmatterSkills_BOM(t *testing.T) {
+func Test_injectFrontmatterSkills_FlowStyleSkills(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [skill-a, skill-b]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{
+		"/path/to/skill-c",
+	})
+	require.NoError(t, err)
+
+	got := string(result)
+	// Existing flow-style skills must be preserved in block form.
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	// New skill must be added.
+	assert.Contains(t, got, "  - skill-c")
+	// Flow-style line must NOT remain.
+	assert.NotContains(t, got, "[skill-a")
+	// Other frontmatter must be preserved.
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func Test_injectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: []\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{
+		"/path/to/skill-a",
+	})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.NotContains(t, got, "[]")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func Test_injectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills:\n  - skill-a\n  # A comment in the middle\n  - skill-b\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{
+		"/path/to/skill-c",
+	})
+	require.NoError(t, err)
+
+	got := string(result)
+	// skill-c must be injected after skill-b (the last list item),
+	// not after skill-a (before the comment).
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.Contains(t, got, "  - skill-c")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	// Comment must be preserved.
+	assert.Contains(t, got, "# A comment")
+	assertValidFrontmatter(t, result)
+}
+
+func Test_injectFrontmatterSkills_BOM(t *testing.T) {
 	t.Parallel()
 	src := "\xef\xbb\xbf---\nname: test\n---\nBody\n"
-	result, err := InjectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "  - skill-a")
 	assert.Contains(t, string(result), "Body")
-}
-
-// countOccurrences returns the number of non-overlapping occurrences of
-// substr in s.
-func countOccurrences(s, substr string) int {
-	count := 0
-	for i := 0; ; {
-		j := indexOf(s[i:], substr)
-		if j < 0 {
-			break
-		}
-		count++
-		i += j + len(substr)
-	}
-	return count
-}
-
-// indexOf returns the index of substr in s, or -1 if not found.
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 // assertValidFrontmatter checks that the result has valid YAML frontmatter

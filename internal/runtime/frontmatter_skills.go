@@ -17,7 +17,7 @@ type frontmatterSkills struct {
 	Skills []string `yaml:"skills,omitempty"`
 }
 
-// InjectFrontmatterSkills adds skill names derived from skillDirs into the
+// injectFrontmatterSkills adds skill names derived from skillDirs into the
 // agent definition's YAML frontmatter `skills:` section. Existing entries
 // are preserved; new names are appended with deduplication by basename.
 // If the agent has no frontmatter, one is created. If skillDirs is empty,
@@ -26,7 +26,7 @@ type frontmatterSkills struct {
 // This ensures harness-listed skills reliably activate: Claude Code loads
 // skills listed in the agent frontmatter without requiring an explicit
 // Skill tool call in the prompt body.
-func InjectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
+func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	if len(skillDirs) == 0 {
 		return data, nil
 	}
@@ -122,14 +122,23 @@ func InjectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 
 	skillsInjected := false
 	inSkillsBlock := false
+	flowStyleSkills := false
 	lastSkillLineIdx := -1
 
 	// Find the skills block boundaries.
 	for i, line := range frontLines {
 		trimmed := strings.TrimSpace(string(line))
-		if trimmed == "skills:" {
-			inSkillsBlock = true
+		if strings.HasPrefix(trimmed, "skills:") {
 			lastSkillLineIdx = i
+			if trimmed == "skills:" {
+				// Block mapping form — list items follow on subsequent lines.
+				inSkillsBlock = true
+			} else {
+				// Flow-style value (e.g. `skills: [a, b]` or `skills: []`).
+				// The YAML parser already captured the values into fm.Skills;
+				// we will rewrite this line as block form in the output loop.
+				flowStyleSkills = true
+			}
 			continue
 		}
 		if inSkillsBlock {
@@ -137,7 +146,11 @@ func InjectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 				lastSkillLineIdx = i
 				continue
 			}
-			// End of skills block (non-list-item, non-blank).
+			// YAML comments are valid inside the skills block.
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			// End of skills block (non-list-item, non-blank, non-comment).
 			if trimmed != "" {
 				inSkillsBlock = false
 			}
@@ -151,8 +164,18 @@ func InjectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		if i == len(frontLines)-1 && len(line) == 0 {
 			continue
 		}
-		result.Write(line)
-		result.WriteByte('\n')
+
+		if i == lastSkillLineIdx && flowStyleSkills {
+			// Replace the flow-style skills line with block form,
+			// expanding existing entries parsed by yaml.Unmarshal.
+			result.WriteString("skills:\n")
+			for _, s := range fm.Skills {
+				fmt.Fprintf(&result, "  - %s\n", s)
+			}
+		} else {
+			result.Write(line)
+			result.WriteByte('\n')
+		}
 
 		if i == lastSkillLineIdx && !skillsInjected {
 			for _, name := range added {
