@@ -133,7 +133,7 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 			// still hits the cap.
 			scanned++
 			if scanned > maxExtensionScanFiles {
-				return fmt.Errorf("extension %q: %w (more than %d); refusing to bootstrap an extension the injection scan cannot cover", extPath, errExtensionScanUnbounded, maxExtensionScanFiles)
+				return fmt.Errorf("plugin %q: %w (more than %d); refusing to bootstrap a plugin the injection scan cannot cover", extPath, errExtensionScanUnbounded, maxExtensionScanFiles)
 			}
 			info, infoErr := d.Info()
 			if infoErr != nil {
@@ -141,7 +141,7 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 			}
 			if info.Size() > maxExtensionScanFileBytes {
 				skippedLarge++
-				fmt.Fprintf(os.Stderr, "WARNING: extension %q: %s is %d bytes, over the %d-byte scan limit — not scanned\n", extPath, rel, info.Size(), maxExtensionScanFileBytes)
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q: %s is %d bytes, over the %d-byte scan limit — not scanned\n", extPath, rel, info.Size(), maxExtensionScanFileBytes)
 				return nil
 			}
 			content, readErr := os.ReadFile(p)
@@ -154,14 +154,14 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 			result := pipeline.Scan(string(content))
 			if security.HasCriticalFindings(result.Findings) {
 				if failClosed {
-					return fmt.Errorf("extension %q: %w in %s", extPath, errExtensionScanBlocked, rel)
+					return fmt.Errorf("plugin %q: %w in %s", extPath, errExtensionScanBlocked, rel)
 				}
-				fmt.Fprintf(os.Stderr, "WARNING: extension %q has critical injection findings in %s (fail_mode: open)\n", extPath, rel)
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", extPath, rel)
 				for _, f := range result.Findings {
 					fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
 				}
 			} else if len(result.Findings) > 0 {
-				fmt.Fprintf(os.Stderr, "WARNING: extension %q has %d injection finding(s) in %s\n", extPath, len(result.Findings), rel)
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", extPath, len(result.Findings), rel)
 				for _, f := range result.Findings {
 					fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
 				}
@@ -170,7 +170,7 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 		})
 	}
 	if skippedLarge > 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: extension %q: %d file(s) skipped by the %d-byte scan limit\n", extPath, skippedLarge, maxExtensionScanFileBytes)
+		fmt.Fprintf(os.Stderr, "WARNING: plugin %q: %d file(s) skipped by the %d-byte scan limit\n", extPath, skippedLarge, maxExtensionScanFileBytes)
 	}
 	if err == nil {
 		return nil
@@ -182,9 +182,9 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 		return err
 	}
 	if failClosed {
-		return fmt.Errorf("cannot scan extension %q: %w", extPath, err)
+		return fmt.Errorf("cannot scan plugin %q: %w", extPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "WARNING: could not scan extension %q: %v\n", extPath, err)
+	fmt.Fprintf(os.Stderr, "WARNING: could not scan plugin %q: %v\n", extPath, err)
 	return nil
 }
 

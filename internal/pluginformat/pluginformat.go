@@ -1,7 +1,8 @@
 // Package pluginformat decides which runtime loads a `plugins:` entry.
 //
 // A plugin directory belongs to one of two families (ADR 0094): a manifest
-// bundle a runtime reads at startup (Claude Code's plugin.json layout), or
+// bundle a runtime reads at startup (a Claude plugin, marked by plugin.json
+// at its root or by Claude Code's own .claude-plugin/plugin.json), or
 // a code module the runtime loads and executes (pi's `-e <dir>`
 // extensions). One harness key lists both, so something has to tell them
 // apart per entry — that is this package.
@@ -23,8 +24,8 @@ import (
 type Kind string
 
 const (
-	// KindClaude is a Claude Code plugin: a directory with plugin.json at
-	// its root, uploaded into the runtime's plugins/ directory.
+	// KindClaude is a Claude Code plugin: a directory carrying one of the
+	// claudeMarkerFiles, uploaded into the runtime's plugins/ directory.
 	KindClaude Kind = "claude"
 	// KindPi is a pi extension: a directory pi's `-e <dir>` loader resolves
 	// an entry point in, uploaded and loaded as code.
@@ -84,6 +85,40 @@ func DetectTree(files map[string][]byte) (Kind, string) {
 		return "", notAKindProblem(problem)
 	}
 	return KindPi, ""
+}
+
+// TreeEntriesProblem walks a plugin directory and reports the first entry
+// no runtime may load — a symlink, a special file, a name the sandbox
+// preflight could not reproduce (ExtensionEntryProblem) — or "" when the
+// tree is clean. The pi detector applies the same rule as part of its
+// own walk; a Claude plugin is claimed by its marker alone, so harness
+// validation calls this for it separately. The rule is one for every
+// kind: the upload would carry a symlink's target into the sandbox, and
+// the injection scan (which refuses the same entries) only runs when
+// security is enabled.
+func TreeEntriesProblem(dir string) (string, error) {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	var problem string
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if p == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return relErr
+		}
+		if problem = ExtensionEntryProblem(filepath.ToSlash(rel), d.Type()); problem != "" {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return problem, err
 }
 
 func notAKindProblem(piProblem string) string {

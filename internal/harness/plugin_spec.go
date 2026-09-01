@@ -14,7 +14,8 @@ import (
 
 // PluginSpec is one `plugins:` entry: a directory a runtime loads (ADR
 // 0094). Which runtime loads it follows from the directory's format, not
-// from the key: a plugin.json bundle is Claude Code's, a directory pi's
+// from the key: a directory with plugin.json at its root or
+// .claude-plugin/plugin.json is Claude Code's, a directory pi's
 // `-e <dir>` loader resolves an entry point in is pi's, and each runtime
 // names and skips the entries of the other format. Two YAML forms:
 //
@@ -359,6 +360,15 @@ func (h *Harness) validatePluginDir(field string, e PluginSpec) error {
 	if kind != pluginformat.KindPi {
 		if len(e.Env) > 0 || e.Pi != nil {
 			return fmt.Errorf("%s: env/pi options apply to plugins the runtime loads as code; %q is a Claude plugin", field, e.Path)
+		}
+		// The pi detector walked the tree already; a Claude plugin is
+		// claimed by its marker, so the no-symlink rule is applied here.
+		problem, err := pluginformat.TreeEntriesProblem(e.Path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if problem != "" {
+			return fmt.Errorf("%s %q: %s", field, e.Path, problem)
 		}
 		return nil
 	}

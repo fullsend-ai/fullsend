@@ -7715,6 +7715,7 @@ base: `+baseURL+`
 	assert.Equal(t, pluginContent, content)
 
 	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit through the legacy key")
+	assert.Equal(t, "https://example.com/plugins/gopls-lsp/", deps[len(deps)-1].URL, "the dependency is recorded under the new directory key")
 	assert.Equal(t, "directory", deps[len(deps)-1].Type)
 }
 

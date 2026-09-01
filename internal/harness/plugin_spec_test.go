@@ -314,6 +314,18 @@ func TestValidateFilesExist_PluginDirRules(t *testing.T) {
 		assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension")
 	})
 
+	// A Claude plugin is claimed by its marker without a tree walk, so the
+	// no-symlink rule has to be applied to it here — the injection scan
+	// that refuses the same entry only runs with security enabled.
+	t.Run("symlink inside a claude plugin", func(t *testing.T) {
+		dir := pluginDir(t, map[string]string{"plugin.json": `{"name":"x"}`})
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "commands"), 0o755))
+		require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(dir, "commands", "go.md")))
+		err := validate(t, PluginSpec{Path: dir})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "commands/go.md")
+	})
+
 	// Validate() cannot compare a URL entry's basename with a local one; by
 	// ValidateFilesExist every entry is a local directory, so two entries
 	// that would upload to the same sandbox name are refused here.

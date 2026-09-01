@@ -82,7 +82,7 @@ func TestScanRuntimeContent_ExtensionCriticalFailClosed(t *testing.T) {
 		plugins:   scanPiPlugin("my-ext", ext),
 	}, true)
 	require.Error(t, err, "a planted injection anywhere in the tree (node_modules included) blocks")
-	assert.Contains(t, err.Error(), `extension "`+ext+`": blocked`)
+	assert.Contains(t, err.Error(), `plugin "`+ext+`": blocked`)
 	assert.Contains(t, err.Error(), "node_modules/dep/helper.js")
 }
 
@@ -99,7 +99,7 @@ func TestScanRuntimeContent_ExtensionCriticalFailOpen(t *testing.T) {
 		}, false)
 		require.NoError(t, err)
 	})
-	assert.Contains(t, output, "WARNING: extension")
+	assert.Contains(t, output, "WARNING: plugin")
 	assert.Contains(t, output, "[critical]")
 }
 
@@ -124,14 +124,14 @@ func TestScanRuntimeContent_ExtensionBenignAndBinarySkipped(t *testing.T) {
 		plugins:   scanPiPlugin("gone", filepath.Join(dir, "gone")),
 	}, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot scan extension")
+	assert.Contains(t, err.Error(), "cannot scan plugin")
 	output = captureStderr(t, func() {
 		assert.NoError(t, scanRuntimeContent(scanBootstrap{
 			agentPath: agentPath,
 			plugins:   scanPiPlugin("gone", filepath.Join(dir, "gone")),
 		}, false))
 	})
-	assert.Contains(t, output, "WARNING: could not scan extension")
+	assert.Contains(t, output, "WARNING: could not scan plugin")
 }
 
 // TestScanRuntimeContent_ExtensionScanBounds covers the two bounds on the
@@ -471,7 +471,7 @@ func TestScanRuntimeContent_ClaudePluginScannedAsTree(t *testing.T) {
 	plugin := filepath.Join(dir, "gopls-lsp")
 	require.NoError(t, os.MkdirAll(plugin, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(plugin, "plugin.json"),
-		[]byte(`{"name":"gopls-lsp","description":"`+criticalInjectionSnippet+`"}`), 0o644))
+		[]byte(`{"name":"gopls-lsp"}`), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(plugin, "commands"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(plugin, "commands", "go.md"),
 		[]byte("# go\n"+criticalInjectionSnippet), 0o644))
@@ -482,4 +482,21 @@ func TestScanRuntimeContent_ClaudePluginScannedAsTree(t *testing.T) {
 	}, true)
 	require.Error(t, err, "a finding anywhere in the tree blocks")
 	assert.ErrorIs(t, err, errExtensionScanBlocked)
+	assert.Contains(t, err.Error(), "commands/go.md", "the nested file, not the benign manifest, is what blocked")
+}
+
+// TestScanRuntimeContent_UnknownKindIsAnError: a kind neither runtime
+// reads must not fall through to some default scan.
+func TestScanRuntimeContent_UnknownKindIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+	plugin := filepath.Join(dir, "p")
+	require.NoError(t, os.MkdirAll(plugin, 0o755))
+	err := scanRuntimeContent(scanBootstrap{
+		agentPath: agentPath,
+		plugins:   []runtime.PluginInput{{Name: "p", Path: plugin, Kind: pluginformat.Kind("opencode")}},
+	}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown format kind")
 }
