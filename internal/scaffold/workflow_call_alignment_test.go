@@ -664,10 +664,13 @@ func TestClosedIssueReadyToCodeDoesNotDispatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := string(tc.content(t))
+			condition := `elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]] && [[ "${ISSUE_STATE}" == "open" ]]; then`
 			assert.Contains(t, s, `ISSUE_STATE: ${{ github.event.issue.state }}`,
 				"route step must read issue state from the triggering event")
-			assert.Regexp(t, `(?s)TRIGGERING_LABEL\}" == "ready-to-code".*ISSUE_STATE\}" == "open".*STAGE="code"`, s,
-				"ready-to-code must route only when the event reports an open issue")
+			assert.Contains(t, s, condition,
+				"ready-to-code must require an open issue in the same conditional")
+			assert.Regexp(t, regexp.QuoteMeta(condition)+`\n\s+#[^\n]*\n\s+if [^\n]+; then\n\s+STAGE="code"\n\s+fi`, s,
+				"STAGE=code must remain inside the guarded ready-to-code branch")
 		})
 	}
 }
