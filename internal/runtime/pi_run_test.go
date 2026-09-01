@@ -623,6 +623,7 @@ func TestValidatePiModel_MissingMapping(t *testing.T) {
 	const alias = "fable"
 	id, ok := piModelAliases[alias]
 	require.True(t, ok, "test fixture assumes %q starts mapped", alias)
+	// Mutates the package-level map; this test must NOT be t.Parallel().
 	delete(piModelAliases, alias)
 	t.Cleanup(func() { piModelAliases[alias] = id })
 
