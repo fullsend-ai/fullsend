@@ -416,6 +416,24 @@ if [[ -n "${GREETING}" && "${STATUS}" == "complete" ]]; then
 fi
 ```
 
+### Handling behavioral exits
+
+When the agent hits a behavioral limit (turn limit or cost limit), the
+harness sets `FULLSEND_AGENT_EXIT_REASON` to the error subtype before
+running the post-script. Known subtypes: `error_max_turns`, `error_max_cost`.
+Check this variable to distinguish "agent chose not to change anything" from
+"agent was interrupted mid-work":
+
+```bash
+if [[ -n "${FULLSEND_AGENT_EXIT_REASON:-}" ]]; then
+  echo "Agent was interrupted: ${FULLSEND_AGENT_EXIT_REASON}"
+  # Handle partial work — e.g., post a comment explaining the interruption
+fi
+```
+
+Unlike API or infrastructure errors (which skip the post-script entirely),
+behavioral exits still run the post-script so it can report accurately.
+
 ### Post-script security considerations
 
 The post-script runs on the trusted runner with full credentials, but reads output produced by the untrusted sandbox. Treat agent output as untrusted input:

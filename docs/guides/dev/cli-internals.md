@@ -523,6 +523,18 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                   │ yet (tracked in fullsend-ai/agents#411)  │
 │  │                   │ — they still scan for the last iteration │
 │  │                   │ blindly.                                 │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_REASON is set when   │
+│  │                   │ the agent hit a behavioral limit rather  │
+│  │                   │ than crashing or succeeding. Known       │
+│  │                   │ subtypes: error_max_turns (turn limit),  │
+│  │                   │ error_max_cost (cost limit). Unlike API/ │
+│  │                   │ infrastructure errors (which skip the    │
+│  │                   │ post-script entirely), behavioral exits  │
+│  │                   │ still run the post-script so it can      │
+│  │                   │ report accurately instead of emitting a  │
+│  │                   │ misleading "no changes needed" message.  │
+│  │                   │ See #6877.                               │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

@@ -2985,18 +2985,19 @@ func TestAgentTimedOut(t *testing.T) {
 func TestIsBehavioralExitSubtype(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		name    string
 		subtype string
 		want    bool
 	}{
-		{"error_max_turns", true},
-		{"error_max_cost", true},
-		{"success", false},
-		{"error_unknown", false},
-		{"", false},
-		{"error_max_turns_extra", false},
+		{"max turns", "error_max_turns", true},
+		{"max cost", "error_max_cost", true},
+		{"success", "success", false},
+		{"unknown error", "error_unknown", false},
+		{"empty string", "", false},
+		{"partial match suffix", "error_max_turns_extra", false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.subtype, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := isBehavioralExitSubtype(tt.subtype)
 			assert.Equal(t, tt.want, got, "isBehavioralExitSubtype(%q)", tt.subtype)
