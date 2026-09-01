@@ -78,7 +78,7 @@ runtime-specific options. Five rules govern it.
    directory is a Claude plugin. Each runtime loads the entries of its own
    kind and *names and skips* the rest, so switching runtime never silently
    drops a plugin.
-2. **Harness-repo content only.** A plugin has the same trust as `skills:`
+2. **Sourced like `skills:`.** A plugin has the same trust as `skills:`
    and `scripts:`: a path in the harness repository or a forge tree URL
    pinned with `#sha256=`, org-allowlisted, content-addressed, injection
    scanned. `npm:`/`git:`/`ssh:` sources and `..` segments are rejected at
