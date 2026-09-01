@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_injectFrontmatterSkills_ExistingSkillsDedup(t *testing.T) {
+func TestInjectFrontmatterSkills_ExistingSkillsDedup(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: triage
@@ -39,7 +39,7 @@ You are the triage agent.
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_NoExistingSkills(t *testing.T) {
+func TestInjectFrontmatterSkills_NoExistingSkills(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: code
@@ -61,7 +61,7 @@ You are the code agent.
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_NoFrontmatter(t *testing.T) {
+func TestInjectFrontmatterSkills_NoFrontmatter(t *testing.T) {
 	t.Parallel()
 	src := `# Just a prompt
 
@@ -78,7 +78,7 @@ Do things.
 	assert.Contains(t, got, "Do things.")
 }
 
-func Test_injectFrontmatterSkills_EmptySkillDirs(t *testing.T) {
+func TestInjectFrontmatterSkills_EmptySkillDirs(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -94,7 +94,7 @@ Body
 	assert.Equal(t, src, string(result))
 }
 
-func Test_injectFrontmatterSkills_AllAlreadyPresent(t *testing.T) {
+func TestInjectFrontmatterSkills_AllAlreadyPresent(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -112,7 +112,7 @@ Body
 	assert.Equal(t, src, string(result), "no change when all skills already present")
 }
 
-func Test_injectFrontmatterSkills_PreservesOtherFrontmatter(t *testing.T) {
+func TestInjectFrontmatterSkills_PreservesOtherFrontmatter(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: review
@@ -144,7 +144,7 @@ Review the PR.
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_DeterministicOrder(t *testing.T) {
+func TestInjectFrontmatterSkills_DeterministicOrder(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -166,7 +166,7 @@ Body
 		"added skills should be sorted alphabetically")
 }
 
-func Test_injectFrontmatterSkills_EmptyStringDirs(t *testing.T) {
+func TestInjectFrontmatterSkills_EmptyStringDirs(t *testing.T) {
 	t.Parallel()
 	src := `---
 name: test
@@ -179,7 +179,7 @@ Body
 	assert.Equal(t, src, string(result))
 }
 
-func Test_injectFrontmatterSkills_SkillsAfterBody(t *testing.T) {
+func TestInjectFrontmatterSkills_SkillsAfterBody(t *testing.T) {
 	t.Parallel()
 	// The skills: section comes before other fields.
 	src := `---
@@ -203,7 +203,7 @@ Body text here.
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_FlowStyleSkills(t *testing.T) {
+func TestInjectFrontmatterSkills_FlowStyleSkills(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills: [skill-a, skill-b]\nmodel: opus\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{
@@ -225,7 +225,7 @@ func Test_injectFrontmatterSkills_FlowStyleSkills(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
+func TestInjectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills: []\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{
@@ -240,7 +240,7 @@ func Test_injectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
+func TestInjectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills:\n  - skill-a\n  # A comment in the middle\n  - skill-b\nmodel: opus\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{
@@ -261,13 +261,28 @@ func Test_injectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
-func Test_injectFrontmatterSkills_BOM(t *testing.T) {
+func TestInjectFrontmatterSkills_BOM(t *testing.T) {
 	t.Parallel()
 	src := "\xef\xbb\xbf---\nname: test\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "  - skill-a")
 	assert.Contains(t, string(result), "Body")
+}
+
+func TestInjectFrontmatterSkills_NoFrontmatterDedup(t *testing.T) {
+	t.Parallel()
+	src := "# Just a prompt\n"
+	// Two skill dirs with the same basename — should produce one entry.
+	result, err := injectFrontmatterSkills([]byte(src), []string{
+		"/a/skill-x",
+		"/b/skill-x",
+	})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Equal(t, 1, strings.Count(got, "skill-x"), "duplicate basenames should be deduplicated")
+	assert.Contains(t, got, "# Just a prompt")
 }
 
 // assertValidFrontmatter checks that the result has valid YAML frontmatter
