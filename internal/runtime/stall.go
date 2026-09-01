@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +24,16 @@ const (
 	stallPollDivisor = 20
 	stallMaxPoll     = 30 * time.Second
 	stallMinPoll     = time.Millisecond
+)
+
+// Watchdog lifecycle. stop() and the fire branch in watch() both attempt
+// watchdogArmed -> {watchdogStopped,watchdogFired} via CompareAndSwap: exactly
+// one wins, so a tick that loses the race to a concurrent stop() can never
+// fire, and a stop() that loses the race to a firing tick can never suppress it.
+const (
+	watchdogArmed int32 = iota
+	watchdogStopped
+	watchdogFired
 )
 
 // stallWatchdog terminates a run whose runtime event stream has gone quiet.
@@ -47,10 +56,13 @@ type stallWatchdog struct {
 	warnW   io.Writer
 	isCI    bool
 
-	lastEvent atomic.Int64 // UnixNano of the most recent event
-	fired     atomic.Bool
+	// start anchors lastEvent and every silence calculation to time.Since,
+	// which is monotonic — unlike time.Now().UnixNano() reconstructed via
+	// time.Unix, a wall-clock step (NTP, DST, manual) can't perturb it.
+	start     time.Time
+	lastEvent atomic.Int64 // time.Since(start) as of the most recent event
+	state     atomic.Int32 // watchdogArmed | watchdogStopped | watchdogFired
 	stopped   chan struct{}
-	stopOnce  sync.Once
 }
 
 // startStallWatchdog arms a watchdog that calls kill after timeout of event
@@ -72,9 +84,9 @@ func startStallWatchdogTo(annotations io.Writer, timeout time.Duration, printer 
 		printer: printer,
 		warnW:   annotations,
 		isCI:    os.Getenv("GITHUB_ACTIONS") == "true",
+		start:   time.Now(),
 		stopped: make(chan struct{}),
 	}
-	w.lastEvent.Store(time.Now().UnixNano())
 	go w.watch()
 	return w
 }
@@ -84,7 +96,7 @@ func (w *stallWatchdog) note() {
 	if w == nil {
 		return
 	}
-	w.lastEvent.Store(time.Now().UnixNano())
+	w.lastEvent.Store(int64(time.Since(w.start)))
 }
 
 // stop disarms the watchdog. Safe to call more than once, and safe after the
@@ -93,13 +105,15 @@ func (w *stallWatchdog) stop() {
 	if w == nil {
 		return
 	}
-	w.stopOnce.Do(func() { close(w.stopped) })
+	if w.state.CompareAndSwap(watchdogArmed, watchdogStopped) {
+		close(w.stopped)
+	}
 }
 
 // stalledErr returns a non-nil error wrapping ErrStalled when the watchdog
 // killed the run, and nil otherwise.
 func (w *stallWatchdog) stalledErr() error {
-	if w == nil || !w.fired.Load() {
+	if w == nil || w.state.Load() != watchdogFired {
 		return nil
 	}
 	return fmt.Errorf("%w: no runtime events for %s (FULLSEND_STALL_TIMEOUT)", ErrStalled, w.timeout)
@@ -118,20 +132,23 @@ func (w *stallWatchdog) watch() {
 
 	// The lastEvent value a warning was already emitted for. Comparing
 	// against it (rather than a bool) rearms the warning as soon as an event
-	// arrives, so each stall episode warns exactly once.
-	var warnedFor int64
+	// arrives, so each stall episode warns exactly once. -1 is a sentinel:
+	// lastEvent is always >= 0 (elapsed since start), so it can never collide
+	// with "no warning issued yet" the way a zero-initialized value would.
+	var warnedFor int64 = -1
 
 	for {
 		select {
 		case <-w.stopped:
 			return
-		case now := <-ticker.C:
+		case <-ticker.C:
 			last := w.lastEvent.Load()
-			silence := now.Sub(time.Unix(0, last))
+			silence := time.Since(w.start) - time.Duration(last)
 			switch {
 			case silence >= w.timeout:
-				w.fired.Store(true)
-				w.kill()
+				if w.state.CompareAndSwap(watchdogArmed, watchdogFired) {
+					w.kill()
+				}
 				return
 			case silence >= w.timeout/2 && warnedFor != last:
 				warnedFor = last
