@@ -751,7 +751,7 @@ providers' and sandbox tooling's families (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GO
 extension's own settings are untouched by any of it.
 
 **Other runtimes** name and skip each entry
-(`Extension "<name>": skipped — the <runtime> runtime has no pi extensions (see docs/runtimes.md)`)
+(`Plugin "<name>": skipped — the <runtime> runtime does not load pi extensions (see docs/runtimes.md)`)
 rather than dropping the list silently, the mirror of pi's `plugins:` warning.
 
 ### Claude-on-Vertex via an interim extension

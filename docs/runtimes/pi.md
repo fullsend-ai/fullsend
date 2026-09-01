@@ -193,8 +193,7 @@ What a local pi run needs, beyond the guide:
 ## Plugins (pi extensions)
 
 pi's tool surface grows through extensions — JavaScript/TypeScript modules pi loads with `-e`. A
-harness ships its own under the same `plugins:` key Claude Code plugins use: a list of directories,
-each loaded by whichever runtime reads its format
+harness ships its own under the same `plugins:` key Claude Code plugins use
 ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)).
 
 ```yaml
@@ -212,10 +211,6 @@ That is the whole configuration: no manifest file, no tool-mapping table, no all
 An extension is harness-repo content with the same trust as `scripts:` and `skills:` —
 org-allowlisted URL base, content-addressed fetch, injection scan of every text file. Nothing is
 ever picked up from the target repository.
-
-An entry in the Claude Code format (a `plugin.json` bundle) is not something pi can load, so pi
-names it and skips it rather than failing the run — the same list can therefore serve both
-runtimes.
 
 ### What makes a valid extension directory
 
@@ -255,9 +250,7 @@ it is rejected rather than passed on.
 
 `env` is for the extension's own settings — `FFF_MULTIGREP`, `GO_DIAG_LEVEL`. Names belonging to the
 runtime, an interpreter, a proxy or a credential are refused; the deny-list is in
-[Harness Field Reference § `plugins`](../reference/harness-reference.md#field-details). Both keys
-only apply to an entry a runtime loads as code: on a Claude plugin they are a validation error, so
-nothing is dropped in silence.
+[Harness Field Reference § `plugins`](../reference/harness-reference.md#field-details).
 
 ### Extension tools and `tools:`
 
@@ -281,12 +274,6 @@ from the extension runs — so an extension must not write into its own director
 workspace or `/tmp`. First use of each extension tool is logged as
 `[fullsend-hooks] extension tool: <name>`, and the `session_start` roster line ends with
 `extensions=<names>`.
-
-On the Claude Code runtime the entry is named and skipped
-(`Plugin "<name>": skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)`)
-and the run continues; the dummy runtime prints a line of its own. In the other direction, a
-`plugin.json` entry under pi is skipped with
-`Plugin "<name>": skipped — pi does not support Claude plugins (see docs/runtimes.md)`.
 
 ### Troubleshooting plugins
 
