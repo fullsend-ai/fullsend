@@ -59,6 +59,30 @@ func (p PluginSpec) Name() string {
 	return filepath.Base(p.Path)
 }
 
+// SameOptions reports whether two entries carry the same env and pi
+// options, treating an absent map, block or args list as equal to an empty
+// one — `env: {}` and no `env:` mean the same thing to every runtime.
+func (p PluginSpec) SameOptions(o PluginSpec) bool {
+	if len(p.Env) != len(o.Env) {
+		return false
+	}
+	for k, v := range p.Env {
+		if ov, ok := o.Env[k]; !ok || ov != v {
+			return false
+		}
+	}
+	a, b := p.PiArgs(), o.PiArgs()
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // PiArgs is the entry's pi args, or nil when it carries no pi: block.
 func (p PluginSpec) PiArgs() []string {
 	if p.Pi == nil {

@@ -40,11 +40,6 @@ const (
 // plugin any runtime here would load.
 var claudeMarkerFiles = []string{"plugin.json", ".claude-plugin/plugin.json"}
 
-// ClaudeMarkerFiles returns the marker paths, relative to the plugin
-// directory, that make it a Claude plugin — the files the injection scan
-// reads for that kind.
-func ClaudeMarkerFiles() []string { return append([]string(nil), claudeMarkerFiles...) }
-
 // Detect reports the kind of a local plugin directory. The second return is
 // empty on success and, when no family claims the directory, says why —
 // both halves of the verdict, so the harness author does not have to guess
@@ -57,9 +52,11 @@ func ClaudeMarkerFiles() []string { return append([]string(nil), claudeMarkerFil
 // server ships a package.json whose "main" resolves, which would otherwise
 // make it look like a pi extension as well.
 func Detect(dir string) (Kind, string, error) {
+	// Lstat, not Stat: a marker that is itself a symlink is an entry the
+	// scan and the upload rules refuse, so it must not claim the directory.
 	for _, marker := range claudeMarkerFiles {
-		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(marker)))
-		if err == nil && !info.IsDir() {
+		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(marker)))
+		if err == nil && info.Mode().IsRegular() {
 			return KindClaude, "", nil
 		}
 	}

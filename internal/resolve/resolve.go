@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -394,7 +393,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	for i, p := range h.Plugins {
 		if prev, ok := seen[p.Path]; ok {
 			kept := deduped[prev]
-			if !reflect.DeepEqual(kept.Env, p.Env) || !reflect.DeepEqual(kept.Pi, p.Pi) {
+			if !kept.SameOptions(p) {
 				return ResolveResult{}, fmt.Errorf("plugins[%d]: resolves to the same directory as an earlier entry (%s) but with different env/pi options; merge them into one entry", i, p.Path)
 			}
 			continue

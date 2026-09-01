@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -292,6 +291,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					printer.StepInfo(fmt.Sprintf("Forge variant %q has no remote dependencies", platform))
 				}
 			}
+			// Base-composed plugins are already local here; hold them to
+			// the same on-disk checks fullsend run applies.
+			if err := h.ValidatePluginDirs(); err != nil {
+				printer.StepFail("Plugin validation failed")
+				return nil, err
+			}
 			continue
 		}
 
@@ -335,14 +340,6 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepFail("Resolution failed")
 			return nil, fmt.Errorf("resolving remote resources: %w", resolveErr)
 		}
-		// URL plugins are only format-checked once fetched; run the same
-		// on-disk plugin checks fullsend run applies so a lock never
-		// records an entry run would refuse.
-		if err := h.ValidatePluginDirs(); err != nil {
-			printer.StepFail("Plugin validation failed")
-			return nil, err
-		}
-
 		for _, dep := range result.Deps {
 			if dep.Warning != "" {
 				printer.StepWarn(dep.Warning)
@@ -354,6 +351,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 
 		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(result.Deps)))
+
+		// URL plugins are only format-checked once fetched; run the same
+		// on-disk plugin checks fullsend run applies so a lock never
+		// records an entry run would refuse.
+		if err := h.ValidatePluginDirs(); err != nil {
+			printer.StepFail("Plugin validation failed")
+			return nil, err
+		}
 	}
 
 	if len(allDeps) == 0 {
@@ -1068,15 +1073,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	deduped := h.Plugins[:0]
 	for _, p := range h.Plugins {
 		if prev, ok := seen[p.Path]; ok {
-			if kept := deduped[prev]; !reflect.DeepEqual(kept.Env, p.Env) || !reflect.DeepEqual(kept.Pi, p.Pi) {
+			if kept := deduped[prev]; !kept.SameOptions(p) {
 				fmt.Fprintf(os.Stderr, "WARNING: plugin %q is listed twice with different env/pi options; keeping the first entry\n", p.Path)
 			}
 			continue
 		}
-		{
-			seen[p.Path] = len(deduped)
-			deduped = append(deduped, p)
-		}
+		seen[p.Path] = len(deduped)
+		deduped = append(deduped, p)
 	}
 	h.Plugins = deduped
 	for _, p := range h.Plugins {

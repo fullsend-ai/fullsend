@@ -1769,6 +1769,32 @@ func TestResolveHarness_PluginNonForgeURLRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "supported forge")
 }
 
+// TestResolveHarness_SameTreeDifferentOptions: two entries that resolve to
+// one directory are deduped only when their env/pi options agree; a
+// differing pair is an error rather than a silent drop of the second's
+// options. An absent env and an empty one are the same options.
+func TestResolveHarness_SameTreeDifferentOptions(t *testing.T) {
+	dir := t.TempDir()
+	plugin := filepath.Join(dir, "ext")
+	require.NoError(t, os.MkdirAll(plugin, 0o755))
+
+	same := &harness.Harness{Agent: "agents/test.md", Role: "test", Plugins: []harness.PluginSpec{
+		{Path: plugin, Env: map[string]string{}},
+		{Path: plugin},
+	}}
+	_, err := ResolveHarness(context.Background(), same, ResolveOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Len(t, same.Plugins, 1, "identical options dedupe to one entry")
+
+	differ := &harness.Harness{Agent: "agents/test.md", Role: "test", Plugins: []harness.PluginSpec{
+		{Path: plugin},
+		{Path: plugin, Pi: &harness.PiPluginOptions{Args: []string{"--x"}}},
+	}}
+	_, err = ResolveHarness(context.Background(), differ, ResolveOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different env/pi options")
+}
+
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
 	h := &harness.Harness{
 		Agent:     "agents/test.md",

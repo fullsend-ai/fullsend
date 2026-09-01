@@ -15,8 +15,8 @@ import (
 var skillMarkerNames = [...]string{"SKILL.md", "skill.md", "Skill.md"}
 
 // scanRuntimeContent runs InputPipeline on the agent definition, SKILL.md
-// files, the JSON of each declared Claude plugin, and every text file of
-// each declared pi extension.
+// files, and every text file of each declared plugin, whichever runtime
+// loads it.
 func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 	agentPath := input.AgentPath()
 	if agentPath == "" {
@@ -38,24 +38,17 @@ func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 		}
 	}
 
-	// Each format is scanned the way its runtime reads it: a Claude plugin
-	// through its manifest files, a pi extension through its whole tree,
-	// which is code the runtime executes.
+	// Both kinds are scanned as a whole tree: a pi extension is code the
+	// runtime executes, and a Claude plugin carries prompt content all over
+	// it (commands/, agents/, skills/, hooks/, .mcp.json, the manifest).
 	for _, plugin := range input.Plugins() {
 		if plugin.Path == "" {
 			continue
 		}
 		var err error
 		switch plugin.Kind {
-		case pluginformat.KindPi:
-			err = scanPluginTree(pipeline, plugin.Path, failClosed, true)
-		case pluginformat.KindClaude:
-			// Claude Code reads prompt-bearing content from all over the
-			// tree (commands/, agents/, skills/, hooks/, .mcp.json, the
-			// manifest), so the whole tree is scanned; a symlink is
-			// skipped rather than refused, since no run-time preflight
-			// re-hashes a Claude plugin.
-			err = scanPluginTree(pipeline, plugin.Path, failClosed, false)
+		case pluginformat.KindPi, pluginformat.KindClaude:
+			err = scanPluginTree(pipeline, plugin.Path, failClosed)
 		default:
 			err = fmt.Errorf("plugin %q: unknown format kind %q", plugin.Path, plugin.Kind)
 		}
@@ -102,18 +95,16 @@ var errExtensionScanUnbounded = errors.New("too many files to scan")
 // downgrade: the Run-time preflight would fail the same tree closed.
 var errExtensionScanRefused = errors.New("refused: inadmissible entry")
 
-// (the pi extension scan)
-// directory (node_modules included — vendored dependencies are code the
-// model's tools will run). Binary files are skipped by a cheap NUL-byte
-// probe, oversized ones by maxExtensionScanFileBytes; the scan is
-// heuristic, so breadth matters more than precision, and a finding in
-// third-party JavaScript or prose is as likely to be a false positive as a
-// real one (see docs/runtimes/pi.md).
-// scanPluginTree scans every regular text file under a plugin directory.
-// refuseSpecial is the pi rule: a symlink or special file is a refusal
-// (the run-time preflight would reject the tree anyway); for a Claude
-// plugin such entries are skipped instead.
-func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool, refuseSpecial bool) error {
+// scanPluginTree scans every regular text file under a plugin directory
+// (node_modules included — vendored dependencies are code the model's
+// tools will run). Binary files are skipped by a cheap NUL-byte probe,
+// oversized ones by maxExtensionScanFileBytes; the scan is heuristic, so
+// breadth matters more than precision, and a finding in third-party
+// JavaScript or prose is as likely to be a false positive as a real one
+// (see docs/runtimes/pi.md). A symlink or special file is a refusal for
+// every kind: the scan can only vouch for what it read, and the upload
+// would carry the symlink's target into the sandbox unscanned.
+func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool) error {
 	var scanned, skippedLarge int
 	root, err := filepath.EvalSymlinks(extPath)
 	if err == nil {
@@ -129,18 +120,11 @@ func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool
 			if p == root {
 				return nil
 			}
-			// Same rule as harness validation and the tree hash: a symlink
+			// Same rule as harness validation and pi's tree hash: a symlink
 			// or a special file is a refusal, not something to walk past.
-			// Skipping it silently here would let a tree the Run-time
-			// preflight rejects sail through bootstrap unscanned.
+			// Skipping it silently would upload content the scan never read.
 			if problem := pluginformat.ExtensionEntryProblem(rel, d.Type()); problem != "" {
-				if !refuseSpecial {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				return fmt.Errorf("extension %q: %w: %s", extPath, errExtensionScanRefused, problem)
+				return fmt.Errorf("plugin %q: %w: %s", extPath, errExtensionScanRefused, problem)
 			}
 			if d.IsDir() {
 				return nil
@@ -268,31 +252,6 @@ func scanSkillDir(pipeline *security.Pipeline, skillPath string, failClosed bool
 		fmt.Fprintf(os.Stderr, "WARNING: skill %q has %d non-critical injection finding(s) — not blocked (only critical findings block); uploading\n", skillPath, len(result.Findings))
 		for _, f := range result.Findings {
 			fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-		}
-	}
-	return nil
-}
-
-func scanPluginDir(pipeline *security.Pipeline, pluginPath string, failClosed bool) error {
-	for _, name := range []string{"plugin.json", ".lsp.json"} {
-		content, err := os.ReadFile(filepath.Join(pluginPath, name))
-		if err != nil {
-			continue
-		}
-		result := pipeline.Scan(string(content))
-		if security.HasCriticalFindings(result.Findings) {
-			if failClosed {
-				return fmt.Errorf("plugin %q blocked: critical injection findings in %s", pluginPath, name)
-			}
-			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", pluginPath, name)
-			for _, f := range result.Findings {
-				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-			}
-		} else if len(result.Findings) > 0 {
-			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", pluginPath, len(result.Findings), name)
-			for _, f := range result.Findings {
-				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-			}
 		}
 	}
 	return nil
