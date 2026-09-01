@@ -11,10 +11,12 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 - **Schema:** [`normalized-event.schema.json`](normalized-event.schema.json)
 - **CEL context:** harness `trigger` expressions receive a single root variable
   `event` bound to a `NormalizedEvent` object.
-- **Authorization:** `fullsend dispatch` enforces
-  [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
-  as a platform-level gate after normalization and **before** CEL evaluation.
-  Harness `trigger` expressions express routing only, not permission policy.
+- **Authorization:** `fullsend dispatch` enforces the
+  [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
+  after normalization and **before** CEL evaluation. Harness `trigger`
+  expressions express routing only, not permission policy. The historical
+  decision is recorded in
+  [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
 ## Scope (v1)
 
