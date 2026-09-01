@@ -48,15 +48,15 @@ var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",
 	"haiku":  "claude-haiku-4-5",
-	"fable":  "claude-fable-5",
+	"fable":  "claude-fable-5-1",
 }
 
-// piDocumentedAliases lists the aliases documented in docs/runtimes/claude.md
-// and docs/runtimes.md that Claude Code resolves natively. Any alias in this
-// set must have an entry in piModelAliases; one that does not is a missing-
-// mapping bug — the bare alias is not a pi catalog id and will silently
-// substitute a fallback model with the wrong wire id.
-var piDocumentedAliases = []string{"opus", "sonnet", "haiku", "fable"}
+// piDocumentedAliases lists the aliases pi resolves through docs/runtimes/pi.md
+// (and docs/runtimes.md). Any alias in this set must have an entry in
+// piModelAliases; one that does not is a missing-mapping bug — the bare
+// alias is not a pi catalog id and will silently substitute a fallback
+// model with the wrong wire id.
+var piDocumentedAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
 
 // validatePiModel returns an error if model is a documented alias that has
 // no entry in piModelAliases. Bare ids and provider/id specs pass through
@@ -70,12 +70,9 @@ func validatePiModel(model string) error {
 	if strings.Contains(model, "/") {
 		return nil
 	}
-	for _, alias := range piDocumentedAliases {
-		if model == alias {
-			if _, ok := piModelAliases[model]; !ok {
-				return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project", model)
-			}
-			return nil
+	if piDocumentedAliases[model] {
+		if _, ok := piModelAliases[model]; !ok {
+			return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project", model)
 		}
 	}
 	return nil

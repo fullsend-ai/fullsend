@@ -24,7 +24,7 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus"))
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet"))
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", translatePiModel("haiku"))
-	assert.Equal(t, "anthropic-vertex/claude-fable-5", translatePiModel("fable"))
+	assert.Equal(t, "anthropic-vertex/claude-fable-5-1", translatePiModel("fable"))
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel(""), "empty falls back to the opus alias")
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "bare ids get the provider prefix")
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6"), "provider/id passes through")
@@ -586,7 +586,7 @@ func TestPiThinkingFor_DefaultAndUnknown(t *testing.T) {
 // locally rather than in a live run where pi silently substitutes a fallback.
 func TestPiModelAliases_CoversDocumentedAliases(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
-	for _, alias := range piDocumentedAliases {
+	for alias := range piDocumentedAliases {
 		t.Run(alias, func(t *testing.T) {
 			id, ok := piModelAliases[alias]
 			require.True(t, ok, "documented alias %q missing from piModelAliases", alias)
@@ -602,7 +602,7 @@ func TestPiModelAliases_CoversDocumentedAliases(t *testing.T) {
 func TestValidatePiModel(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	// All documented aliases pass validation (they are in piModelAliases).
-	for _, alias := range piDocumentedAliases {
+	for alias := range piDocumentedAliases {
 		assert.NoError(t, validatePiModel(alias), "documented alias %q should pass validation", alias)
 	}
 	// Empty model (defaults to piDefaultModel) passes.
@@ -612,6 +612,24 @@ func TestValidatePiModel(t *testing.T) {
 	// Provider/id specs pass without alias checking.
 	assert.NoError(t, validatePiModel("anthropic/claude-sonnet-4-6"))
 	assert.NoError(t, validatePiModel("xai/grok-4.6"))
+}
+
+// TestValidatePiModel_MissingMapping exercises the actual failure the guard
+// exists to catch: a documented alias with no piModelAliases entry. It
+// mutates the package-level map rather than relying on a real gap, so the
+// test stays valid even after every current alias is mapped.
+func TestValidatePiModel_MissingMapping(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	const alias = "fable"
+	id, ok := piModelAliases[alias]
+	require.True(t, ok, "test fixture assumes %q starts mapped", alias)
+	delete(piModelAliases, alias)
+	t.Cleanup(func() { piModelAliases[alias] = id })
+
+	err := validatePiModel(alias)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), alias)
+	assert.Contains(t, err.Error(), "documented but has no pi mapping")
 }
 
 func TestBuildPiRunCommand_HonoursPromptOverride(t *testing.T) {
