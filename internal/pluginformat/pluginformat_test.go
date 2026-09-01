@@ -18,7 +18,13 @@ func TestDetect_ClaudeMarkerWins(t *testing.T) {
 	t.Parallel()
 
 	for name, files := range map[string]map[string]string{
-		"plugin.json only":         {"plugin.json": `{"name":"x"}`},
+		"plugin.json only":     {"plugin.json": `{"name":"x"}`},
+		"claude code manifest": {".claude-plugin/plugin.json": `{"name":"x"}`, ".lsp.json": `{}`},
+		"claude manifest beside a node server": {
+			".claude-plugin/plugin.json": `{"name":"x"}`,
+			"package.json":               `{"main":"server/index.js"}`,
+			"server/index.js":            "//",
+		},
 		"plugin.json beside index": {"plugin.json": `{"name":"x"}`, "index.js": "//"},
 		"bundled node mcp server": {
 			"plugin.json":       `{"name":"x"}`,
@@ -57,6 +63,13 @@ func TestDetectTree(t *testing.T) {
 	assert.Equal(t, KindClaude, claude)
 	assert.Empty(t, problem)
 
+	claude2, problem := DetectTree(map[string][]byte{
+		".claude-plugin/plugin.json": []byte(`{"name":"x"}`),
+		"index.js":                   []byte("//"),
+	})
+	assert.Equal(t, KindClaude, claude2, "Claude Code's own manifest path is a marker too")
+	assert.Empty(t, problem)
+
 	pi, problem := DetectTree(map[string][]byte{"index.js": []byte("//")})
 	assert.Equal(t, KindPi, pi)
 	assert.Empty(t, problem)
@@ -64,7 +77,7 @@ func TestDetectTree(t *testing.T) {
 	none, problem := DetectTree(map[string][]byte{"README.md": []byte("#")})
 	assert.Empty(t, string(none))
 	assert.Equal(t,
-		`not a Claude plugin (no plugin.json) and not a pi extension `+
+		`not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension `+
 			`(no index.js/index.ts/index.mjs/index.cjs, package.json "pi.extensions" entry or "main" file — pi would fail to load it)`,
 		problem)
 

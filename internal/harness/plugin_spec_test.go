@@ -272,12 +272,6 @@ func TestResolveRelativeTo_PluginOptions(t *testing.T) {
 	assert.Contains(t, err.Error(), "plugins[0]")
 }
 
-func TestPluginPaths(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, PluginPaths(nil))
-	assert.Equal(t, []string{"a", "b"}, PluginPaths([]PluginSpec{{Path: "a"}, {Path: "b"}}))
-}
-
 // TestValidateFilesExist_PluginDirRules covers the checks that need the
 // directory on disk: the stat rules, the format verdict (reported against
 // the offending entry — the rule itself is pinned in
@@ -317,7 +311,20 @@ func TestValidateFilesExist_PluginDirRules(t *testing.T) {
 		err := validate(t, PluginSpec{Path: dir})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `plugins[0] "`+dir+`"`)
-		assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json) and not a pi extension")
+		assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension")
+	})
+
+	// Validate() cannot compare a URL entry's basename with a local one; by
+	// ValidateFilesExist every entry is a local directory, so two entries
+	// that would upload to the same sandbox name are refused here.
+	t.Run("same basename after resolution", func(t *testing.T) {
+		a := pluginDir(t, map[string]string{"index.js": "//"})
+		b := pluginDir(t, map[string]string{"plugin.json": `{"name":"x"}`})
+		require.NotEqual(t, a, b)
+		err := validate(t, PluginSpec{Path: a}, PluginSpec{Path: b})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `both load as plugin "my-plugin"`)
+		require.NoError(t, validate(t, PluginSpec{Path: a}, PluginSpec{Path: a}), "the same resolved path twice is a resolve-side dedup, not a collision")
 	})
 
 	// env and pi: are options for a runtime that loads the entry as code.

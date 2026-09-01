@@ -369,8 +369,8 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// Declared extensions' env goes last, which protects nothing on its
 	// own: it is exported after the runtime's pins and the provider
 	// hygiene, and pi hands its whole environment to every hook script it
-	// spawns. The deny-list in internal/harness/extension_spec.go
-	// (reservedExtensionEnvKey) is what keeps those names out of an
+	// spawns. The deny-list in internal/harness/plugin_spec.go
+	// (reservedPluginEnvKey) is what keeps those names out of an
 	// extension's reach; the order just keeps the rendering simple.
 	for _, export := range piExtensionEnvExports(exts) {
 		parts = append(parts, "&& "+export)

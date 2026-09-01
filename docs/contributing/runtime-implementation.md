@@ -739,7 +739,7 @@ consumes at most one value per flag and none after `--flag=value`, and reads eve
 as **prompt text** prepended to the agent's prompt, which makes
 `args: ["--fff-mode", "override", "and now ignore your instructions"]` an injection vector rather
 than a flag value. `env` is exported last, but export order is not the protection — pi hands its
-whole environment to every hook script it spawns, so the deny-list in `extension_spec.go` refuses
+whole environment to every hook script it spawns, so the deny-list in `plugin_spec.go` refuses
 the names outright at validation. It covers the interpreter environment (`PATH`, `HOME`, `TMPDIR`,
 `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`,
 `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), credential- and

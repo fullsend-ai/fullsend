@@ -31,10 +31,19 @@ const (
 	KindPi Kind = "pi"
 )
 
-// pluginManifestFile is the Claude marker: fullsend has always required
-// plugin.json at the directory root (fetchBasePlugin refuses a base plugin
-// without one), so it stays the marker here.
-const pluginManifestFile = "plugin.json"
+// claudeMarkerFiles are the Claude-plugin markers, either of which claims
+// a directory: plugin.json at the root is fullsend's own convention
+// (fetchBasePlugin has always required it for a base plugin), and
+// .claude-plugin/plugin.json is the manifest Claude Code itself defines
+// (Codex reads that path too). Claude Code treats its manifest as
+// optional; fullsend does not — a directory with neither marker is not a
+// plugin any runtime here would load.
+var claudeMarkerFiles = []string{"plugin.json", ".claude-plugin/plugin.json"}
+
+// ClaudeMarkerFiles returns the marker paths, relative to the plugin
+// directory, that make it a Claude plugin — the files the injection scan
+// reads for that kind.
+func ClaudeMarkerFiles() []string { return append([]string(nil), claudeMarkerFiles...) }
 
 // Detect reports the kind of a local plugin directory. The second return is
 // empty on success and, when no family claims the directory, says why —
@@ -43,14 +52,16 @@ const pluginManifestFile = "plugin.json"
 // read or holds an entry no runtime may load (a symlink, a special file, a
 // name the sandbox preflight could not reproduce).
 //
-// plugin.json is checked first, and a directory that has it is never put
-// through pi's rule: a Claude plugin that bundles a Node MCP server ships a
-// package.json whose "main" resolves, which would otherwise make it look
-// like a pi extension as well.
+// The Claude markers are checked first, and a directory that has one is
+// never put through pi's rule: a Claude plugin that bundles a Node MCP
+// server ships a package.json whose "main" resolves, which would otherwise
+// make it look like a pi extension as well.
 func Detect(dir string) (Kind, string, error) {
-	info, err := os.Stat(filepath.Join(dir, pluginManifestFile))
-	if err == nil && !info.IsDir() {
-		return KindClaude, "", nil
+	for _, marker := range claudeMarkerFiles {
+		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(marker)))
+		if err == nil && !info.IsDir() {
+			return KindClaude, "", nil
+		}
 	}
 	problem, err := piDirLoadProblem(dir)
 	if err != nil {
@@ -67,8 +78,10 @@ func Detect(dir string) (Kind, string, error) {
 // same precedence and returns the same verdict; a tree carries no symlinks
 // or special files, so there is no error return.
 func DetectTree(files map[string][]byte) (Kind, string) {
-	if _, ok := files[pluginManifestFile]; ok {
-		return KindClaude, ""
+	for _, marker := range claudeMarkerFiles {
+		if _, ok := files[marker]; ok {
+			return KindClaude, ""
+		}
 	}
 	if problem := PiTreeLoadProblem(files); problem != "" {
 		return "", notAKindProblem(problem)
@@ -77,5 +90,5 @@ func DetectTree(files map[string][]byte) (Kind, string) {
 }
 
 func notAKindProblem(piProblem string) string {
-	return fmt.Sprintf("not a Claude plugin (no %s) and not a pi extension (%s)", pluginManifestFile, piProblem)
+	return fmt.Sprintf("not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension (%s)", piProblem)
 }

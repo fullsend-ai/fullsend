@@ -46,10 +46,18 @@ func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 			continue
 		}
 		var err error
-		if plugin.Kind == pluginformat.KindPi {
-			err = scanPiPluginDir(pipeline, plugin.Path, failClosed)
-		} else {
-			err = scanPluginDir(pipeline, plugin.Path, failClosed)
+		switch plugin.Kind {
+		case pluginformat.KindPi:
+			err = scanPluginTree(pipeline, plugin.Path, failClosed, true)
+		case pluginformat.KindClaude:
+			// Claude Code reads prompt-bearing content from all over the
+			// tree (commands/, agents/, skills/, hooks/, .mcp.json, the
+			// manifest), so the whole tree is scanned; a symlink is
+			// skipped rather than refused, since no run-time preflight
+			// re-hashes a Claude plugin.
+			err = scanPluginTree(pipeline, plugin.Path, failClosed, false)
+		default:
+			err = fmt.Errorf("plugin %q: unknown format kind %q", plugin.Path, plugin.Kind)
 		}
 		if err != nil {
 			return err
@@ -94,14 +102,18 @@ var errExtensionScanUnbounded = errors.New("too many files to scan")
 // downgrade: the Run-time preflight would fail the same tree closed.
 var errExtensionScanRefused = errors.New("refused: inadmissible entry")
 
-// scanPiPluginDir scans every regular text file under a pi extension
+// (the pi extension scan)
 // directory (node_modules included — vendored dependencies are code the
 // model's tools will run). Binary files are skipped by a cheap NUL-byte
 // probe, oversized ones by maxExtensionScanFileBytes; the scan is
 // heuristic, so breadth matters more than precision, and a finding in
 // third-party JavaScript or prose is as likely to be a false positive as a
 // real one (see docs/runtimes/pi.md).
-func scanPiPluginDir(pipeline *security.Pipeline, extPath string, failClosed bool) error {
+// scanPluginTree scans every regular text file under a plugin directory.
+// refuseSpecial is the pi rule: a symlink or special file is a refusal
+// (the run-time preflight would reject the tree anyway); for a Claude
+// plugin such entries are skipped instead.
+func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool, refuseSpecial bool) error {
 	var scanned, skippedLarge int
 	root, err := filepath.EvalSymlinks(extPath)
 	if err == nil {
@@ -122,6 +134,12 @@ func scanPiPluginDir(pipeline *security.Pipeline, extPath string, failClosed boo
 			// Skipping it silently here would let a tree the Run-time
 			// preflight rejects sail through bootstrap unscanned.
 			if problem := pluginformat.ExtensionEntryProblem(rel, d.Type()); problem != "" {
+				if !refuseSpecial {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				return fmt.Errorf("extension %q: %w: %s", extPath, errExtensionScanRefused, problem)
 			}
 			if d.IsDir() {

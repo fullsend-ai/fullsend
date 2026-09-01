@@ -926,7 +926,8 @@ func TestResolveRelativeTo_Plugins(t *testing.T) {
 		Plugins: []PluginSpec{{Path: "plugins/gopls-lsp"}},
 	}
 	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
-	assert.Equal(t, []string{"/base/dir/plugins/gopls-lsp"}, PluginPaths(h.Plugins))
+	require.Len(t, h.Plugins, 1)
+	assert.Equal(t, "/base/dir/plugins/gopls-lsp", h.Plugins[0].Path)
 }
 
 func TestResolveRelativeTo_PluginTraversalRejected(t *testing.T) {

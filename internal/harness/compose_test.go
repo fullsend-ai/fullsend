@@ -1507,7 +1507,9 @@ plugins:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"plugin-a", "plugin-b"}, PluginPaths(h.Plugins))
+	require.Len(t, h.Plugins, 2)
+	assert.Equal(t, "plugin-a", h.Plugins[0].Path)
+	assert.Equal(t, "plugin-b", h.Plugins[1].Path)
 }
 
 func TestLoadWithBase_ProvidersConcat(t *testing.T) {
@@ -7657,6 +7659,65 @@ base: `+baseURL+`
 	assert.Equal(t, "directory", deps[len(deps)-1].Type)
 }
 
+func TestLoadWithBase_URLBase_PluginOfflineCacheHit_LegacyMarkerKey(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+	hash := computeHash(baseContent)
+
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	// An index written before the plugins key carried pi entries is keyed
+	// on the marker file, not the directory: lookups must still hit it.
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path))
+
+	cachedPlugin := filepath.Join(h.Plugins[0].Path, "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit through the legacy key")
+	assert.Equal(t, "directory", deps[len(deps)-1].Type)
+}
+
 func TestLoadWithBase_SourceURL_Plugins(t *testing.T) {
 	pluginContent := []byte(`{"name":"gopls-lsp"}`)
 
@@ -7827,7 +7888,7 @@ func TestFetchBasePluginDir_NoPluginJSON(t *testing.T) {
 			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json) and not a pi extension")
+	assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension")
 }
 
 func TestFetchBasePluginDir_FetchError(t *testing.T) {
@@ -8824,7 +8885,7 @@ plugins:
 	assert.Equal(t, []PluginSpec{{Path: "extensions/from-child"}}, h.Plugins)
 }
 
-func TestFetchBaseExtension_FreshFetch(t *testing.T) {
+func TestFetchBasePlugin_PiFormat_FreshFetch(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	fetcher := fakeTreeFetcher(map[string][]byte{
 		"index.js":  []byte("export default function () {}"),
@@ -8861,7 +8922,7 @@ func TestFetchBaseExtension_FreshFetch(t *testing.T) {
 	assert.Equal(t, localDir, localDir2)
 }
 
-func TestFetchBaseExtension_NotLoadable(t *testing.T) {
+func TestFetchBasePlugin_PiFormat_NotLoadable(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	fetcher := fakeTreeFetcher(map[string][]byte{
 		"README.md":   []byte("# ext"),
@@ -8877,7 +8938,7 @@ func TestFetchBaseExtension_NotLoadable(t *testing.T) {
 	assert.Contains(t, err.Error(), "pi would fail to load it")
 }
 
-func TestFetchBaseExtension_AllowlistAndOffline(t *testing.T) {
+func TestFetchBasePlugin_PiFormat_AllowlistAndOffline(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
@@ -8894,7 +8955,7 @@ func TestFetchBaseExtension_AllowlistAndOffline(t *testing.T) {
 	assert.Contains(t, err.Error(), "offline mode")
 }
 
-func TestResolveBaseExtensions_Validation(t *testing.T) {
+func TestResolveBasePlugins_PiFormatValidation(t *testing.T) {
 	baseURL := "https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml"
 	allow := []string{"https://raw.githubusercontent.com/org/repo/"}
 

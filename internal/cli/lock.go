@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -333,6 +334,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		if resolveErr != nil {
 			printer.StepFail("Resolution failed")
 			return nil, fmt.Errorf("resolving remote resources: %w", resolveErr)
+		}
+		// URL plugins are only format-checked once fetched; run the same
+		// on-disk plugin checks fullsend run applies so a lock never
+		// records an entry run would refuse.
+		if err := h.ValidatePluginDirs(); err != nil {
+			printer.StepFail("Plugin validation failed")
+			return nil, err
 		}
 
 		for _, dep := range result.Deps {
@@ -1053,11 +1061,20 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	h.Plugins = filteredPlugins
 
 	// De-duplicate plugins by resolved path and set executable permissions.
-	seen := make(map[string]bool, len(h.Plugins))
+	// Two entries on one tree with different env/pi options are a conflict
+	// (resolve.ResolveHarness refuses them); here the lock replay keeps the
+	// first and warns rather than silently dropping the second's options.
+	seen := make(map[string]int, len(h.Plugins))
 	deduped := h.Plugins[:0]
 	for _, p := range h.Plugins {
-		if !seen[p.Path] {
-			seen[p.Path] = true
+		if prev, ok := seen[p.Path]; ok {
+			if kept := deduped[prev]; !reflect.DeepEqual(kept.Env, p.Env) || !reflect.DeepEqual(kept.Pi, p.Pi) {
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q is listed twice with different env/pi options; keeping the first entry\n", p.Path)
+			}
+			continue
+		}
+		{
+			seen[p.Path] = len(deduped)
 			deduped = append(deduped, p)
 		}
 	}

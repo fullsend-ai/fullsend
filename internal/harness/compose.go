@@ -538,8 +538,8 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 // mergeBaseIntoChild merges base harness fields into child harness.
 // Child values override base values following ADR-0045 merge rules:
 //   - Scalars: child overrides if non-zero
-//   - Slices (skills, plugins, extensions, providers, api_servers): base +
-//     child (concatenated; extensions must still have distinct basenames,
+//   - Slices (skills, plugins, providers, api_servers): base +
+//     child (concatenated; plugins must still have distinct basenames,
 //     which Validate enforces after the merge)
 //   - Maps (runner_env): base merged with child; child keys win
 //   - Pointer structs (validation_loop, security): child replaces if non-nil
@@ -1901,10 +1901,21 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 	}
 
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, keyURL)
+	indexKey := keyURL
+	if !indexHit {
+		// Indexes written before the plugins key carried pi entries were
+		// keyed on the Claude marker file. Honour those so an offline run
+		// against an existing cache does not fail until it can re-lock.
+		if legacyKey := dirURL + "/plugin.json"; legacyKey != keyURL {
+			if h, ok := urlIndexLookup(opts.WorkspaceRoot, legacyKey); ok {
+				hash, indexHit, indexKey = h, true, legacyKey
+			}
+		}
+	}
 	var staleFallback *Dependency
 	var staleFallbackPath string
 	if indexHit {
-		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, kind.label+":"+keyURL)
+		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, kind.label+":"+indexKey)
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {

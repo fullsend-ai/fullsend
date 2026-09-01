@@ -78,7 +78,7 @@ func TestDetect_PiEntryPoints(t *testing.T) {
 		t.Run("no-entry/"+name, func(t *testing.T) {
 			dir := writeExtDir(t, files)
 			problem := detectProblem(t, dir)
-			assert.Equal(t, `not a Claude plugin (no plugin.json) and not a pi extension (no index.js/index.ts/index.mjs/index.cjs, package.json "pi.extensions" entry or "main" file — pi would fail to load it)`, problem)
+			assert.Equal(t, `not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension (no index.js/index.ts/index.mjs/index.cjs, package.json "pi.extensions" entry or "main" file — pi would fail to load it)`, problem)
 		})
 	}
 

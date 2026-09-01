@@ -52,9 +52,12 @@ OpenCode are both in the roadmap.
 Across those runtimes, plugin directories fall into two families rather than
 one per runtime:
 
-- **Manifest bundles** a runtime reads at startup: Claude Code's
-  `plugin.json` layout, which Codex also reads (`.codex-plugin/plugin.json`
-  and `.claude-plugin/plugin.json`).
+- **Manifest bundles** a runtime reads at startup: Claude Code's plugin
+  layout, whose manifest is `.claude-plugin/plugin.json`; Codex discovers
+  `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json` and
+  `.cursor-plugin/plugin.json`. fullsend's own historical marker for a
+  Claude plugin is `plugin.json` at the directory root (what
+  `fetchBasePlugin` has always required).
 - **Code modules** a runtime loads and executes: pi's `-e <dir>` extensions,
   and OpenCode's plugin modules.
 
@@ -70,7 +73,10 @@ runtime-specific options. Five rules govern it.
 1. **The directory decides which runtime loads it.** `internal/pluginformat`
    is a leaf package (no dependency on `internal/harness` or
    `internal/runtime`) that classifies an entry: `plugin.json` at the root
-   is a Claude plugin, otherwise pi's own `-e <dir>` loader rule decides
+   or `.claude-plugin/plugin.json` marks a Claude plugin (Claude Code
+   treats its manifest as optional; fullsend requires one of the two, since
+   a directory with neither is not something any runtime here would load),
+   otherwise pi's own `-e <dir>` loader rule decides
    whether it is a pi extension, and a directory that is neither is a
    validation error. The marker order is precedence, not exclusivity: a
    Claude plugin that bundles a Node MCP server ships a `package.json`
@@ -173,9 +179,11 @@ extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
   proxy-shaped name, or the runner's and providers' families.
 - Base-composed plugin directories key their lock entry on the directory URL
   rather than on `<dir>/plugin.json`, since a plugin entry no longer has one
-  marker file; existing lock files re-resolve once.
+  marker file. The legacy key is still honoured on lookup, so an existing
+  cache keeps serving offline runs until the next online `fullsend lock`
+  rewrites it.
 - Follow-ups out of scope here: single-file pi entries; the Codex and
-  OpenCode loaders; `.claude-plugin/plugin.json` as a second Claude marker;
+  OpenCode loaders;
   Claude-side honouring of `env`; an image-baked (`image:`) prefix form;
   `replaces_builtin` guards; per-tool Claude-name mapping; the Track E
   sub-agent tool (#6527); `--tools` union with extension tools. Per-agent

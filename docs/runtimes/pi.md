@@ -283,7 +283,7 @@ workspace or `/tmp`. First use of each extension tool is logged as
 | `Failed to load extension "<path>"` on stderr, exit 1 | pi could not import the entry point at run time even though validation accepted the directory | Re-run with `--debug='*'` and read `pi-debug.log` in the run directory |
 | `Unknown option --x` at startup | `pi.args` names a flag the extension does not register with `pi.registerFlag` | Drop the flag, or register it in the extension |
 | The extension loads, registers nothing, and prints no message | `package.json` has a `pi` object whose `pi.extensions` resolves to nothing — pi exits 0 in silence | Name real entry points in `pi.extensions`, or remove the `pi` object. Validation refuses this shape, so it can only appear if the directory changed after it was validated |
-| `Plugin "<name>": skipped — pi does not support Claude plugins` | The directory has a `plugin.json` at its root, so it is read as a Claude plugin whatever else it contains | Remove `plugin.json` if the directory is meant to be a pi extension; keep the entry as it is if the harness also runs under Claude Code |
+| `Plugin "<name>": skipped — pi does not support Claude plugins` | The directory has `plugin.json` at its root or `.claude-plugin/plugin.json`, so it is read as a Claude plugin whatever else it contains | Remove `plugin.json` if the directory is meant to be a pi extension; keep the entry as it is if the harness also runs under Claude Code |
 
 How the runner protects this path — the tree hash, the loader cache, the symlink rule, the `env`
 deny-list — is in

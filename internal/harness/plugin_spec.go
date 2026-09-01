@@ -146,19 +146,6 @@ func (p PluginSpec) MarshalYAML() (interface{}, error) {
 	return out, nil
 }
 
-// PluginPaths extracts the directory paths from a slice of PluginSpec
-// values, for call sites that only need the directories.
-func PluginPaths(entries []PluginSpec) []string {
-	if entries == nil {
-		return nil
-	}
-	paths := make([]string, len(entries))
-	for i, p := range entries {
-		paths[i] = p.Path
-	}
-	return paths
-}
-
 var validPluginEnvKey = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 // The environment names a plugin's env: may not set. The runtime

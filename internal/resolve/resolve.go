@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -385,14 +386,21 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 
 	// De-duplicate plugins by resolved path (e.g. two slots referencing
-	// the same URL resolve to identical local paths).
-	seen := make(map[string]bool, len(h.Plugins))
+	// the same URL resolve to identical local paths). Two spellings of one
+	// tree that carry different env/pi options are a conflict, not a
+	// duplicate: dropping the second would silently discard its options.
+	seen := make(map[string]int, len(h.Plugins))
 	deduped := h.Plugins[:0]
-	for _, p := range h.Plugins {
-		if !seen[p.Path] {
-			seen[p.Path] = true
-			deduped = append(deduped, p)
+	for i, p := range h.Plugins {
+		if prev, ok := seen[p.Path]; ok {
+			kept := deduped[prev]
+			if !reflect.DeepEqual(kept.Env, p.Env) || !reflect.DeepEqual(kept.Pi, p.Pi) {
+				return ResolveResult{}, fmt.Errorf("plugins[%d]: resolves to the same directory as an earlier entry (%s) but with different env/pi options; merge them into one entry", i, p.Path)
+			}
+			continue
 		}
+		seen[p.Path] = len(deduped)
+		deduped = append(deduped, p)
 	}
 	h.Plugins = deduped
 

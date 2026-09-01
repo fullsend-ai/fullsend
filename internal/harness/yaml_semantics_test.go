@@ -66,7 +66,16 @@ func TestYAMLSemantics_Slices(t *testing.T) {
 			absent:    `agent: test.md`,
 			empty:     "agent: test.md\nplugins: []",
 			populated: "agent: test.md\nplugins:\n  - a\n  - b",
-			getSlice:  func(h Harness) []string { return PluginPaths(h.Plugins) },
+			getSlice: func(h Harness) []string {
+				if h.Plugins == nil {
+					return nil
+				}
+				out := make([]string, 0, len(h.Plugins))
+				for _, p := range h.Plugins {
+					out = append(out, p.Path)
+				}
+				return out
+			},
 		},
 		{
 			fieldName: "providers",
