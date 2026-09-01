@@ -25,7 +25,7 @@ admin > maintain > write > triage > read > none > external
 | `triage` | Label and moderate without push access |
 | `read` | Read-only collaborator |
 | `none` | Authenticated user without explicit repository permission |
-| `external` | Actor outside the repository (fork PR author, drive-by commenter) |
+| `external` | Actor outside the repository or project (currently Jira-only; GitHub/GitLab map non-collaborators to `none`) |
 
 ### Forge-native permission mapping
 
@@ -37,19 +37,38 @@ admin > maintain > write > triage > read > none > external
 | | `triage` | `triage` |
 | | `read` | `read` |
 | | _(no collaborator entry)_ | `none` |
-| | _(fork/external actor)_ | `external` |
+| | _(fork/non-collaborator)_ | `none` |
 | **GitLab** | Owner | `admin` |
 | | Maintainer | `maintain` |
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
+| **Jira** | Administrators | `admin` |
+| | Developers | `write` |
+| | _(other named role)_ | `read` |
+| | _(no project membership)_ | `external` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
 returns the user's **effective** role including inherited org grants
-regardless of membership visibility. The `author_association` field is
+regardless of membership visibility. Fork authors and non-collaborators
+whose `role_name` is unrecognized by `MapGitHubPermission` are mapped to
+`none` (not `external`); the `external` role is currently produced only
+by the Jira adapter for actors without project membership. Both `none`
+and `external` are denied by the default thresholds, so the
+authorization outcome is identical. The `author_association` field is
 **not** used because it does not correctly reflect private org membership
 (see [Excluded fields](#excluded-fields)).
+
+On Jira the mapping source is the project's role membership roster,
+resolved once per poll cycle for the configured `--jira-project`. An
+actor is matched by Jira account ID. Role names are matched
+case-insensitively against the names above; unrecognized role names fall
+through to `read`. Actors with no membership in the configured project —
+or whose issue belongs to a different project — are mapped to `external`
+(fail-closed). See the
+[Jira integration guide](../../../guides/user/jira-integration.md) for
+details on the name-based matching limitation.
 
 ## Default thresholds
 
