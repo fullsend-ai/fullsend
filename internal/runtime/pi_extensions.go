@@ -233,8 +233,8 @@ func piTreeHashCommand(dir, shaTool string) string {
 }
 
 // piExtensionsGuard is the POSIX sh fragment run before pi, and before the
-// agent-writable .env is sourced, when the harness declared pi
-// extensions: every extension directory must exist in the sandbox and hash to the
+// agent-writable .env is sourced, when the harness declared pi extensions.
+// Every extension directory must exist in the sandbox and hash to the
 // value computed from the host copy, else the iteration stops with
 // piExtensionTamperedExit before any extension code can run. Empty when
 // there are no extensions.

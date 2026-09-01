@@ -27,8 +27,8 @@ Accepted
 
 ## Context
 
-pi grows its tool surface through extensions: JavaScript/TypeScript modules
-loaded with `-e` that register tools, providers and event handlers. The pi
+pi grows its tool surface through extensions — JavaScript/TypeScript
+modules loaded with `-e` that register tools, providers and event handlers. The pi
 runtime already loads the vendored Vertex providers and the sandbox hook
 adapter ([ADR 0090](0090-runtime-neutral-sandbox-hooks-contract.md)) that
 way, under `--no-extensions` and `defaultProjectTrust: never`, so nothing
@@ -130,7 +130,7 @@ extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 ## Options
 
-- **A separate `extensions:` key for pi.** Rejected: the runtime is chosen
+- **A separate `extensions` key for pi.** Rejected: the runtime is chosen
   by org and per-repo config, not by the harness, so a per-runtime key makes
   the harness carry a decision it does not own — and it multiplies with
   Codex and OpenCode. Detecting the format per directory costs one leaf
