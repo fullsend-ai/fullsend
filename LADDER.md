@@ -31,10 +31,6 @@ discussion. A maintainer will review and comment `/vouch` if approved.
 
 **Who approves:** Any single maintainer.
 
-**Duration:** Permanent. A maintainer may revoke a vouch if the
-contributor violates project norms (e.g., submitting AI-generated vouch
-requests, repeated low-quality contributions).
-
 ### Triage
 
 **What it means:** You have GitHub `triage` collaborator access on the
@@ -59,10 +55,6 @@ discussion. Link to your merged PRs or reviews.
 
 **Who approves:** Any single maintainer.
 
-**Duration:** Permanent unless revoked. Any maintainer may revoke access
-if the contributor becomes inactive for an extended period or misuses
-the role.
-
 ### Write
 
 **What it means:** You have GitHub `write` collaborator access on the
@@ -72,7 +64,6 @@ repository.
 
 - `/fs-code` and `/fs-fix` slash commands (mutation agents)
 - Push access to non-protected branches
-- Bypassing the vouch gate
 
 **Criteria:**
 
@@ -90,14 +81,12 @@ discussion. Link to your contribution history.
 **Who approves:** Two maintainers must approve. A single maintainer
 can request more discussion but cannot unilaterally grant write access.
 
-**Duration:** Permanent unless revoked. Any maintainer may revoke
-access if the contributor becomes inactive or misuses the role.
-
 ### Maintainer
 
 **What it means:** You have merge and approval rights and are a member
 of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
-team.
+team. You are expected to be an active regular participant in the
+project and to help review contributions you are not driving.
 
 **What it unlocks:**
 
@@ -119,17 +108,6 @@ Role changes use the following request mechanisms:
 | Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 maintainer |
 | Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 maintainers |
 | Maintainer | Issue (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
-
-## Prow/OWNERS repositories
-
-Some repositories use Prow and `OWNERS` files as their primary
-authority model. Contributors with approval rights via `OWNERS` may
-only have `read` access at the GitHub collaborator level. Because
-fullsend checks GitHub roles exclusively, slash commands from these
-contributors fail silently — even though they are trusted approvers in
-the Prow model. If you are in this situation, request the appropriate
-role through the process above so your GitHub collaborator role matches
-your actual trust level.
 
 ## Revoking access
 
