@@ -162,6 +162,39 @@ func TestPiRuntimeBootstrap_NoSecurityNoHooks(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "no hook extension without security config")
 }
 
+func TestPiRuntimeBootstrap_AgentNameMismatch(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, logPath, store, "/dev/null")
+
+	agentFile := writeAgentFile(t, "---\nname: code\n---\n# Code agent")
+	err := PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   agentFile,
+		agentName:   "coder",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent name mismatch")
+	assert.Contains(t, err.Error(), `"coder"`)
+	assert.Contains(t, err.Error(), `"code"`)
+}
+
+func TestPiRuntimeBootstrap_AgentNameMatch(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, logPath, store, "/dev/null")
+
+	agentFile := writeAgentFile(t, "---\nname: triage\n---\n# Triage agent")
+	err := PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   agentFile,
+		agentName:   "triage",
+	})
+	assert.NoError(t, err)
+}
+
 func TestPiRuntimeBootstrap_PreflightFailure(t *testing.T) {
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nfor last; do :; done\ncase \"$last\" in \"pi --version\") echo 'sh: pi: not found' >&2; exit 127 ;; esac\nexit 0\n"

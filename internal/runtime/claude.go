@@ -47,6 +47,20 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("agent path is required")
 	}
 
+	// Validate the frontmatter name: field against the requested agent name.
+	// Claude Code resolves --agent by frontmatter name, not filename, so a
+	// mismatch means the runtime silently falls back to the default agent,
+	// producing an unconstrained run (#6764).
+	if agentName := input.AgentName(); agentName != "" {
+		if data, readErr := os.ReadFile(agentPath); readErr == nil {
+			if def, parseErr := parsePiAgent(data); parseErr != nil {
+				fmt.Fprintf(os.Stderr, "Agent name validation: skipped for %s: %v\n", agentPath, parseErr)
+			} else if err := validateAgentNameMatch(agentName, def.Name); err != nil {
+				return err
+			}
+		}
+	}
+
 	sandboxName := input.SandboxName()
 	configDir := r.ConfigDir()
 

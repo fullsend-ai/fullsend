@@ -105,6 +105,92 @@ func TestAgentDestName(t *testing.T) {
 	}
 }
 
+func TestValidateAgentNameMatch(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestedName  string
+		definitionName string
+		wantErr        string // empty means no error expected
+	}{
+		{
+			name:           "matching names pass",
+			requestedName:  "code",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "mismatched names fail",
+			requestedName:  "coder",
+			definitionName: "code",
+			wantErr:        `agent name mismatch: requested "coder" but definition declares "code"`,
+		},
+		{
+			name:           "empty requested name skips validation",
+			requestedName:  "",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "empty definition name skips validation",
+			requestedName:  "coder",
+			definitionName: "",
+			wantErr:        "",
+		},
+		{
+			name:           "both empty skips validation",
+			requestedName:  "",
+			definitionName: "",
+			wantErr:        "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAgentNameMatch(tc.requestedName, tc.definitionName)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBootstrap_AgentNameMismatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "coder",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent name mismatch")
+	assert.Contains(t, err.Error(), `"coder"`)
+	assert.Contains(t, err.Error(), `"code"`)
+}
+
+func TestBootstrap_AgentNameMatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "code",
+	})
+	assert.NoError(t, err)
+}
+
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
 	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
