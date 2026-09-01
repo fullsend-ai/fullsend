@@ -3005,6 +3005,87 @@ func TestIsBehavioralExitSubtype(t *testing.T) {
 	}
 }
 
+func TestClassifyTranscriptError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		subtype          string
+		exitCode         int
+		wantExitReason   string
+		wantOverrideExit bool
+		wantWarnContains string
+	}{
+		{
+			name:             "behavioral exit max turns",
+			subtype:          "error_max_turns",
+			exitCode:         2,
+			wantExitReason:   "error_max_turns",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "behavioral exit max cost",
+			subtype:          "error_max_cost",
+			exitCode:         1,
+			wantExitReason:   "error_max_cost",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "behavioral exit with exit code 0",
+			subtype:          "error_max_turns",
+			exitCode:         0,
+			wantExitReason:   "error_max_turns",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "infra error with exit code 0",
+			subtype:          "error_unknown",
+			exitCode:         0,
+			wantExitReason:   "",
+			wantOverrideExit: true,
+			wantWarnContains: "Agent exited with code 0 but transcript contains error:",
+		},
+		{
+			name:             "non-behavioral error with non-zero exit",
+			subtype:          "error_unknown",
+			exitCode:         1,
+			wantExitReason:   "",
+			wantOverrideExit: false,
+			wantWarnContains: "Transcript contains error:",
+		},
+		{
+			name:             "empty subtype with exit code 0",
+			subtype:          "",
+			exitCode:         0,
+			wantExitReason:   "",
+			wantOverrideExit: true,
+			wantWarnContains: "Agent exited with code 0 but transcript contains error:",
+		},
+		{
+			name:             "empty subtype with non-zero exit",
+			subtype:          "",
+			exitCode:         1,
+			wantExitReason:   "",
+			wantOverrideExit: false,
+			wantWarnContains: "Transcript contains error:",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			outcome := classifyTranscriptError("test error msg", tt.subtype, tt.exitCode)
+			assert.Equal(t, tt.wantExitReason, outcome.exitReason,
+				"exitReason for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+			assert.Equal(t, tt.wantOverrideExit, outcome.overrideExitCode,
+				"overrideExitCode for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+			assert.Contains(t, outcome.warnMsg, tt.wantWarnContains,
+				"warnMsg for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+		})
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.

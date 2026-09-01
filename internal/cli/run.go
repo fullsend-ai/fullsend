@@ -2035,27 +2035,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		outputJSONL := filepath.Join(iterDir, "output.jsonl")
 		if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
 			transcriptErrMsg = transcriptErrorMessage(te)
-			if isBehavioralExitSubtype(te.Subtype) {
-				// Behavioral exits (error_max_turns, error_max_cost): the
-				// agent was interrupted mid-work, not crashed. Let the
-				// post-script run with context about why there may be no
-				// changes, rather than skipping it entirely. See #6877.
-				agentExitReason = te.Subtype
-				printer.StepWarn("Agent hit behavioral limit: " + transcriptErrMsg)
-			} else if exitCode == 0 {
-				// API/infrastructure failures where Claude exits 0 but
-				// reports errors in the transcript. Treat as failures so
-				// the post-script is skipped. See #2786.
+			outcome := classifyTranscriptError(transcriptErrMsg, te.Subtype, exitCode)
+			if outcome.exitReason != "" {
+				agentExitReason = outcome.exitReason
+			}
+			if outcome.overrideExitCode {
 				lastExitCode = 1
 				transcriptErrorOverride = true
-				printer.StepWarn("Agent exited with code 0 but transcript contains error: " + transcriptErrMsg)
-			} else {
-				// Non-behavioral transcript error with a non-zero exit
-				// code (e.g., error_unknown). The exit code already
-				// signals failure; the transcript error enriches the
-				// span telemetry with additional context. See #6877.
-				printer.StepWarn("Transcript contains error: " + transcriptErrMsg)
 			}
+			printer.StepWarn(outcome.warnMsg)
 		}
 
 		// finish_reason reflects how the generation ended: a clean exit is
@@ -2217,6 +2205,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
+		// If the sweep validated an earlier iteration, clear
+		// agentExitReason so the post-script does not receive the last
+		// iteration's behavioral exit reason for an iteration that may
+		// not have hit a behavioral limit. See #6877.
+		if sweep.validatedIter > 0 && sweep.validatedIter != runCount {
+			agentExitReason = ""
+		}
 	}
 
 	// Write aggregated behavioral metrics.
@@ -3307,6 +3302,46 @@ func isBehavioralExitSubtype(subtype string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// transcriptCheckOutcome captures how a transcript error should be handled
+// by the iteration loop. See classifyTranscriptError.
+type transcriptCheckOutcome struct {
+	// exitReason is the behavioral exit subtype to pass to the post-script
+	// (e.g., "error_max_turns"). Empty for non-behavioral errors.
+	exitReason string
+	// overrideExitCode indicates that lastExitCode should be set to 1 and
+	// transcriptErrorOverride should be set to true (API/infra failures
+	// where Claude exits 0 but reports errors in the transcript). See #2786.
+	overrideExitCode bool
+	// warnMsg is the console warning message for the printer.
+	warnMsg string
+}
+
+// classifyTranscriptError determines how a transcript error should be
+// handled based on its subtype and the process exit code. Three categories:
+//  1. Behavioral limits (error_max_turns, error_max_cost): pass the reason
+//     to the post-script so it can report accurately. See #6877.
+//  2. API/infra failures with exit code 0: override the exit code to 1 so
+//     the post-script is skipped. See #2786.
+//  3. Non-behavioral errors with non-zero exit code: the exit code already
+//     signals failure; the transcript error enriches span telemetry.
+func classifyTranscriptError(errMsg, subtype string, exitCode int) transcriptCheckOutcome {
+	if isBehavioralExitSubtype(subtype) {
+		return transcriptCheckOutcome{
+			exitReason: subtype,
+			warnMsg:    "Agent hit behavioral limit: " + errMsg,
+		}
+	}
+	if exitCode == 0 {
+		return transcriptCheckOutcome{
+			overrideExitCode: true,
+			warnMsg:          "Agent exited with code 0 but transcript contains error: " + errMsg,
+		}
+	}
+	return transcriptCheckOutcome{
+		warnMsg: "Transcript contains error: " + errMsg,
 	}
 }
 
