@@ -62,9 +62,17 @@ A role satisfies a threshold when it is **at or above** the minimum in
 the role ordering. For example, `admin` satisfies both `triage` and
 `write` thresholds.
 
-The dispatch implementation uses a parameterized
+The bash dispatch implementation uses a parameterized
 `has_repo_permission(username, min)` helper that encodes this comparison
 (see [Enforcement point](#enforcement-point)).
+
+> **Implementation note:** the Go dispatch path (`IsAuthorized()` in
+> `harnessdispatch`) currently uses a coarse `write+` filter for all
+> non-exception transitions — it does not yet distinguish observation
+> from mutation thresholds. Poll-based dispatch (GitLab/Jira) uses the
+> Go path, so a `triage`-role user triggering observation through that
+> path is denied today. The bash path (GitHub webhook dispatch)
+> implements the full parameterized threshold.
 
 ## Fail-closed behavior
 
@@ -87,29 +95,35 @@ rationale.
 
 ### Label application (GitHub)
 
-When `transition.kind` is `label_changed` and `label.action` is `added`,
-the event is authorized regardless of `actor.role`. GitHub's own
-permission model requires at least `triage` access to apply a label, so
-label application is an **implicit authorization gate**. Bot accounts
-that apply labels as part of agent-to-agent handoff (e.g., adding
-`ready-to-code` after triage completes) rely on this path because the
-collaborator API often returns 404 for `[bot]` accounts even when the
-GitHub App has write access via its installation token.
+When `source.system` is `github`, `transition.kind` is `label_changed`,
+and `label.action` is `added`, the event is authorized regardless of
+`actor.role`. This exception applies only when `source.system` is
+`github`. GitHub's own permission model requires at least `triage`
+access to apply a label, so label application is an **implicit
+authorization gate**. Bot accounts that apply labels as part of
+agent-to-agent handoff (e.g., adding `ready-to-code` after triage
+completes) rely on this path because the collaborator API often returns
+404 for `[bot]` accounts even when the GitHub App has write access via
+its installation token.
 
 ### Bot-submitted reviews (GitHub)
 
-When `transition.kind` is `review_submitted` and `actor.kind` is `bot`,
-the event is authorized regardless of `actor.role`. This allows the
-review agent's bot identity to trigger downstream stages (e.g., the fix
-agent) without a collaborator role lookup. The downstream harness CEL
-trigger constrains which bot and review state are accepted.
+When `source.system` is `github`, `transition.kind` is
+`review_submitted`, and `actor.kind` is `bot`, the event is authorized
+regardless of `actor.role`. This exception applies only when
+`source.system` is `github`. This allows the review agent's bot identity
+to trigger downstream stages (e.g., the fix agent) without a
+collaborator role lookup. The downstream harness CEL trigger constrains
+which bot and review state are accepted.
 
 ### Lifecycle close (pull\_request\_target.closed)
 
 The `pull_request_target.closed` event that triggers the retro stage is
 intentionally ungated: any closer may trigger read-only lifecycle
 accounting. The retro agent performs only observation work and does not
-mutate repository state.
+mutate repository state. This exception is currently implemented in
+the bash dispatch path; the Go `IsAuthorized()` path has no special
+handling for closed transitions and applies the standard `write+` gate.
 
 ### Schedule and manual dispatch
 

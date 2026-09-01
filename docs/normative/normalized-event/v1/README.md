@@ -89,8 +89,11 @@ payload. The input driver **must** resolve and populate `entity` (and
 or operator-specified work item before dispatch proceeds. Schedule drivers must
 not emit events with a missing or synthetic entity.
 
-**Authorization:** the platform authorization gate (ADR 0054) treats schedule and
-manual dispatch as **trusted operator actions**, not end-user webhook events.
+**Authorization:** the platform authorization gate
+([Authorization Contract v1](../../authorization/v1/);
+[ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md))
+treats schedule and manual dispatch as **trusted operator actions**, not
+end-user webhook events.
 Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
 bot or workflow `GITHUB_ACTOR`), `actor.kind` to `bot`, and `actor.role` to the
 effective permission of that identity on the target repo (typically `write` for
