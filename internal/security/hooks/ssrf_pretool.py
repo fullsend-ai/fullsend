@@ -136,11 +136,31 @@ def _parse_egress_allowlist() -> set[tuple[str, int]]:
         if not entry:
             continue
         if "*" in entry:
-            print(
-                f"WARNING: wildcard entry '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
-                "is not supported and will be ignored — use exact hostnames",
-                file=sys.stderr,
-            )
+            # Accept leading wildcard entries like *.domain.com:port.
+            # Reject bare '*' and mid-string globs (e.g. 'atl*an.net').
+            if ":" in entry:
+                wc_host, _, wc_port_str = entry.rpartition(":")
+                try:
+                    wc_port = int(wc_port_str)
+                except ValueError:
+                    print(
+                        f"WARNING: malformed port in '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
+                        "— entry ignored",
+                        file=sys.stderr,
+                    )
+                    continue
+            else:
+                wc_host = entry
+                wc_port = 0
+            if wc_host.startswith("*.") and len(wc_host) > 2 and "*" not in wc_host[2:]:
+                entries.add((wc_host.lower().rstrip("."), wc_port))
+            else:
+                print(
+                    f"WARNING: wildcard entry '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
+                    "is not supported and will be ignored — use exact hostnames "
+                    "or leading wildcard patterns like *.domain.com",
+                    file=sys.stderr,
+                )
             continue
         if ":" in entry:
             host, _, port_str = entry.rpartition(":")
@@ -173,7 +193,20 @@ def _is_host_allowlisted(hostname: str, port: int | None) -> bool:
     if port is not None and (hostname, port) in allowlist:
         return True
     # Check host-only match (port 0 sentinel means any port).
-    return (hostname, 0) in allowlist
+    if (hostname, 0) in allowlist:
+        return True
+    # Check wildcard entries: *.domain matches any subdomain of domain
+    # but not the bare domain itself (require at least one subdomain label).
+    for entry_host, entry_port in allowlist:
+        if not entry_host.startswith("*."):
+            continue
+        # *.atlassian.net → suffix ".atlassian.net"
+        suffix = entry_host[1:]
+        if hostname.endswith(suffix) and (
+            entry_port == 0 or (port is not None and entry_port == port)
+        ):
+            return True
+    return False
 
 
 def log_finding(scanner: str, name: str, severity: str, detail: str, action: str):

@@ -1047,16 +1047,45 @@ class TestEgressAllowlistParsing:
             result = hook._parse_egress_allowlist()
             assert ("2001:db8::1", 8443) in result
 
-    def test_wildcard_entries_ignored(self, hook, capsys):
+    def test_leading_wildcard_entries_accepted(self, hook):
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*.internal:443,exact.host:8443"},
         ):
             result = hook._parse_egress_allowlist()
+            assert len(result) == 2
+            assert ("*.internal", 443) in result
+            assert ("exact.host", 8443) in result
+
+    def test_bare_wildcard_rejected(self, hook, capsys):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*:443,exact.host:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
             assert len(result) == 1
             assert ("exact.host", 8443) in result
             captured = capsys.readouterr()
-            assert "wildcard entry '*.internal:443'" in captured.err
+            assert "wildcard entry '*:443'" in captured.err
+
+    def test_mid_string_glob_rejected(self, hook, capsys):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "atl*an.net:443,exact.host:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert len(result) == 1
+            assert ("exact.host", 8443) in result
+            captured = capsys.readouterr()
+            assert "wildcard entry 'atl*an.net:443'" in captured.err
+
+    def test_leading_wildcard_no_port(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert ("*.atlassian.net", 0) in result
 
     def test_malformed_port_warns(self, hook, capsys):
         with mock.patch.dict(
@@ -1069,6 +1098,89 @@ class TestEgressAllowlistParsing:
             captured = capsys.readouterr()
             assert "malformed port" in captured.err
             assert "host.internal:notaport" in captured.err
+
+
+class TestWildcardAllowlistMatching:
+    """Verify wildcard suffix matching in _is_host_allowlisted."""
+
+    def test_wildcard_matches_subdomain(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+        ):
+            assert hook._is_host_allowlisted("redhat.atlassian.net", 443) is True
+
+    def test_wildcard_matches_multi_level_subdomain(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+        ):
+            assert hook._is_host_allowlisted("sub.redhat.atlassian.net", 443) is True
+
+    def test_wildcard_does_not_match_base_domain(self, hook):
+        """*.atlassian.net must not match atlassian.net (no subdomain)."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+        ):
+            assert hook._is_host_allowlisted("atlassian.net", 443) is False
+
+    def test_wildcard_does_not_match_suffix_spoof(self, hook):
+        """*.atlassian.net must not match atlassian.net.evil.com."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+        ):
+            assert hook._is_host_allowlisted("atlassian.net.evil.com", 443) is False
+
+    def test_wildcard_port_must_match(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+        ):
+            assert hook._is_host_allowlisted("redhat.atlassian.net", 8080) is False
+
+    def test_wildcard_port_zero_matches_any(self, hook):
+        """Wildcard entry without port matches any port."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net"},
+        ):
+            assert hook._is_host_allowlisted("redhat.atlassian.net", 443) is True
+            assert hook._is_host_allowlisted("redhat.atlassian.net", 8080) is True
+
+    def test_bare_wildcard_does_not_match(self, hook, capsys):
+        """Bare * must not match any hostname."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*:443"},
+        ):
+            assert hook._is_host_allowlisted("anything.com", 443) is False
+            # Consume warning output
+            capsys.readouterr()
+
+    def test_mid_string_glob_does_not_match(self, hook, capsys):
+        """Mid-string globs like atl*an.net must not match."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "atl*an.net:443"},
+        ):
+            assert hook._is_host_allowlisted("atlassian.net", 443) is False
+            capsys.readouterr()
+
+    def test_wildcard_case_insensitive(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.Atlassian.NET:443"},
+        ):
+            assert hook._is_host_allowlisted("Redhat.ATLASSIAN.net", 443) is True
+
+    def test_wildcard_trailing_dot_stripped(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net.:443"},
+        ):
+            assert hook._is_host_allowlisted("redhat.atlassian.net", 443) is True
 
 
 class TestEgressAllowlistValidateUrl:
@@ -1195,3 +1307,44 @@ class TestEgressAllowlistValidateUrl:
         ):
             result = hook.validate_url(url)
             assert result is None  # allowed
+
+    def test_wildcard_allowlist_allows_subdomain_on_dns_failure(self, hook):
+        """Wildcard *.atlassian.net:443 allows redhat.atlassian.net when DNS fails."""
+        url = "https://redhat.atlassian.net/rest/api/2/issue/PROJ-1"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(
+                os.environ,
+                {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+            ),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed
+
+    def test_wildcard_allowlist_blocks_base_domain_on_dns_failure(self, hook):
+        """Wildcard *.atlassian.net must not match the bare domain atlassian.net."""
+        url = "https://atlassian.net/something"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(
+                os.environ,
+                {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+            ),
+        ):
+            result = hook.validate_url(url)
+            assert result is not None
+            assert "fail-closed" in result
+
+    def test_wildcard_allowlist_blocks_wrong_port_on_dns_failure(self, hook):
+        """Wildcard on port 443 must not match port 8080."""
+        url = "https://redhat.atlassian.net:8080/api"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(
+                os.environ,
+                {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
+            ),
+        ):
+            result = hook.validate_url(url)
+            assert result is not None
+            assert "fail-closed" in result
