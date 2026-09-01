@@ -536,11 +536,12 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	agentDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+	agentFile := filepath.Join(agentDir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("test"), 0o644))
 
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "test-sandbox",
-		agentPath:   agentDir,
+		agentPath:   agentFile,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
