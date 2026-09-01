@@ -2982,6 +2982,28 @@ func TestAgentTimedOut(t *testing.T) {
 	}
 }
 
+func TestIsBehavioralExitSubtype(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		subtype string
+		want    bool
+	}{
+		{"error_max_turns", true},
+		{"error_max_cost", true},
+		{"success", false},
+		{"error_unknown", false},
+		{"", false},
+		{"error_max_turns_extra", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.subtype, func(t *testing.T) {
+			t.Parallel()
+			got := isBehavioralExitSubtype(tt.subtype)
+			assert.Equal(t, tt.want, got, "isBehavioralExitSubtype(%q)", tt.subtype)
+		})
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.
