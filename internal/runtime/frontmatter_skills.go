@@ -33,16 +33,23 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 
 	// Collect basenames from skill directories — these are the names
 	// the runtime uses to identify skills in the sandbox.
+	seen := make(map[string]bool, len(skillDirs))
 	newNames := make([]string, 0, len(skillDirs))
 	for _, d := range skillDirs {
 		if d == "" {
 			continue
 		}
-		newNames = append(newNames, filepath.Base(d))
+		name := filepath.Base(d)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		newNames = append(newNames, name)
 	}
 	if len(newNames) == 0 {
 		return data, nil
 	}
+	sort.Strings(newNames)
 
 	content := bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 
@@ -78,13 +85,13 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		}
 	}
 	if closingIdx < 0 {
-		return nil, fmt.Errorf("inject frontmatter skills: unterminated frontmatter")
+		return nil, fmt.Errorf("unterminated frontmatter")
 	}
 
 	// Parse existing skills from frontmatter.
 	var fm frontmatterSkills
 	if err := yaml.Unmarshal(frontBytes, &fm); err != nil {
-		return nil, fmt.Errorf("inject frontmatter skills: parsing frontmatter: %w", err)
+		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
 	// Deduplicate: build a set of existing skill names.
