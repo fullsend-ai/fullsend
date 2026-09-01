@@ -183,7 +183,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | Interface | Responsibility |
 |-----------|----------------|
 | `runtime.Runtime` | Name, config dir, env exports, bootstrap, run loop, per-iteration cleanup, user processes cleanup |
-| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, plugin dirs, and declared pi extensions (`Extensions() []ExtensionInput` — name, host path, args, env; ADR 0094) to upload. Only pi loads extensions; other runtimes must warn and skip them, never drop them silently |
+| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, and declared plugins (`Plugins() []PluginInput` — name, host path, format kind, env, pi args; ADR 0094) to upload. A runtime loads the entries whose `Kind` it reads and must warn and skip the rest, never drop them silently |
 | `runtime.SandboxHooksBootstrap` | Optional `BootstrapInput` extension — runtime-neutral sandbox tool hook config (`security.SandboxHookConfig`); every runtime should honour it |
 | `runtime.TranscriptHandler` | Extract transcripts/debug logs; parse errors for CI annotations |
 | `runtime.DebugLogNamer` | Optional — names the per-iteration debug-log artifact (default `agent-debug.log`) |
@@ -587,19 +587,27 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 - An unreadable manifest, or one without a hook plan, blocks every tool call.
 - Because pi silently skips a missing `-e` path, `Run` checks — before sourcing the agent-writable `.env`, with `command -p sha256sum` / `command -p cut` so nothing in the shell environment can stand in for them — that the adapter exists and matches the embedded copy's SHA-256 and that the manifest exists, failing closed (exit 97) otherwise; it refuses to start at all (exit -1) when security is enabled but the manifest carries no hook plan; and it decides whether to load the adapter from the runner's security signal rather than the manifest.
 - The manifest and the hook scripts themselves stay agent-writable between iterations — the same residue Claude Code has with `claude-config/hooks.json` and its scripts (both are written once at `Bootstrap`).
-- Declared harness extensions ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment — uploaded at `Bootstrap`, re-hashed and preflighted before every iteration, appended with `-e` after the adapter so the sandbox hooks see every call first ([Pi extensions](#pi-extensions-adr-0094)). The adapter itself grants them nothing: it logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions, and that is all. No hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
+- The pi-format entries of the harness's `plugins:` list ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment — uploaded at `Bootstrap`, re-hashed and preflighted before every iteration, appended with `-e` after the adapter so the sandbox hooks see every call first ([Pi extensions](#pi-extensions-adr-0094)). The adapter itself grants them nothing: it logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions, and that is all. No hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
 - Edit inputs keep pi's `edits[]` shape, with `path` mirrored to `file_path` and the first `oldText`/`newText` pair mirrored to `old_string`/`new_string`; no shipped script reads the latter.
 - pi fires `tool_result` for failed calls too, so — unlike Claude Code's `PostToolUse` — errored tool output is sanitized as well.
 - The `tool_call`/`tool_result` event shapes the adapter relies on (`toolName`, `input`, `content`, `isError`; `{block, reason}` and `{content, isError}` replies) are verified against pi v0.84.2 `src/extensions/types.ts`/`runner.ts`; the lifecycle run is the live confirmation.
 
 ### Pi extensions (ADR 0094)
 
-Harness `extensions:` entries ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). The
-walkthrough a harness author follows is [Pi § Extensions](../runtimes/pi.md#extensions); this section
+The pi-format entries of the harness's `plugins:` list
+([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). The walkthrough a harness author
+follows is [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions); this section
 keeps the rules' *reasons* and the provenance behind them (verified against the pinned pi build,
 0.84.4 unless noted).
 
-**Validation mirrors pi's own loader.** `internal/harness/extension_spec.go` re-implements
+**Which entries are pi's is decided per directory.** `internal/pluginformat` is the leaf package
+both `internal/harness` and `internal/runtime` read: `Detect` (local directory) and `DetectTree`
+(fetched tree) return `KindClaude` for a `plugin.json` bundle and `KindPi` for a directory pi's
+loader resolves. `plugin.json` is checked first and settles it — a Claude plugin that bundles a Node
+MCP server ships a `package.json` whose `main` resolves, which would otherwise satisfy pi's rule as
+well. Everything below is the `KindPi` half of that verdict.
+
+**Validation mirrors pi's own loader.** `internal/pluginformat/pi.go` re-implements
 `-e <dir>` resolution so a harness never ships a directory pi would refuse — or, worse, accept and
 load nothing from. pi's rule is not the obvious one:
 
@@ -651,12 +659,18 @@ load nothing from. pi's rule is not the obvious one:
   walking. The whole tree is walked — `node_modules` and dotted directories included — so a planted
   symlink is named at validation rather than failing anonymously at Bootstrap; only the entry-point
   *listing* skips those directories, which cannot hold an entry point pi would resolve.
-- **Source and naming.** URLs, `npm:`/`git:`/`ssh:` sources and `..` segments are rejected: pi would
-  install `npm:`/`git:` sources from the network at startup, which the sandbox cannot do. Names are
-  limited to `a-z A-Z 0-9 _ -`; duplicate basenames are refused because `sandbox.UploadDir` replaces
-  its destination wholesale and one entry would silently drop the other; and
-  `harness.PiReservedExtensionNames` (`fullsend-hooks`, `anthropic-vertex`, `xai-vertex`) is refused
-  because an upload under one of those would shadow runner-owned code.
+- **Source and naming.** `npm:`/`git:`/`ssh:` sources and `..` segments are rejected: pi would
+  install `npm:`/`git:` sources from the network at startup, which the sandbox cannot do. A URL
+  entry follows the `skills:` rule — a forge `/tree/` directory pinned with `#sha256=` — and is
+  format-checked after `resolve.Resolve` has fetched it, so it is held to exactly the same rules as
+  a local path. Names are limited to `a-z A-Z 0-9 _ -`; duplicate basenames are refused because
+  `sandbox.UploadDir` replaces its destination wholesale and one entry would silently drop the
+  other; and `pluginformat.PiReservedExtensionNames` (`fullsend-hooks`, `anthropic-vertex`,
+  `xai-vertex`) is refused for a pi-format entry because an upload under one of those would shadow
+  runner-owned code.
+- **`env` and `pi:` are code-family options.** They are valid on an entry a runtime loads as code;
+  on a Claude plugin they would be silently dropped, so `ValidateFilesExist` refuses them there
+  rather than accepting configuration that does nothing.
 - **Scan limits.** Extensions take the same injection scan as `skills:`/`plugins:`/`scripts:`, over
   every text file including `node_modules`. Files over 1 MiB are noted on stderr and skipped, and a
   tree over 20 000 files is refused in either `fail_mode` — scanning a vendored dependency graph is
@@ -664,13 +678,16 @@ load nothing from. pi's rule is not the obvious one:
   the heuristics run over third-party JavaScript and prose, so minified bundles and README examples
   produce false positives.
 
-Validation runs wherever the harness is loaded: `fullsend run` (the "File validation failed" step)
-and `fullsend lock` for a URL-sourced harness, where `TreeLoadProblem` applies the same rule to the
-fetched tree map.
+Validation runs wherever the harness is loaded. The syntax checks (path shape, duplicates, `env`
+key syntax, `pi.args`) are in `Harness.Validate`, which touches no disk; the format verdict and the
+checks that depend on it are in `ValidateFilesExist`, which runs after URL entries have been
+fetched to local paths — `fullsend run`'s "File validation failed" step. `fullsend lock` and base
+composition apply the same rule to a fetched tree through `pluginformat.DetectTree`.
 
 **Upload and the tree-hash preflight.** `Bootstrap` uploads each directory to
 `/sandbox/pi-config/extensions/<name>/` — a runner-owned path pi does not auto-discover — and
-records name, sandbox path, tree hash, `args` and `env` in `fullsend-manifest.json`. `Run` re-hashes
+records name, sandbox path, tree hash, `pi.args` and `env` in `fullsend-manifest.json` (whose
+`extensions` field keeps its name: it is pi's own vocabulary, not the harness key's). `Run` re-hashes
 the *host* directory (`piExtensionTreeHash`, one definition implemented in Go and as a POSIX
 `find | LC_ALL=C sort | sha256sum` pipeline, equivalence-tested under `sh` and `dash`) and emits a
 preflight in the same pre-`.env` block as the hook-adapter guard, exiting 96 when a sandbox copy is

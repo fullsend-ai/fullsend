@@ -184,7 +184,7 @@ timeout_minutes: 20
 # max_runtime_fetches: 10
 ```
 
-See [Harness Field Reference](../../reference/harness-reference.md) for the full field reference (including optional `security`, `providers`, `plugins`, `extensions`, and runtime fetch blocks).
+See [Harness Field Reference](../../reference/harness-reference.md) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 

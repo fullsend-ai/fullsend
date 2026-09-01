@@ -183,9 +183,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — codex does not support Claude plugins (see docs/runtimes.md)\n", p)
+	for _, e := range input.Plugins() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — codex does not support harness plugins yet (see docs/runtimes.md)\n", e.SandboxName())
 		}
 	}
 

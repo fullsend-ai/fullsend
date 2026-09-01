@@ -112,8 +112,8 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Unattended | No approval prompts, stdin closed, bounded retries; a missing credential exits 1 |
 | Artifacts | `output.jsonl`, `transcripts/<agent>-<ts>_<id>.jsonl`, `metrics.json` with `runtime: pi`, plus `pi-debug.log` with `--debug` |
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
-| Extensions | Harness `extensions:` directories, uploaded and loaded with `-e` after a tree-hash preflight ([Extensions](#extensions)) |
-| Not supported | Sub-agents, fallback chains, `plugins:`, Bedrock/Azure providers |
+| Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
+| Not supported | Sub-agents, fallback chains, Claude-format plugins (named and skipped), Bedrock/Azure providers |
 
 ## Running it locally
 
@@ -190,26 +190,32 @@ What a local pi run needs, beyond the guide:
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 
-## Extensions
+## Plugins (pi extensions)
 
 pi's tool surface grows through extensions — JavaScript/TypeScript modules pi loads with `-e`. A
-harness ships its own the way it ships skills or plugins: a list of directories in the harness
-repository ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)).
+harness ships its own under the same `plugins:` key Claude Code plugins use: a list of directories,
+each loaded by whichever runtime reads its format
+([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)).
 
 ```yaml
 # harness/code.yaml
-extensions:
+plugins:
   - extensions/go-diagnostics                 # directory in the harness repo
-  - path: extensions/pi-fff                   # object form only when a flag or env is needed
-    args: ["--fff-mode", "override"]
+  - path: extensions/pi-fff                   # object form only when env or a flag is needed
     env:
       FFF_MULTIGREP: "1"
+    pi:
+      args: ["--fff-mode", "override"]
 ```
 
 That is the whole configuration: no manifest file, no tool-mapping table, no allowlist bookkeeping.
-An extension is harness-repo content with the same trust as `plugins:`, `scripts:` and `skills:` —
+An extension is harness-repo content with the same trust as `scripts:` and `skills:` —
 org-allowlisted URL base, content-addressed fetch, injection scan of every text file. Nothing is
 ever picked up from the target repository.
+
+An entry in the Claude Code format (a `plugin.json` bundle) is not something pi can load, so pi
+names it and skips it rather than failing the run — the same list can therefore serve both
+runtimes.
 
 ### What makes a valid extension directory
 
@@ -235,12 +241,13 @@ ever picked up from the target repository.
 - **Pick a free name.** Not `fullsend-hooks`, `anthropic-vertex` or `xai-vertex` — those are the
   runner's own sandbox names — and not the directory name another entry already uses. Allowed
   characters are `a-z`, `A-Z`, `0-9`, `_` and `-`.
-- **Give a path, not a source.** Entries are paths relative to the harness repository; URLs,
-  `npm:`/`git:`/`ssh:` sources and `..` segments are refused.
+- **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
+  repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
+  sources and `..` segments are refused: pi would fetch them from the network at startup.
 
-### `args` and `env`
+### `pi.args` and `env`
 
-`args` are flags the extension registered with `pi.registerFlag`, written `--flag` or
+`pi.args` are flags the extension registered with `pi.registerFlag`, written `--flag` or
 `--flag=value`. pi's own option names (`--model`, `--tools`, `--extension`, …) belong to the runner
 and are refused, and single-dash forms do not exist in pi. One bare value may follow a `--flag`
 written without `=`; every other bare word is prompt text pi would prepend to the agent's prompt, so
@@ -248,7 +255,9 @@ it is rejected rather than passed on.
 
 `env` is for the extension's own settings — `FFF_MULTIGREP`, `GO_DIAG_LEVEL`. Names belonging to the
 runtime, an interpreter, a proxy or a credential are refused; the deny-list is in
-[Harness Field Reference § `extensions`](../reference/harness-reference.md#field-details).
+[Harness Field Reference § `plugins`](../reference/harness-reference.md#field-details). Both keys
+only apply to an entry a runtime loads as code: on a Claude plugin they are a validation error, so
+nothing is dropped in silence.
 
 ### Extension tools and `tools:`
 
@@ -274,17 +283,20 @@ workspace or `/tmp`. First use of each extension tool is logged as
 `extensions=<names>`.
 
 On the Claude Code runtime the entry is named and skipped
-(`Extension "<name>": skipped — the Claude Code runtime has no pi extensions (see docs/runtimes.md)`)
-and the run continues. The dummy runtime prints the same line.
+(`Plugin "<name>": skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)`)
+and the run continues; the dummy runtime prints a line of its own. In the other direction, a
+`plugin.json` entry under pi is skipped with
+`Plugin "<name>": skipped — pi does not support Claude plugins (see docs/runtimes.md)`.
 
-### Troubleshooting extensions
+### Troubleshooting plugins
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Exit 96, `fullsend: pi extension "<name>" is missing or was modified` | The sandbox copy diverged from the host: the agent or the extension wrote into `/sandbox/pi-config/extensions/`, or planted a symlink or directory there | Write to the workspace or `/tmp` instead; re-run |
 | `Failed to load extension "<path>"` on stderr, exit 1 | pi could not import the entry point at run time even though validation accepted the directory | Re-run with `--debug='*'` and read `pi-debug.log` in the run directory |
-| `Unknown option --x` at startup | `args` names a flag the extension does not register with `pi.registerFlag` | Drop the flag, or register it in the extension |
+| `Unknown option --x` at startup | `pi.args` names a flag the extension does not register with `pi.registerFlag` | Drop the flag, or register it in the extension |
 | The extension loads, registers nothing, and prints no message | `package.json` has a `pi` object whose `pi.extensions` resolves to nothing — pi exits 0 in silence | Name real entry points in `pi.extensions`, or remove the `pi` object. Validation refuses this shape, so it can only appear if the directory changed after it was validated |
+| `Plugin "<name>": skipped — pi does not support Claude plugins` | The directory has a `plugin.json` at its root, so it is read as a Claude plugin whatever else it contains | Remove `plugin.json` if the directory is meant to be a pi extension; keep the entry as it is if the harness also runs under Claude Code |
 
 How the runner protects this path — the tree hash, the loader cache, the symlink rule, the `env`
 deny-list — is in
@@ -302,7 +314,7 @@ for that purpose. `extension_error` events are not mapped.
 
 **The model is not found, or the provider is missing.** A pi provider comes from an extension loaded
 with `-e`, so an extension that did not load takes its provider with it. The table in
-[Extensions § Troubleshooting extensions](#troubleshooting-extensions) separates the two ways that happens — the loud
+[Plugins § Troubleshooting plugins](#troubleshooting-plugins) separates the two ways that happens — the loud
 one (`Failed to load extension`, exit 1) and the silent one (pi exits 0 having loaded nothing).
 
 **`No API key found for <provider>`.** The provider is registered but its credentials did not

@@ -66,7 +66,7 @@ agents:
     source: harness/code.yaml
 ```
 
-Because config-registered agents take precedence over built-in agents on name collision, your `code` agent replaces the default — with all of the base agent's scripts, policies, host_files, plugins, and extensions still inherited.
+Because config-registered agents take precedence over built-in agents on name collision, your `code` agent replaces the default — with all of the base agent's scripts, policies, host_files, and plugins still inherited.
 
 Test it locally first:
 ```bash
@@ -100,7 +100,7 @@ env:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins, pi `extensions`, or host_files** — your entries are concatenated with the base's, base first.
+- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
 
