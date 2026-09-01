@@ -152,8 +152,13 @@ def _parse_egress_allowlist() -> set[tuple[str, int]]:
             else:
                 wc_host = entry
                 wc_port = 0
-            if wc_host.startswith("*.") and len(wc_host) > 2 and "*" not in wc_host[2:]:
-                entries.add((wc_host.lower().rstrip("."), wc_port))
+            wc_host_clean = wc_host.lower().rstrip(".")
+            if (
+                wc_host_clean.startswith("*.")
+                and len(wc_host_clean) > 2
+                and "*" not in wc_host_clean[2:]
+            ):
+                entries.add((wc_host_clean, wc_port))
             else:
                 print(
                     f"WARNING: wildcard entry '{entry}' in FULLSEND_EGRESS_ALLOWLIST "

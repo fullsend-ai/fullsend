@@ -1087,6 +1087,18 @@ class TestEgressAllowlistParsing:
             result = hook._parse_egress_allowlist()
             assert ("*.atlassian.net", 0) in result
 
+    def test_trailing_dot_wildcard_collapses_rejected(self, hook, capsys):
+        """*..:443 must not silently become ('*', 443) after rstrip('.')."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*..:443,exact.host:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert len(result) == 1
+            assert ("exact.host", 8443) in result
+            captured = capsys.readouterr()
+            assert "wildcard entry '*..:443'" in captured.err
+
     def test_malformed_port_warns(self, hook, capsys):
         with mock.patch.dict(
             os.environ,
