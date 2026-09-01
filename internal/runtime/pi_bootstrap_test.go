@@ -94,7 +94,7 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 			agentPath:   writeAgentFile(t, testAgentDef),
 			agentName:   "triage",
 			skillDirs:   []string{skillDir},
-			pluginDirs:  []string{"/tmp/some-plugin"},
+			plugins:     claudePlugins("/tmp/some-plugin"),
 		},
 		hooks: security.SandboxHookConfigFromHarness(h),
 	}

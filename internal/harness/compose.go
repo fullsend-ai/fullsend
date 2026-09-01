@@ -157,11 +157,6 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced plugins: %w", err)
 			}
 			deps = append(deps, pluginDeps...)
-			extensionDeps, err := resolveBaseExtensions(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
-			if err != nil {
-				return nil, nil, fmt.Errorf("resolving URL-sourced extensions: %w", err)
-			}
-			deps = append(deps, extensionDeps...)
 		}
 
 		if err := child.validateForge(); err != nil {
@@ -264,11 +259,6 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced plugins after base composition: %w", err)
 		}
 		deps = append(deps, pluginDeps...)
-		extensionDeps, err := resolveBaseExtensions(ctx, child, opts.SourceURL, allowlist, opts)
-		if err != nil {
-			return nil, nil, fmt.Errorf("resolving URL-sourced extensions after base composition: %w", err)
-		}
-		deps = append(deps, extensionDeps...)
 	}
 
 	// ResolveForge and ResolveOverlays once on the merged result
@@ -383,11 +373,6 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving base plugins from %s: %w", cleanURL, err)
 		}
 		deps = append(deps, pluginDeps...)
-		extensionDeps, err := resolveBaseExtensions(ctx, base, baseRef, allowlist, opts)
-		if err != nil {
-			return nil, nil, fmt.Errorf("resolving base extensions from %s: %w", cleanURL, err)
-		}
-		deps = append(deps, extensionDeps...)
 
 		baseDir = childDir
 	} else {
@@ -614,16 +599,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}
 	if base.Plugins != nil {
-		merged := make([]string, 0, len(base.Plugins)+len(child.Plugins))
+		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
 		merged = append(merged, base.Plugins...)
 		merged = append(merged, child.Plugins...)
 		child.Plugins = merged
-	}
-	if base.Extensions != nil {
-		merged := make([]ExtensionSpec, 0, len(base.Extensions)+len(child.Extensions))
-		merged = append(merged, base.Extensions...)
-		merged = append(merged, child.Extensions...)
-		child.Extensions = merged
 	}
 	if base.Providers != nil {
 		merged := make([]string, 0, len(base.Providers)+len(child.Providers))
@@ -1383,8 +1362,10 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 
 // resolveBasePlugins fetches plugin directories with relative paths from a
 // URL-referenced base harness, following the same pattern as
-// resolveBaseResources. Plugins are directories (fetched via fetchBasePlugin)
-// that use plugin.json as their marker file instead of SKILL.md.
+// resolveBaseResources. Plugins are directories (fetched via
+// fetchBasePlugin) rather than single files, and the fetched tree must be
+// in one of the two runtime formats (pluginformat.DetectTree) — the same
+// rule ValidateFilesExist applies to a local directory.
 func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	if len(base.Plugins) == 0 {
 		return nil, nil
@@ -1397,7 +1378,8 @@ func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allo
 
 	var deps []Dependency
 
-	for i, p := range base.Plugins {
+	for i, e := range base.Plugins {
+		p := e.Path
 		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
 			continue
 		}
@@ -1412,47 +1394,7 @@ func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allo
 		if err != nil {
 			return nil, err
 		}
-		base.Plugins[i] = localDir
-		deps = append(deps, dep)
-	}
-
-	return deps, nil
-}
-
-// resolveBaseExtensions fetches pi extension directories with relative
-// paths from a URL-referenced base harness, following resolveBasePlugins.
-// Extensions are harness-repo content only (ADR 0094): URLs are rejected
-// at Validate, so every non-empty, not-yet-cached entry is a relative path
-// under the base harness's directory.
-func resolveBaseExtensions(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
-	if len(base.Extensions) == 0 {
-		return nil, nil
-	}
-
-	baseURLDir := urlParentDirPrefix(baseURL)
-	if baseURLDir == "" {
-		return nil, fmt.Errorf("cannot determine directory from base URL")
-	}
-
-	var deps []Dependency
-
-	for i, e := range base.Extensions {
-		p := e.Path
-		if p == "" || isFullsendCachePath(p, opts.WorkspaceRoot) {
-			continue
-		}
-		fieldName := fmt.Sprintf("extensions[%d]", i)
-		if err := validateBaseRelPath(fieldName, p); err != nil {
-			return nil, err
-		}
-		if baseName := filepath.Base(p); !ValidPluginBasename(baseName) {
-			return nil, fmt.Errorf("base %s path %q does not end in a valid extension basename (allowed: a-z, A-Z, 0-9, _, -)", fieldName, p)
-		}
-		dep, localDir, err := fetchBaseExtension(ctx, fieldName, baseURLDir, p, allowlist, opts)
-		if err != nil {
-			return nil, err
-		}
-		base.Extensions[i].Path = localDir
+		base.Plugins[i].Path = localDir
 		deps = append(deps, dep)
 	}
 
@@ -1905,45 +1847,31 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	}, treePath, nil
 }
 
-// baseDirKind parameterises the directory fetch shared by Claude plugins
-// and pi extensions: what the directory is called in errors and audit
+// baseDirKind parameterises the directory fetch used for base-composed
+// plugin directories: what the directory is called in errors and audit
 // entries, which URL the cache index and allowlist checks key on, and what
 // makes a fetched tree acceptable.
 type baseDirKind struct {
-	label string // "plugin" or "extension"
-	// keyFile is appended to the directory URL to form the index/audit key:
-	// "/plugin.json" for plugins, whose marker file is what the allowlist
-	// check names; "/" for extensions, which have no fixed marker file.
+	label string
+	// keyFile is appended to the directory URL to form the index/audit key.
+	// It is "/" because a plugin entry has no one marker file any more: a
+	// Claude plugin carries plugin.json, a pi extension carries whatever
+	// entry point pi resolves.
 	keyFile  string
 	validate func(field, dirPath string, files map[string][]byte) error
 }
 
-var (
-	basePluginKind = baseDirKind{
-		label:   "plugin",
-		keyFile: "/plugin.json",
-		validate: func(field, dirPath string, files map[string][]byte) error {
-			if _, ok := files["plugin.json"]; !ok {
-				return fmt.Errorf("base %s: plugin directory %s has no plugin.json", field, dirPath)
-			}
-			return nil
-		},
-	}
-	baseExtensionKind = baseDirKind{
-		label:   "extension",
-		keyFile: "/",
-		validate: func(field, dirPath string, files map[string][]byte) error {
-			// Same rule ValidateFilesExist applies to a local directory.
-			if kind, problem := pluginformat.DetectTree(files); kind != pluginformat.KindPi {
-				if problem == "" {
-					problem = "it is a Claude plugin (plugin.json), which pi does not load"
-				}
-				return extensionNotLoadableError("base "+field, dirPath, problem)
-			}
-			return nil
-		},
-	}
-)
+var basePluginKind = baseDirKind{
+	label:   "plugin",
+	keyFile: "/",
+	validate: func(field, dirPath string, files map[string][]byte) error {
+		// Same rule ValidateFilesExist applies to a local directory.
+		if kind, problem := pluginformat.DetectTree(files); kind == "" {
+			return pluginNotLoadableError("base "+field, dirPath, problem)
+		}
+		return nil
+	},
+}
 
 // fetchBasePlugin fetches a plugin directory from a URL-referenced base
 // harness: the cached tree when the URL index has it, else a fresh sparse
@@ -1958,14 +1886,7 @@ func fetchBasePluginDir(ctx context.Context, field, pluginDirURL, pluginFileURL,
 	return fetchBaseDirTree(ctx, basePluginKind, field, pluginDirURL, pluginFileURL, pluginPath, allowedBy, allowlist, opts)
 }
 
-// fetchBaseExtension fetches a pi extension directory from a URL-referenced
-// base harness through the same allowlist, cache and audit path as
-// plugins; the fetched tree must pass ExtensionDirLoadProblem.
-func fetchBaseExtension(ctx context.Context, field, baseURLDir, extPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
-	return fetchBaseDir(ctx, baseExtensionKind, field, baseURLDir, extPath, allowlist, opts)
-}
-
-// fetchBaseDir fetches a directory (plugin or pi extension, per kind) from
+// fetchBaseDir fetches a plugin directory from
 // a URL-referenced base harness. It mirrors fetchBaseSkill: the cached
 // tree is served when the URL index has it under kind's key, else the tree
 // is fetched via fetchBaseDirTree; a stale partial listing is re-fetched

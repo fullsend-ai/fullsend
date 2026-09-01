@@ -902,7 +902,7 @@ func TestValidate_PluginNameValid(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"plugins/gopls-lsp", "plugins/my_plugin-2"},
+		Plugins: []PluginSpec{{Path: "plugins/gopls-lsp"}, {Path: "plugins/my_plugin-2"}},
 	}
 	require.NoError(t, h.Validate())
 }
@@ -912,7 +912,7 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 		h := &Harness{
 			Agent:   "agents/test.md",
 			Role:    "test",
-			Plugins: []string{"plugins/" + name},
+			Plugins: []PluginSpec{{Path: "plugins/" + name}},
 		}
 		err := h.Validate()
 		require.Error(t, err, "expected error for plugin name %q", name)
@@ -923,16 +923,16 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 func TestResolveRelativeTo_Plugins(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
-		Plugins: []string{"plugins/gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "plugins/gopls-lsp"}},
 	}
 	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
-	assert.Equal(t, []string{"/base/dir/plugins/gopls-lsp"}, h.Plugins)
+	assert.Equal(t, []string{"/base/dir/plugins/gopls-lsp"}, PluginPaths(h.Plugins))
 }
 
 func TestResolveRelativeTo_PluginTraversalRejected(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
-		Plugins: []string{"../../etc/evil"},
+		Plugins: []PluginSpec{{Path: "../../etc/evil"}},
 	}
 	err := h.ResolveRelativeTo("/base/dir")
 	require.Error(t, err)
@@ -1036,7 +1036,7 @@ func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 
 	h := &Harness{
 		Agent:   agentFile,
-		Plugins: []string{"/nonexistent/plugin"},
+		Plugins: []PluginSpec{{Path: "/nonexistent/plugin"}},
 	}
 	err := h.ValidateFilesExist()
 	require.Error(t, err)
@@ -1449,12 +1449,12 @@ func TestHasURLReferences(t *testing.T) {
 		},
 		{
 			name: "URL plugin",
-			h:    Harness{Agent: "agents/test.md", Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}},
+			h:    Harness{Agent: "agents/test.md", Plugins: []PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}}},
 			want: true,
 		},
 		{
 			name: "local plugin only",
-			h:    Harness{Agent: "agents/test.md", Plugins: []string{"gopls-lsp"}},
+			h:    Harness{Agent: "agents/test.md", Plugins: []PluginSpec{{Path: "gopls-lsp"}}},
 			want: false,
 		},
 		{
@@ -2131,7 +2131,7 @@ func TestValidateResourceTypes_PluginURLRequiresHash(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp"}},
 	}
 	err := h.ValidateResourceTypes()
 	require.Error(t, err)
@@ -2142,7 +2142,7 @@ func TestValidateResourceTypes_PluginLocalNamePassesThrough(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
 		Role:    "test",
-		Plugins: []string{"gopls-lsp"},
+		Plugins: []PluginSpec{{Path: "gopls-lsp"}},
 	}
 	err := h.ValidateResourceTypes()
 	require.NoError(t, err)
@@ -2152,8 +2152,8 @@ func TestValidateResourceTypes_PluginURLWithHashValid(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2164,8 +2164,8 @@ func TestValidateResourceTypes_PluginNonForgeURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://example.com/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://example.com/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2177,8 +2177,8 @@ func TestValidateResourceTypes_PluginNonGitHubForgeRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://gitlab.com/org/repo/-/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://gitlab.com/org/repo/-/tree/main/plugins/gopls-lsp#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2201,8 +2201,8 @@ func TestValidateResourceTypes_PluginBlobURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/repo/blob/main/plugins/gopls-lsp/init.sh#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/repo/blob/main/plugins/gopls-lsp/init.sh#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2225,8 +2225,8 @@ func TestValidateResourceTypes_PluginRepoRootURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
-		Plugins: []string{
-			"https://github.com/org/myplugin/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Plugins: []PluginSpec{
+			{Path: "https://github.com/org/myplugin/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 		},
 	}
 	err := h.ValidateResourceTypes()
@@ -2283,7 +2283,11 @@ func TestHasURLDirResources(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &Harness{Skills: tt.skills, Plugins: tt.plugins}
+			plugins := make([]PluginSpec, 0, len(tt.plugins))
+			for _, p := range tt.plugins {
+				plugins = append(plugins, PluginSpec{Path: p})
+			}
+			h := &Harness{Skills: tt.skills, Plugins: plugins}
 			assert.Equal(t, tt.want, h.HasURLDirResources())
 		})
 	}

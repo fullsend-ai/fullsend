@@ -3,6 +3,8 @@ package runtime
 import (
 	"fmt"
 	"path/filepath"
+
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 )
 
 // BootstrapInput is the portable contract every runtime needs to provision
@@ -19,29 +21,43 @@ type BootstrapInput interface {
 	// cobra arg validation in cmd/fullsend).
 	AgentName() string
 	SkillDirs() []string
-	PluginDirs() []string
-	// Extensions returns the harness's declared pi extensions (ADR 0094).
-	// Only the pi runtime loads them; other runtimes warn and skip.
-	Extensions() []ExtensionInput
+	// Plugins returns the harness's declared plugin directories (ADR 0094),
+	// each tagged with the runtime format it is in. A runtime loads the
+	// entries of its own kind and names and skips the rest.
+	Plugins() []PluginInput
 }
 
-// ExtensionInput is one declared pi extension: a host directory to upload,
-// the sandbox name it is uploaded as, and the CLI args and environment the
-// harness gave it. Name is optional — the path basename is used when empty.
-type ExtensionInput struct {
-	Name string
-	Path string
-	Args []string
-	Env  map[string]string
+// PluginInput is one declared plugin: a host directory to upload, the
+// sandbox name it is uploaded as, the format the directory is in, and the
+// environment and pi options the harness gave it. Name is optional — the
+// path basename is used when empty.
+type PluginInput struct {
+	Name   string
+	Path   string
+	Kind   pluginformat.Kind
+	Env    map[string]string
+	PiArgs []string
 }
 
-// SandboxName is the directory name the extension takes in the sandbox:
+// SandboxName is the directory name the plugin takes in the sandbox:
 // Name when set, else the path basename.
-func (e ExtensionInput) SandboxName() string {
-	if e.Name != "" {
-		return e.Name
+func (p PluginInput) SandboxName() string {
+	if p.Name != "" {
+		return p.Name
 	}
-	return filepath.Base(e.Path)
+	return filepath.Base(p.Path)
+}
+
+// pluginsOfKind returns the entries with a non-empty path that a runtime
+// reading the given format loads.
+func pluginsOfKind(inputs []PluginInput, kind pluginformat.Kind) []PluginInput {
+	var out []PluginInput
+	for _, in := range inputs {
+		if in.Path != "" && in.Kind == kind {
+			out = append(out, in)
+		}
+	}
+	return out
 }
 
 // validateAgentNameMatch returns an error when requestedName and

@@ -15,7 +15,8 @@ import (
 var skillMarkerNames = [...]string{"SKILL.md", "skill.md", "Skill.md"}
 
 // scanRuntimeContent runs InputPipeline on the agent definition, SKILL.md
-// files, plugin JSON, and every text file of each declared pi extension.
+// files, the JSON of each declared Claude plugin, and every text file of
+// each declared pi extension.
 func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 	agentPath := input.AgentPath()
 	if agentPath == "" {
@@ -37,20 +38,20 @@ func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 		}
 	}
 
-	for _, pluginPath := range input.PluginDirs() {
-		if pluginPath == "" {
+	// Each format is scanned the way its runtime reads it: a Claude plugin
+	// through its manifest files, a pi extension through its whole tree,
+	// which is code the runtime executes.
+	for _, plugin := range input.Plugins() {
+		if plugin.Path == "" {
 			continue
 		}
-		if err := scanPluginDir(pipeline, pluginPath, failClosed); err != nil {
-			return err
+		var err error
+		if plugin.Kind == pluginformat.KindPi {
+			err = scanPiPluginDir(pipeline, plugin.Path, failClosed)
+		} else {
+			err = scanPluginDir(pipeline, plugin.Path, failClosed)
 		}
-	}
-
-	for _, ext := range input.Extensions() {
-		if ext.Path == "" {
-			continue
-		}
-		if err := scanExtensionDir(pipeline, ext.Path, failClosed); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -93,14 +94,14 @@ var errExtensionScanUnbounded = errors.New("too many files to scan")
 // downgrade: the Run-time preflight would fail the same tree closed.
 var errExtensionScanRefused = errors.New("refused: inadmissible entry")
 
-// scanExtensionDir scans every regular text file under an extension
+// scanPiPluginDir scans every regular text file under a pi extension
 // directory (node_modules included — vendored dependencies are code the
 // model's tools will run). Binary files are skipped by a cheap NUL-byte
 // probe, oversized ones by maxExtensionScanFileBytes; the scan is
 // heuristic, so breadth matters more than precision, and a finding in
 // third-party JavaScript or prose is as likely to be a false positive as a
 // real one (see docs/runtimes/pi.md).
-func scanExtensionDir(pipeline *security.Pipeline, extPath string, failClosed bool) error {
+func scanPiPluginDir(pipeline *security.Pipeline, extPath string, failClosed bool) error {
 	var scanned, skippedLarge int
 	root, err := filepath.EvalSymlinks(extPath)
 	if err == nil {

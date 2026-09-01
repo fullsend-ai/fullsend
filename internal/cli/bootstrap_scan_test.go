@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -38,16 +39,20 @@ type scanBootstrap struct {
 	sandboxName string
 	agentPath   string
 	skillDirs   []string
-	pluginDirs  []string
-	extensions  []runtime.ExtensionInput
+	plugins     []runtime.PluginInput
 }
 
-func (b scanBootstrap) SandboxName() string                  { return b.sandboxName }
-func (b scanBootstrap) AgentPath() string                    { return b.agentPath }
-func (b scanBootstrap) AgentName() string                    { return "" }
-func (b scanBootstrap) SkillDirs() []string                  { return b.skillDirs }
-func (b scanBootstrap) PluginDirs() []string                 { return b.pluginDirs }
-func (b scanBootstrap) Extensions() []runtime.ExtensionInput { return b.extensions }
+func (b scanBootstrap) SandboxName() string            { return b.sandboxName }
+func (b scanBootstrap) AgentPath() string              { return b.agentPath }
+func (b scanBootstrap) AgentName() string              { return "" }
+func (b scanBootstrap) SkillDirs() []string            { return b.skillDirs }
+func (b scanBootstrap) Plugins() []runtime.PluginInput { return b.plugins }
+
+// scanPiPlugin is one pi-format entry: those are scanned tree-wide,
+// because the runtime executes every file in them.
+func scanPiPlugin(name, path string) []runtime.PluginInput {
+	return []runtime.PluginInput{{Name: name, Path: path, Kind: pluginformat.KindPi}}
+}
 
 // writeScanExtension builds an extension directory with a planted
 // injection string in a nested source file, a binary file that must be
@@ -73,8 +78,8 @@ func TestScanRuntimeContent_ExtensionCriticalFailClosed(t *testing.T) {
 	ext := writeScanExtension(t, dir, true)
 
 	err := scanRuntimeContent(scanBootstrap{
-		agentPath:  agentPath,
-		extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}},
+		agentPath: agentPath,
+		plugins:   scanPiPlugin("my-ext", ext),
 	}, true)
 	require.Error(t, err, "a planted injection anywhere in the tree (node_modules included) blocks")
 	assert.Contains(t, err.Error(), `extension "`+ext+`": blocked`)
@@ -89,8 +94,8 @@ func TestScanRuntimeContent_ExtensionCriticalFailOpen(t *testing.T) {
 
 	output := captureStderr(t, func() {
 		err := scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}},
+			agentPath: agentPath,
+			plugins:   scanPiPlugin("my-ext", ext),
 		}, false)
 		require.NoError(t, err)
 	})
@@ -106,8 +111,8 @@ func TestScanRuntimeContent_ExtensionBenignAndBinarySkipped(t *testing.T) {
 
 	output := captureStderr(t, func() {
 		err := scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}, {Name: "", Path: ""}},
+			agentPath: agentPath,
+			plugins:   append(scanPiPlugin("my-ext", ext), runtime.PluginInput{Name: "", Path: ""}),
 		}, true)
 		require.NoError(t, err)
 	})
@@ -115,15 +120,15 @@ func TestScanRuntimeContent_ExtensionBenignAndBinarySkipped(t *testing.T) {
 
 	// A missing directory is reported (fail closed) rather than skipped.
 	err := scanRuntimeContent(scanBootstrap{
-		agentPath:  agentPath,
-		extensions: []runtime.ExtensionInput{{Name: "gone", Path: filepath.Join(dir, "gone")}},
+		agentPath: agentPath,
+		plugins:   scanPiPlugin("gone", filepath.Join(dir, "gone")),
 	}, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot scan extension")
 	output = captureStderr(t, func() {
 		assert.NoError(t, scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			extensions: []runtime.ExtensionInput{{Name: "gone", Path: filepath.Join(dir, "gone")}},
+			agentPath: agentPath,
+			plugins:   scanPiPlugin("gone", filepath.Join(dir, "gone")),
 		}, false))
 	})
 	assert.Contains(t, output, "WARNING: could not scan extension")
@@ -151,8 +156,8 @@ func TestScanRuntimeContent_ExtensionScanBounds(t *testing.T) {
 
 	output := captureStderr(t, func() {
 		require.NoError(t, scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			extensions: []runtime.ExtensionInput{{Name: "big-ext", Path: ext}},
+			agentPath: agentPath,
+			plugins:   scanPiPlugin("big-ext", ext),
 		}, true), "an oversized file is skipped, not a critical finding")
 	})
 	assert.Contains(t, output, "bundle.min.js")
@@ -173,8 +178,8 @@ func TestScanRuntimeContent_ExtensionScanBounds(t *testing.T) {
 	}
 	for _, failClosed := range []bool{true, false} {
 		err := scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			extensions: []runtime.ExtensionInput{{Name: "many-ext", Path: many}},
+			agentPath: agentPath,
+			plugins:   scanPiPlugin("many-ext", many),
 		}, failClosed)
 		require.Errorf(t, err, "failClosed=%v", failClosed)
 		assert.ErrorIs(t, err, errExtensionScanUnbounded)
@@ -268,8 +273,8 @@ func TestScanPluginDir_FindingDetailsInStderr(t *testing.T) {
 
 	output := captureStderr(t, func() {
 		err := scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			pluginDirs: []string{pluginDir},
+			agentPath: agentPath,
+			plugins:   []runtime.PluginInput{{Name: "my-plugin", Path: pluginDir, Kind: pluginformat.KindClaude}},
 		}, false)
 		require.NoError(t, err)
 	})
@@ -301,8 +306,8 @@ func TestScanRuntimeContent_PluginCriticalFailClosed(t *testing.T) {
 		[]byte(criticalInjectionSnippet), 0o644))
 
 	err := scanRuntimeContent(scanBootstrap{
-		agentPath:  agentPath,
-		pluginDirs: []string{pluginDir},
+		agentPath: agentPath,
+		plugins:   []runtime.PluginInput{{Name: "my-plugin", Path: pluginDir, Kind: pluginformat.KindClaude}},
 	}, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugin")
@@ -355,8 +360,8 @@ func TestScanPluginDir_NonCriticalFindingDetails(t *testing.T) {
 
 	output := captureStderr(t, func() {
 		err := scanRuntimeContent(scanBootstrap{
-			agentPath:  agentPath,
-			pluginDirs: []string{pluginDir},
+			agentPath: agentPath,
+			plugins:   []runtime.PluginInput{{Name: "my-plugin", Path: pluginDir, Kind: pluginformat.KindClaude}},
 		}, false)
 		require.NoError(t, err)
 	})
@@ -378,7 +383,7 @@ func TestScanExtensionDir_RefusesNonRegularEntries(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.js"), []byte("//"), 0o644))
 		require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(dir, "link.js")))
 		for _, failClosed := range []bool{true, false} {
-			err := scanExtensionDir(pipeline, dir, failClosed)
+			err := scanPiPluginDir(pipeline, dir, failClosed)
 			require.Error(t, err, "fail_mode must not downgrade an inadmissible entry")
 			assert.ErrorIs(t, err, errExtensionScanRefused)
 			assert.Contains(t, err.Error(), "link.js")
@@ -388,7 +393,7 @@ func TestScanExtensionDir_RefusesNonRegularEntries(t *testing.T) {
 	t.Run("unreproducible name", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, `a\b.js`), []byte("//"), 0o644))
-		err := scanExtensionDir(pipeline, dir, false)
+		err := scanPiPluginDir(pipeline, dir, false)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, errExtensionScanRefused)
 	})
@@ -398,7 +403,7 @@ func TestScanExtensionDir_RefusesNonRegularEntries(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.js"), []byte("//"), 0o644))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "lib", "a.js"), []byte("//"), 0o644))
-		require.NoError(t, scanExtensionDir(pipeline, dir, true))
+		require.NoError(t, scanPiPluginDir(pipeline, dir, true))
 	})
 }
 
@@ -416,11 +421,36 @@ func TestScanExtensionDir_OversizedFilesCountTowardCap(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("blob%d.bin", i)),
 			[]byte("way over the tiny limit"), 0o644))
 	}
-	err := scanExtensionDir(security.InputPipeline(), dir, false)
+	err := scanPiPluginDir(security.InputPipeline(), dir, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errExtensionScanUnbounded)
 
 	// Three of them stay under the cap.
 	require.NoError(t, os.Remove(filepath.Join(dir, "blob3.bin")))
-	require.NoError(t, scanExtensionDir(security.InputPipeline(), dir, true))
+	require.NoError(t, scanPiPluginDir(security.InputPipeline(), dir, true))
+}
+
+// TestScanRuntimeContent_ClaudePluginScannedAsManifest covers the other
+// half of the per-format dispatch: a Claude plugin is scanned through its
+// manifest files, not walked as a code tree.
+func TestScanRuntimeContent_ClaudePluginScannedAsManifest(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+
+	plugin := filepath.Join(dir, "gopls-lsp")
+	require.NoError(t, os.MkdirAll(plugin, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(plugin, "plugin.json"),
+		[]byte(`{"name":"gopls-lsp","description":"`+criticalInjectionSnippet+`"}`), 0o644))
+	// A code file the pi walk would have flagged: the Claude scan reads the
+	// manifest files only, the way Claude Code loads the bundle.
+	require.NoError(t, os.WriteFile(filepath.Join(plugin, "index.js"),
+		[]byte("// "+criticalInjectionSnippet), 0o644))
+
+	err := scanRuntimeContent(scanBootstrap{
+		agentPath: agentPath,
+		plugins:   []runtime.PluginInput{{Name: "gopls-lsp", Path: plugin, Kind: pluginformat.KindClaude}},
+	}, true)
+	require.Error(t, err, "the manifest itself is scanned")
+	assert.Contains(t, err.Error(), "plugin.json")
 }

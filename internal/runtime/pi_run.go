@@ -243,7 +243,7 @@ const piConfigTamperedExit = 98
 // enables security — the same signal ClaudeRuntime uses for --settings),
 // never from the agent-writable manifest, and the command fails closed if
 // the adapter or manifest file is missing. exts are the declared harness
-// extensions resolved from the host by Run (piResolveRunExtensions): their
+// extensions resolved from the host by Run (piResolveRunPlugins): their
 // preflight hash, -e entries and env exports come from there, not from m.
 func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension) string {
 	r := PiRuntime{}
@@ -619,11 +619,10 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if err := validatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases); err != nil {
 		return -1, err
 	}
-	cmd := buildPiRunCommand(params, m)
 	// The extension preflight hashes come from the host directories, not
 	// from the manifest just read: that file sits in the agent-writable
 	// config dir and could be rewritten together with an extension.
-	exts, err := piResolveRunExtensions(params.Extensions)
+	exts, err := piResolveRunPlugins(params.Plugins)
 	if err != nil {
 		return -1, err
 	}

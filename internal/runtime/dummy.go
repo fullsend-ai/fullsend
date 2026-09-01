@@ -106,12 +106,13 @@ func (DummyRuntime) EnvExports() []string { return nil }
 func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 
-	// Mirror of ClaudeRuntime.Bootstrap: extensions are pi code (ADR 0094)
-	// and the dummy runtime runs scripted operations rather than an agent,
-	// so they are named and skipped rather than silently dropped.
-	for _, e := range input.Extensions() {
+	// Mirror of ClaudeRuntime.Bootstrap: the dummy runtime runs scripted
+	// operations rather than an agent, so every declared plugin (ADR 0094)
+	// is named — with the format it is in — and skipped rather than
+	// silently dropped.
+	for _, e := range input.Plugins() {
 		if e.Path != "" {
-			fmt.Fprintf(os.Stderr, "Extension %q: skipped — the dummy runtime has no pi extensions (see docs/runtimes.md)\n", e.SandboxName())
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — the dummy runtime loads no plugins (see docs/runtimes.md)\n", e.SandboxName(), e.Kind)
 		}
 	}
 

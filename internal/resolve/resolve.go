@@ -346,8 +346,8 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 
 	// Resolve plugins — same directory fetch as skills, but without
 	// transitive dependency resolution (plugins have no SKILL.md frontmatter).
-	for i, p := range h.Plugins {
-		if harness.IsURL(p) {
+	for i, e := range h.Plugins {
+		if p := e.Path; harness.IsURL(p) {
 			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("plugins[%d]", i), p, h, opts, state, false, 0)
 			if err != nil {
 				return ResolveResult{}, fmt.Errorf("resolving plugins[%d]: %w", i, err)
@@ -366,9 +366,11 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				}
 			}
 
-			// Always assign — plugins have no transitive re-append, so
-			// blanking the slot (as skills do for dedup) would drop the plugin.
-			h.Plugins[i] = localPath
+			// Only the path is replaced: the entry's env and pi options
+			// are the harness author's and survive resolution. Always
+			// assign — plugins have no transitive re-append, so blanking
+			// the slot (as skills do for dedup) would drop the plugin.
+			h.Plugins[i].Path = localPath
 			state.appendDependency(dep)
 
 			// Make plugin files executable. The cache writes all files
@@ -376,7 +378,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			// or MCP server binaries that need the executable bit.
 			// NOTE: this mutates the shared content-addressed cache — files
 			// in the same tree referenced as skills will also become 0755.
-			if err := chmodPluginDir(h.Plugins[i]); err != nil {
+			if err := chmodPluginDir(h.Plugins[i].Path); err != nil {
 				return ResolveResult{}, fmt.Errorf("setting plugin permissions for plugins[%d]: %w", i, err)
 			}
 		}
@@ -387,8 +389,8 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	seen := make(map[string]bool, len(h.Plugins))
 	deduped := h.Plugins[:0]
 	for _, p := range h.Plugins {
-		if !seen[p] {
-			seen[p] = true
+		if !seen[p.Path] {
+			seen[p.Path] = true
 			deduped = append(deduped, p)
 		}
 	}

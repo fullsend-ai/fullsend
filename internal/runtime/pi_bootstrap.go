@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -114,9 +115,9 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	cfg := r.ConfigDir()
 
-	// Resolve (and hash) the declared extensions before touching the
+	// Resolve (and hash) the declared pi extensions before touching the
 	// sandbox so a name collision or an unreadable directory fails early.
-	extensions, err := piResolveRunExtensions(input.Extensions())
+	extensions, err := piResolveRunPlugins(input.Plugins())
 	if err != nil {
 		return err
 	}
@@ -155,20 +156,15 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	// path pi does not auto-discover (Run passes --no-extensions and names
 	// each one with -e). The host tree hash in the manifest is what Run's
 	// preflight recomputes against the sandbox copy.
-	for _, in := range input.Extensions() {
-		if in.Path == "" {
-			continue
-		}
+	for _, in := range pluginsOfKind(input.Plugins(), pluginformat.KindPi) {
 		if err := sandbox.Upload(sandboxName, in.Path, r.piExtensionsDir()+"/"+in.SandboxName()); err != nil {
 			return fmt.Errorf("copying extension %q: %w", in.SandboxName(), err)
 		}
 		fmt.Fprintf(os.Stderr, "Extension %q: uploaded to sandbox\n", in.SandboxName())
 	}
 
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — pi does not support Claude plugins (see docs/runtimes.md)\n", p)
-		}
+	for _, in := range pluginsOfKind(input.Plugins(), pluginformat.KindClaude) {
+		fmt.Fprintf(os.Stderr, "Plugin %q: skipped — pi does not support Claude plugins (see docs/runtimes.md)\n", in.SandboxName())
 	}
 
 	tools, unsupported := piToolsFor(def.Tools)

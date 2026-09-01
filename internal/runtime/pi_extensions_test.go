@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -290,15 +291,17 @@ func TestPiExtensionsGuard(t *testing.T) {
 	assert.Equal(t, "", piExtensionsGuard(nil), "no extensions, no guard")
 }
 
-func TestPiResolveRunExtensions(t *testing.T) {
+func TestPiResolveRunPlugins(t *testing.T) {
 	t.Parallel()
 	dir := writeExtensionFixture(t, "go-diagnostics")
 	sum, err := piExtensionTreeHash(dir)
 	require.NoError(t, err)
 
-	exts, err := piResolveRunExtensions([]ExtensionInput{
-		{Path: dir, Args: []string{"--strict"}, Env: map[string]string{"GO_DIAG": "1"}},
-		{Name: "explicit", Path: dir},
+	exts, err := piResolveRunPlugins([]PluginInput{
+		{Path: dir, Kind: pluginformat.KindPi, PiArgs: []string{"--strict"}, Env: map[string]string{"GO_DIAG": "1"}},
+		{Name: "explicit", Path: dir, Kind: pluginformat.KindPi},
+		// A Claude plugin in the same list belongs to another runtime.
+		{Name: "claude-one", Path: dir, Kind: pluginformat.KindClaude},
 	})
 	require.NoError(t, err)
 	require.Len(t, exts, 2)
@@ -309,21 +312,24 @@ func TestPiResolveRunExtensions(t *testing.T) {
 	assert.Equal(t, "explicit", exts[1].Name, "an explicit name wins over the basename")
 	assert.Equal(t, "/sandbox/pi-config/extensions/explicit", exts[1].Path)
 
-	_, err = piResolveRunExtensions([]ExtensionInput{{Path: filepath.Join(t.TempDir(), "missing")}})
+	_, err = piResolveRunPlugins(piPlugins(filepath.Join(t.TempDir(), "missing")))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 
-	_, err = piResolveRunExtensions([]ExtensionInput{{Path: dir}, {Name: "go-diagnostics", Path: t.TempDir()}})
+	_, err = piResolveRunPlugins([]PluginInput{
+		{Path: dir, Kind: pluginformat.KindPi},
+		{Name: "go-diagnostics", Path: t.TempDir(), Kind: pluginformat.KindPi},
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "two extension paths both resolve to the sandbox name")
 
 	for _, reserved := range piReservedExtensionNames {
-		_, err = piResolveRunExtensions([]ExtensionInput{{Name: reserved, Path: dir}})
+		_, err = piResolveRunPlugins([]PluginInput{{Name: reserved, Path: dir, Kind: pluginformat.KindPi}})
 		require.Error(t, err, reserved)
 		assert.Contains(t, err.Error(), "reserved")
 	}
 
-	got, err := piResolveRunExtensions(nil)
+	got, err := piResolveRunPlugins(nil)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -403,8 +409,8 @@ func TestPiRuntimeBootstrap_Extensions(t *testing.T) {
 			sandboxName: "sb",
 			agentPath:   writeAgentFile(t, "---\nname: code\n---\nBody"),
 			agentName:   "code",
-			extensions: []ExtensionInput{
-				{Path: ext, Args: []string{"--strict"}, Env: map[string]string{"GO_DIAG": "1"}},
+			plugins: []PluginInput{
+				{Path: ext, Kind: pluginformat.KindPi, PiArgs: []string{"--strict"}, Env: map[string]string{"GO_DIAG": "1"}},
 			},
 		},
 		hooks: security.SandboxHookConfigFromHarness(h),
@@ -443,13 +449,13 @@ func TestPiRuntimeBootstrap_Extensions(t *testing.T) {
 	other := writeExtensionFixture(t, "go-diagnostics")
 	err = PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: in.agentPath, agentName: "code",
-		extensions: []ExtensionInput{{Path: ext}, {Path: other}},
+		plugins: piPlugins(ext, other),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "two extension paths both resolve to the sandbox name")
 	err = PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: in.agentPath, agentName: "code",
-		extensions: []ExtensionInput{{Name: "fullsend-hooks", Path: ext}},
+		plugins: []PluginInput{{Name: "fullsend-hooks", Path: ext, Kind: pluginformat.KindPi}},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
@@ -463,7 +469,7 @@ func TestPiRuntimeRun_ExtensionTamperedFailsClosed(t *testing.T) {
 	ext := writeExtensionFixture(t, "go-diagnostics")
 	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: code\n---\nBody"), agentName: "code",
-		extensions: []ExtensionInput{{Path: ext}},
+		plugins: piPlugins(ext),
 	}))
 	// Replace the fake so the run command's extension guard fails the way
 	// a modified or deleted extension directory would (exit 96).
@@ -483,8 +489,8 @@ exit 0
 
 	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
 		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second,
-		Extensions: []ExtensionInput{{Path: ext}},
-		OnEvent:    func(AgentEvent) {},
+		Plugins: piPlugins(ext),
+		OnEvent: func(AgentEvent) {},
 	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
 	assert.Equal(t, piExtensionTamperedExit, exit)
 	require.ErrorContains(t, err, "pi extension directory")
@@ -495,18 +501,18 @@ exit 0
 	require.NoError(t, os.RemoveAll(ext))
 	exit, err = PiRuntime{}.Run(context.Background(), RunParams{
 		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second,
-		Extensions: []ExtensionInput{{Path: ext}},
-		OnEvent:    func(AgentEvent) {},
+		Plugins: piPlugins(ext),
+		OnEvent: func(AgentEvent) {},
 	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
 	assert.Equal(t, -1, exit)
 	require.ErrorContains(t, err, "hashing pi extension")
 }
 
-// TestDummyRuntimeBootstrap_ExtensionsSkippedWithWarning is the dummy
-// runtime's half of the same contract: BootstrapInput.Extensions() must
+// TestDummyRuntimeBootstrap_PluginsSkippedWithWarning is the dummy
+// runtime's half of the same contract: BootstrapInput.Plugins() must
 // never be dropped without a word. The exec is stubbed, so this needs no
 // sandbox gateway.
-func TestDummyRuntimeBootstrap_ExtensionsSkippedWithWarning(t *testing.T) {
+func TestDummyRuntimeBootstrap_PluginsSkippedWithWarning(t *testing.T) {
 	var execCalls int
 	r := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
 		execCalls++
@@ -516,21 +522,27 @@ func TestDummyRuntimeBootstrap_ExtensionsSkippedWithWarning(t *testing.T) {
 	stderr := captureStderr(t, func() {
 		require.NoError(t, r.Bootstrap(bootstrapInput{
 			sandboxName: "sb",
-			extensions:  []ExtensionInput{{Path: ext}, {Name: "named", Path: ext}, {Path: ""}},
+			plugins: []PluginInput{
+				{Path: ext, Kind: pluginformat.KindPi},
+				{Name: "named", Path: ext, Kind: pluginformat.KindPi},
+				{Name: "a-claude-one", Path: ext, Kind: pluginformat.KindClaude},
+				{Path: ""},
+			},
 		}))
 	})
-	assert.Contains(t, stderr, `Extension "go-diagnostics": skipped — the dummy runtime has no pi extensions (see docs/runtimes.md)`)
-	assert.Contains(t, stderr, `Extension "named": skipped`)
+	assert.Contains(t, stderr, `Plugin "go-diagnostics" (pi): skipped — the dummy runtime loads no plugins (see docs/runtimes.md)`)
+	assert.Contains(t, stderr, `Plugin "named" (pi): skipped`)
+	assert.Contains(t, stderr, `Plugin "a-claude-one" (claude): skipped`)
 	assert.Equal(t, 1, execCalls, "the skip loop does not stop the mkdir")
 
 	// Nothing is printed when the harness declares none.
 	stderr = captureStderr(t, func() {
 		require.NoError(t, r.Bootstrap(bootstrapInput{sandboxName: "sb"}))
 	})
-	assert.NotContains(t, stderr, "Extension")
+	assert.NotContains(t, stderr, "Plugin")
 }
 
-func TestClaudeRuntimeBootstrap_ExtensionsSkippedWithWarning(t *testing.T) {
+func TestClaudeRuntimeBootstrap_PiPluginsSkippedWithWarning(t *testing.T) {
 	work := t.TempDir()
 	logPath := filepath.Join(work, "openshell.log")
 	fakeOpenshellPi(t, logPath, filepath.Join(work, "store"), "/dev/null")
@@ -539,11 +551,14 @@ func TestClaudeRuntimeBootstrap_ExtensionsSkippedWithWarning(t *testing.T) {
 	stderr := captureStderr(t, func() {
 		require.NoError(t, ClaudeRuntime{}.Bootstrap(bootstrapInput{
 			sandboxName: "sb", agentPath: agent, agentName: "code",
-			extensions: []ExtensionInput{{Path: ext}, {Name: "named", Path: ext}},
+			plugins: []PluginInput{
+				{Path: ext, Kind: pluginformat.KindPi},
+				{Name: "named", Path: ext, Kind: pluginformat.KindPi},
+			},
 		}))
 	})
-	assert.Contains(t, stderr, `Extension "go-diagnostics": skipped — the Claude Code runtime has no pi extensions (see docs/runtimes.md)`)
-	assert.Contains(t, stderr, `Extension "named": skipped`)
+	assert.Contains(t, stderr, `Plugin "go-diagnostics": skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)`)
+	assert.Contains(t, stderr, `Plugin "named": skipped`)
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	assert.NotContains(t, string(log), "extensions/", "nothing is uploaded for extensions on Claude Code")

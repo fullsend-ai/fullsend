@@ -55,21 +55,21 @@ type piManifestExtension struct {
 
 func (r PiRuntime) piExtensionsDir() string { return r.ConfigDir() + "/extensions" }
 
-// piResolveRunExtensions turns the runner's ExtensionInputs into manifest
-// entries: sandbox path, host tree hash, args and env. Both Bootstrap and
-// Run call it so the two agree on the hash by construction. Name
-// collisions between entries and with piReservedExtensionNames are errors
-// (sandbox.UploadDir replaces its destination wholesale, so a collision
-// would silently drop one extension).
-func piResolveRunExtensions(inputs []ExtensionInput) ([]piManifestExtension, error) {
+// piResolveRunPlugins turns the pi-format entries of the runner's plugin
+// list into manifest entries: sandbox path, host tree hash, args and env.
+// Entries in the Claude format belong to another runtime and are dropped
+// here (Bootstrap names them). Both Bootstrap and Run call it so the two
+// agree on the hash by construction. Name collisions between entries and
+// with piReservedExtensionNames are errors (sandbox.UploadDir replaces its
+// destination wholesale, so a collision would silently drop one
+// extension).
+func piResolveRunPlugins(all []PluginInput) ([]piManifestExtension, error) {
+	inputs := pluginsOfKind(all, pluginformat.KindPi)
 	if len(inputs) == 0 {
 		return nil, nil
 	}
 	paths := make([]string, 0, len(inputs))
 	for _, in := range inputs {
-		if in.Path == "" {
-			continue
-		}
 		// duplicateDestinationNameError keys on the path basename; an
 		// explicit Name that differs from it is checked through a
 		// synthetic path so both collide the same way.
@@ -81,9 +81,6 @@ func piResolveRunExtensions(inputs []ExtensionInput) ([]piManifestExtension, err
 	r := PiRuntime{}
 	exts := make([]piManifestExtension, 0, len(inputs))
 	for _, in := range inputs {
-		if in.Path == "" {
-			continue
-		}
 		sum, err := piExtensionTreeHash(in.Path)
 		if err != nil {
 			return nil, fmt.Errorf("hashing pi extension %q (%s): %w", in.SandboxName(), in.Path, err)
@@ -92,7 +89,7 @@ func piResolveRunExtensions(inputs []ExtensionInput) ([]piManifestExtension, err
 			Name:   in.SandboxName(),
 			Path:   r.piExtensionsDir() + "/" + in.SandboxName(),
 			SHA256: sum,
-			Args:   append([]string(nil), in.Args...),
+			Args:   append([]string(nil), in.PiArgs...),
 			Env:    cloneStringMap(in.Env),
 		})
 	}

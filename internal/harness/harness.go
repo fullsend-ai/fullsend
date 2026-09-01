@@ -11,7 +11,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
@@ -326,8 +325,7 @@ type Harness struct {
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
 	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
-	Plugins                []string                `yaml:"plugins,omitempty"`
-	Extensions             []ExtensionSpec         `yaml:"extensions,omitempty"` // pi extensions from the harness repo (ADR 0094)
+	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
@@ -481,16 +479,7 @@ func (h *Harness) Validate() error {
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
-	for i, p := range h.Plugins {
-		if IsURL(p) {
-			continue // validated by ValidateResourceTypes below
-		}
-		pluginBase := filepath.Base(p)
-		if !validPluginName.MatchString(pluginBase) {
-			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
-		}
-	}
-	if err := h.validateExtensions(); err != nil {
+	if err := h.validatePlugins(); err != nil {
 		return err
 	}
 	for i, p := range h.Providers {
@@ -653,12 +642,7 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 		}
 	}
 	for i := range h.Plugins {
-		if h.Plugins[i], err = resolve(fmt.Sprintf("plugins[%d]", i), h.Plugins[i]); err != nil {
-			return err
-		}
-	}
-	for i := range h.Extensions {
-		if h.Extensions[i].Path, err = resolve(fmt.Sprintf("extensions[%d]", i), h.Extensions[i].Path); err != nil {
+		if h.Plugins[i].Path, err = resolve(fmt.Sprintf("plugins[%d]", i), h.Plugins[i].Path); err != nil {
 			return err
 		}
 	}
@@ -804,33 +788,14 @@ func (h *Harness) ValidateFilesExist() error {
 			}
 		}
 	}
-	for i, p := range h.Plugins {
-		if err := check(fmt.Sprintf("plugins[%d]", i), p); err != nil {
+	for i, e := range h.Plugins {
+		// A URL entry that reached here unresolved is the caller's ordering
+		// bug, not a directory to stat — the same defence check() applies.
+		if e.Path == "" || IsURL(e.Path) {
+			continue
+		}
+		if err := h.validatePluginDir(fmt.Sprintf("plugins[%d]", i), e); err != nil {
 			return err
-		}
-	}
-	for i, e := range h.Extensions {
-		field := fmt.Sprintf("extensions[%d]", i)
-		info, err := os.Stat(e.Path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("%s: %q must be a directory (pi loads index.js/index.ts/index.mjs/index.cjs, or the package.json \"pi.extensions\"/\"main\" entries, from it)", field, e.Path)
-		}
-		// pi exits 1 with `Failed to load extension "<path>"` when it cannot
-		// resolve an entry point, and loads nothing at all from a directory
-		// that turned into package layout, so the harness author learns here
-		// rather than from a failed run or a missing tool.
-		kind, problem, err := pluginformat.Detect(e.Path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		if kind != pluginformat.KindPi {
-			if problem == "" {
-				problem = "it is a Claude plugin (plugin.json), which pi does not load"
-			}
-			return extensionNotLoadableError(field, e.Path, problem)
 		}
 	}
 	for i, hf := range h.HostFiles {
@@ -1016,8 +981,8 @@ func (h *Harness) ValidateResourceTypes() error {
 	if err := ValidateSkillOverrides(h.Skills); err != nil {
 		return err
 	}
-	for i, p := range h.Plugins {
-		if IsURL(p) {
+	for i, e := range h.Plugins {
+		if p := e.Path; IsURL(p) {
 			cleanURL, _, hasHash := ParseIntegrityHash(p)
 			if !hasHash {
 				return fmt.Errorf("plugins[%d] URL must include #sha256=... integrity hash", i)
@@ -1083,7 +1048,7 @@ func (h *Harness) HasURLDirResources() bool {
 		}
 	}
 	for _, p := range h.Plugins {
-		if IsURL(p) {
+		if IsURL(p.Path) {
 			return true
 		}
 	}
@@ -1108,7 +1073,7 @@ func (h *Harness) HasURLReferences() bool {
 		}
 	}
 	for _, p := range h.Plugins {
-		if IsURL(p) {
+		if IsURL(p.Path) {
 			return true
 		}
 	}

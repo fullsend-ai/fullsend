@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/skill"
@@ -91,11 +92,19 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
+	// Mirror of the pi runtime's skip: a pi extension is code with no
+	// Claude Code equivalent, so it is named and skipped rather than
+	// silently dropped.
 	var pluginDirs []string
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			pluginDirs = append(pluginDirs, p)
+	for _, e := range input.Plugins() {
+		if e.Path == "" {
+			continue
 		}
+		if e.Kind != pluginformat.KindClaude {
+			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)\n", e.SandboxName())
+			continue
+		}
+		pluginDirs = append(pluginDirs, e.Path)
 	}
 	if len(pluginDirs) > 0 {
 		if err := duplicateDestinationNameError("plugin", pluginDirs, reservedPluginDestNames...); err != nil {
@@ -103,15 +112,6 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		if err := bootstrapPlugins(sandboxName, configDir, pluginDirs); err != nil {
 			return fmt.Errorf("bootstrapping plugins: %w", err)
-		}
-	}
-
-	// Mirror of the pi runtime's `plugins:` warning: extensions are pi
-	// code and have no Claude Code equivalent, so they are named and skipped
-	// rather than silently dropped.
-	for _, e := range input.Extensions() {
-		if e.Path != "" {
-			fmt.Fprintf(os.Stderr, "Extension %q: skipped — the Claude Code runtime has no pi extensions (see docs/runtimes.md)\n", e.SandboxName())
 		}
 	}
 

@@ -1,14 +1,35 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
+
+// claudePluginDir and piPluginDir write the smallest directory each format
+// is recognised by, so the bootstrap input can detect a real kind.
+func claudePluginDir(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{"name":"`+name+`"}`), 0o644))
+	return dir
+}
+
+func piPluginDir(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "index.js"), []byte("export default function () {}"), 0o644))
+	return dir
+}
 
 func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 	disabled := false
@@ -18,7 +39,8 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 			Enabled: &disabled,
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	require.NoError(t, err)
 
 	_, ok := boot.(agentruntime.SandboxHooksBootstrap)
 	assert.False(t, ok)
@@ -28,24 +50,28 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
+	plugin := claudePluginDir(t, "p")
 	h := &harness.Harness{
 		Agent:   "agents/test.md",
 		Skills:  []harness.SkillEntry{{Source: "skills/a"}},
-		Plugins: []string{"plugins/p"},
+		Plugins: []harness.PluginSpec{{Path: plugin}},
 		Security: &harness.SecurityConfig{
 			SandboxHooks: &harness.SandboxHooks{
 				Tirith: &harness.TirithConfig{FailOn: "critical"},
 			},
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
 	require.True(t, ok)
 	// The harness sandbox_hooks block is carried through unchanged.
 	assert.Equal(t, "critical", hooksBoot.SandboxHookConfig().TirithFailOn())
 	assert.True(t, hooksBoot.SandboxHookConfig().TirithRequired())
-	assert.Equal(t, []string{"plugins/p"}, boot.PluginDirs())
+	assert.Equal(t, []agentruntime.PluginInput{
+		{Name: "p", Path: plugin, Kind: pluginformat.KindClaude},
+	}, boot.Plugins())
 	assert.Equal(t, harness.SkillSources(h.Skills), boot.SkillDirs())
 }
 
@@ -56,37 +82,98 @@ func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
 			SandboxHooks: &harness.SandboxHooks{},
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443")
+	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
 	require.True(t, ok)
 	assert.Equal(t, "gitlab.company.com:443", hooksBoot.SandboxHookConfig().ForgeEgressEntry())
 }
 
-func TestNewHarnessBootstrap_CarriesExtensions(t *testing.T) {
+// TestNewHarnessBootstrap_CarriesPlugins covers the mapping the runtimes
+// dispatch on: every entry is passed through with the format its directory
+// is in, so each runtime can load its own and name the rest.
+func TestNewHarnessBootstrap_CarriesPlugins(t *testing.T) {
 	t.Parallel()
+	claude := claudePluginDir(t, "gopls-lsp")
+	diagnostics := piPluginDir(t, "go-diagnostics")
+	fff := piPluginDir(t, "pi-fff")
 	h := &harness.Harness{
-		Agent:   "/fs/agents/code.md",
-		Skills:  []harness.SkillEntry{{Source: "/fs/skills/a"}},
-		Plugins: []string{"/fs/plugins/p"},
-		Extensions: []harness.ExtensionSpec{
-			{Path: "/fs/extensions/go-diagnostics"},
-			{Path: "/fs/extensions/pi-fff", Args: []string{"--fff-mode", "override"}, Env: map[string]string{"FFF_MULTIGREP": "1"}},
+		Agent:  "/fs/agents/code.md",
+		Skills: []harness.SkillEntry{{Source: "/fs/skills/a"}},
+		Plugins: []harness.PluginSpec{
+			{Path: claude},
+			{Path: diagnostics},
+			{
+				Path: fff,
+				Env:  map[string]string{"FFF_MULTIGREP": "1"},
+				Pi:   &harness.PiPluginOptions{Args: []string{"--fff-mode", "override"}},
+			},
 		},
 	}
-	boot := newHarnessBootstrap(h, "sb", "code", "")
+	boot, err := newHarnessBootstrap(h, "sb", "code", "")
+	require.NoError(t, err)
 	assert.Equal(t, []string{"/fs/skills/a"}, boot.SkillDirs())
-	assert.Equal(t, []string{"/fs/plugins/p"}, boot.PluginDirs())
-	assert.Equal(t, []agentruntime.ExtensionInput{
-		{Name: "go-diagnostics", Path: "/fs/extensions/go-diagnostics"},
-		{Name: "pi-fff", Path: "/fs/extensions/pi-fff", Args: []string{"--fff-mode", "override"}, Env: map[string]string{"FFF_MULTIGREP": "1"}},
-	}, boot.Extensions())
+	assert.Equal(t, []agentruntime.PluginInput{
+		{Name: "gopls-lsp", Path: claude, Kind: pluginformat.KindClaude},
+		{Name: "go-diagnostics", Path: diagnostics, Kind: pluginformat.KindPi},
+		{
+			Name: "pi-fff", Path: fff, Kind: pluginformat.KindPi,
+			Env:    map[string]string{"FFF_MULTIGREP": "1"},
+			PiArgs: []string{"--fff-mode", "override"},
+		},
+	}, boot.Plugins())
 
 	// The security-enabled wrapper exposes the same list.
 	_, hooked := boot.(agentruntime.SandboxHooksBootstrap)
 	require.True(t, hooked, "security defaults on, so the hooks wrapper is returned")
 
-	// No extensions: nil, not an empty slice, so runtimes can len() it.
-	assert.Nil(t, newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "").Extensions())
-	assert.Nil(t, extensionInputs(nil))
+	// No plugins: nil, not an empty slice, so runtimes can len() it.
+	bare, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "")
+	require.NoError(t, err)
+	assert.Nil(t, bare.Plugins())
+	got, err := pluginInputs(nil)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// TestNewHarnessBootstrap_UndetectablePlugin covers the ordering guard: by
+// this point ValidateFilesExist has already refused a directory no runtime
+// would load, so a failure here is a caller bug and is reported with the
+// offending entry rather than silently producing a kindless input.
+func TestNewHarnessBootstrap_UndetectablePlugin(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "neither")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("#"), 0o644))
+
+	_, err := newHarnessBootstrap(&harness.Harness{
+		Agent:   "a.md",
+		Plugins: []harness.PluginSpec{{Path: dir}},
+	}, "sb", "code", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0]")
+	assert.Contains(t, err.Error(), "not a Claude plugin")
+
+	_, err = newHarnessBootstrap(&harness.Harness{
+		Agent:   "a.md",
+		Plugins: []harness.PluginSpec{{Path: filepath.Join(t.TempDir(), "missing")}},
+	}, "sb", "code", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0]")
+}
+
+// TestDescribePlugins covers the run header line: each entry is tagged
+// with the format it is in, and an unreadable one is printed bare.
+func TestDescribePlugins(t *testing.T) {
+	t.Parallel()
+	claude := claudePluginDir(t, "gopls-lsp")
+	pi := piPluginDir(t, "go-diagnostics")
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	assert.Equal(t, []string{
+		claude + " (claude)",
+		pi + " (pi)",
+		missing,
+	}, describePlugins([]harness.PluginSpec{{Path: claude}, {Path: pi}, {Path: missing}}))
 }
