@@ -54,9 +54,8 @@ repository.
 - Responsive to feedback on your own PRs
 
 **How to request:** Open a
-[Role Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=role-request)
-discussion. Title it "Role request: triage — \<your GitHub username\>".
-Link to your merged PRs or reviews.
+[Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request)
+discussion. Link to your merged PRs or reviews.
 
 **Who approves:** Any single maintainer.
 
@@ -85,9 +84,8 @@ repository.
 - Trusted not to push directly to protected branches or bypass review
 
 **How to request:** Open a
-[Role Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=role-request)
-discussion. Title it "Role request: write — \<your GitHub username\>".
-Link to your contribution history.
+[Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request)
+discussion. Link to your contribution history.
 
 **Who approves:** Two maintainers must approve. A single maintainer
 can request more discussion but cannot unilaterally grant write access.
@@ -118,8 +116,8 @@ Role changes use the following request mechanisms:
 | Role | Request mechanism | Approval |
 |------|-------------------|----------|
 | Vouched | [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) | 1 maintainer |
-| Triage | [Role Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=role-request) | 1 maintainer |
-| Write | [Role Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=role-request) | 2 maintainers |
+| Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 maintainer |
+| Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 maintainers |
 | Maintainer | Issue (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
 
 ## Prow/OWNERS repositories
