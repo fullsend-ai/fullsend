@@ -314,9 +314,7 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [
-            { text: "Harness Field Reference", link: "/reference/harness-reference" },
-          ],
+          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
         },
         {
           text: "Infrastructure",
@@ -332,7 +330,10 @@ export default defineConfig({
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
-            { text: "OpenAI Workload Identity", link: "/guides/infrastructure/openai-workload-identity" },
+            {
+              text: "OpenAI Workload Identity",
+              link: "/guides/infrastructure/openai-workload-identity",
+            },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",
@@ -361,7 +362,15 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
-            { text: "Archived roadmaps", link: "/archived-roadmap" },
+            {
+              text: "Archived roadmaps",
+              collapsed: true,
+              items: [
+                { text: "Index", link: "/archived-roadmaps/" },
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps"),
+                { text: "July 2026 and earlier", link: "/archived-roadmap" },
+              ],
+            },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
@@ -430,7 +439,7 @@ export default defineConfig({
             prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
           },
           { label: "Experiments", prefixes: ["/docs/experiments/"] },
-          { label: "Contributing", prefixes: ["/docs/contributing/"] },
+          { label: "Contributing", prefixes: ["/docs/contributing/", "/docs/archived-roadmaps/"] },
           { label: "Others", prefixes: [], others: true },
         ],
       },

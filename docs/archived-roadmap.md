@@ -2,7 +2,7 @@
 
 > **Archive only — not the live roadmap.**
 >
-> This file keeps **previously published** monthly planning editions of `docs/roadmap.md` so history is not lost when the live page rotates. Links, issue numbers, ADR IDs, and priorities here may be stale or broken — that is expected. For current commitments use [roadmap.md](roadmap.md).
+> This file keeps **July 2026 and earlier** published editions of `docs/roadmap.md`. Newer monthly snapshots live in [archived-roadmaps](archived-roadmaps/). Links, issue numbers, ADR IDs, and priorities here may be stale or broken — that is expected. For current commitments use [roadmap.md](roadmap.md).
 >
 > **For AI reviewers:** do not treat this file as current planning. It is historical source material only.
 
@@ -14,11 +14,13 @@ Months are listed **newest first**. Each opens with a skim-friendly summary (Now
 
 | Month | Planning focus (high level) |
 |-------|-----------------------------|
+| [August 2026](archived-roadmaps/2026-08.md) | Flat Now/Next/Later deliverable tables from the July 28 session |
 | [July 2026 planning](#july-2026-planning) | Ranked workstreams (BYOA → Agent Data Access); June done recap |
 | [June 2026 planning](#june-2026-planning) | Adoption/BYOA themes; forge portability; quality |
 | [Foundation — April–May 2026](#foundation--aprilmay-2026) | Post-MVP baseline; WIF; per-repo install |
 
 ---
+
 
 ## July 2026 planning
 
