@@ -133,7 +133,9 @@ fullsend
 │       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │       ├── --number <int>                   #     Issue number
-│       └── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 ├── post-review                              # Post PR/MR review comments to GitHub or GitLab
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)

@@ -56,8 +56,8 @@ fullsend issues get \
 Posts a comment with a sticky marker on an issue. On re-runs, finds
 the existing comment by its marker and edits in-place. By default,
 old content is collapsed into `<details>` blocks to preserve history;
-set `keep_history: false` in config.yaml (or pass `--keep-history=false`
-on `post-review` / `post-comment`) to replace the body with no history.
+set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
+to replace the body with no history.
 This prevents comment flooding on re-runs. For GitHub and GitLab, the marker is embedded as an invisible
 HTML comment in the body. For Jira, the marker is stored as a comment
 entity property (Jira has no HTML comments, so a body-embedded marker
@@ -86,6 +86,7 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--dry-run` | No | Print what would be posted without making API calls |
+| `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ### Jira marker storage

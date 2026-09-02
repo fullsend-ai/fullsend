@@ -190,7 +190,10 @@ type issuesPostCommentConfig struct {
 }
 
 func newIssuesPostCommentCmd() *cobra.Command {
-	var cfg issuesPostCommentConfig
+	var (
+		cfg         issuesPostCommentConfig
+		keepHistory bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "post-comment",
@@ -223,6 +226,9 @@ pointing at the directory containing it.
 
 The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("keep-history") {
+				cfg.keepHistory = &keepHistory
+			}
 			return runIssuesPostComment(cmd.Context(), &cfg)
 		},
 	}
@@ -236,6 +242,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
 	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("project")
 	_ = cmd.MarkFlagRequired("number")
