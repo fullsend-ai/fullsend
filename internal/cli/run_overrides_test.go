@@ -203,6 +203,30 @@ func TestResolveStallTimeout(t *testing.T) {
 	}
 }
 
+// TestEffectiveStallTimeout: the watchdog is disabled (0, the value
+// startStallWatchdog treats as "no watchdog") when the stall timeout is not
+// strictly below the run timeout — the global deadline would always fire
+// first — and passes through untouched when it is below.
+func TestEffectiveStallTimeout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		stall, run time.Duration
+		want       time.Duration
+	}{
+		{name: "below the run timeout stays enabled", stall: 5 * time.Minute, run: 30 * time.Minute, want: 5 * time.Minute},
+		{name: "equal to the run timeout is disabled", stall: 10 * time.Minute, run: 10 * time.Minute, want: 0},
+		{name: "above the run timeout is disabled", stall: 31 * time.Minute, run: 30 * time.Minute, want: 0},
+		{name: "explicitly disabled stays disabled", stall: 0, run: 30 * time.Minute, want: 0},
+		{name: "default vs default run timeout stays enabled", stall: defaultStallTimeout, run: 30 * time.Minute, want: defaultStallTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, effectiveStallTimeout(tc.stall, tc.run))
+		})
+	}
+}
+
 func TestAggregateMetrics_StalledOmittedWhenFalse(t *testing.T) {
 	t.Parallel()
 	clean, err := json.Marshal(aggregateMetrics{})

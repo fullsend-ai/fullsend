@@ -160,6 +160,18 @@ func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
 	return d, nil
 }
 
+// effectiveStallTimeout disables the watchdog (returns 0) when it could never
+// fire: sandbox.ExecStreamReader wraps the command in the global run
+// timeout's context, so a stall timeout at or above it always loses the race
+// to the global deadline. Below it, the configured value stands unchanged —
+// no clamping or deriving, existing configs keep their behavior.
+func effectiveStallTimeout(stall, run time.Duration) time.Duration {
+	if stall >= run {
+		return 0
+	}
+	return stall
+}
+
 // validateRuntimeName mirrors the config validation so a flag/env override
 // cannot select a runtime the config file could not.
 func validateRuntimeName(name string) error {
