@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -756,20 +757,77 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 }
 
 func TestValidate_NegativeMaxCostUSD(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: -0.01}
+	v := -0.01
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: &v}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "max_cost_usd must be non-negative")
 }
 
 func TestValidate_MaxCostUSDZeroAllowed(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: 0}
+	v := 0.0
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: &v}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_MaxCostUSDUnsetAllowed(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test"}
 	require.NoError(t, h.Validate())
 }
 
 func TestValidate_MaxCostUSDPositiveAllowed(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: 5.25}
+	v := 5.25
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: &v}
 	require.NoError(t, h.Validate())
+}
+
+func TestValidate_MaxCostUSDNonFinite(t *testing.T) {
+	for name, v := range map[string]float64{
+		"NaN":  math.NaN(),
+		"+Inf": math.Inf(1),
+		"-Inf": math.Inf(-1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := v
+			h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: &v}
+			err := h.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "max_cost_usd must be a finite number")
+		})
+	}
+}
+
+// YAML has literal spellings for non-finite floats; loading must reject
+// them, or `.nan`/`.inf` in a harness file would silently disable the cap.
+func TestLoad_MaxCostUSDNonFiniteYAML(t *testing.T) {
+	for _, val := range []string{".nan", ".inf", "-.inf"} {
+		t.Run(val, func(t *testing.T) {
+			content := "agent: agents/test.md\nrole: test\nmax_cost_usd: " + val + "\n"
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			_, err := Load(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "max_cost_usd must be a finite number")
+		})
+	}
+}
+
+func TestLoad_MaxCostUSDField(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+max_cost_usd: 2.5
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.MaxCostUSD)
+	assert.InDelta(t, 2.5, *h.MaxCostUSD, 0.0001)
 }
 
 func TestValidate_NegativeSandboxTimeout(t *testing.T) {
