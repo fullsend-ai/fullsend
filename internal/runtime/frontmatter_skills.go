@@ -125,7 +125,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		}
 		if yaml.Unmarshal(frontBytes, &probe) == nil && probe.Skills != nil {
 			if _, isList := probe.Skills.([]interface{}); !isList {
-				return nil, fmt.Errorf("skills field must be a YAML list, got scalar: %w", err)
+				return nil, fmt.Errorf("skills field must be a YAML list: %w", err)
 			}
 		}
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
@@ -151,9 +151,6 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		// with the injection path (which always operates on BOM-stripped data).
 		return content, nil
 	}
-
-	// Sort added names for deterministic output.
-	sort.Strings(added)
 
 	// Reconstruct the frontmatter by injecting skills.
 	// Strategy: if the frontmatter already has a skills: section, append
@@ -199,16 +196,6 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 				// The YAML parser already captured the values into fm.Skills;
 				// we will rewrite this line as block form in the output loop.
 				flowStyleSkills = true
-				// Multi-line flow arrays (e.g. "skills: [\n  a,\n  b\n]"):
-				// mark continuation lines for skipping during reconstruction.
-				if !strings.Contains(rest, "]") {
-					for j := i + 1; j < len(frontLines); j++ {
-						flowEndIdx = j
-						if strings.Contains(string(frontLines[j]), "]") {
-							break
-						}
-					}
-				}
 			} else {
 				// Non-list value (e.g. "skills: null") — rewrite as block
 				// form. The YAML parser already validated the field; we
@@ -230,6 +217,34 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 			if trimmed != "" {
 				inSkillsBlock = false
 			}
+		}
+	}
+
+	// When replacing the skills line (flowStyleSkills), determine how many
+	// subsequent lines belong to the original value and should be skipped.
+	// Uses indentation to identify continuation content rather than scanning
+	// for "]", which breaks when "]" appears inside YAML comments on
+	// continuation lines. Also handles non-list values followed by block
+	// items (e.g., YAML anchors: "skills: &defaults\n  - skill-a").
+	if flowStyleSkills && lastSkillLineIdx >= 0 {
+		for j := lastSkillLineIdx + 1; j < len(frontLines); j++ {
+			if len(frontLines[j]) == 0 {
+				break
+			}
+			jTrimmed := strings.TrimSpace(string(frontLines[j]))
+			if jTrimmed == "" {
+				flowEndIdx = j
+				continue
+			}
+			if frontLines[j][0] == ' ' || frontLines[j][0] == '\t' {
+				flowEndIdx = j
+				continue
+			}
+			if strings.HasPrefix(jTrimmed, "]") {
+				flowEndIdx = j
+				break
+			}
+			break
 		}
 	}
 
