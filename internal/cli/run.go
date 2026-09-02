@@ -2083,14 +2083,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if stallErr != nil {
 		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", stallErr, stallTimeout))
 	}
-	if stallTimeout >= timeout {
-		// ExecStreamReader wraps the command in the global timeout's context,
-		// so a stall timeout at or above it can never fire — the global
-		// deadline always wins the race. Say so instead of arming a watchdog
-		// that silently protects nothing.
+	if d := effectiveStallTimeout(stallTimeout, timeout); d != stallTimeout {
+		// The watchdog could never fire — the global deadline always wins the
+		// race. Say so instead of arming one that silently protects nothing.
 		printer.StepInfo(fmt.Sprintf(
 			"Stall watchdog inactive: FULLSEND_STALL_TIMEOUT (%s) is not below the run timeout (timeout_minutes, %s)", stallTimeout, timeout))
-		stallTimeout = 0
+		stallTimeout = d
 	}
 
 	maxIterations := 1
