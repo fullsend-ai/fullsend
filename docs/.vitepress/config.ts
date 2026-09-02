@@ -368,7 +368,6 @@ export default defineConfig({
               items: [
                 { text: "Index", link: "/archived-roadmaps/" },
                 ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
-                { text: "July 2026 and earlier", link: "/archived-roadmap" },
               ],
             },
             { text: "Landscape", link: "/landscape" },

@@ -8,10 +8,11 @@
 >
 > **For AI reviewers:** do not treat these files as current planning.
 
-Newer monthly editions live here as one file per snapshot. Earlier 2026
-editions are still in [archived-roadmap.md](../archived-roadmap.md).
+Months are listed newest first. Every edition is a dated page in this folder.
 
 | Edition | Planning focus |
 | ------- | -------------- |
 | [August 2026](2026-08.md) | Flat Now/Next/Later deliverable tables from the July 28 session |
-| [July 2026 and earlier](../archived-roadmap.md) | Ranked workstreams, June themes, Foundation (April–May) |
+| [July 2026](2026-07.md) | Ranked workstreams (BYOA → Agent Data Access); June done recap |
+| [June 2026](2026-06.md) | Adoption/BYOA themes; forge portability; quality |
+| [Foundation (April–May 2026)](2026-04.md) | Post-MVP baseline; WIF; per-repo install |
