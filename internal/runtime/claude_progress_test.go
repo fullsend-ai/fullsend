@@ -633,6 +633,198 @@ func TestProgressParserNoResultEvent(t *testing.T) {
 	}
 }
 
+// TestParseClaudeStreamFallbackResultOnIncompleteStream verifies that when
+// the stream ends without a "result" event but message_start events were
+// observed, a fallback ResultEvent is emitted with accumulated token counts.
+// This covers the scenario in #6806 where the agent process terminates
+// abnormally after doing work but before emitting its final result line.
+func TestParseClaudeStreamFallbackResultOnIncompleteStream(t *testing.T) {
+	lines := []string{
+		// System init
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6","claude_code_version":"1.0.50"}`,
+		// Turn 1: message_start with token usage
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":5000,"cache_read_input_tokens":3000,"cache_creation_input_tokens":1000}}}}`,
+		// Turn 1: content
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop"}}`,
+		// Turn 1: message_delta with output tokens
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		// Turn 2: message_start — new turn accumulates previous output
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":8000,"cache_read_input_tokens":4000,"cache_creation_input_tokens":0}}}}`,
+		// Turn 2: content
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Write"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop"}}`,
+		// Turn 2: output tokens
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":3000}}}`,
+		// No result event — stream ends (process killed)
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	// Find the fallback ResultEvent.
+	var results []ResultEvent
+	for _, e := range events {
+		if r, ok := e.(ResultEvent); ok {
+			results = append(results, r)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 fallback ResultEvent, got %d", len(results))
+	}
+
+	r := results[0]
+	if r.NumTurns != 2 {
+		t.Errorf("expected 2 turns, got %d", r.NumTurns)
+	}
+	if !r.IsError {
+		t.Error("expected IsError to be true for fallback result")
+	}
+	if r.Subtype != "stream_incomplete" {
+		t.Errorf("expected subtype stream_incomplete, got %q", r.Subtype)
+	}
+	// Input tokens: 5000 (turn 1) + 8000 (turn 2) = 13000
+	if r.InputTokens != 13000 {
+		t.Errorf("expected 13000 input tokens, got %d", r.InputTokens)
+	}
+	// Output tokens: 2000 (turn 1) + 3000 (turn 2) = 5000
+	if r.OutputTokens != 5000 {
+		t.Errorf("expected 5000 output tokens, got %d", r.OutputTokens)
+	}
+	// Cache read: 3000 + 4000 = 7000
+	if r.CacheReadInputTokens != 7000 {
+		t.Errorf("expected 7000 cache read tokens, got %d", r.CacheReadInputTokens)
+	}
+	// Cache creation: 1000 + 0 = 1000
+	if r.CacheCreationInputTokens != 1000 {
+		t.Errorf("expected 1000 cache creation tokens, got %d", r.CacheCreationInputTokens)
+	}
+	// ErrorMessage should describe the fallback condition.
+	if r.ErrorMessage != "stream ended without result event" {
+		t.Errorf("expected error message %q, got %q", "stream ended without result event", r.ErrorMessage)
+	}
+	// TotalCostUSD cannot be derived without pricing data.
+	if r.TotalCostUSD != 0 {
+		t.Errorf("expected 0 total cost (not derivable), got %f", r.TotalCostUSD)
+	}
+}
+
+// TestParseClaudeStreamNoFallbackWhenResultPresent verifies that the fallback
+// ResultEvent is NOT emitted when a real result event is present.
+func TestParseClaudeStreamNoFallbackWhenResultPresent(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":5000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		`{"type":"result","num_turns":1,"total_cost_usd":0.05,"is_error":false,"subtype":"success","usage":{"input_tokens":5000,"output_tokens":2000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`,
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var results []ResultEvent
+	for _, e := range events {
+		if r, ok := e.(ResultEvent); ok {
+			results = append(results, r)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 ResultEvent (real, no fallback), got %d", len(results))
+	}
+	if results[0].Subtype != "success" {
+		t.Errorf("expected subtype success from real result, got %q", results[0].Subtype)
+	}
+	if results[0].TotalCostUSD != 0.05 {
+		t.Errorf("expected 0.05 total cost from real result, got %f", results[0].TotalCostUSD)
+	}
+}
+
+// TestProgressParserFallbackMetrics verifies that RunMetrics are populated
+// from the fallback ResultEvent when the stream ends without a result line.
+func TestProgressParserFallbackMetrics(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6","claude_code_version":"1.0.50"}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop"}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1500}}}`,
+		// No result event
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.NumTurns != 1 {
+		t.Errorf("expected 1 turn from fallback, got %d", metrics.NumTurns)
+	}
+	if metrics.InputTokens != 10000 {
+		t.Errorf("expected 10000 input tokens from fallback, got %d", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 1500 {
+		t.Errorf("expected 1500 output tokens from fallback, got %d", metrics.OutputTokens)
+	}
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("expected model claude-opus-4-6, got %q", metrics.Model)
+	}
+}
+
+// TestParseClaudeStreamFallbackOnReadError verifies that the fallback
+// ResultEvent is emitted when parseClaudeStream encounters a read error
+// (e.g., broken pipe from a killed process).
+func TestParseClaudeStreamFallbackOnReadError(t *testing.T) {
+	// Simulate a stream that ends with a read error after one turn.
+	normalData := strings.Join([]string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":7000,"cache_read_input_tokens":2000,"cache_creation_input_tokens":500}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}`,
+	}, "\n") + "\n"
+	r := io.MultiReader(
+		strings.NewReader(normalData),
+		&errorReader{err: errors.New("broken pipe")},
+	)
+
+	var events []AgentEvent
+	err := parseClaudeStream(r, func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	if err == nil {
+		t.Fatal("expected error from parseClaudeStream, got nil")
+	}
+
+	var results []ResultEvent
+	for _, e := range events {
+		if re, ok := e.(ResultEvent); ok {
+			results = append(results, re)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 fallback ResultEvent on read error, got %d", len(results))
+	}
+	if results[0].NumTurns != 1 {
+		t.Errorf("expected 1 turn, got %d", results[0].NumTurns)
+	}
+	if results[0].InputTokens != 7000 {
+		t.Errorf("expected 7000 input tokens, got %d", results[0].InputTokens)
+	}
+	if results[0].OutputTokens != 1000 {
+		t.Errorf("expected 1000 output tokens, got %d", results[0].OutputTokens)
+	}
+	if results[0].ErrorMessage != "stream ended without result event" {
+		t.Errorf("expected error message %q, got %q", "stream ended without result event", results[0].ErrorMessage)
+	}
+}
+
+// errorReader is a reader that always returns an error.
+type errorReader struct {
+	err error
+}
+
+func (e *errorReader) Read([]byte) (int, error) {
+	return 0, e.err
+}
+
 func TestHeartbeatConcurrency(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
