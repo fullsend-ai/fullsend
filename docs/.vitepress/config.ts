@@ -2,6 +2,7 @@ import { defineConfig } from "@lando/vitepress-theme-default-plus/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyMarkdownSources } from "./markdown-sources";
 import {
   DOCS_URL_BASE,
   globalSeoHead,
@@ -191,6 +192,17 @@ export default defineConfig({
     ];
   },
 
+  // Emit the markdown source next to each HTML page so /docs/foo.md is a
+  // static file alongside /docs/foo.html (and /docs/foo with cleanUrls).
+  buildEnd(siteConfig) {
+    copyMarkdownSources({
+      pages: siteConfig.pages,
+      srcDir: siteConfig.srcDir,
+      outDir: siteConfig.outDir,
+      rewrites: siteConfig.rewrites.map,
+    });
+  },
+
   srcExclude: ["**/agents/icons/**", "**/testing/**"],
   ignoreDeadLinks: true,
 
@@ -314,9 +326,7 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [
-            { text: "Harness Field Reference", link: "/reference/harness-reference" },
-          ],
+          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
         },
         {
           text: "Infrastructure",
@@ -332,7 +342,10 @@ export default defineConfig({
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
-            { text: "OpenAI Workload Identity", link: "/guides/infrastructure/openai-workload-identity" },
+            {
+              text: "OpenAI Workload Identity",
+              link: "/guides/infrastructure/openai-workload-identity",
+            },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",

@@ -66,6 +66,15 @@ export function canonicalUrl(page: string, cleanUrls = false): string {
   return new URL(outputPath, DOCS_URL_BASE).href;
 }
 
+/**
+ * Absolute URL of the published markdown source for a page.
+ * `page` is the post-rewrite path (README.md already mapped to index.md),
+ * which is the file copied into dist next to the HTML.
+ */
+export function markdownUrl(page: string): string {
+  return new URL(page, DOCS_URL_BASE).href;
+}
+
 export interface PageSeoInput {
   /** Post-rewrite source path of the page (VitePress `TransformContext.page`). */
   page: string;
@@ -90,6 +99,7 @@ export function pageSeoHead({
   const url = canonicalUrl(page, cleanUrls);
   return [
     ["link", { rel: "canonical", href: url }],
+    ["link", { rel: "alternate", type: "text/markdown", href: markdownUrl(page) }],
     ["meta", { property: "og:url", content: url }],
     ["meta", { property: "og:title", content: title }],
     ["meta", { property: "og:description", content: description }],
