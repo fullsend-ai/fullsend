@@ -1134,6 +1134,61 @@ func TestParseClaudeStreamNoFinalTokensEventAfterResult(t *testing.T) {
 	}
 }
 
+// TestParseClaudeStreamBrokenPipeCapturesTokens verifies that when the
+// stream is interrupted mid-read (broken pipe, simulating process kill),
+// the deferred TokensEvent fires and metrics are captured. This is the
+// regression test for #6936: GitHub Actions cancellation kills the sandbox
+// subprocess, causing a broken pipe on the stream reader.
+func TestParseClaudeStreamBrokenPipeCapturesTokens(t *testing.T) {
+	pr, pw := io.Pipe()
+
+	// Write usage-bearing events then break the pipe (simulates SIGKILL).
+	go func() {
+		lines := []string{
+			`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+			`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+			`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		}
+		for _, l := range lines {
+			pw.Write([]byte(l + "\n"))
+		}
+		pw.CloseWithError(errors.New("broken pipe"))
+	}()
+
+	var metrics RunMetrics
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// progressParser wraps parseClaudeStream and populates metrics.
+	err := progressParser(pr, printer, &metrics)
+	if err == nil {
+		t.Fatal("expected error from broken pipe, got nil")
+	}
+
+	// Token metrics must be non-zero despite the broken pipe (#6936).
+	if metrics.InputTokens == 0 {
+		t.Error("expected non-zero InputTokens after broken pipe")
+	}
+	if metrics.OutputTokens == 0 {
+		t.Error("expected non-zero OutputTokens after broken pipe")
+	}
+	if metrics.InputTokens != 4000 {
+		t.Errorf("InputTokens = %d, want 4000", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 2000 {
+		t.Errorf("OutputTokens = %d, want 2000", metrics.OutputTokens)
+	}
+	if metrics.CacheReadInputTokens != 500 {
+		t.Errorf("CacheReadInputTokens = %d, want 500", metrics.CacheReadInputTokens)
+	}
+	if metrics.CacheCreationInputTokens != 200 {
+		t.Errorf("CacheCreationInputTokens = %d, want 200", metrics.CacheCreationInputTokens)
+	}
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("Model = %q, want claude-opus-4-6", metrics.Model)
+	}
+}
+
 // TestParseClaudeStreamFinalTokensEventOnCancel verifies that a deferred
 // TokensEvent is emitted at EOF when the stream ends without a ResultEvent,
 // even when the per-message total is below the throttle threshold.
