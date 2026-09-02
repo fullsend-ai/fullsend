@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -63,6 +64,13 @@ type stallWatchdog struct {
 	lastEvent atomic.Int64 // time.Since(start) as of the most recent event
 	state     atomic.Int32 // watchdogArmed | watchdogStopped | watchdogFired
 	stopped   chan struct{}
+
+	// mu serializes stop()'s disarm with warning emission. The select in
+	// watch() can draw an already-queued tick even when stopped is closed,
+	// and the CAS only protects the kill path — a bare state check before
+	// warning would leave a check-then-warn window, so both the disarm and
+	// the check+emit happen under this lock: no warning once stop() returns.
+	mu sync.Mutex
 }
 
 // startStallWatchdog arms a watchdog that calls kill after timeout of event
@@ -105,9 +113,11 @@ func (w *stallWatchdog) stop() {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
 	if w.state.CompareAndSwap(watchdogArmed, watchdogStopped) {
 		close(w.stopped)
 	}
+	w.mu.Unlock()
 }
 
 // stalledErr returns a non-nil error wrapping ErrStalled when the watchdog
@@ -152,7 +162,11 @@ func (w *stallWatchdog) watch() {
 				return
 			case silence >= w.timeout/2 && warnedFor != last:
 				warnedFor = last
-				w.warn(fmt.Sprintf("no agent events for %s", w.timeout/2))
+				w.mu.Lock()
+				if w.state.Load() == watchdogArmed {
+					w.warn(fmt.Sprintf("no agent events for %s", w.timeout/2))
+				}
+				w.mu.Unlock()
 			}
 		}
 	}
