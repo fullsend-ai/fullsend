@@ -127,6 +127,28 @@ func TestStallWatchdog_WarnsOncePerStallEpisode(t *testing.T) {
 	assert.Zero(t, kills.Load(), "warning at half the threshold must not kill the run")
 }
 
+// TestStallWatchdog_NoWarningAfterStop: once stop() returns, a queued tick
+// must not emit a stall warning — the select can still draw ticker.C after
+// stopped closes, and a completed run warning about inactivity is misleading.
+func TestStallWatchdog_NoWarningAfterStop(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	annotations := &syncBuf{}
+	w := startStallWatchdogTo(annotations, 200*time.Millisecond, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+
+	// Deep in the warn window (past 100ms, short of the 200ms kill), so ticks
+	// queued around stop() would warn if the disarm didn't suppress them.
+	time.Sleep(140 * time.Millisecond)
+	w.stop()
+	before := countLines(annotations.String(), "::warning::")
+
+	// Several more poll intervals: any warning emitted now is the race.
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, before, countLines(annotations.String(), "::warning::"),
+		"a stopped watchdog must not emit new warnings, got: %q", annotations.String())
+}
+
 // TestStallWatchdog_NoAnnotationsOutsideCI keeps the workflow-command syntax
 // out of local terminals, as the event renderer does.
 func TestStallWatchdog_NoAnnotationsOutsideCI(t *testing.T) {
