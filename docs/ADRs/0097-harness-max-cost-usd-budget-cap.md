@@ -3,6 +3,7 @@ title: "97. Harness-level max_cost_usd budget cap"
 status: Accepted
 relates_to:
   - operational-observability
+  - security-threat-model
 topics:
   - harness
   - configuration
@@ -27,12 +28,18 @@ iterations cost, so a repo could only bound cost indirectly, by lowering
 iteration counts or timeouts that exist for other reasons. Cost anomalies —
 a single run costing many times the median — are an explicit operational
 concern (see
-[operational-observability.md](../problems/operational-observability.md)).
+[operational-observability.md](../problems/operational-observability.md)),
+and the threat model's agentic-DOS section proposes cost budgets and asks
+whether they should hard-stop or gate on human approval (see
+[security-threat-model.md](../problems/security-threat-model.md)).
 
-Claude Code reports `total_cost_usd` once, in the final result event of a
-completed iteration, so no mechanism at this layer can interrupt an
-iteration already in flight; the only enforceable boundary is between
-iterations.
+Fullsend enforces at the iteration boundary because that is the
+runtime-agnostic layer: cost arrives as a runtime-reported aggregate (for
+Claude Code, once, in the final result event of a completed iteration), and
+not every runtime offers an in-flight budget control — pi has none. Claude
+Code does ship a native per-invocation `--max-budget-usd` flag, unused
+here, which could later complement this cap as a tighter in-flight bound
+for that runtime.
 
 ## Decision
 
@@ -53,6 +60,8 @@ not here.
   distorting `max_iterations` or `timeout_minutes`.
 - The cap is soft by one iteration: a run can finish up to one full
   iteration past the budget, because cost is only known at iteration end.
+  Wiring the Claude runtime's native per-invocation budget flag could
+  tighten this for that runtime; not decided here.
 - `over_budget` in `metrics.json` lets post-scripts and dashboards
   attribute halted runs to the budget rather than to model failure.
 - Budget enforcement gains a compose-level subtlety (absent vs explicit
