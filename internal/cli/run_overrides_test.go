@@ -145,10 +145,10 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 
 func TestResolveRunOverrides_InvalidRuntime(t *testing.T) {
 	t.Parallel()
-	_, err := resolveRunOverrides(runOverrideFlags{runtime: "opencode"}, envMap(nil), "")
+	_, err := resolveRunOverrides(runOverrideFlags{runtime: "nonexistent"}, envMap(nil), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--runtime flag")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	assert.Contains(t, err.Error(), `invalid runtime "nonexistent"`)
 
 	_, err = resolveRunOverrides(runOverrideFlags{}, envMap(map[string]string{envRuntime: "nope"}), "")
 	require.Error(t, err)
@@ -260,7 +260,7 @@ agents:
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
 
-func TestResolveBackend_PerAgentRuntimeRejectsStub(t *testing.T) {
+func TestResolveBackend_PerAgentRuntimeRejectsUnknown(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
@@ -268,18 +268,18 @@ func TestResolveBackend_PerAgentRuntimeRejectsStub(t *testing.T) {
 version: "1"
 agents:
   - name: code
-    runtime: opencode
+    runtime: nonexistent
 `), 0o644))
 
 	// `fullsend run` never calls Validate() on the config it loads, so the
-	// per-agent runtime must be checked against ValidRuntimes here — a stub
+	// per-agent runtime must be checked against ValidRuntimes here — an unknown
 	// runtime cannot be activated through an agents: entry any more than
 	// through the repo-wide key.
 	_, _, err := resolveBackend(runOverrides{}, cfg, "code")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errResolvingRuntime)
 	assert.Contains(t, err.Error(), "agents.code")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	assert.Contains(t, err.Error(), `invalid runtime "nonexistent"`)
 
 	backend, _, err := resolveBackend(runOverrides{}, cfg, "triage")
 	require.NoError(t, err)

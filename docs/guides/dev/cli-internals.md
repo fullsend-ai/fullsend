@@ -92,7 +92,7 @@ fullsend
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── set          <name>                   # Set an agent's runtime, model or effort (per-repo)
-│   │   ├── --runtime <claude|pi>            #   Runtime for this agent
+│   │   ├── --runtime <claude|pi|codex|opencode> # Runtime for this agent
 │   │   ├── --model <alias|id|provider/id>   #   Model for this agent
 │   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA

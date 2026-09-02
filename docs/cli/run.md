@@ -17,7 +17,7 @@ fullsend run <agent-name> [flags]
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory |
-| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
+| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
 | `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
@@ -88,7 +88,7 @@ Each run produces artifacts in the output directory:
 
 | Field | Description |
 |-------|-------------|
-| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`) |
+| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`, `opencode`) |
 | `model` | Model the provider reported using |
 | `requested_runtime` | Runtime selected for the run (config file, or a `--runtime`/`FULLSEND_RUNTIME` override) |
 | `requested_model` | Model the harness/agent requested |
@@ -127,7 +127,7 @@ parent's stream, so without it `total_cost_usd` would grow with no way to attrib
 Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none). When the budget
 is spent the runner ends the iteration and terminates the agent's processes in the sandbox. Before
 every iteration it tells the agent when that will happen, through two environment variables set on
-every runtime (claude, pi, codex):
+every runtime (claude, pi, codex, opencode):
 
 | Variable | Value |
 |---|---|

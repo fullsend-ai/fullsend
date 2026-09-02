@@ -206,7 +206,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude, pi or codex; dummy is for behaviour-test installs only). Prompted on a terminal when omitted")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude, pi, codex or opencode; dummy runtimes are for behaviour-test installs only). Prompted on a terminal when omitted")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override (conflicts with --vendor)")
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
