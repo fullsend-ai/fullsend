@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -53,6 +55,11 @@ const (
 	// forgeGitLab is the forge type for GitLab instances.
 	forgeGitLab = "gitlab"
 )
+
+// gitlabPathSegmentPattern matches valid GitLab group, subgroup, and
+// project name segments. GitLab allows alphanumerics, hyphens, underscores,
+// and dots — but a segment must start with a letter or digit.
+var gitlabPathSegmentPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // --- request command ---
 
@@ -179,6 +186,19 @@ Forge types:
 
 			if forge == forgeGitLab && issuer == "" {
 				return fmt.Errorf("--issuer is required when --forge=gitlab (the GitLab instance URL, e.g. https://gitlab.example.com)")
+			}
+
+			if issuer != "" {
+				u, err := url.Parse(issuer)
+				if err != nil {
+					return fmt.Errorf("--issuer is not a valid URL: %w", err)
+				}
+				if u.Scheme != "https" {
+					return fmt.Errorf("--issuer must use the https scheme (got %q)", issuer)
+				}
+				if u.Host == "" {
+					return fmt.Errorf("--issuer must have a non-empty host (got %q)", issuer)
+				}
 			}
 
 			repos, err := parseRepoListForForge(args[0], forge)
@@ -317,11 +337,14 @@ func parseRepoListForForge(arg, forge string) ([]string, error) {
 		if forge == forgeGitLab {
 			// GitLab project paths can have subgroups
 			// (group/subgroup/project). Validate that every segment is
-			// non-empty.
+			// non-empty and contains only valid characters.
 			segments := strings.Split(p, "/")
 			for _, seg := range segments {
 				if seg == "" {
 					return nil, fmt.Errorf("invalid project path %q: empty path segment", p)
+				}
+				if !gitlabPathSegmentPattern.MatchString(seg) {
+					return nil, fmt.Errorf("invalid project path %q: segment %q contains invalid characters (allowed: alphanumerics, hyphens, underscores, dots; must start with a letter or digit)", p, seg)
 				}
 			}
 		} else {
@@ -380,7 +403,11 @@ func buildRequestDoc(repos []string, audience, project, serviceAccount, ref, for
 	// An explicit --ref refs/pull/* asks for the mapping the companion
 	// already provides; emitting both spends two of the fifty mapping
 	// slots on one identical assertion.
-	companion := ref != "" && ref != openAIPullRefPattern
+	//
+	// The companion mapping uses refs/pull/*, which is a GitHub-specific
+	// ref pattern. GitLab merge-request jobs do not produce refs/pull/*
+	// claims, so the companion is skipped for the GitLab forge.
+	companion := ref != "" && ref != openAIPullRefPattern && forge != forgeGitLab
 	doc := openAIRequestDoc{
 		Version: openAIRequestSchemaVersion,
 		Provider: openAIRequestProvider{
@@ -492,6 +519,9 @@ func loadJWKSKeys(path string) ([]openAIRequestJWK, error) {
 		}
 		if k.Kid == "" {
 			return nil, fmt.Errorf("JWKS file %s: key missing required 'kid' field", path)
+		}
+		if k.Kty == "" {
+			return nil, fmt.Errorf("JWKS file %s: key %q missing required 'kty' field (RFC 7517 §4.1)", path, k.Kid)
 		}
 		keys = append(keys, openAIRequestJWK{
 			Kid: k.Kid,

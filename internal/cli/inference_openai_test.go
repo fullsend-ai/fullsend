@@ -1862,3 +1862,106 @@ func TestParseRepoListForForge_GitLabRejectsOrgOnly(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "owner/repo")
 }
+
+func TestParseRepoListForForge_GitLabRejectsInvalidCharacters(t *testing.T) {
+	_, err := parseRepoListForForge("group/pro ject", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+
+	_, err = parseRepoListForForge("group/pro<ject", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+
+	// Valid path should still work.
+	repos, err := parseRepoListForForge("group/my-project.v2", forgeGitLab)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"group/my-project.v2"}, repos)
+}
+
+// --- GitLab forge + --ref: no companion mapping ---
+
+func TestOpenAIRequest_GitLabForge_RefSkipsCompanion(t *testing.T) {
+	// GitLab MR jobs do not produce refs/pull/* claims, so the companion
+	// mapping that covers PR-triggered runs on GitHub must not be emitted
+	// for the GitLab forge — it would waste a mapping slot and never match.
+	doc := buildRequestDoc(
+		[]string{"group/project"},
+		"fullsend://group",
+		"", "",
+		"refs/heads/main",
+		forgeGitLab,
+		"https://gitlab.example.com",
+		false, nil,
+	)
+
+	require.Len(t, doc.Mappings, 1,
+		"GitLab forge: --ref emits one mapping, no refs/pull/* companion")
+	m := doc.Mappings[0]
+	assert.Equal(t, "refs/heads/main", m.Assertions.Ref)
+	assert.Equal(t, "group/project", m.Assertions.ProjectPath)
+	assert.Empty(t, m.Assertions.Repository,
+		"GitLab forge asserts project_path, not repository")
+}
+
+func TestOpenAIRequest_GitLabForge_RefViaCmd(t *testing.T) {
+	// End-to-end: --forge gitlab --ref produces a single mapping.
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--ref", "refs/heads/main",
+		"--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	require.Len(t, doc.Mappings, 1,
+		"GitLab + --ref: one mapping, no companion")
+	assert.Equal(t, "refs/heads/main", doc.Mappings[0].Assertions.Ref)
+	assert.Equal(t, "group/project", doc.Mappings[0].Assertions.ProjectPath)
+}
+
+// --- issuer URL validation ---
+
+func TestOpenAIRequest_IssuerRejectsNonHTTPS(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "http://insecure.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
+}
+
+func TestOpenAIRequest_IssuerRejectsNoHost(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-empty host")
+}
+
+// --- JWKS kty validation ---
+
+func TestOpenAIRequest_JWKSFile_MissingKty(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	jwksData := `{"keys": [{"kid": "key-1"}]}`
+	require.NoError(t, os.WriteFile(jwksPath, []byte(jwksData), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--jwks-file", jwksPath,
+		"--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kty")
+}
