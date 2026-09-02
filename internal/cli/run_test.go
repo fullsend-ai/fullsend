@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"net/http"
@@ -4877,7 +4880,7 @@ func TestExceedsCostBudget(t *testing.T) {
 	}{
 		{"zero cap means unlimited", 1000, 0, false},
 		{"under cap", 1.23, 5, false},
-		{"exactly at cap is not over", 5, 5, false},
+		{"exactly at cap is exhausted", 5, 5, true},
 		{"over cap", 5.01, 5, true},
 		{"zero cost never trips", 0, 5, false},
 	}
@@ -4898,24 +4901,64 @@ func TestExceedsCostBudget(t *testing.T) {
 // "cancelled" for successful runs. The halt is a plain flag now; this test
 // pins that by rejecting any context cancellation at that scope.
 //
-// It reads the source because the failure is invisible at the package
+// It inspects the source AST because the failure is invisible at the package
 // boundary: the run still succeeds, only the reported status is wrong, and
-// .codecov.yml excludes run.go from patch coverage.
+// .codecov.yml excludes run.go from patch coverage. Parsing (rather than
+// text-matching known variable spellings) confines the check to runAgent
+// itself and catches any rebinding, whatever the cancel func is called.
 func TestRunAgent_DoesNotCancelTheRunContext(t *testing.T) {
-	src, err := os.ReadFile("run.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "run.go", nil, 0)
 	require.NoError(t, err)
 
-	start := bytes.Index(src, []byte("func runAgent("))
-	require.Positive(t, start, "runAgent not found in run.go")
-	body := src[start:]
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "runAgent" {
+			fn = fd
+			break
+		}
+	}
+	require.NotNil(t, fn, "runAgent not found in run.go")
 
-	// Body-scope (one-tab) cancellation of the run's own ctx. A derived
-	// context on its own variable is fine — the status defer closes over
-	// `ctx`, so only rebinding that name breaks it.
-	assert.NotContains(t, string(body), "\n\tctx, cancel := context.WithCancel(ctx)",
-		"rebinding ctx at runAgent's body scope makes the status defer report 'cancelled'")
-	assert.NotContains(t, string(body), "\n\tctx, budgetCancel := context.WithCancel(ctx)",
-		"rebinding ctx at runAgent's body scope makes the status defer report 'cancelled'")
+	// Body-scope statements only: a rebinding there is what the
+	// status-comment defer closes over. A derived context on its own
+	// variable, or a shadow inside a nested block, is fine.
+	for _, stmt := range fn.Body.List {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok {
+			continue
+		}
+		bindsCtx := false
+		for _, lhs := range assign.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok && id.Name == "ctx" {
+				bindsCtx = true
+			}
+		}
+		if !bindsCtx {
+			continue
+		}
+		for _, rhs := range assign.Rhs {
+			call, ok := rhs.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok || pkg.Name != "context" {
+				continue
+			}
+			// Every cancellable-context constructor; context.WithValue
+			// does not cancel and stays legal.
+			switch sel.Sel.Name {
+			case "WithCancel", "WithCancelCause", "WithTimeout", "WithTimeoutCause", "WithDeadline", "WithDeadlineCause":
+				t.Errorf("run.go:%d: rebinding ctx via context.%s at runAgent's body scope makes the status defer report 'cancelled'",
+					fset.Position(assign.Pos()).Line, sel.Sel.Name)
+			}
+		}
+	}
 }
 
 // --- mintAgentToken tests ---

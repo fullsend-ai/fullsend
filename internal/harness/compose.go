@@ -587,7 +587,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.TimeoutMinutes == 0 {
 		child.TimeoutMinutes = base.TimeoutMinutes
 	}
-	if child.MaxCostUSD == 0 {
+	// max_cost_usd is presence-aware (pointer) so a child's explicit 0
+	// can override an inherited positive cap with "unlimited"; only an
+	// absent field inherits.
+	if child.MaxCostUSD == nil {
 		child.MaxCostUSD = base.MaxCostUSD
 	}
 	if child.SandboxTimeoutSeconds == 0 {
