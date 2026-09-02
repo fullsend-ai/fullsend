@@ -339,9 +339,18 @@ func TestInjectFrontmatterSkills_InvalidSkillName(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := injectFrontmatterSkills([]byte(src), []string{tc.dir})
 			require.Error(t, err, "should reject skill name with %s", tc.name)
-			assert.Contains(t, err.Error(), "unsafe for YAML")
+			assert.Contains(t, err.Error(), "invalid skill name")
 		})
 	}
+}
+
+func TestInjectFrontmatterSkills_ScalarSkillsValue(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: my-single-skill\n---\nBody\n"
+	_, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills field must be a YAML list")
+	assert.Contains(t, err.Error(), "scalar")
 }
 
 func TestInjectFrontmatterSkills_BOMStrippedOnNoOp(t *testing.T) {

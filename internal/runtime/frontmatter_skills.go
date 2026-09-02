@@ -55,7 +55,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		}
 		name := filepath.Base(d)
 		if !isValidSkillName(name) {
-			return nil, fmt.Errorf("skill name %q (from %q) contains characters unsafe for YAML; must match [a-zA-Z0-9._-]+", name, d)
+			return nil, fmt.Errorf("invalid skill name %q from %q: must match [a-zA-Z0-9._-]+", name, d)
 		}
 		if seen[name] {
 			continue
@@ -108,6 +108,16 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	// Parse existing skills from frontmatter.
 	var fm frontmatterSkills
 	if err := yaml.Unmarshal(frontBytes, &fm); err != nil {
+		// When the skills field has an unexpected type (e.g., scalar
+		// string instead of a list), produce a more specific message.
+		var probe struct {
+			Skills interface{} `yaml:"skills"`
+		}
+		if yaml.Unmarshal(frontBytes, &probe) == nil && probe.Skills != nil {
+			if _, isList := probe.Skills.([]interface{}); !isList {
+				return nil, fmt.Errorf("skills field must be a YAML list, got scalar: %w", err)
+			}
+		}
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
