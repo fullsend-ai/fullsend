@@ -46,6 +46,7 @@ func newPostReviewCmd() *cobra.Command {
 		forgeName   string
 		baseURL     string
 		keepHistory bool
+		fullsendDir string
 	)
 
 	cmd := &cobra.Command{
@@ -114,10 +115,24 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 			if err != nil {
 				return err
 			}
+
+			// Resolve keep_history: explicit --keep-history flag takes
+			// precedence, otherwise fall back to config.yaml via
+			// --fullsend-dir (matching the pattern in issues post-comment).
+			resolvedKeepHistory := keepHistory
+			if !cmd.Flags().Changed("keep-history") {
+				var khFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+				}
+				resolvedKeepHistory = resolved
+			}
+
 			cfg := sticky.Config{
 				Marker:      reviewMarker,
 				DryRun:      dryRun,
-				KeepHistory: keepHistory,
+				KeepHistory: resolvedKeepHistory,
 			}
 
 			// Stale-head check: refuse to post a review against code
@@ -158,6 +173,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
 	_ = cmd.MarkFlagRequired("repo")

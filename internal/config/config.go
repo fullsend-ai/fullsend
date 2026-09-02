@@ -751,11 +751,19 @@ type perRepoConfig struct {
 	// jira) for `fullsend issues` commands' --tracker flag. Distinct
 	// from Forge, which is the repo's hosting platform — a repo can be
 	// hosted on GitHub but track issues in Jira.
-	Tracker    string       `yaml:"tracker,omitempty"`
-	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
-	Runtime    string       `yaml:"runtime,omitempty"`
-	Roles      []string     `yaml:"roles,omitempty"`
-	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	Tracker    string `yaml:"tracker,omitempty"`
+	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
+	Runtime    string `yaml:"runtime,omitempty"`
+
+	// KeepHistory controls whether sticky comment updates append the
+	// previous body as a collapsed "Previous run" <details> block. When
+	// nil (omitted), falls through to parent (code default true —
+	// history appended). When explicitly false, updates replace the body
+	// in-place with no history.
+	KeepHistory *bool `yaml:"keep_history,omitempty"`
+
+	Roles  []string     `yaml:"roles,omitempty"`
+	Agents []AgentEntry `yaml:"agents,omitempty"`
 	// AllowedRemoteResources holds the locally-set allowed remote
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
@@ -768,13 +776,6 @@ type perRepoConfig struct {
 	// shared with orgConfig via ConfigReader, and Go forbids a field and
 	// method sharing a name on the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
-
-	// KeepHistory controls whether sticky comment updates append the
-	// previous body as a collapsed "Previous run" <details> block. When
-	// nil (omitted), falls through to parent (code default true —
-	// history appended). When explicitly false, updates replace the body
-	// in-place with no history.
-	KeepHistory *bool `yaml:"keep_history,omitempty"`
 
 	// Mint URL for token minting (ADR 0069 Decision 1).
 	MintURL string `yaml:"mint_url,omitempty"`

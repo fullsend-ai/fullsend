@@ -280,7 +280,10 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 
 	printer.Header("Post Comment")
 
-	keepHistory := resolveKeepHistory(cfg.keepHistory, cfg.fullsendDir, cfg.testConfigReader)
+	keepHistory, err := resolveKeepHistory(cfg.keepHistory, cfg.fullsendDir, cfg.testConfigReader)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", err))
+	}
 
 	stickyCfg := sticky.Config{
 		Marker:      cfg.marker,
@@ -485,21 +488,24 @@ func validateTrackerName(name string) (string, error) {
 // resolveKeepHistory returns the explicit flag value if non-nil, otherwise
 // resolves the keep_history setting from config.yaml via fullsendDir. If
 // neither source provides a value, defaults to true (current behavior).
-func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.PerRepoConfigReader) bool {
+// Returns an error when config loading fails so callers can surface it
+// (matching the pattern in resolveTracker).
+func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.PerRepoConfigReader) (bool, error) {
 	if flag != nil {
-		return *flag
+		return *flag, nil
 	}
 	prc := testConfigReader
 	if prc == nil && fullsendDir != "" {
 		reader, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
-		if err == nil {
-			prc, _ = reader.(config.PerRepoConfigReader)
+		if err != nil {
+			return true, fmt.Errorf("loading config for keep_history: %w", err)
 		}
+		prc, _ = reader.(config.PerRepoConfigReader)
 	}
 	if prc != nil {
-		return prc.ConfigKeepHistory()
+		return prc.ConfigKeepHistory(), nil
 	}
-	return true
+	return true, nil
 }
 
 // findMarkedTrackerComment returns the first tracker comment whose body
