@@ -412,7 +412,7 @@ func TestValidRuntimes(t *testing.T) {
 	assert.Contains(t, runtimes, "dummy")
 	assert.Contains(t, runtimes, "dummy-playback")
 	assert.Contains(t, runtimes, "codex")
-	assert.NotContains(t, runtimes, "opencode", "opencode is resolved via runtime.Resolve() but not user-selectable until implemented")
+	assert.Contains(t, runtimes, "opencode", "opencode is user-selectable (unbound-force#510)")
 }
 
 func TestOrgConfigValidateRuntime(t *testing.T) {
@@ -429,14 +429,10 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 	cfg.Defaults.Runtime = "pi"
 	require.NoError(t, cfg.Validate(), "pi is user-selectable (#6464)")
 
-	// No codex case here: org mode is deprecated (ADR 0044), so codex's
-	// selectability is asserted on the per-repo and agents: paths instead
-	// (TestPerRepoConfigValidate_Runtime, TestResolveForAgent).
-
-	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
-	// so config validation must reject it until the runtime is implemented.
+	// opencode became user-selectable once the runtime was implemented
+	// (unbound-force#510).
 	cfg.Defaults.Runtime = "opencode"
-	require.Error(t, cfg.Validate())
+	require.NoError(t, cfg.Validate(), "opencode is user-selectable (unbound-force#510)")
 
 	cfg.Defaults.Runtime = "invalid"
 	require.Error(t, cfg.Validate())
@@ -693,15 +689,13 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 	cfg.Runtime = "codex"
 	assert.NoError(t, cfg.Validate(), "codex is user-selectable (#6920)")
 
-	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
-	// so config validation must reject it until the runtime is implemented.
+	// opencode became user-selectable once the runtime was implemented
+	// (unbound-force#510); it is now in ValidRuntimes().
 	cfg.Runtime = "opencode"
-	err := cfg.Validate()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid runtime")
+	assert.NoError(t, cfg.Validate(), "opencode is user-selectable (unbound-force#510)")
 
 	cfg.Runtime = "invalid"
-	err = cfg.Validate()
+	err := cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid runtime")
 }
@@ -2603,7 +2597,7 @@ func TestAgentSettings_Validate(t *testing.T) {
 		{"settings without a name", "agents:\n  - model: sonnet\n", "must name the agent"},
 		{"invalid model", "agents:\n  - name: triage\n    model: bad//id\n", `invalid model "bad//id"`},
 		{"leading slash model", "agents:\n  - name: triage\n    model: /leading\n", "invalid model"},
-		{"invalid runtime", "agents:\n  - name: triage\n    runtime: opencode\n", `invalid runtime "opencode"`},
+		{"invalid runtime", "agents:\n  - name: triage\n    runtime: nonexistent\n", `invalid runtime "nonexistent"`},
 		{"invalid effort", "agents:\n  - name: triage\n    effort: turbo\n", `invalid effort "turbo"`},
 		{"invalid effort on sourced entry", "agents:\n  - source: harness/lint.yaml\n    effort: turbo\n", `invalid effort "turbo"`},
 		{"duplicate built-in tuning", "agents:\n  - name: triage\n    model: sonnet\n  - name: Triage\n    model: haiku\n", "duplicate agent name"},

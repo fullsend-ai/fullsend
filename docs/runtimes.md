@@ -9,9 +9,9 @@ sandbox, the credentials, and the verdict.
 | **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
 | **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per repo — Claude, Grok and Gemini on Vertex; GPT via OpenAI WIF (wired, not yet exercised live) | Supported for all roles |
 | **[`codex`](runtimes/codex.md)** | Third runtime, opt-in per repo or agent — OpenAI models only, via the same secretless credential path (wired, not yet exercised live) | Opt-in |
+| **[`opencode`](runtimes/opencode.md)** | Fourth runtime, opt-in per repo or agent — reads `AGENTS.md` natively | Experimental; read-only agents (`triage`, `prioritize`) until the security-hook adapter lands (unbound-force#515) |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
 | `dummy-playback` | Behaviour tests — replays canned agent results from a playlist, no inference | Internal |
-| `opencode` | Not yet functional | Stub |
 
 Pick one with `runtime:` in `.fullsend/config.yaml`, or per run with `--runtime`.
 
@@ -223,15 +223,20 @@ Harness keys are runtime-neutral in YAML; each runtime owns the translation.
 Test-only runtimes (`dummy`, `dummy-playback`) ignore all harness config keys
 and are omitted from this table.
 
-| Harness key | Claude Code | pi | codex |
-|---|---|---|---|
-| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids only |
-| `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) |
-| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) |
-| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively |
-| `plugins` | Loads the `plugin.json` directories (marketplace layout) | Loads the extension directories: uploaded to `PI_CODING_AGENT_DIR/extensions/`, tree-hash preflight, `-e` ([Plugins](runtimes/pi.md#plugins-pi-extensions), ADR 0094) | Unsupported — warned and skipped |
-| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` |
-| `validation_loop.feedback_mode` | Replaces the prompt on retry | Same | Same |
+| Harness key | Claude Code | pi | codex | OpenCode |
+|---|---|---|---|---|
+| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids only | alias table, then `provider/model` (default provider `anthropic-vertex`); passthrough for `provider/model` |
+| `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) | `--variant` (model reasoning variant) |
+| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) | agent frontmatter `tools:` record (`{toolID: bool}`); Claude names mapped to OpenCode IDs |
+| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively | `OPENCODE_CONFIG_DIR/skills/`, discovered natively |
+| `plugins` | Loads the `plugin.json` directories (marketplace layout) | Loads the extension directories: uploaded to `PI_CODING_AGENT_DIR/extensions/`, tree-hash preflight, `-e` ([Plugins](runtimes/pi.md#plugins-pi-extensions), ADR 0094) | Unsupported — warned and skipped | Unsupported — warned and skipped |
+| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` | Plugin adapter (`tool.execute.before/after`), runner-owned + sha256-gated — **owned by unbound-force#515**; path reserved at `OPENCODE_CONFIG_DIR/plugins/fullsend-hooks.ts` |
+| `validation_loop.feedback_mode` | Replaces the prompt on retry | Same | Same | Same (`RunParams.Prompt` honored) |
+
+OpenCode notes:
+
+- `opencode run` is always invoked with `--thinking` so reasoning/thinking blocks reach the transcript (non-interactive runs default `thinking=false`).
+- A non-interactive `opencode run` has no TTY, so OpenCode **auto-rejects** any tool permission that config does not pre-resolve. The injected `OPENCODE_CONFIG_CONTENT` policy must therefore **allow** the tools a read-only agent needs (read, grep, glob, list, read-only bash); a deny-only policy makes every tool call fail. Write-path denial and the compensating hook adapter are [unbound-force#515].
 
 Full per-key detail, including the exact `--tools` mapping and allowlist parsing rules, is in
 [Implementing an agent runtime](contributing/runtime-implementation.md).
@@ -241,6 +246,7 @@ Full per-key detail, including the exact `--tools` mapping and allowlist parsing
 - [Claude Code](runtimes/claude.md) — models, fallback chains, behaviour notes
 - [Pi](runtimes/pi.md) — models and providers, behaviour differences, troubleshooting
 - [Codex](runtimes/codex.md) — OpenAI models, behaviour differences, troubleshooting
+- [OpenCode](runtimes/opencode.md) — models, providers, configuration, and current limitations
 - [Implementing an agent runtime](contributing/runtime-implementation.md) — security matrix, interfaces, hook contract, sandbox layout
 - [Running agents locally](guides/user/running-agents-locally.md) — step-by-step local runs
 - [architecture.md](architecture.md) — where the runtime sits
