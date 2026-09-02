@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,6 +20,14 @@ SECRET_HOOK = str(HOOKS_DIR / "secret_redact_posttool.py")
 CHAIN_HOOK = str(HOOKS_DIR / "posttool_chain.py")
 
 PLAIN_PAT = "ghp_FAKEtesttoken000000000000000000000000"
+# Segments concatenated so the fixture does not trip gitleaks.
+JWT = (
+    "eyJhbGciOiJSUzI1NiJ9"
+    + "."
+    + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+    + "."
+    + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+)
 
 
 def obfuscate_with_char(text: str, char: str) -> str:
@@ -43,10 +53,13 @@ def run_hook(
     env_extra: dict[str, str] | None = None,
     tool_name: str = "Read",
     tool_input: dict | None = None,
+    cwd: str | None = None,
 ) -> tuple[int, str, str]:
     body: dict = {"tool_name": tool_name, key: payload}
     if tool_input is not None:
         body["tool_input"] = tool_input
+    if cwd is not None:
+        body["cwd"] = cwd
     env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
     env.update(env_extra or {})
     proc = subprocess.run(
@@ -276,7 +289,7 @@ class TestPostToolChain(unittest.TestCase):
             mod = real_load(token)
             if token == "redact" and mod is not None:
 
-                def boom(_text: str):
+                def boom(_text: str, **_kw):
                     raise RuntimeError("boom")
 
                 mod.redact_text = boom
@@ -569,6 +582,17 @@ def read_payload(content: str) -> dict:
     }
 
 
+@contextlib.contextmanager
+def checkout():
+    """A checkout (with .git) beside a runner token file, as the sandbox
+    lays them out; yields (repo, token_path)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = os.path.realpath(tmp)
+        repo = os.path.join(ws, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        yield repo, os.path.join(ws, ".gcp-oidc-token")
+
+
 class TestContentPreservedAndRewriteNotes(unittest.TestCase):
     """What the agent reads must be what is on disk unless a control fired,
     and when one fires the agent is told (additionalContext)."""
@@ -592,6 +616,33 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("updatedToolOutput", stdout)
+
+    def test_jwt_fixture_in_read_not_rewritten(self):
+        with checkout() as (repo, _):
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f'\t{{name: "valid", input: "{JWT}"}},\n'),
+                key="tool_response",
+                tool_input={"file_path": f"{repo}/x_test.go"},
+                cwd=repo,
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_jwt_in_runner_token_file_read_still_masked(self):
+        # The runner's OIDC token file sits beside the checkout, not in it.
+        with checkout() as (repo, token):
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f"{JWT}\n"),
+                key="tool_response",
+                tool_input={"file_path": token},
+                cwd=repo,
+            )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn(JWT, json.dumps(out["hookSpecificOutput"]["updatedToolOutput"]))
+        self.assertIn("masked", out["hookSpecificOutput"]["additionalContext"])
 
     def test_redaction_adds_additional_context(self):
         rc, stdout, _ = run_hook(
@@ -692,6 +743,22 @@ class TestPostToolUseFailure(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("updatedToolOutput", stdout)
         self.assertNotIn("tool_result", stdout)
+
+    def test_jwt_in_failed_read_not_flagged(self):
+        body = self._body(f'parse error near: tok := "{JWT}"')
+        body["tool_name"] = "Read"
+        with checkout() as (repo, _):
+            body["tool_input"] = {"file_path": f"{repo}/f"}
+            body["cwd"] = repo
+            rc, stdout, _ = run_raw(body)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_jwt_in_failed_bash_call_is_flagged(self):
+        rc, stdout, _ = run_raw(self._body(f"Exit code 1\nexchange with {JWT} failed"))
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertIn("credential-like", out["hookSpecificOutput"]["additionalContext"])
 
     def test_credential_in_a_failed_call_is_detected_and_flagged(self):
         aws = "AKIA" + "IOSFODNN7EXAMPLE"

@@ -11,6 +11,8 @@
 //
 // Contract with the scripts (v1 and v2 — fullsend#6357):
 //   stdin  {"tool_name", "tool_input", "tool_result", "tool_response"}
+//          (no "cwd": the redact stage's checkout-scoped bare-JWT skip
+//          stays inert under pi, which masks as before)
 //   stdout PreToolUse: exit != 0 or {"decision":"block","reason"} blocks.
 //          PostToolUse: {"hookSpecificOutput":{"updatedToolOutput": <text>}}
 //          (v2) or {"tool_result": <text>} (v1) replaces the result text;
