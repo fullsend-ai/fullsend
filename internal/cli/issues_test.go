@@ -148,7 +148,7 @@ func TestPostTrackerStickyComment_EmptyBody(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
 	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "", cfg, printer)
 	assert.Error(t, err)
@@ -159,7 +159,7 @@ func TestPostTrackerStickyComment_EmptyMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: ""}
+	cfg := sticky.Config{Marker: "", KeepHistory: true}
 
 	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
 	assert.Error(t, err)
@@ -170,7 +170,7 @@ func TestPostTrackerStickyComment_DryRun_Create(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true}
+	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
 	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
 	require.NoError(t, err)
@@ -710,7 +710,7 @@ func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true}
+	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
 	url, err := postJiraStickyComment(context.Background(), tc, "PROJ", 42, "hello", cfg, printer)
 	require.NoError(t, err)
@@ -750,7 +750,7 @@ func TestPostJiraStickyComment_EmptyBody(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
 	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "   ", cfg, printer)
 	require.Error(t, err)
@@ -761,7 +761,7 @@ func TestPostJiraStickyComment_EmptyMarker(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "  "}
+	cfg := sticky.Config{Marker: "  ", KeepHistory: true}
 
 	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "body", cfg, printer)
 	require.Error(t, err)
