@@ -285,6 +285,75 @@ func TestInjectFrontmatterSkills_NoFrontmatterDedup(t *testing.T) {
 	assert.Contains(t, got, "# Just a prompt")
 }
 
+func TestInjectFrontmatterSkills_BlockScalarNoFalseMatch(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\ndescription: >-\n  skills: are critical for automation\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/my-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// The description continuation line must be preserved, not matched as a skills: key.
+	assert.Contains(t, got, "skills: are critical for automation")
+	assert.Contains(t, got, "  - my-skill")
+	assert.Contains(t, got, "name: test")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_MultilineFlowStyle(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\n  skill-a,\n  skill-b\n]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-c"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// All existing skills must be preserved in block form.
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	// New skill must be added.
+	assert.Contains(t, got, "  - skill-c")
+	// Flow array remnants must not leak into output.
+	assert.NotContains(t, got, "skill-a,")
+	assert.NotContains(t, got, "]")
+	// Other frontmatter must be preserved.
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_InvalidSkillName(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\n---\nBody\n"
+
+	tests := []struct {
+		name string
+		dir  string
+	}{
+		{"colon", "/path/to/my: skill"},
+		{"hash", "/path/to/skill #beta"},
+		{"bracket", "/path/to/skill[0]"},
+		{"space", "/path/to/my skill"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := injectFrontmatterSkills([]byte(src), []string{tc.dir})
+			require.Error(t, err, "should reject skill name with %s", tc.name)
+			assert.Contains(t, err.Error(), "unsafe for YAML")
+		})
+	}
+}
+
+func TestInjectFrontmatterSkills_BOMStrippedOnNoOp(t *testing.T) {
+	t.Parallel()
+	src := "\xef\xbb\xbf---\nname: test\nskills:\n  - skill-a\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+	require.NoError(t, err)
+	// BOM should be stripped even when no skills are added (no-op path).
+	assert.False(t, strings.HasPrefix(string(result), "\xef\xbb\xbf"), "BOM should be stripped on no-op path")
+	assert.Contains(t, string(result), "---\nname: test")
+}
+
 // assertValidFrontmatter checks that the result has valid YAML frontmatter
 // delimiters and the YAML inside parses without error.
 func assertValidFrontmatter(t *testing.T, data []byte) {
