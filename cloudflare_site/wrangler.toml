@@ -13,12 +13,10 @@ preview_urls = true
 
 [assets]
 directory = "./public"
-not_found_handling = "single-page-application"
+not_found_handling = "404-page"
 # Exposes env.ASSETS to worker/src/index.ts, which is now a plain passthrough.
-# Previously `run_worker_first = ["/api/*"]` meant the Worker only ran for /api/*
-# (which returned JSON before touching ASSETS), so the binding was never needed.
-# Most traffic still never reaches the Worker: an exact asset match is served
-# directly, and an unmatched *navigation* gets the SPA fallback. But an unmatched
-# non-navigation request (fetch/XHR, curl, monitoring probes) does reach it, and
-# without this binding those 503. Verified against `wrangler dev`.
+# Most traffic never reaches the Worker: an exact asset match is served directly,
+# and an unmatched path gets public/404.html (HTTP 404). But a request that is
+# not a navigation and has no asset match does reach it, and without this binding
+# those 503. Verified against `wrangler dev`.
 binding = "ASSETS"

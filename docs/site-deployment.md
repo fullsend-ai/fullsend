@@ -109,4 +109,4 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 
 **Artifact download 404.** **Build Site** must upload artifact **`site`**; **Deploy Site** needs `actions: read`.
 
-**Stale `/admin/*` links.** The admin SPA was removed. `not_found_handling = "single-page-application"` means old admin URLs fall back to the landing page rather than returning 404.
+**Stale `/admin/*` links.** The admin SPA was removed. `not_found_handling = "404-page"` means old admin URLs correctly return HTTP 404 with `public/404.html`.
