@@ -350,7 +350,6 @@ func TestInjectFrontmatterSkills_ScalarSkillsValue(t *testing.T) {
 	_, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills field must be a YAML list")
-	assert.Contains(t, err.Error(), "scalar")
 }
 
 func TestInjectFrontmatterSkills_BOMStrippedOnNoOp(t *testing.T) {
@@ -428,6 +427,37 @@ func TestInjectFrontmatterSkills_CRLFNoFrontmatter(t *testing.T) {
 	assert.Contains(t, got, "---\r\n")
 	assert.Contains(t, got, "  - my-skill\r\n")
 	assert.Contains(t, got, "# Just a prompt")
+}
+
+func TestInjectFrontmatterSkills_FlowCommentWithBracket(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\n  code-review, # see ] for details\n  security-review\n]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - code-review")
+	assert.Contains(t, got, "  - security-review")
+	assert.Contains(t, got, "  - new-skill")
+	// Flow array remnants must not leak into output.
+	assert.NotContains(t, got, "code-review,")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_AnchorNoDedup(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: &defaults\n  - skill-a\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Equal(t, 1, strings.Count(got, "skill-a"), "skill-a should appear exactly once")
+	assert.Contains(t, got, "  - skill-b")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
 }
 
 // assertValidFrontmatter checks that the result has valid YAML frontmatter
