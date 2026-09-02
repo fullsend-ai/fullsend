@@ -234,6 +234,56 @@ func TestParseClaudeStream_ToolResultLinesResetTheSilenceClock(t *testing.T) {
 		"a tool_result line must reset the watchdog's silence clock")
 }
 
+// TestParsePiStream_OversizedLinesResetTheSilenceClock: a line exceeding
+// streamBufSize is consumed without semantic parsing, but a runtime writing
+// megabytes is alive — the drained line must still feed the watchdog.
+func TestParsePiStream_OversizedLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	var events []AgentEvent
+	lines := 0
+	onLine := func() { lines++; w.note() }
+
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"big","pad":"` + strings.Repeat("a", streamBufSize+1) + `"}` + "\n"
+	_, err := parsePiStreamLines(strings.NewReader(input),
+		func(e AgentEvent) { events = append(events, e) }, onLine)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, lines, "a fully consumed oversized line must count as liveness")
+	assert.Positive(t, w.lastEvent.Load(),
+		"an oversized line must reset the watchdog's silence clock")
+	// Semantic parsing still skips it; the only event is the EOF fallback
+	// result for the truncated stream.
+	require.Len(t, events, 1)
+	assert.IsType(t, ResultEvent{}, events[0])
+}
+
+// TestParseClaudeStream_OversizedLinesResetTheSilenceClock: the Claude parser
+// twin of the pi oversized-line liveness test.
+func TestParseClaudeStream_OversizedLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	var events []AgentEvent
+	lines := 0
+	onLine := func() { lines++; w.note() }
+
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"big","pad":"` + strings.Repeat("a", streamBufSize+1) + `"}` + "\n"
+	err := parseClaudeStreamLines(strings.NewReader(input),
+		func(e AgentEvent) { events = append(events, e) }, onLine)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, lines, "a fully consumed oversized line must count as liveness")
+	assert.Positive(t, w.lastEvent.Load(),
+		"an oversized line must reset the watchdog's silence clock")
+	assert.Empty(t, events, "oversized lines stay excluded from semantic parsing")
+}
+
 // TestStallWatchdog_NoAnnotationsOutsideCI keeps the workflow-command syntax
 // out of local terminals, as the event renderer does.
 func TestStallWatchdog_NoAnnotationsOutsideCI(t *testing.T) {
