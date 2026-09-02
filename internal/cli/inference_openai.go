@@ -249,7 +249,7 @@ Forge types:
 			// second owner's mapping would silently carry the first
 			// owner's audience.
 			if audience == "" {
-				owners := repoOwners(repos)
+				owners := repoOwners(repos, forge)
 				if len(owners) > 1 {
 					return fmt.Errorf("repositories span more than one owner (%s): pass --audience with the provider's audience, since the default is derived from the owner", strings.Join(owners, ", "))
 				}
@@ -398,12 +398,17 @@ func parseRepoListForForge(arg, forge string) ([]string, error) {
 }
 
 // repoOwners returns the distinct owners of a repository list, in order.
-func repoOwners(repos []string) []string {
+// GitHub owner names are case-insensitive, so dedup folds to lower-case.
+// GitLab group names are case-sensitive, so dedup is exact.
+func repoOwners(repos []string, forge string) []string {
 	var owners []string
 	seen := make(map[string]bool, len(repos))
 	for _, r := range repos {
 		owner := strings.SplitN(r, "/", 2)[0]
-		key := strings.ToLower(owner)
+		key := owner
+		if forge == forgeGitHub {
+			key = strings.ToLower(owner)
+		}
 		if seen[key] {
 			continue
 		}

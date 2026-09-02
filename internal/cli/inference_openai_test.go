@@ -1321,8 +1321,19 @@ func TestParseRepoList_DedupesCaseInsensitively(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acme/widget", "acme/gadget"}, repos)
 
-	// The same rule keeps the mixed-owner guard honest.
-	assert.Equal(t, []string{"acme"}, repoOwners([]string{"acme/widget", "Acme/gadget"}))
+	// The same rule keeps the mixed-owner guard honest (GitHub is case-insensitive).
+	assert.Equal(t, []string{"acme"}, repoOwners([]string{"acme/widget", "Acme/gadget"}, forgeGitHub))
+}
+
+func TestRepoOwners_GitLabCaseSensitive(t *testing.T) {
+	// GitLab group names are case-sensitive, so MyGroup and mygroup are
+	// distinct owners and must not be collapsed.
+	owners := repoOwners([]string{"MyGroup/project1", "mygroup/project2"}, forgeGitLab)
+	assert.Equal(t, []string{"MyGroup", "mygroup"}, owners)
+
+	// Same-case entries still dedup.
+	owners = repoOwners([]string{"group/proj1", "group/proj2"}, forgeGitLab)
+	assert.Equal(t, []string{"group"}, owners)
 }
 
 func TestImport_AudienceFromProviderBlockWhenReplyLeavesItDefault(t *testing.T) {
