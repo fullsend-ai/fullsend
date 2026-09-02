@@ -302,11 +302,11 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			}
 
 		case "result":
-			seenResult = true
 			var re resultEvent
 			if err := json.Unmarshal(line, &re); err != nil {
 				continue
 			}
+			seenResult = true
 			onEvent(ResultEvent{
 				NumTurns:                 re.NumTurns,
 				TotalCostUSD:             re.TotalCostUSD,
