@@ -17,6 +17,20 @@ type frontmatterSkills struct {
 	Skills []string `yaml:"skills,omitempty"`
 }
 
+// isValidSkillName reports whether name contains only characters safe for
+// use as a bare YAML scalar: alphanumeric, hyphens, underscores, dots.
+func isValidSkillName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 // injectFrontmatterSkills adds skill names derived from skillDirs into the
 // agent definition's YAML frontmatter `skills:` section. Existing entries
 // are preserved; new names are appended with deduplication by basename.
@@ -40,6 +54,9 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 			continue
 		}
 		name := filepath.Base(d)
+		if !isValidSkillName(name) {
+			return nil, fmt.Errorf("skill name %q (from %q) contains characters unsafe for YAML; must match [a-zA-Z0-9._-]+", name, d)
+		}
 		if seen[name] {
 			continue
 		}
@@ -110,8 +127,9 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	}
 
 	if len(added) == 0 {
-		// All skills already present — return unchanged.
-		return data, nil
+		// All skills already present — return BOM-stripped content for consistency
+		// with the injection path (which always operates on BOM-stripped data).
+		return content, nil
 	}
 
 	// Sort added names for deterministic output.
@@ -130,12 +148,15 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	skillsInjected := false
 	inSkillsBlock := false
 	flowStyleSkills := false
+	flowEndIdx := -1
 	lastSkillLineIdx := -1
 
-	// Find the skills block boundaries.
+	// Find the skills block boundaries. Match only top-level (unindented)
+	// skills: keys to avoid false matches inside block scalar continuations
+	// (e.g., "description: >-\n  skills: are critical").
 	for i, line := range frontLines {
 		trimmed := strings.TrimSpace(string(line))
-		if strings.HasPrefix(trimmed, "skills:") {
+		if bytes.HasPrefix(line, []byte("skills:")) {
 			lastSkillLineIdx = i
 			if trimmed == "skills:" {
 				// Block mapping form — list items follow on subsequent lines.
@@ -145,6 +166,16 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 				// The YAML parser already captured the values into fm.Skills;
 				// we will rewrite this line as block form in the output loop.
 				flowStyleSkills = true
+				// Multi-line flow arrays (e.g. "skills: [\n  a,\n  b\n]"):
+				// mark continuation lines for skipping during reconstruction.
+				if !strings.Contains(trimmed, "]") {
+					for j := i + 1; j < len(frontLines); j++ {
+						flowEndIdx = j
+						if strings.Contains(string(frontLines[j]), "]") {
+							break
+						}
+					}
+				}
 			}
 			continue
 		}
@@ -169,6 +200,11 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	for i, line := range frontLines {
 		// Skip the trailing empty line from bytes.Split if it exists.
 		if i == len(frontLines)-1 && len(line) == 0 {
+			continue
+		}
+
+		// Skip continuation lines of multi-line flow-style arrays.
+		if flowEndIdx >= 0 && i > lastSkillLineIdx && i <= flowEndIdx {
 			continue
 		}
 
