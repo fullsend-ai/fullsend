@@ -203,15 +203,16 @@ type aggregateMetrics struct {
 	// without sub-agents keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
 	// OverBudget is set when the max_cost_usd cap actually suppressed a
-	// retry: aggregate cost reached the cap while another validation-loop
-	// iteration would otherwise have started. A run whose final iteration
-	// merely crossed the cap on its way to stopping normally (single
-	// iteration, validation passed, iterations exhausted) is NOT marked.
-	// It records why the run stopped retrying; it does not imply the run
-	// succeeded — the halt is only reached after an iteration failed
-	// validation, so over_budget commonly accompanies a non-nil run error.
-	// Callers should read it as "do not blame the model for stopping
-	// here", not as a success signal.
+	// retry: aggregate cost reached the cap while another iteration would
+	// otherwise have started — after a failed validation, or after an
+	// extraction failure whose `continue` retries without reaching
+	// validation. A run whose final iteration merely crossed the cap on
+	// its way to stopping normally (single iteration, validation passed,
+	// iterations exhausted) is NOT marked. It records why the run stopped
+	// retrying and implies nothing about the final validation state (the
+	// post-loop sweep may still pass a completed iteration). Callers
+	// should read it as "do not blame the model for stopping here", not
+	// as a success or failure signal.
 	OverBudget bool `json:"over_budget,omitempty"`
 }
 
