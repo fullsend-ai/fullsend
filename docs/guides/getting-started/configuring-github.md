@@ -113,7 +113,7 @@ defaults. The `--config-hash` flag is optional but recommended for remote
 URLs — it verifies the SHA-256 digest of the fetched content before
 committing. `--config` is only valid for per-repo mode.
 
-This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` and `codex` are experimental and meant for opt-in pilots — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
+This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi`, `codex`, and `opencode` are experimental and meant for opt-in pilots — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
 
 To apply the same preset across many repositories, declare `defaults.config_base` (and optionally `defaults.config_base.sha256`) in `repos.yaml` and run `fullsend repos install`. See [Repo Management — Configuration presets](repo-management.md#configuration-presets).
 
