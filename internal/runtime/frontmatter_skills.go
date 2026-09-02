@@ -68,7 +68,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	}
 	sort.Strings(newNames)
 
-	content := bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	content := bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
 
 	// Check for existing frontmatter.
 	lines := bytes.SplitAfter(content, []byte("\n"))
