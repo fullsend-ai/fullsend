@@ -750,7 +750,7 @@ func TestSetupAgentEnvContent(t *testing.T) {
 	assert.Contains(t, s, "GITHUB_ENV")
 	// Per-run override passthrough from repository variables (#6526).
 	assert.Contains(t, s, "FULLSEND_REPO_VARS")
-	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL"} {
+	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL", "FULLSEND_STALL_TIMEOUT"} {
 		assert.Contains(t, s, key)
 	}
 }

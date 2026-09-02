@@ -149,6 +149,91 @@ func TestStallWatchdog_NoWarningAfterStop(t *testing.T) {
 		"a stopped watchdog must not emit new warnings, got: %q", annotations.String())
 }
 
+// TestStallWatchdog_LateEventSuppressesWarning: note() is not serialized with
+// the tick, so an event can land after the tick computed its silence but
+// before the warning is emitted. The lastEvent re-check under mu must
+// suppress that warning — a stall notice right after activity resumed is
+// misleading. Driven through warnIfStillSilent directly because the race
+// window in watch() cannot be hit deterministically.
+func TestStallWatchdog_LateEventSuppressesWarning(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	annotations := &syncBuf{}
+	// An hour-long timeout: the poll ticker contributes nothing during the
+	// test, so the warn path is driven only by the direct calls below.
+	w := startStallWatchdogTo(annotations, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	// The tick read lastEvent == 0, then an event arrived before the warning
+	// was emitted: the stale episode must stay silent.
+	time.Sleep(2 * time.Millisecond) // note() must store a value distinct from 0
+	w.note()
+	w.warnIfStillSilent(0)
+	assert.Empty(t, annotations.String(),
+		"an event arriving after the silence calculation must suppress the warning")
+
+	// The same call with the current lastEvent emits, proving the lastEvent
+	// guard — not some other condition — is what suppressed it above.
+	w.warnIfStillSilent(w.lastEvent.Load())
+	assert.Equal(t, 1, countLines(annotations.String(), "::warning::"))
+}
+
+// TestParsePiStream_DiscardedLinesResetTheSilenceClock: pi lines with no
+// AgentEvent mapping — tool_execution_update streams continuously while a
+// tool runs — must still count as liveness, so an actively streaming tool is
+// never killed as stalled. Garbage and blank lines must not count.
+func TestParsePiStream_DiscardedLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	var events []AgentEvent
+	lines := 0
+	onLine := func() { lines++; w.note() }
+
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"tool_execution_update","toolCallId":"t1"}` + "\n" +
+		`{"type":"turn_start"}` + "\n" +
+		"not json\n" +
+		"\n"
+	_, err := parsePiStreamLines(strings.NewReader(input),
+		func(e AgentEvent) { events = append(events, e) }, onLine)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, lines, "each well-formed line is liveness; garbage and blanks are not")
+	assert.Positive(t, w.lastEvent.Load(),
+		"a discarded lifecycle line must reset the watchdog's silence clock")
+	// The lifecycle lines themselves emit nothing; the only event is the
+	// EOF fallback result for the truncated stream.
+	require.Len(t, events, 1)
+	assert.IsType(t, ResultEvent{}, events[0])
+}
+
+// TestParseClaudeStream_ToolResultLinesResetTheSilenceClock: Claude Code
+// `user` tool_result lines produce no AgentEvent, but they are stream
+// activity and must feed the watchdog.
+func TestParseClaudeStream_ToolResultLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	var events []AgentEvent
+	lines := 0
+	onLine := func() { lines++; w.note() }
+
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}` + "\n"
+	err := parseClaudeStreamLines(strings.NewReader(input),
+		func(e AgentEvent) { events = append(events, e) }, onLine)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, lines)
+	assert.Empty(t, events, "user tool_result lines map to no AgentEvent")
+	assert.Positive(t, w.lastEvent.Load(),
+		"a tool_result line must reset the watchdog's silence clock")
+}
+
 // TestStallWatchdog_NoAnnotationsOutsideCI keeps the workflow-command syntax
 // out of local terminals, as the event renderer does.
 func TestStallWatchdog_NoAnnotationsOutsideCI(t *testing.T) {

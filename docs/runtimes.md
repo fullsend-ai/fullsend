@@ -92,7 +92,7 @@ flowchart LR
 | Runtime | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry | `runtime:` in `.fullsend/config.yaml` (repo default) |
 | Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:`; `models.aliases` in `.fullsend/config.yaml` remaps the alias any of these resolve to |
 | Effort | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry | harness `effort:` |
-| Stall timeout | — | `FULLSEND_STALL_TIMEOUT` (default `10m`, `0` disables) | — | — |
+| Stall timeout | — | `FULLSEND_STALL_TIMEOUT` (default `15m`, `0` disables; must be below `timeout_minutes` or the watchdog is inactive) | — | — |
 
 In CI these are repository variables of the same name, plain or role-prefixed
 (`TRIAGE_FULLSEND_MODEL`), so a repo can switch one role's model without a pull request. For

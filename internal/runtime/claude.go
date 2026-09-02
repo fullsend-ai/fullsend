@@ -131,8 +131,11 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	defer cancel()
 
 	// cancel is the sandbox command's own cancel (a context derived inside
-	// ExecStreamReader) — the same kill the global timeout uses. The
-	// watchdog never touches ctx, which the caller owns.
+	// ExecStreamReader) — the same kill the global timeout uses. It SIGKILLs
+	// the local `openshell sandbox exec` client; the agent inside the sandbox
+	// dies when the caller's deferred sandbox.Delete tears the sandbox down
+	// (see the stallWatchdog doc). The watchdog never touches ctx, which the
+	// caller owns.
 	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
 	defer stall.stop()
 
@@ -184,7 +187,10 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 		innerHandler(evt)
 	}
 
-	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// `user` tool_result lines that map to no AgentEvent — resets the silence
+	// clock, so an actively streaming tool is never mistaken for a stall.
+	if parseErr := parseClaudeStreamLines(r, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, r)
