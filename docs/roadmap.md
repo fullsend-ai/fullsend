@@ -5,9 +5,9 @@ horizons, not deadlines: **Now** is what this planning cycle is advancing,
 **Next** is likely once Now has room, **Later** is on the horizon.
 
 This edition is the **September 2026** planning snapshot. Themes are how to
-find work; horizons are how to read commitment. Tracking spans
+find work; **Now / Next / Later** horizons are how to read commitment. Issue tracking spans
 [fullsend-ai/fullsend](https://github.com/fullsend-ai/fullsend) and
-[fullsend-ai/agents](https://github.com/fullsend-ai/agents) (best-effort).
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents).
 The team also does maintenance that is not listed here.
 
 Earlier published editions live in [archived-roadmaps](archived-roadmaps/).
@@ -42,7 +42,8 @@ That agent depends on a trust path the team laid out in planning:
 which should improve trust in auto-merge. Debounce/restart and a tighter
 triage → code → review → fix loop are the other enablers. Eval measurements
 and the revert/defect view (next theme) are how we know the path is actually
-safer.
+safer. The auto-merge agent will not be recommended for opt-in until
+revert and defect visibility ([fullsend#6892](https://github.com/fullsend-ai/fullsend/issues/6892)) is operational.
 
 **Auto-merge agent**
 
@@ -99,7 +100,7 @@ open; the work below is what the September plan focuses on.
 
 ### Community
 
-Gain additional contributors through the [maintainer process](../MAINTAINERS.md).
+Gain additional contributors through the [maintainer process](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md).
 Do not promise specific number of new maintainers. Keep contributor pull
 requests moving. Progress is tracked through PR review velocity and the
 maintainer process rather than dedicated issues.
@@ -138,7 +139,7 @@ Parked or dependency-bound in this planning session. Not dated.
 Direction, not a plan. No dates.
 
 - Kubernetes and OpenShift execution — forge-decoupled agent runtime
-- Security hardening, human factors, and production feedback loops — [human-factors](problems/human-factors.md) · [governance](problems/governance.md) · [production-feedback](problems/production-feedback.md) · tracking: [fullsend#172](https://github.com/fullsend-ai/fullsend/issues/172) · [fullsend#877](https://github.com/fullsend-ai/fullsend/issues/877) · [fullsend#2826](https://github.com/fullsend-ai/fullsend/issues/2826)
+- Security hardening, human factors, and production feedback loops — [human-factors](problems/human-factors.md) · [governance](problems/governance.md) · [production-feedback](problems/production-feedback.md) · tracking: [fullsend#172](https://github.com/fullsend-ai/fullsend/issues/172) · [fullsend#174](https://github.com/fullsend-ai/fullsend/issues/174) · [fullsend#84](https://github.com/fullsend-ai/fullsend/issues/84) · [fullsend#159](https://github.com/fullsend-ai/fullsend/issues/159) · [fullsend#877](https://github.com/fullsend-ai/fullsend/issues/877) · [fullsend#2826](https://github.com/fullsend-ai/fullsend/issues/2826) · [fullsend#2828](https://github.com/fullsend-ai/fullsend/issues/2828)
 - Agent attestations — cryptographic provenance for agent output: [fullsend#267](https://github.com/fullsend-ai/fullsend/issues/267)
 - Cross-forge orchestration — GitHub + GitLab / multi-org
 - Alternative sandbox providers — considered; not worth the refactor now

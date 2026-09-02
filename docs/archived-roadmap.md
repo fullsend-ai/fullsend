@@ -1,4 +1,4 @@
-# Archived roadmaps
+# Archived roadmaps — July 2026 and earlier
 
 > **Archive only — not the live roadmap.**
 >
@@ -20,7 +20,6 @@ Months are listed **newest first**. Each opens with a skim-friendly summary (Now
 | [Foundation — April–May 2026](#foundation--aprilmay-2026) | Post-MVP baseline; WIF; per-repo install |
 
 ---
-
 
 ## July 2026 planning
 

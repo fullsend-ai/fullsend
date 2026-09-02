@@ -367,7 +367,7 @@ export default defineConfig({
               collapsed: true,
               items: [
                 { text: "Index", link: "/archived-roadmaps/" },
-                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps"),
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
                 { text: "July 2026 and earlier", link: "/archived-roadmap" },
               ],
             },
@@ -439,7 +439,7 @@ export default defineConfig({
             prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
           },
           { label: "Experiments", prefixes: ["/docs/experiments/"] },
-          { label: "Contributing", prefixes: ["/docs/contributing/", "/docs/archived-roadmaps/"] },
+          { label: "Contributing", prefixes: ["/docs/contributing/"] },
           { label: "Others", prefixes: [], others: true },
         ],
       },
