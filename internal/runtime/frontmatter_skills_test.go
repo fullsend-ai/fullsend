@@ -263,7 +263,7 @@ func TestInjectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
 
 func TestInjectFrontmatterSkills_BOM(t *testing.T) {
 	t.Parallel()
-	src := "\xef\xbb\xbf---\nname: test\n---\nBody\n"
+	src := "\xEF\xBB\xBF---\nname: test\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
 	require.NoError(t, err)
 	assert.Contains(t, string(result), "  - skill-a")
@@ -355,11 +355,11 @@ func TestInjectFrontmatterSkills_ScalarSkillsValue(t *testing.T) {
 
 func TestInjectFrontmatterSkills_BOMStrippedOnNoOp(t *testing.T) {
 	t.Parallel()
-	src := "\xef\xbb\xbf---\nname: test\nskills:\n  - skill-a\n---\nBody\n"
+	src := "\xEF\xBB\xBF---\nname: test\nskills:\n  - skill-a\n---\nBody\n"
 	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
 	require.NoError(t, err)
 	// BOM should be stripped even when no skills are added (no-op path).
-	assert.False(t, strings.HasPrefix(string(result), "\xef\xbb\xbf"), "BOM should be stripped on no-op path")
+	assert.False(t, strings.HasPrefix(string(result), "\xEF\xBB\xBF"), "BOM should be stripped on no-op path")
 	assert.Contains(t, string(result), "---\nname: test")
 }
 
