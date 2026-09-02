@@ -92,7 +92,7 @@ type RepoEntry struct {
 	MintMode               string   `yaml:"mint_mode,omitempty"`
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 	// Runtime is the agent runtime written as the repo's `runtime:` at
-	// install time (claude, pi, codex); empty inherits defaults.runtime,
+	// install time (claude, pi, codex, opencode); empty inherits defaults.runtime,
 	// and an empty resolved value keeps the code default (claude).
 	Runtime string `yaml:"runtime,omitempty"`
 	// Vendor overrides the default vendor setting for this repo.
@@ -104,7 +104,7 @@ type RepoEntry struct {
 // across all platforms.
 type DefaultsConfig struct {
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-	// Runtime is the default agent runtime for every repo (claude, pi, codex).
+	// Runtime is the default agent runtime for every repo (claude, pi, codex, opencode).
 	Runtime string `yaml:"runtime,omitempty"`
 	// Vendor, when true, vendors the fullsend binary and content into
 	// each repo so CI does not need network access to fetch them.
