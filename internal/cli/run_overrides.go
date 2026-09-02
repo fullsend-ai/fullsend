@@ -130,13 +130,15 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 }
 
 // defaultStallTimeout is how long the runtime event stream may stay silent
-// before the run is killed as stalled. Claude Code's stream-json emits one
-// event per assistant message and completed tool call — fullsend does not
-// request partial messages — so a single long tool call (a full test suite,
-// a slow clone) is legitimately silent for minutes. The default is
-// deliberately generous; repos that know their event cadence can tune it
-// down with FULLSEND_STALL_TIMEOUT.
-const defaultStallTimeout = 10 * time.Minute
+// before the run is killed as stalled. Streaming tool output counts as
+// liveness (every well-formed stream line resets the clock), so this floor
+// only has to cover genuinely silent calls. The binding constraint is Claude
+// Code's bash ceiling: BASH_MAX_TIMEOUT_MS defaults to 600000ms (10m) and
+// the model routinely requests the full ceiling for test suites, so the
+// default must sit above it or a legitimately quiet 10m command is killed as
+// stalled. 15m gives that headroom; repos that raise BASH_MAX_TIMEOUT_MS or
+// know their event cadence tune FULLSEND_STALL_TIMEOUT to match.
+const defaultStallTimeout = 15 * time.Minute
 
 // resolveStallTimeout returns the event-inactivity timeout for the run:
 // FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"

@@ -63,4 +63,12 @@ vars='{"FULLSEND_FALLBACK_MODELS":"sonnet,haiku"}'
 out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="${vars}")"
 check "fallback chain" "FULLSEND_FALLBACK_MODELS=sonnet,haiku" "$(grep '^FULLSEND_FALLBACK_MODELS=' <<<"${out}")"
 
+# 7. Stall timeout forwards, plain and role-prefixed (Go durations pass the
+# value regex).
+vars='{"FULLSEND_STALL_TIMEOUT":"5m","TRIAGE_FULLSEND_STALL_TIMEOUT":"90s"}'
+out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="${vars}")"
+check "stall timeout role-prefixed wins" "FULLSEND_STALL_TIMEOUT=90s" "$(grep '^FULLSEND_STALL_TIMEOUT=' <<<"${out}")"
+out="$(run AGENT_PREFIX=CODE_ FULLSEND_REPO_VARS="${vars}")"
+check "stall timeout plain applies" "FULLSEND_STALL_TIMEOUT=5m" "$(grep '^FULLSEND_STALL_TIMEOUT=' <<<"${out}")"
+
 exit "${fail}"

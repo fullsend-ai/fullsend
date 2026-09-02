@@ -505,9 +505,12 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	defer cancel()
 
 	// cancel is the sandbox command's own cancel (a context derived inside
-	// ExecStreamReader) — the same kill the global timeout uses. The
-	// watchdog never touches ctx, which the caller owns. It arms per
-	// attempt, so a fallback attempt starts with a fresh silence clock.
+	// ExecStreamReader) — the same kill the global timeout uses. It SIGKILLs
+	// the local `openshell sandbox exec` client; the agent inside the sandbox
+	// dies when the caller's deferred sandbox.Delete tears the sandbox down
+	// (see the stallWatchdog doc). The watchdog never touches ctx, which the
+	// caller owns. It arms per attempt, so a fallback attempt starts with a
+	// fresh silence clock.
 	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
 	defer stall.stop()
 
@@ -538,7 +541,10 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 		gate.handle(evt)
 	}
 
-	if parseErr := parseClaudeStream(reader, onEvent); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// lines that map to no AgentEvent — resets the silence clock, so an
+	// actively streaming tool is never mistaken for a stall.
+	if parseErr := parseClaudeStreamLines(reader, onEvent, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
