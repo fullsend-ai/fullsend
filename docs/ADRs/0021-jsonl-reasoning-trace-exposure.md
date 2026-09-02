@@ -19,6 +19,12 @@ Date: 2026-04-15
 
 Accepted
 
+Platform resume of a prior run (new ephemeral sandbox + JSONL conversation
+tree) is decided in
+[ADR 0094](0094-resume-agent-sessions-from-jsonl-transcripts.md). This ADR
+still governs JSONL exposure; 0094 governs using that JSONL as the next
+run's starting conversation.
+
 ## Context
 
 The retro agent needs access to the raw JSONL conversation transcripts that

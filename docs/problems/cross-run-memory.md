@@ -25,6 +25,8 @@ Two mechanisms partially address this:
 
 Neither mechanism provides automatic, immediate feedback from one run's outcome to the next run's context. That gap is the problem space.
 
+**Session continuation is not this problem.** Replaying a prior run's JSONL transcript into a new ephemeral sandbox, for the same agent and work item, is decided in [ADR 0094](../ADRs/0094-resume-agent-sessions-from-jsonl-transcripts.md). That restores a conversation tree; it does not promote lessons, observations, or instructions to later unrelated runs. Cross-role consumption of another agent's JSONL remains in this problem space.
+
 ## The feedback-loop tension
 
 There are at least three different kinds of memory, and they should not be treated the same way:
@@ -131,7 +133,7 @@ Retry loops can become flapping when the system does not converge. See [flapping
 - Should memory entries be observations only, or can any of them become instructions?
 - How should future agents distinguish system-derived facts from agent-authored interpretations?
 - Can non-review-gated memory be made safe enough, or should all durable memory promotion go through reviewed repo instructions or skills?
-- How should memory interact with separate agent roles? Should triage memory ever influence review behavior directly?
+- How should memory interact with separate agent roles? Should triage memory ever influence review behavior directly? (Same-agent JSONL resume is [ADR 0094](../ADRs/0094-resume-agent-sessions-from-jsonl-transcripts.md); cross-role transcript consumption is still this question.)
 - What retention model prevents stale memory from dominating: time-based, count-based, outcome-based, or explicit supersession?
 - Should the retro agent curate memory by pruning stale entries and proposing durable skill additions, or would that give it too much influence over future runs?
 - How should memory interact with structured agent output? Should agent output include an "observations" field that post-scripts can validate and classify?
