@@ -272,6 +272,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Automatic runs are serialized per harness and event subject. Later events do
+  not cancel an active run. Dispatch passes the initial `NormalizedEvent` to
+  `fullsend run`; after each execution terminates, `fullsend run` uses the input
+  driver to retrieve and authorize newer events, re-evaluates the harness
+  trigger, and starts at most one bounded follow-up from the newest match
+  ([ADR 0098](ADRs/0098-serialize-agent-runs-and-coalesce-subsequent-events.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
@@ -303,7 +309,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
   lock refresh.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
-- What happens when work needs to be cancelled, retried, or reassigned?
+- How should explicit cancellation, retry, and reassignment interact with the
+  automatic event-coalescing policy in
+  [ADR 0098](ADRs/0098-serialize-agent-runs-and-coalesce-subsequent-events.md)?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without

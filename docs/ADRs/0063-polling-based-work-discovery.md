@@ -351,6 +351,11 @@ still be safe to re-run (idempotent or gracefully no-op on repeat) as defense in
 depth — but polling does not impose a new idempotency requirement beyond what
 event-driven dispatch already assumes under `cancel-in-progress`.
 
+> **Update (2026-09):** [ADR 0098](0098-serialize-agent-runs-and-coalesce-subsequent-events.md)
+> replaces automatic cancellation with serialized runs and bounded follow-up
+> event coalescing. Source-native locks and agent idempotency remain defense in
+> depth for duplicate dispatch and side effects.
+
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:
 
