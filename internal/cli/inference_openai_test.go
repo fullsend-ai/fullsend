@@ -1978,6 +1978,32 @@ func TestOpenAIRequest_IssuerRejectsTrailingSlash(t *testing.T) {
 	assert.Contains(t, err.Error(), "trailing slash")
 }
 
+func TestOpenAIRequest_IssuerRejectsUserinfo(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://user:pass@gitlab.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+}
+
+// --- GitLab case-sensitive dedup ---
+
+func TestParseRepoListForForge_GitLabCaseSensitiveDedup(t *testing.T) {
+	repos, err := parseRepoListForForge("group/Project,group/project", forgeGitLab)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"group/Project", "group/project"}, repos,
+		"GitLab paths are case-sensitive; both spellings should be kept")
+}
+
+func TestParseRepoListForForge_GitHubCaseInsensitiveDedup(t *testing.T) {
+	repos, err := parseRepoListForForge("acme/Widget,acme/widget", forgeGitHub)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/Widget"}, repos,
+		"GitHub paths are case-insensitive; second spelling should be deduped")
+}
+
 // --- JWKS kty validation ---
 
 func TestOpenAIRequest_JWKSFile_MissingKty(t *testing.T) {

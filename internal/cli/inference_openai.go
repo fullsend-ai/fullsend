@@ -206,9 +206,12 @@ Forge types:
 				if u.Host == "" {
 					return fmt.Errorf("--issuer must have a non-empty host (got %q)", issuer)
 				}
+				if u.User != nil {
+					return fmt.Errorf("--issuer must not contain userinfo (got %q)", issuer)
+				}
 				// RFC 8414 §2: OIDC issuer identifiers must not contain
-				// query or fragment components. A trailing slash is also
-				// stripped to avoid issuer-claim mismatches.
+				// userinfo, query, or fragment components. A trailing
+				// slash is also rejected to avoid issuer-claim mismatches.
 				if u.RawQuery != "" {
 					return fmt.Errorf("--issuer must not contain a query string (got %q)", issuer)
 				}
@@ -377,10 +380,14 @@ func parseRepoListForForge(arg, forge string) ([]string, error) {
 	// A duplicate would render as two identical mappings in the request.
 	// GitHub compares owner/repo case-insensitively, so Acme/Widget and
 	// acme/widget are the same repository; the first spelling is kept.
+	// GitLab paths are case-sensitive, so dedup is exact for that forge.
 	seen := make(map[string]bool, len(repos))
 	deduped := repos[:0]
 	for _, r := range repos {
-		key := strings.ToLower(r)
+		key := r
+		if forge == forgeGitHub {
+			key = strings.ToLower(r)
+		}
 		if seen[key] {
 			continue
 		}
