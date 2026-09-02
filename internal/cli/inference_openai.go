@@ -26,6 +26,13 @@ const (
 	// document written by one release is readable by the next. OpenAI has
 	// no API for providers or mappings today, so it is deliberately not a
 	// claim about any future submission contract.
+	//
+	// Version "1" is forward-compatible with additive fields. New fields
+	// (project_path, jwks_keys) use omitempty, so GitHub-forge documents
+	// are byte-identical to pre-change output. GitLab-forge documents are
+	// a net-new artifact that no prior consumer has produced. A consumer
+	// encountering an unknown field in a v1 document should ignore it
+	// rather than reject the document.
 	openAIRequestSchemaVersion = "1"
 
 	// defaultOpenAIAudiencePrefix is the default audience convention.
@@ -198,6 +205,18 @@ Forge types:
 				}
 				if u.Host == "" {
 					return fmt.Errorf("--issuer must have a non-empty host (got %q)", issuer)
+				}
+				// RFC 8414 §2: OIDC issuer identifiers must not contain
+				// query or fragment components. A trailing slash is also
+				// stripped to avoid issuer-claim mismatches.
+				if u.RawQuery != "" {
+					return fmt.Errorf("--issuer must not contain a query string (got %q)", issuer)
+				}
+				if u.Fragment != "" {
+					return fmt.Errorf("--issuer must not contain a fragment (got %q)", issuer)
+				}
+				if strings.HasSuffix(u.Path, "/") {
+					return fmt.Errorf("--issuer must not have a trailing slash (got %q)", issuer)
 				}
 			}
 

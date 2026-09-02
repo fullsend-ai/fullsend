@@ -1948,6 +1948,36 @@ func TestOpenAIRequest_IssuerRejectsNoHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "non-empty host")
 }
 
+func TestOpenAIRequest_IssuerRejectsQueryString(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com?foo=bar"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query string")
+}
+
+func TestOpenAIRequest_IssuerRejectsFragment(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com#frag"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fragment")
+}
+
+func TestOpenAIRequest_IssuerRejectsTrailingSlash(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com/"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing slash")
+}
+
 // --- JWKS kty validation ---
 
 func TestOpenAIRequest_JWKSFile_MissingKty(t *testing.T) {
