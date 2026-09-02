@@ -278,6 +278,16 @@ func piIsErrorStop(reason string) bool {
 //     maps to exit 1 in text mode) — ParseTranscriptFile must detect errors
 //     from the stream, not the exit code.
 func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
+	return parsePiStreamLines(r, onEvent, nil)
+}
+
+// parsePiStreamLines is parsePiStream with a per-line liveness hook: onLine
+// (nil ok) is called for every well-formed JSON line, including the lifecycle
+// types that map to no AgentEvent — tool_execution_update, emitted
+// continuously while a tool streams output, among them. Any stream activity
+// is proof of life, so the stall watchdog counts lines, not just the sparser
+// semantic events.
+func parsePiStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) (sessionID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -463,6 +473,9 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		var env piEnvelope
 		if jsonErr := json.Unmarshal(line, &env); jsonErr != nil {
 			continue
+		}
+		if onLine != nil {
+			onLine()
 		}
 
 		switch env.Type {

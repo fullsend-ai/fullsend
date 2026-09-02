@@ -537,8 +537,11 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	defer cancel()
 
 	// cancel is the sandbox command's own cancel (a context derived inside
-	// ExecStreamReader) — the same kill the global timeout uses. The
-	// watchdog never touches ctx, which the caller owns.
+	// ExecStreamReader) — the same kill the global timeout uses. It SIGKILLs
+	// the local `openshell sandbox exec` client; the agent inside the sandbox
+	// dies when the caller's deferred sandbox.Delete tears the sandbox down
+	// (see the stallWatchdog doc). The watchdog never touches ctx, which the
+	// caller owns.
 	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
 	defer stall.stop()
 
@@ -591,7 +594,11 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parsePiStream(reader, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// tool_execution_update lines emitted while a tool streams output, which
+	// map to no AgentEvent — resets the silence clock, so an actively
+	// streaming tool is never mistaken for a stall.
+	if _, parseErr := parsePiStreamLines(reader, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)

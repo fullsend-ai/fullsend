@@ -42,11 +42,15 @@ const (
 // The runner's heartbeat reports elapsed wall-clock time whether or not the
 // agent is alive, so a wedged process is indistinguishable from a thinking
 // one until the global timeout expires — and gets billed for the difference.
-// Every event the stream parser emits is proof of life: note() records it,
-// half a timeout of silence logs a warning, and a full timeout of silence
-// calls kill, which is the same context cancel the global timeout uses to
-// terminate the sandbox command (sandbox.ExecStreamReader). The watchdog
-// owns no context of its own and never touches the caller's.
+// Every well-formed line the stream parser reads is proof of life: note()
+// records it, half a timeout of silence logs a warning, and a full timeout of
+// silence calls kill, which is the same context cancel the global timeout
+// uses (sandbox.ExecStreamReader). That cancel SIGKILLs the local `openshell
+// sandbox exec` client only — it does not signal the agent inside the
+// sandbox. The agent dies when runAgent returns and its deferred
+// sandbox.Delete (internal/cli/run.go) destroys the sandbox; under
+// --keep-sandbox nothing stops it, exactly as with the global timeout. The
+// watchdog owns no context of its own and never touches the caller's.
 //
 // A nil *stallWatchdog is a disabled watchdog: every method is a no-op, so
 // call sites need no branch for FULLSEND_STALL_TIMEOUT=0.
@@ -70,6 +74,9 @@ type stallWatchdog struct {
 	// and the CAS only protects the kill path — a bare state check before
 	// warning would leave a check-then-warn window, so both the disarm and
 	// the check+emit happen under this lock: no warning once stop() returns.
+	// note() stays lock-free; warnIfStillSilent re-reads lastEvent under mu
+	// instead, so an event that lands after the tick computed its silence
+	// still suppresses the warning.
 	mu sync.Mutex
 }
 
@@ -162,14 +169,24 @@ func (w *stallWatchdog) watch() {
 				return
 			case silence >= w.timeout/2 && warnedFor != last:
 				warnedFor = last
-				w.mu.Lock()
-				if w.state.Load() == watchdogArmed {
-					w.warn(fmt.Sprintf("no agent events for %s", w.timeout/2))
-				}
-				w.mu.Unlock()
+				w.warnIfStillSilent(last)
 			}
 		}
 	}
+}
+
+// warnIfStillSilent emits the half-timeout warning for the stall episode that
+// began at last, unless the watchdog was stopped or an event arrived after
+// the tick computed its silence — note() is not serialized with the tick, so
+// last can be stale by the time the lock is held, and a warning right after
+// activity resumed would be misleading.
+func (w *stallWatchdog) warnIfStillSilent(last int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.state.Load() != watchdogArmed || w.lastEvent.Load() != last {
+		return
+	}
+	w.warn(fmt.Sprintf("no agent events for %s", w.timeout/2))
 }
 
 // warn surfaces a stall warning the way the event renderer surfaces tool
