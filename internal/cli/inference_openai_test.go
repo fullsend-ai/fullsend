@@ -240,6 +240,9 @@ func TestDefaultServiceAccountID(t *testing.T) {
 	assert.Equal(t, "fullsend-widget-ci", defaultServiceAccountID("acme/widget"))
 	assert.Equal(t, "fullsend-gadget-ci", defaultServiceAccountID("acme/gadget"))
 	assert.Equal(t, "fullsend-my-repo-ci", defaultServiceAccountID("org/my-repo"))
+	// GitLab subgroup paths: slashes in the repo portion are replaced with hyphens.
+	assert.Equal(t, "fullsend-subgroup-project-ci", defaultServiceAccountID("group/subgroup/project"))
+	assert.Equal(t, "fullsend-a-b-project-ci", defaultServiceAccountID("group/a/b/project"))
 }
 
 // --- import command tests ---

@@ -317,7 +317,7 @@ func parseRepoListForForge(arg, forge string) ([]string, error) {
 		if forge == forgeGitLab {
 			// GitLab project paths can have subgroups
 			// (group/subgroup/project). Validate that every segment is
-			// non-empty and contains only valid characters.
+			// non-empty.
 			segments := strings.Split(p, "/")
 			for _, seg := range segments {
 				if seg == "" {
@@ -365,10 +365,13 @@ func repoOwners(repos []string) []string {
 }
 
 // defaultServiceAccountID derives the default service account name for
-// a repository: fullsend-<repo>-ci.
+// a repository: fullsend-<repo>-ci.  For GitLab subgroup paths like
+// group/subgroup/project, slashes in the repo portion are replaced
+// with hyphens so the resulting name (fullsend-subgroup-project-ci)
+// stays valid as a service account identifier.
 func defaultServiceAccountID(repo string) string {
 	parts := strings.SplitN(repo, "/", 2)
-	repoName := parts[1]
+	repoName := strings.ReplaceAll(parts[1], "/", "-")
 	return "fullsend-" + repoName + "-ci"
 }
 
