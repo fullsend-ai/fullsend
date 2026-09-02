@@ -2130,7 +2130,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			lastExitCode = exitCode
 			printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
 			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
-				printer.StepWarn("Cancellation: failed to write metrics.json: " + err.Error())
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
 			}
 			return fmt.Errorf("run cancelled (iteration %d): %w", iteration, runErr)
 		}
