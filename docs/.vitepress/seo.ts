@@ -33,6 +33,15 @@ const CANONICAL_REDIRECTS: Record<string, string> = {
   "archived-roadmap.md": "archived-roadmaps/",
 };
 
+/** Map an HTML canonical destination to the markdown file that backs it. */
+function markdownSourcePath(page: string): string {
+  const dest = CANONICAL_REDIRECTS[page];
+  if (!dest) return page;
+  if (dest.endsWith("/")) return `${dest}index.md`;
+  if (dest.endsWith(".md")) return dest;
+  return dest.replace(/\.html?$/, "") + ".md";
+}
+
 /** Non-content path: template placeholder or repo-metadata (ALL-CAPS) name. */
 export function isNonContentPath(pageOrUrl: string): boolean {
   const pathOnly = pageOrUrl.split(/[?#]/, 1)[0];
@@ -67,6 +76,30 @@ export function canonicalUrl(page: string, cleanUrls = false): string {
   return new URL(outputPath, DOCS_URL_BASE).href;
 }
 
+/**
+ * Absolute URL base for a VitePress `site.base` path (e.g. `/docs/` or
+ * `/docs/v/dev/`). Versioned builds override `--base`; the trailing slash is
+ * required so `new URL(page, base)` keeps the last path segment.
+ */
+export function docsUrlBase(base = DOCS_BASE): string {
+  const url = new URL(base, SITE_ORIGIN);
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return url.href;
+}
+
+/**
+ * Absolute URL of the published markdown source for a page.
+ * `page` is the post-rewrite path (README.md already mapped to index.md),
+ * which is the file copied into dist next to the HTML. Redirect stubs (the
+ * root `index.md` meta-refresh) follow the same table as `canonicalUrl` so
+ * agents fetching the alternate get real content, not the stub.
+ * `base` is the current build's VitePress `site.base` so versioned pages
+ * advertise that version's own `.md` rather than the unversioned root.
+ */
+export function markdownUrl(page: string, base = DOCS_BASE): string {
+  return new URL(markdownSourcePath(page), docsUrlBase(base)).href;
+}
+
 export interface PageSeoInput {
   /** Post-rewrite source path of the page (VitePress `TransformContext.page`). */
   page: string;
@@ -74,6 +107,8 @@ export interface PageSeoInput {
   title: string;
   /** Resolved page description (VitePress `TransformContext.description`). */
   description: string;
+  /** VitePress `site.base` for this build (`/docs/` or `/docs/v/<version>/`). */
+  base?: string;
   cleanUrls?: boolean;
 }
 
@@ -81,16 +116,20 @@ export interface PageSeoInput {
  * Per-page SEO head tags: a canonical link plus page-specific Open Graph tags.
  * Twitter cards fall back to the `og:*` values, so no `twitter:title` /
  * `twitter:description` duplication is needed.
+ * Canonical and og:url stay on the unversioned `/docs/` URL. The markdown
+ * alternate uses `base` so a versioned page points at that version's source.
  */
 export function pageSeoHead({
   page,
   title,
   description,
+  base = DOCS_BASE,
   cleanUrls = false,
 }: PageSeoInput): HeadConfig[] {
   const url = canonicalUrl(page, cleanUrls);
   return [
     ["link", { rel: "canonical", href: url }],
+    ["link", { rel: "alternate", type: "text/markdown", href: markdownUrl(page, base) }],
     ["meta", { property: "og:url", content: url }],
     ["meta", { property: "og:title", content: title }],
     ["meta", { property: "og:description", content: description }],

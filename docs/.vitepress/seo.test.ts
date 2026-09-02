@@ -6,6 +6,7 @@ import {
   isIndexablePage,
   isNonContentPath,
   isSitemapUrl,
+  markdownUrl,
   pageOutputPath,
   pageRobotsHead,
   pageSeoHead,
@@ -69,6 +70,34 @@ describe("canonicalUrl", () => {
   });
 });
 
+describe("markdownUrl", () => {
+  it("keeps the .md filename of a content page", () => {
+    expect(markdownUrl("agents/triage.md")).toBe("https://fullsend.sh/docs/agents/triage.md");
+  });
+
+  it("uses index.md for a directory page, not the trailing-slash HTML URL", () => {
+    expect(markdownUrl("agents/index.md")).toBe("https://fullsend.sh/docs/agents/index.md");
+  });
+
+  it("follows the root HTML redirect to the getting-started source", () => {
+    expect(markdownUrl("index.md")).toBe(
+      "https://fullsend.sh/docs/guides/getting-started/index.md",
+    );
+    expect(markdownUrl("index.md", "/docs/v/dev/")).toBe(
+      "https://fullsend.sh/docs/v/dev/guides/getting-started/index.md",
+    );
+  });
+
+  it("resolves against a versioned VitePress base", () => {
+    expect(markdownUrl("agents/triage.md", "/docs/v/dev/")).toBe(
+      "https://fullsend.sh/docs/v/dev/agents/triage.md",
+    );
+    expect(markdownUrl("agents/index.md", "/docs/v/v0.39.0")).toBe(
+      "https://fullsend.sh/docs/v/v0.39.0/agents/index.md",
+    );
+  });
+});
+
 describe("pageSeoHead", () => {
   const head = pageSeoHead({
     page: "agents/triage.md",
@@ -81,6 +110,64 @@ describe("pageSeoHead", () => {
     const url = "https://fullsend.sh/docs/agents/triage";
     expect(head).toContainEqual(["link", { rel: "canonical", href: url }]);
     expect(head).toContainEqual(["meta", { property: "og:url", content: url }]);
+  });
+
+  it("emits an alternate link to the published markdown source", () => {
+    expect(head).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/agents/triage.md",
+      },
+    ]);
+  });
+
+  it("points the root markdown alternate at the getting-started source", () => {
+    const root = pageSeoHead({
+      page: "index.md",
+      title: "Fullsend Docs",
+      description: "Docs home",
+      cleanUrls: true,
+    });
+    expect(root).toContainEqual([
+      "link",
+      { rel: "canonical", href: "https://fullsend.sh/docs/guides/getting-started/" },
+    ]);
+    expect(root).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/guides/getting-started/index.md",
+      },
+    ]);
+  });
+
+  it("points the markdown alternate at the versioned base, not the canonical root", () => {
+    const versioned = pageSeoHead({
+      page: "agents/triage.md",
+      title: "Triage Agent | Fullsend",
+      description: "How the triage agent works",
+      base: "/docs/v/dev/",
+      cleanUrls: true,
+    });
+    expect(versioned).toContainEqual([
+      "link",
+      { rel: "canonical", href: "https://fullsend.sh/docs/agents/triage" },
+    ]);
+    expect(versioned).toContainEqual([
+      "meta",
+      { property: "og:url", content: "https://fullsend.sh/docs/agents/triage" },
+    ]);
+    expect(versioned).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/v/dev/agents/triage.md",
+      },
+    ]);
   });
 
   it("emits page-specific og:title and og:description", () => {

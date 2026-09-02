@@ -2,9 +2,21 @@
 
 > Autonomous SDLC agents for your codebase
 
-Fullsend is a platform for fully autonomous agentic development for GitHub-hosted organizations. It provides triage, code generation, review, fix, retro, and prioritization agents that operate on GitHub issues and pull requests.
+Fullsend is a platform for fully autonomous agentic development for
+GitHub-hosted organizations. It provides triage, code generation, review, fix,
+retro, and prioritization agents that operate on GitHub issues and pull
+requests.
 
 ## Docs
+
+The stable version is served at both `/docs/` and `/docs/v/stable/`. `/docs/v/`
+has an HTML list of versions to explore. The stable version at `/docs/` is
+usually enough. Source Markdown files ship alongside the HTML; add a `.md`
+suffix (and `index.md` for directory URLs) to fetch them:
+`/docs/agents/triage` → `/docs/agents/triage.md`, `/docs/agents/` →
+`/docs/agents/index.md`. A hit returns `Content-Type: text/markdown`; a missing
+Markdown page returns HTTP 404 with `Content-Type: text/html`. Old versions may
+not have Markdown files.
 
 - [Getting Started](https://fullsend.sh/docs/guides/getting-started/)
 - [Agents Overview](https://fullsend.sh/docs/agents/)
