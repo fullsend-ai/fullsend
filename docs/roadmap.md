@@ -8,7 +8,9 @@ This edition is the **September 2026** planning snapshot. Themes are how to
 find work; **Now / Next / Later** horizons are how to read commitment. Issue tracking spans
 [fullsend-ai/fullsend](https://github.com/fullsend-ai/fullsend) and
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents).
-The team also does maintenance that is not listed here.
+[User support](#user-support) is standing work on every edition until we say
+otherwise: investigating reports, fixing bugs, and keeping docs accurate. It
+is real capacity, not the headline of this page.
 
 Earlier published editions live in [archived-roadmaps](archived-roadmaps/).
 
@@ -23,6 +25,7 @@ Earlier published editions live in [archived-roadmaps](archived-roadmaps/).
 | [Community](#community) | Contributor review keeps moving; identify maintainer candidates through the documented process |
 | [Platform](#platform) | Host APIs, public mint, leftover cleanup from deprecated per-org install ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)), artifacts, behaviour tests |
 | [Partners](#partners) | Tekton and Lightwell stay in motion; not a ship promise |
+| [User support](#user-support) | Standing: user reports, bugs, and docs — always on, not the feature headline |
 
 ## Now
 
@@ -88,11 +91,16 @@ stages and MLflow export on the same GitLab run, not as separate pieces.
 ### Jira
 
 Finish the path from Jira events into default triage and code so teams (for
-example Konflux) do not copy bugs into GitHub first. The August-edition Jira
-poller issues ([fullsend#3812](https://github.com/fullsend-ai/fullsend/issues/3812),
-[fullsend#4885](https://github.com/fullsend-ai/fullsend/issues/4885),
-[fullsend#3428](https://github.com/fullsend-ai/fullsend/issues/3428)) remain
-open; the work below is what the September plan focuses on.
+example Konflux) do not copy bugs into GitHub first.
+
+August Jira-poller work that is still open, and how it maps:
+
+- [fullsend#4885 — Define Jira authentication strategy: interim service account credentials](https://github.com/fullsend-ai/fullsend/issues/4885) (issue)
+- [fullsend#2269 — JIRA identity and credential management](https://github.com/fullsend-ai/fullsend/issues/2269) (issue; still open, not a September Now item)
+- [fullsend#3812 — docs(adr): ADR 0079 — Jira project setup via fullsend CLI](https://github.com/fullsend-ai/fullsend/pull/3812) (open ADR pull request, not a poller tracking issue)
+- [fullsend#3428 — docs(adr): add ADR 0068 for privacy allowlist on poll input drivers](https://github.com/fullsend-ai/fullsend/pull/3428) (open ADR pull request, not a poller tracking issue)
+
+The work below is what this edition focuses on.
 
 - [fullsend#6672 — jira-poll: built-in harness files lack CEL triggers, causing 0 dispatches](https://github.com/fullsend-ai/fullsend/issues/6672)
 - [fullsend#2264 — Add JIRA support to the triage agent](https://github.com/fullsend-ai/fullsend/issues/2264)
@@ -126,6 +134,14 @@ behaviour coverage in the agents repo.
 Keep the Tekton compatibility conversation going. Explore a Lightwell
 custom-agent workflow after their GA, as a mock/PoC — not a September
 delivery promise. No public tracking issue yet for either thread.
+
+### User support
+
+Standing theme for this edition and later ones until we drop it on purpose.
+We spend significant time investigating user concerns, fixing bugs, and
+updating docs. That is real capacity, not a dated deliverable, so it does not
+get a numbered backlog dump. It still sits last on this page so Auto-merge,
+GitLab, and the other feature themes remain the planning focus.
 
 ## Next
 
