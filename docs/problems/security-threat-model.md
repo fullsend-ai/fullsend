@@ -400,7 +400,7 @@ DOS has elements that touch several existing threats:
 
 ### Open questions
 
-- Should cost budgets trigger a hard stop or a human-in-the-loop approval flow?
+- Should cost budgets trigger a hard stop or a human-in-the-loop approval flow? (Per-run granularity decided in [ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md): a hard stop between iterations, no approval flow; per-repo/per-org budgets and any approval flow for them remain open.)
 - How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
 - How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
 - Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?

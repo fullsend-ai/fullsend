@@ -2324,6 +2324,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		lastExitCode = exitCode
 
+		// Enforcement relies on runtime-self-reported cost. An iteration
+		// that completes without reporting any (no result event after a
+		// crash, an unpriced provider) contributes $0 to the aggregate
+		// and silently weakens the cap — say so.
+		if maxCostUSD > 0 && metrics.TotalCostUSD == 0 {
+			printer.StepWarn("Iteration reported no cost data — max_cost_usd cannot account for it")
+		}
+
 		// Budget check: latch as soon as the aggregate cost is known to
 		// have reached the cap. The flag alone stops the loop — see the
 		// guard at the top and the retry check at the bottom, which are
