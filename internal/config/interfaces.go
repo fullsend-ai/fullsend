@@ -77,6 +77,7 @@ type PerRepoConfigReader interface {
 	ConfigForge() string
 	ConfigTracker() string
 	ConfigMintURL() string
+	ConfigKeepHistory() bool
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
@@ -117,6 +118,7 @@ type PerRepoConfigWriter interface {
 	SetRoles([]string)
 	SetRuntime(string)
 	SetMintURL(string)
+	SetKeepHistory(bool)
 	SetInferenceProvider(string)
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
@@ -429,6 +431,21 @@ func (c *perRepoConfig) ConfigForge() string {
 	return ""
 }
 
+// ConfigKeepHistory reports whether sticky comment updates should
+// append previous content as a collapsed "Previous run" block.
+// KeepHistory is a *bool: nil falls through to parent, non-nil
+// (including explicit false) is the local decision. Code default
+// is true (history appended).
+func (c *perRepoConfig) ConfigKeepHistory() bool {
+	if c.KeepHistory != nil {
+		return *c.KeepHistory
+	}
+	if c.parent != nil {
+		return c.parent.ConfigKeepHistory()
+	}
+	return true
+}
+
 // ConfigTracker returns the configured default issue tracker (e.g.
 // "github", "gitlab", "jira"), used as the default for `fullsend
 // issues` commands' --tracker flag when it is not set explicitly.
@@ -542,6 +559,11 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 
 // SetRuntime replaces the configured agent runtime.
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
+
+// SetKeepHistory sets whether sticky comment updates append history.
+// Stores a *bool so that an explicit false is distinguishable from
+// unset (nil) across layers.
+func (c *perRepoConfig) SetKeepHistory(v bool) { c.KeepHistory = &v }
 
 // SetMintURL sets the token mint URL.
 func (c *perRepoConfig) SetMintURL(mintURL string) { c.MintURL = mintURL }

@@ -14,12 +14,13 @@ import (
 
 func newPostCommentCmd() *cobra.Command {
 	var (
-		repo   string
-		number int
-		marker string
-		result string
-		token  string
-		dryRun bool
+		repo        string
+		number      int
+		marker      string
+		result      string
+		token       string
+		dryRun      bool
+		keepHistory bool
 	)
 
 	cmd := &cobra.Command{
@@ -69,8 +70,9 @@ The --result flag accepts a file path or "-" for stdin.`,
 
 			client := gh.New(token)
 			cfg := sticky.Config{
-				Marker: marker,
-				DryRun: dryRun,
+				Marker:      marker,
+				DryRun:      dryRun,
+				KeepHistory: keepHistory,
 			}
 			_, err = sticky.Post(cmd.Context(), client, owner, repoName, number, body, cfg, printer)
 			return err
@@ -83,6 +85,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&result, "result", "-", "path to comment body file, or '-' for stdin")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")

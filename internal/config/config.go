@@ -769,6 +769,13 @@ type perRepoConfig struct {
 	// method sharing a name on the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
+	// KeepHistory controls whether sticky comment updates append the
+	// previous body as a collapsed "Previous run" <details> block. When
+	// nil (omitted), falls through to parent (code default true —
+	// history appended). When explicitly false, updates replace the body
+	// in-place with no history.
+	KeepHistory *bool `yaml:"keep_history,omitempty"`
+
 	// Mint URL for token minting (ADR 0069 Decision 1).
 	MintURL string `yaml:"mint_url,omitempty"`
 
@@ -953,6 +960,7 @@ type perRepoConfigMarshal struct {
 	Tracker                string                    `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
+	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
@@ -974,6 +982,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Tracker:             c.Tracker,
 		KillSwitch:          c.KillSwitch,
 		Runtime:             c.Runtime,
+		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
