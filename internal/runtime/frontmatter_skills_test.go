@@ -363,6 +363,73 @@ func TestInjectFrontmatterSkills_BOMStrippedOnNoOp(t *testing.T) {
 	assert.Contains(t, string(result), "---\nname: test")
 }
 
+func TestInjectFrontmatterSkills_SkillsWithComment(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: # no skills yet\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// New skill must be injected.
+	assert.Contains(t, got, "  - skill-a")
+	// Other frontmatter keys must be preserved (not silently skipped).
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_SkillsNull(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: null\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// skills: null must be replaced with block-style list.
+	assert.Contains(t, got, "  - skill-a")
+	assert.NotContains(t, got, "null")
+	// Other frontmatter keys must be preserved.
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_CRLFLineEndings(t *testing.T) {
+	t.Parallel()
+	src := "---\r\nname: test\r\nskills:\r\n  - existing\r\nmodel: opus\r\n---\r\nBody\r\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// Injected lines must use CRLF to match existing content.
+	assert.Contains(t, got, "  - new-skill\r\n")
+	// Existing content must be preserved with CRLF.
+	assert.Contains(t, got, "  - existing\r\n")
+	assert.Contains(t, got, "model: opus\r\n")
+	assert.Contains(t, got, "Body")
+	// Must not contain bare LF (without preceding CR) in the frontmatter.
+	frontmatter := got[:strings.Index(got, "Body")]
+	for i, c := range frontmatter {
+		if c == '\n' && (i == 0 || frontmatter[i-1] != '\r') {
+			t.Errorf("found bare LF at position %d in frontmatter, expected CRLF", i)
+		}
+	}
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_CRLFNoFrontmatter(t *testing.T) {
+	t.Parallel()
+	src := "# Just a prompt\r\n\r\nDo things.\r\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/my-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	// Injected frontmatter must use CRLF to match the body.
+	assert.Contains(t, got, "---\r\n")
+	assert.Contains(t, got, "  - my-skill\r\n")
+	assert.Contains(t, got, "# Just a prompt")
+}
+
 // assertValidFrontmatter checks that the result has valid YAML frontmatter
 // delimiters and the YAML inside parses without error.
 func assertValidFrontmatter(t *testing.T, data []byte) {

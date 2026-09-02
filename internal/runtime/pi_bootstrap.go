@@ -300,7 +300,7 @@ func piPreflightVersion(sandboxName string) (string, error) {
 
 // uploadBytes writes data to remotePath in the sandbox through a temp file.
 func uploadBytes(sandboxName, remotePath string, data []byte) error {
-	tmp, err := os.CreateTemp("", "fullsend-pi-*")
+	tmp, err := os.CreateTemp("", "fullsend-runtime-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}

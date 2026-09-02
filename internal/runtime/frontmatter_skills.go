@@ -17,6 +17,13 @@ type frontmatterSkills struct {
 	Skills []string `yaml:"skills,omitempty"`
 }
 
+// isFrontmatterFence reports whether line is a YAML frontmatter fence
+// ("---", possibly followed by trailing whitespace or CRLF). Shared by
+// parsePiAgent and injectFrontmatterSkills.
+func isFrontmatterFence(line []byte) bool {
+	return strings.TrimRight(string(line), " \t\r\n") == "---"
+}
+
 // isValidSkillName reports whether name contains only characters safe for
 // use as a bare YAML scalar: alphanumeric, hyphens, underscores, dots.
 func isValidSkillName(name string) bool {
@@ -70,23 +77,26 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 
 	content := bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
 
-	// Check for existing frontmatter.
-	lines := bytes.SplitAfter(content, []byte("\n"))
-	isFence := func(line []byte) bool {
-		return strings.TrimRight(string(line), " \t\r\n") == "---"
+	// Detect line ending style so injected lines match existing content.
+	eol := "\n"
+	if bytes.Contains(content, []byte("\r\n")) {
+		eol = "\r\n"
 	}
 
-	hasFrontmatter := len(lines) > 0 && isFence(lines[0])
+	// Check for existing frontmatter.
+	lines := bytes.SplitAfter(content, []byte("\n"))
+
+	hasFrontmatter := len(lines) > 0 && isFrontmatterFence(lines[0])
 
 	if !hasFrontmatter {
 		// No frontmatter — create one with just the skills list.
 		var buf bytes.Buffer
-		buf.WriteString("---\n")
-		buf.WriteString("skills:\n")
+		fmt.Fprintf(&buf, "---%s", eol)
+		fmt.Fprintf(&buf, "skills:%s", eol)
 		for _, name := range newNames {
-			fmt.Fprintf(&buf, "  - %s\n", name)
+			fmt.Fprintf(&buf, "  - %s%s", name, eol)
 		}
-		buf.WriteString("---\n")
+		fmt.Fprintf(&buf, "---%s", eol)
 		buf.Write(content)
 		return buf.Bytes(), nil
 	}
@@ -95,7 +105,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	var frontBytes []byte
 	closingIdx := -1
 	for i := 1; i < len(lines); i++ {
-		if isFence(lines[i]) {
+		if isFrontmatterFence(lines[i]) {
 			frontBytes = bytes.Join(lines[1:i], nil)
 			closingIdx = i
 			break
@@ -150,6 +160,12 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	// the new entries after its last entry. If not, append a skills:
 	// section before the closing fence.
 	frontLines := bytes.Split(frontBytes, []byte("\n"))
+	// Strip trailing \r from each line so the eol variable controls line
+	// endings consistently — without this, CRLF files would produce
+	// doubled \r when eol is "\r\n".
+	for i := range frontLines {
+		frontLines[i] = bytes.TrimRight(frontLines[i], "\r")
+	}
 	var result bytes.Buffer
 
 	// Write the opening fence.
@@ -168,17 +184,24 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		trimmed := strings.TrimSpace(string(line))
 		if bytes.HasPrefix(line, []byte("skills:")) {
 			lastSkillLineIdx = i
-			if trimmed == "skills:" {
-				// Block mapping form — list items follow on subsequent lines.
+			// Extract the value portion after "skills:" to distinguish
+			// block form from flow-style arrays. Without this check,
+			// lines like "skills: # comment" or "skills: null" would
+			// be misclassified as flow-style, causing subsequent
+			// frontmatter keys to be silently skipped.
+			rest := strings.TrimSpace(trimmed[len("skills:"):])
+			if rest == "" || strings.HasPrefix(rest, "#") {
+				// Block mapping form (bare "skills:", trailing whitespace,
+				// or YAML comment) — list items follow on subsequent lines.
 				inSkillsBlock = true
-			} else {
+			} else if strings.HasPrefix(rest, "[") {
 				// Flow-style value (e.g. `skills: [a, b]` or `skills: []`).
 				// The YAML parser already captured the values into fm.Skills;
 				// we will rewrite this line as block form in the output loop.
 				flowStyleSkills = true
 				// Multi-line flow arrays (e.g. "skills: [\n  a,\n  b\n]"):
 				// mark continuation lines for skipping during reconstruction.
-				if !strings.Contains(trimmed, "]") {
+				if !strings.Contains(rest, "]") {
 					for j := i + 1; j < len(frontLines); j++ {
 						flowEndIdx = j
 						if strings.Contains(string(frontLines[j]), "]") {
@@ -186,6 +209,11 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 						}
 					}
 				}
+			} else {
+				// Non-list value (e.g. "skills: null") — rewrite as block
+				// form. The YAML parser already validated the field; we
+				// replace this line the same way as flow-style.
+				flowStyleSkills = true
 			}
 			continue
 		}
@@ -221,18 +249,18 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		if i == lastSkillLineIdx && flowStyleSkills {
 			// Replace the flow-style skills line with block form,
 			// expanding existing entries parsed by yaml.Unmarshal.
-			result.WriteString("skills:\n")
+			fmt.Fprintf(&result, "skills:%s", eol)
 			for _, s := range fm.Skills {
-				fmt.Fprintf(&result, "  - %s\n", s)
+				fmt.Fprintf(&result, "  - %s%s", s, eol)
 			}
 		} else {
 			result.Write(line)
-			result.WriteByte('\n')
+			result.WriteString(eol)
 		}
 
 		if i == lastSkillLineIdx && !skillsInjected {
 			for _, name := range added {
-				fmt.Fprintf(&result, "  - %s\n", name)
+				fmt.Fprintf(&result, "  - %s%s", name, eol)
 			}
 			skillsInjected = true
 		}
@@ -240,9 +268,9 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 
 	// If there was no skills block, add one at the end of frontmatter.
 	if !skillsInjected {
-		result.WriteString("skills:\n")
+		fmt.Fprintf(&result, "skills:%s", eol)
 		for _, name := range added {
-			fmt.Fprintf(&result, "  - %s\n", name)
+			fmt.Fprintf(&result, "  - %s%s", name, eol)
 		}
 	}
 

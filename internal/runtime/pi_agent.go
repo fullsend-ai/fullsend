@@ -51,16 +51,13 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 	// with "---" but is not a fence is rejected rather than treated as
 	// all-body: that would silently drop the tools: restriction.
 	lines := bytes.SplitAfter(content, []byte("\n"))
-	isFence := func(line []byte) bool {
-		return strings.TrimRight(string(line), " \t\r\n") == "---"
-	}
-	if !isFence(lines[0]) {
+	if !isFrontmatterFence(lines[0]) {
 		return nil, fmt.Errorf("agent definition: first line starts with --- but is not a frontmatter fence: %q", strings.TrimRight(string(lines[0]), "\r\n"))
 	}
 	var front, body []byte
 	closed := false
 	for i := 1; i < len(lines); i++ {
-		if isFence(lines[i]) {
+		if isFrontmatterFence(lines[i]) {
 			front = bytes.Join(lines[1:i], nil)
 			body = bytes.Join(lines[i+1:], nil)
 			closed = true
