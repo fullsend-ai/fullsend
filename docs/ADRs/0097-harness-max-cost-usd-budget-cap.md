@@ -38,21 +38,14 @@ iterations.
 
 Add an optional `max_cost_usd` field to the harness schema: a hard budget
 in USD for one run, checked between iterations against the aggregated
-`total_cost_usd` across `validation_loop` retries.
-
-- The run loop refuses to start another iteration once aggregate cost has
-  **reached** the cap (`>=` — a budget that is exactly spent is spent).
-  In-flight work is never interrupted.
-- `0` means unlimited and is the default. Validation rejects negative and
-  non-finite (NaN/±Inf) values, since those would silently disable the cap.
-- The field is presence-aware in `base:` composition: an absent field
-  inherits the base's cap, while an explicit `0` in a child overrides an
-  inherited cap with unlimited. It is top-level only — not
-  forge-overridable (see the
-  [Harness Field Reference](../contributing/harness-fields.md)).
-- `metrics.json` records `over_budget: true` only when the cap actually
-  suppressed a retry that was otherwise due, distinguishing "halted at
-  budget" from a run that was ending anyway or a crash.
+`total_cost_usd` across `validation_loop` retries. The run loop refuses to
+start another iteration once the cap is reached; in-flight work is never
+interrupted, and `metrics.json` records `over_budget: true` when the cap
+suppressed a retry. The field-level contract — validation, `base:`
+inheritance, the enforcement boundary, and `over_budget` semantics — is
+normative in
+[`docs/normative/harness-budget/v1`](../normative/harness-budget/v1/README.md),
+not here.
 
 ## Consequences
 
