@@ -309,6 +309,21 @@ See [`forge.IsTransient`](../../internal/forge/forge.go) for the canonical examp
 
 **When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `errors.Is(err, context.DeadlineExceeded)` guard as a medium-severity finding. The fix is to add the context-error check before the `Timeout()` check.
 
+### Template map iteration
+
+Go's `text/template` `range` action visits map keys of basic types (string,
+int, uint, float) in **sorted order** — unlike bare `range` over a map in Go code.
+Do **not** flag `{{ range $k, $v := .SomeMap }}` in templates as
+non-deterministic when the key type is a basic type. See
+[text/template documentation](https://pkg.go.dev/text/template) (search
+"sorted key order").
+
+**When reviewing PRs:** Do not flag `range` over a basic-type-keyed map
+inside a `text/template` as non-deterministic output. The `text/template`
+package guarantees sorted iteration for string, int, uint, and float keys. This
+is a well-documented exception to Go's general rule that map iteration
+order is unspecified.
+
 ## Injectable function variables (test seams)
 
 Package-level variables that hold function values for test overriding must:

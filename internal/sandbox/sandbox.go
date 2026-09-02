@@ -975,6 +975,17 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 			return nil
 		}
 
+		// A global policy source is a stable mismatch — retrying with a
+		// new sandbox will not change the gateway-level policy. Clean up
+		// the running sandbox (it reached Ready before verifyPolicy
+		// detected the mismatch) and return immediately.
+		if errors.Is(lastErr, errPolicyGlobal) {
+			if delErr := Delete(name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+			}
+			return lastErr
+		}
+
 		if delErr := Delete(name); delErr != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
 		}
@@ -1089,6 +1100,28 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	// Wait for sandbox to be fully ready (image pull can take a while).
 	deadline := time.Now().Add(timeout)
 	var lastOutput, lastStderr string
+	var lastPolicyErr error
+
+	// checkPolicy runs verifyPolicy against the latest output. It returns:
+	//   - (true, nil)  when the policy is verified — createOnce should return nil.
+	//   - (true, err)  when the mismatch is stable — createOnce should return err.
+	//   - (false, nil) when policy fields may not yet be populated — continue polling.
+	checkPolicy := func() (done bool, err error) {
+		policyErr := verifyPolicy(name, lastOutput, policy)
+		if policyErr == nil {
+			return true, nil
+		}
+		// A global policy source is a stable mismatch that re-polling
+		// cannot fix — return immediately.
+		if errors.Is(policyErr, errPolicyGlobal) {
+			return true, policyErr
+		}
+		// Policy fields may not yet be populated; record the error and
+		// continue polling until the deadline.
+		lastPolicyErr = policyErr
+		return false, nil
+	}
+
 	for time.Now().Before(deadline) {
 		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
 		var stdoutBuf, stderrBuf strings.Builder
@@ -1111,9 +1144,13 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 		if checkErr == nil {
 			switch phase := sandboxPhase(lastOutput); {
 			case phase == readySandboxPhase:
-				return nil
+				if done, err := checkPolicy(); done {
+					return err
+				}
 			case phase == "" && strings.Contains(lastOutput, readySandboxPhase):
-				return nil
+				if done, err := checkPolicy(); done {
+					return err
+				}
 			}
 			// Detect terminal phases and fail immediately instead of
 			// polling through the full timeout.
@@ -1131,9 +1168,21 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	containerLogs := collectPodmanLogs(name)
 
+	if lastPolicyErr != nil {
+		return fmt.Errorf("sandbox %q policy verification failed after %s: %w\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+			name, timeout, lastPolicyErr, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+	}
+
 	return fmt.Errorf("sandbox %q not ready after %s\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
 		name, timeout, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 }
+
+// errPolicyGlobal is returned by verifyPolicy when the sandbox's policy
+// source is "global" instead of "sandbox". This is a stable mismatch that
+// re-polling and re-creation cannot fix — the global policy is a
+// gateway-level setting, not a per-sandbox override. CreateWithRetry
+// classifies it as non-retryable and returns immediately.
+var errPolicyGlobal = errors.New("sandbox policy source is global, not sandbox-level")
 
 // ErrProviderNotFound is returned by DeleteProvider when the gateway has no
 // provider of that name — already gone, which callers treat as done.
@@ -1166,6 +1215,84 @@ func DeleteProvider(name string) error {
 		return fmt.Errorf("provider delete %q failed: %w (output: %s)", name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// verifyPolicy checks that the sandbox has an active policy applied at the
+// sandbox level when one was requested at creation time. The openshell CLI
+// wraps field labels in ANSI escape sequences (even when stdout is not a
+// terminal), so the output is stripped via stripANSI (defined in
+// gateway_endpoint.go) before text parsing. The output format reports
+// policy metadata as:
+//
+//	Policy source: sandbox|global
+//	Policy:
+//	  <yaml>
+//
+// When no policy was requested (empty string), the check is skipped.
+//
+// Returns errPolicyGlobal when the source is "global" — a stable mismatch
+// that re-polling and re-creation cannot fix. Other errors indicate
+// conditions where the policy fields may not yet be populated.
+func verifyPolicy(name, output, requestedPolicy string) error {
+	if requestedPolicy == "" {
+		return nil
+	}
+	// The openshell CLI emits ANSI colour codes unconditionally (even
+	// when stdout is not a terminal), so strip them before parsing.
+	output = stripANSI(output)
+	truncated := truncatePolicyOutput(output, 512)
+	source := parsePolicySource(output)
+	if source == "" {
+		return fmt.Errorf("sandbox %q is ready but no policy source reported (expected policy %q); output: %s", name, requestedPolicy, truncated)
+	}
+	if source == "global" {
+		return fmt.Errorf("%w: sandbox %q policy source is %q, expected %q (requested policy %q); output: %s", errPolicyGlobal, name, source, "sandbox", requestedPolicy, truncated)
+	}
+	if source != "sandbox" {
+		return fmt.Errorf("sandbox %q policy source is %q, expected %q (requested policy %q); output: %s", name, source, "sandbox", requestedPolicy, truncated)
+	}
+	if !hasPolicySection(output) {
+		return fmt.Errorf("sandbox %q reports policy source %q but no policy content found (expected policy %q); output: %s", name, source, requestedPolicy, truncated)
+	}
+	return nil
+}
+
+// truncatePolicyOutput limits output to maxLen bytes for inclusion in error
+// messages, appending an ellipsis if truncated.
+func truncatePolicyOutput(output string, maxLen int) string {
+	if len(output) <= maxLen {
+		return output
+	}
+	return output[:maxLen] + "..."
+}
+
+// parsePolicySource extracts the "Policy source:" field value from
+// openshell sandbox get output. Returns "sandbox", "global", or ""
+// if the field is not present.
+func parsePolicySource(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if val, ok := strings.CutPrefix(line, "Policy source:"); ok {
+			return strings.TrimSpace(val)
+		}
+	}
+	return ""
+}
+
+// hasPolicySection checks whether the output contains a standalone
+// "Policy:" section header, indicating that a policy is active.
+// This is intentionally a presence-only check — it does not compare the
+// policy content against the requested policy YAML. The goal is to
+// detect the case where no policy was applied at all (missing section),
+// not to verify byte-for-byte content equality. This distinguishes the
+// section header from the "Policy source:" metadata field.
+func hasPolicySection(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == "Policy:" {
+			return true
+		}
+	}
+	return false
 }
 
 // Delete deletes a sandbox, returning any error for the caller to log.

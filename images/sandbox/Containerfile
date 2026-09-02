@@ -53,7 +53,7 @@ RUN apt-get update \
 #
 # To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
 # a customManagers regex entry in renovate.json.
-ARG CLAUDE_CODE_VERSION=2.1.252
+ARG CLAUDE_CODE_VERSION=2.1.258
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude

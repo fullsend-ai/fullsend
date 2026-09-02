@@ -54,7 +54,10 @@ type Client struct {
 // NewClient creates a new Client with default settings.
 func NewClient() *Client {
 	c := &Client{
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
+		},
 		retryDelayFn: defaultRetryDelay,
 	}
 	c.tokenFunc = c.adcToken
