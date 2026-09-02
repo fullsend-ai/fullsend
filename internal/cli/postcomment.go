@@ -21,6 +21,7 @@ func newPostCommentCmd() *cobra.Command {
 		token       string
 		dryRun      bool
 		keepHistory bool
+		fullsendDir string
 	)
 
 	cmd := &cobra.Command{
@@ -68,11 +69,25 @@ The --result flag accepts a file path or "-" for stdin.`,
 
 			printer.Header("Post Comment")
 
+			// Resolve keep_history: explicit --keep-history flag takes
+			// precedence, otherwise fall back to config.yaml via
+			// --fullsend-dir (matching the pattern in issues post-comment
+			// and post-review).
+			resolvedKeepHistory := keepHistory
+			if !cmd.Flags().Changed("keep-history") {
+				var khFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+				}
+				resolvedKeepHistory = resolved
+			}
+
 			client := gh.New(token)
 			cfg := sticky.Config{
 				Marker:      marker,
 				DryRun:      dryRun,
-				KeepHistory: keepHistory,
+				KeepHistory: resolvedKeepHistory,
 			}
 			_, err = sticky.Post(cmd.Context(), client, owner, repoName, number, body, cfg, printer)
 			return err
@@ -86,6 +101,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")
