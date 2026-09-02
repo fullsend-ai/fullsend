@@ -71,4 +71,15 @@ check "stall timeout role-prefixed wins" "FULLSEND_STALL_TIMEOUT=90s" "$(grep '^
 out="$(run AGENT_PREFIX=CODE_ FULLSEND_REPO_VARS="${vars}")"
 check "stall timeout plain applies" "FULLSEND_STALL_TIMEOUT=5m" "$(grep '^FULLSEND_STALL_TIMEOUT=' <<<"${out}")"
 
+# 8. The duration pattern admits every Go spelling — sign, µ/μ microseconds,
+# fractions, bare 0 — and still rejects injection attempts and non-durations.
+for good in "+5m" "1µs" "1μs" "1.5h" "0" "1h30m"; do
+  out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="{\"FULLSEND_STALL_TIMEOUT\":\"${good}\"}")"
+  check "duration ${good} forwarded" "FULLSEND_STALL_TIMEOUT=${good}" "$(grep '^FULLSEND_STALL_TIMEOUT=' <<<"${out}")"
+done
+for bad in "5m;rm -rf /" "ten minutes" "opus"; do
+  out="$(run AGENT_PREFIX=TRIAGE_ FULLSEND_REPO_VARS="{\"FULLSEND_STALL_TIMEOUT\":\"${bad}\"}")"
+  check "duration [${bad}] rejected" "0" "$(grep -c '^FULLSEND_STALL_TIMEOUT=' <<<"${out}" || true)"
+done
+
 exit "${fail}"

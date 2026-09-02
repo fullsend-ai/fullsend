@@ -48,8 +48,18 @@ if [[ -n "${FULLSEND_REPO_VARS:-}" ]]; then
     # Role-prefixed first, then plain. jq -r yields "" when absent.
     value="$(printf '%s' "${FULLSEND_REPO_VARS}" | jq -r --arg k "${AGENT_PREFIX}${key}" --arg p "${key}" '(.[$k] // .[$p] // "") | tostring')"
     [[ -n "${value}" ]] || continue
-    if [[ ! "${value}" =~ ^[A-Za-z0-9._/@:,-]+$ ]]; then
-      echo "::warning::ignoring repository variable ${key}: value contains characters outside [A-Za-z0-9._/@:,-]"
+    # Both regexes are injection protection for the GITHUB_ENV file, not full
+    # validation — the CLI reports malformed values itself. The stall timeout
+    # is a Go duration (+5m, 1.5h, 1µs, 0): the shared charset would reject
+    # the sign and the multibyte µ/μ microsecond spellings, so it gets a
+    # duration-shaped pattern instead (µ/μ as literal alternations, safe in
+    # any locale, rather than widening the shared charset for every key).
+    value_re='^[A-Za-z0-9._/@:,-]+$'
+    if [[ "${key}" == "FULLSEND_STALL_TIMEOUT" ]]; then
+      value_re='^[+-]?(0|([0-9]*\.?[0-9]+(ns|us|µs|μs|ms|s|m|h))+)$'
+    fi
+    if [[ ! "${value}" =~ ${value_re} ]]; then
+      echo "::warning::ignoring repository variable ${key}: value does not match ${value_re}"
       continue
     fi
     printf '%s=%s\n' "${key}" "${value}" >> "${GITHUB_ENV}"
