@@ -17,7 +17,9 @@ max_cost_usd: 5.00
 ```
 
 Optional float. A hard budget in USD for one run, checked against the run's
-aggregated `total_cost_usd` summed across `validation_loop` retries.
+aggregated `total_cost_usd` summed across `validation_loop` retries. The
+budget is enforced against the runtime's self-reported cost — see
+[Cost reporting](#cost-reporting).
 
 ## Validation
 
@@ -42,9 +44,26 @@ overrides it. A child can therefore disable an inherited cap with
 
 The cap is checked **between iterations**: once the aggregate cost has
 **reached** the cap (`>=` — a budget that is exactly spent is spent), the run
-loop refuses to start another iteration. The runtime reports cost once, in
-the final result event of a completed iteration, so an iteration already in
-flight is never interrupted; the cap is soft by at most one iteration.
+loop refuses to start another iteration. The boundary is deliberate — it is
+the runtime-agnostic layer. Cost arrives as a runtime-reported aggregate
+(Claude Code reports it once, in the final result event of a completed
+iteration) and not every runtime offers an in-flight budget control (pi has
+none), so fullsend does not interrupt an iteration already in flight and the
+cap is soft by at most one iteration. Claude Code's native per-invocation
+`--max-budget-usd` flag is not used today; it could complement this cap as a
+tighter in-flight bound for that runtime.
+
+## Cost reporting
+
+Enforcement depends entirely on the runtime's self-reported cost — fullsend
+has no pricing table and accepts the reported total as-is (see the
+[cost data contract](../../../guides/infrastructure/distributed-tracing.md#cost-data-contract)).
+A runtime that reports zero or no cost under-counts the aggregate and
+weakens the cap: Claude Code reports cost only in a final result event, so a
+crashed or killed iteration contributes $0 despite spending tokens, and pi
+sums provider-priced usage, so an unpriced provider entry reports $0.
+`fullsend run` emits a warning when a cap is set and a completed iteration
+reports no cost.
 
 ## The `over_budget` marker
 
