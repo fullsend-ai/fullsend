@@ -21,7 +21,7 @@ Earlier published editions live in [archived-roadmaps](archived-roadmaps/).
 | [GitLab](#gitlab) | A usable GitLab path, including traces from real runs |
 | [Jira](#jira) | Jira can drive the default agent loop for teams that already live there |
 | [Community](#community) | Contributor review keeps moving; identify maintainer candidates through the documented process |
-| [Platform](#platform) | Host APIs, public mint, per-org leftovers, artifacts, behaviour tests |
+| [Platform](#platform) | Host APIs, public mint, leftover cleanup from deprecated per-org install ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)), artifacts, behaviour tests |
 | [Partners](#partners) | Tekton and Lightwell stay in motion; not a ship promise |
 
 ## Now
@@ -107,9 +107,11 @@ maintainer process rather than dedicated issues.
 
 ### Platform
 
-Host-side APIs for sandboxed subagents, finish public mint, complete the
-per-org removal leftovers, let teams choose artifact storage, and shift
-tests toward behaviour coverage in the agents repo.
+Host-side APIs for sandboxed subagents, finish public mint, complete leftover
+cleanup from deprecated per-org installation mode
+([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md); this is not
+new org-mode work), let teams choose artifact storage, and shift tests toward
+behaviour coverage in the agents repo.
 
 - [fullsend#879 — Host-side API servers for sandboxed agents](https://github.com/fullsend-ai/fullsend/issues/879)
 - [fullsend#881 — fullsend run: implement host-side API server lifecycle](https://github.com/fullsend-ai/fullsend/issues/881)
