@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -339,7 +340,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	MaxCostUSD             float64                 `yaml:"max_cost_usd,omitempty"` // hard cost cap in USD; 0 = unlimited (default)
+	MaxCostUSD             *float64                `yaml:"max_cost_usd,omitempty"` // hard cost cap in USD; nil = unset (inherits via base:), explicit 0 = unlimited
 	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
@@ -500,8 +501,18 @@ func (h *Harness) Validate() error {
 	if h.TimeoutMinutes < 0 {
 		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
 	}
-	if h.MaxCostUSD < 0 {
-		return fmt.Errorf("max_cost_usd must be non-negative, got %v", h.MaxCostUSD)
+	if h.MaxCostUSD != nil {
+		v := *h.MaxCostUSD
+		// The field decodes straight into a float, so YAML .nan/.inf/-.inf
+		// would otherwise slip through comparison-only checks and silently
+		// disable the budget (NaN fails every > comparison; nothing exceeds
+		// +Inf). Zero is the only documented "unlimited" value.
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("max_cost_usd must be a finite number, got %v", v)
+		}
+		if v < 0 {
+			return fmt.Errorf("max_cost_usd must be non-negative, got %v", v)
+		}
 	}
 	if h.SandboxTimeoutSeconds != 0 && (h.SandboxTimeoutSeconds < 30 || h.SandboxTimeoutSeconds > 600) {
 		return fmt.Errorf("sandbox_timeout_seconds must be 0 (default) or between 30 and 600, got %d", h.SandboxTimeoutSeconds)

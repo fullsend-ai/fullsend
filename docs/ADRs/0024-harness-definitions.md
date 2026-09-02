@@ -419,14 +419,7 @@ runner_env:
 # Hard timeout enforced by the runner. The sandbox is killed after this.
 timeout_minutes: 30
 
-# Optional hard cost cap in USD, checked against the run's aggregated
-# total_cost_usd (summed across validation_loop retries). 0 (default) means
-# unlimited. Claude Code only reports cost once, in the final result event
-# of a completed iteration, so this halts the run before starting another
-# (already over-budget) iteration — it cannot interrupt one long iteration
-# still in progress. metrics.json records over_budget: true when this cap
-# stopped the run, distinguishing "halted at budget" from a crash.
-max_cost_usd: 5.00
+# A hard cost cap (max_cost_usd) was added later — see ADR 0097.
 
 # Security scanning configuration. Controls layered prompt injection defenses
 # enforced by default. Host-side scanners run before sandbox creation; sandbox-

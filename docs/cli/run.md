@@ -79,6 +79,8 @@ Each run produces artifacts in the output directory:
 | `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `FULLSEND_CODEX_MODEL`, `<config path> agents.<name>`, `harness`, `default`) |
 | `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
+| `duration_seconds` | Wall-clock agent execution time in seconds, summed across retry iterations. Each iteration is measured from agent start to runtime return, so the aggregate reflects agent time, not sandbox setup or extraction overhead. Omitted when zero |
+| `over_budget` | Present (as `true`) only when the harness's `max_cost_usd` cap suppressed a retry: aggregate cost reached the cap while the validation loop still had iterations left. It records why retries stopped — not a success signal (the halt is only reached after an iteration failed validation), and a run whose final iteration merely crossed the cap while ending anyway is not marked |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |
 

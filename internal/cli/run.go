@@ -194,12 +194,15 @@ type aggregateMetrics struct {
 	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL",
 	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
-	// OverBudget is set when max_cost_usd was exceeded and the run loop
-	// halted further iterations early. It records why the run stopped
-	// retrying; it does not imply the run succeeded. A harness with a
-	// validation_loop only reaches the halt after an iteration failed
-	// validation, so over_budget commonly accompanies a non-nil run error
-	// — callers should read it as "do not blame the model for stopping
+	// OverBudget is set when the max_cost_usd cap actually suppressed a
+	// retry: aggregate cost reached the cap while another validation-loop
+	// iteration would otherwise have started. A run whose final iteration
+	// merely crossed the cap on its way to stopping normally (single
+	// iteration, validation passed, iterations exhausted) is NOT marked.
+	// It records why the run stopped retrying; it does not imply the run
+	// succeeded — the halt is only reached after an iteration failed
+	// validation, so over_budget commonly accompanies a non-nil run error.
+	// Callers should read it as "do not blame the model for stopping
 	// here", not as a success signal.
 	OverBudget bool `json:"over_budget,omitempty"`
 }
@@ -2059,14 +2062,49 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
 
+	// max_cost_usd resolves to one number at runtime: nil (unset) and an
+	// explicit 0 both mean unlimited — the pointer only exists so base
+	// composition can tell them apart.
+	maxCostUSD := 0.0
+	if h.MaxCostUSD != nil {
+		maxCostUSD = *h.MaxCostUSD
+	}
+	// budgetExhausted latches once the aggregate cost reaches the cap. It
+	// is what stops the loop; aggMetrics.OverBudget is set only at the
+	// point a retry is actually suppressed, so the metrics marker means
+	// "the cap stopped this run", not merely "the cap was crossed".
+	budgetExhausted := false
+
+	// One best-effort writer for the aggregated behavioral metrics. The
+	// happy path calls it eagerly after the loop (post-scripts and
+	// downstream judges read the file); the deferred call catches every
+	// fatal exit once iterations have started — e.g. repository-extraction
+	// failures — so a completed iteration's cost/duration and the
+	// over_budget marker are never lost. Write failures are logged, not
+	// fatal: metrics are evidence, not the run.
+	metricsWritten := false
+	writeAggMetrics := func() {
+		metricsWritten = true
+		if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+			printer.StepWarn("Failed to write metrics.json: " + err.Error())
+		}
+	}
+	defer func() {
+		if !metricsWritten {
+			writeAggMetrics()
+		}
+	}()
+
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		// Claude Code reports total_cost_usd only in the final result event
 		// of a completed iteration, so max_cost_usd cannot interrupt work
-		// already in flight — it stops the loop from starting more. Checked
-		// here rather than only at the bottom of the loop because a
-		// mid-iteration `continue` would otherwise skip past the break and
-		// buy another iteration the budget has already refused.
-		if aggMetrics.OverBudget {
+		// already in flight — it stops the loop from starting more. This
+		// guard is what halts the extraction-failure `continue` paths,
+		// which skip the bottom-of-loop check; reaching it exhausted means
+		// another iteration was about to start, so the suppression is
+		// recorded in the metrics.
+		if budgetExhausted {
+			aggMetrics.OverBudget = true
 			break
 		}
 
@@ -2179,26 +2217,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// started) so the telemetry summary reports the failure faithfully
 			// instead of collapsing every infra failure to a generic 1.
 			lastExitCode = exitCode
-			// Write partial metrics before returning so downstream judges
-			// (e.g., max_turns, max_cost) can inspect what happened.
-			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
-				printer.StepWarn("Failed to write metrics.json: " + err.Error())
-			}
+			// The deferred writeAggMetrics persists the partial metrics so
+			// downstream judges (e.g., max_turns, max_cost) can inspect
+			// what happened.
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
 
-		// Budget check: mark the run over budget as soon as the aggregate
-		// cost is known to have crossed the cap, so metrics.json carries
-		// the marker even if this turns out to be the last iteration
-		// anyway (single-iteration harnesses, or validation already
-		// passing). The flag alone stops the loop — see the guard at the
-		// top. Cancelling the run's context here instead would reassign
+		// Budget check: latch as soon as the aggregate cost is known to
+		// have reached the cap. The flag alone stops the loop — see the
+		// guard at the top and the retry check at the bottom, which are
+		// also where aggMetrics.OverBudget is set, so the marker records
+		// an actually suppressed retry rather than a run that was ending
+		// anyway. Cancelling the run's context here instead would reassign
 		// the ctx that the status-comment defer closes over, making every
 		// run report "cancelled".
-		if !aggMetrics.OverBudget && exceedsCostBudget(aggMetrics.TotalCostUSD, h.MaxCostUSD) {
-			aggMetrics.OverBudget = true
-			printer.StepWarn(fmt.Sprintf("Over max_cost_usd budget ($%.4f > $%.4f) — halting further iterations", aggMetrics.TotalCostUSD, h.MaxCostUSD))
+		if !budgetExhausted && exceedsCostBudget(aggMetrics.TotalCostUSD, maxCostUSD) {
+			budgetExhausted = true
+			printer.StepWarn(fmt.Sprintf("Reached max_cost_usd budget ($%.4f of $%.4f) — no further iterations will start", aggMetrics.TotalCostUSD, maxCostUSD))
 		}
 
 		// Check the tee'd output.jsonl for is_error:true result events.
@@ -2368,11 +2404,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if iteration < maxIterations {
+			// A retry is due. If the budget is exhausted this is the
+			// moment the cap suppresses real work, which is what the
+			// over_budget marker records; on the final iteration the
+			// loop ends for its own reasons and the marker stays unset.
+			if budgetExhausted {
+				aggMetrics.OverBudget = true
+				printer.StepInfo("Skipping remaining retries: reached max_cost_usd budget")
+				break
+			}
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
-		}
-		if aggMetrics.OverBudget {
-			printer.StepInfo("Skipping remaining retries: over max_cost_usd budget")
-			break
 		}
 	}
 
@@ -2389,9 +2430,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Write aggregated behavioral metrics.
-	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
-		printer.StepWarn("Failed to write metrics.json: " + err.Error())
-	}
+	writeAggMetrics()
 	// Same runtime/model/effort/cost line as the status-comment footer, as a
 	// workflow annotation — emitted whether or not status comments are on.
 	emitRunInfoNotice(os.Stderr, os.Getenv("GITHUB_ACTIONS") == "true", runInfoFor(aggMetrics, h.Effort))
@@ -3300,10 +3339,13 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	}
 }
 
-// exceedsCostBudget reports whether totalCostUSD has crossed the harness's
-// max_cost_usd cap. A zero (or unset) cap means unlimited, so it never trips.
+// exceedsCostBudget reports whether totalCostUSD has reached the harness's
+// max_cost_usd cap. The cap is a hard budget: landing exactly on it means it
+// is spent, so >= — the aggregate is known before the next iteration starts,
+// and a retry at exactly the cap would be work the budget has already refused.
+// A zero (or unset) cap means unlimited, so it never trips.
 func exceedsCostBudget(totalCostUSD, maxCostUSD float64) bool {
-	return maxCostUSD > 0 && totalCostUSD > maxCostUSD
+	return maxCostUSD > 0 && totalCostUSD >= maxCostUSD
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work
