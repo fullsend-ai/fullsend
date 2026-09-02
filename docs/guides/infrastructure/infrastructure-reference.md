@@ -226,6 +226,60 @@ During installation, the GCF provisioner creates:
 4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
 5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
+#### Discovery-based vs uploaded key sets
+
+A WIF provider validates OIDC tokens in one of two ways:
+
+- **Discovery-based** (default): the provider fetches the issuer's public keys from the OIDC discovery endpoint (`<issuer>/.well-known/openid-configuration`). This requires the issuer to be reachable from GCP's Security Token Service (for Vertex) or from OpenAI's backend. Public GitHub Actions (`token.actions.githubusercontent.com`) and public GitLab instances use this mode.
+
+- **Uploaded JWKS**: the operator fetches the key set from inside the network and uploads it to the provider. The provider validates tokens against the uploaded keys without contacting the issuer. This is the only option for self-managed instances behind private DNS (VPN-only GitLab, GitHub Enterprise Server on a corporate network).
+
+For GCP Vertex, upload with `gcloud iam workload-identity-pools providers update-oidc --jwk-json-path`. For OpenAI, paste the key set into the provider's JWKS field in the console. GCP limits a WIF provider to **8 keys** in the uploaded set.
+
+See [Self-managed instances behind private DNS](../getting-started/getting-inference.md#self-managed-instances-behind-private-dns) for the step-by-step procedure.
+
+#### JWKS rotation
+
+Uploaded keys freeze trust to specific signing keys. When the instance rotates its keys, every WIF exchange fails until the new keys are uploaded. The overlap-window procedure avoids downtime:
+
+1. **Fetch the new key set** from the instance while the old keys are still active:
+   ```bash
+   curl -sSf https://<instance>/oauth/discovery/keys > new-keys.json
+   ```
+
+2. **Merge old and new keys** into one JWKS document. Both must be present during the rotation window so tokens signed by either key validate:
+   ```bash
+   jq -s '{ keys: (.[0].keys + .[1].keys) }' old-keys.json new-keys.json > merged-keys.json
+   ```
+
+3. **Upload the merged set** to each cloud's provider:
+   - **GCP Vertex:**
+     ```bash
+     gcloud iam workload-identity-pools providers update-oidc \
+       <provider-name> \
+       --workload-identity-pool=<pool-name> \
+       --location=global \
+       --project=<gcp-project> \
+       --jwk-json-path=merged-keys.json
+     ```
+   - **OpenAI:** paste the merged JWKS into the provider's JWKS field in the OpenAI console (Organization Settings → Security → Workload Identity Provider → edit provider).
+
+4. **Wait for the rotation to complete** on the instance (old keys are no longer used for signing).
+
+5. **Drop the retired keys** — upload only the new key set:
+   ```bash
+   # GCP Vertex:
+   gcloud iam workload-identity-pools providers update-oidc \
+     <provider-name> \
+     --workload-identity-pool=<pool-name> \
+     --location=global \
+     --project=<gcp-project> \
+     --jwk-json-path=new-keys.json
+   ```
+   For OpenAI, replace the merged JWKS with only the new keys in the console.
+
+GCP allows at most **8 keys** per uploaded JWKS. If the merged set exceeds this, remove the oldest retired keys first.
+
 ---
 
 ## GitHub Secrets & Variables Deployment

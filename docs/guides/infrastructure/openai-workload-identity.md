@@ -388,6 +388,57 @@ agent starts and names the rule.
   verified against OpenShell 0.0.115 are in
   [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md).
 
+## Self-managed forges (GitLab, GitHub Enterprise Server)
+
+The steps above assume GitHub.com's public OIDC issuer. Self-managed GitLab
+instances and GitHub Enterprise Server use their own issuers and may not be
+reachable from OpenAI's backend. `fullsend inference openai request` supports
+both with `--forge` and `--issuer`:
+
+```bash
+# GitLab — asserts project_path instead of repository:
+fullsend inference openai request group/project \
+  --forge gitlab \
+  --issuer https://gitlab.example.com \
+  --project "<openai-project>" \
+  --format md
+
+# GitHub Enterprise Server — same claims, different issuer:
+fullsend inference openai request acme/widget \
+  --issuer https://github.example.com/_services/token \
+  --project "<openai-project>" \
+  --format md
+```
+
+### Private issuers and uploaded JWKS
+
+When the issuer is not publicly reachable, OpenAI cannot fetch the signing
+keys via OIDC discovery. Pass `--jwks-file` to embed the key set in the
+request document so the administrator can paste it into the provider's JWKS
+field:
+
+```bash
+# Fetch keys from inside the network:
+curl -sSf https://gitlab.example.com/oauth/discovery/keys > keys.json
+
+# Generate the request with the embedded key set:
+fullsend inference openai request group/project \
+  --forge gitlab \
+  --issuer https://gitlab.example.com \
+  --jwks-file keys.json \
+  --project "<openai-project>" \
+  --format md
+```
+
+The generated document marks the provider as `uploaded_jwks: true` and
+lists the embedded keys' `kid` values for identification during rotation.
+
+**Key rotation.** Uploaded keys freeze trust to specific signing keys.
+When the instance rotates, every exchange fails until the JWKS is
+re-uploaded. See the
+[JWKS rotation runbook](infrastructure-reference.md#jwks-rotation)
+for the overlap-window procedure that avoids downtime.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -397,6 +448,7 @@ agent starts and names the rule.
 | `… the job has no GitHub OIDC endpoint` | This is not a GitHub Actions job, or `permissions: id-token: write` is missing from the workflow. On GitLab CI or locally, use an API key. |
 | `OpenAI WIF exchange failed: … token endpoint returned 4xx` | The mapping does not match this run. Check the audience first (one character off is enough), then compare the claims from step 1 with the mapping's assertions (route B: with the administrator). Works in one repository but not another → that repository has no mapping yet. |
 | Exchange fails with 4xx on a PR-review-triggered run | The mapping has a `ref` assertion (e.g. `refs/heads/main`) but `pull_request_review` events carry `refs/pull/<N>/merge`. Either remove the `ref` assertion (the default since this release) or add a second mapping asserting `ref` = `refs/pull/*` — regenerate with `fullsend inference openai request --ref refs/heads/main` to get both. |
+| Exchange fails after instance key rotation | The uploaded JWKS no longer matches the instance's signing keys. Re-upload the current key set — see the [JWKS rotation runbook](infrastructure-reference.md#jwks-rotation). |
 | Exchange succeeded, the model call was refused | The mapping's permissions do not cover the call, or the project cannot use that model. The `scope` in the exchange response shows what was granted. |
 | `OpenAI WIF token refused: the service-account mapping grants …` | The mapping grants more than model access. Narrow its permissions to `api.model.request` (route A: edit the mapping in A3; route B: ask your administrator); fullsend will not run an agent with a broader token. |
 | `the service-account mapping does not narrow permissions` (warning) | The mapping has no permission restriction, so the token holds whatever the service account holds. Add `api.model.request` on the mapping. |
