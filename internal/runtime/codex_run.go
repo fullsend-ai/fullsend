@@ -535,8 +535,17 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		emitted bool
 	)
 	for {
+		if q != nil {
+			// Before the process starts: a steer that lands early in a turn
+			// must still interrupt it, and erring this way costs at most a
+			// sweep that finds nothing.
+			q.beginTurn()
+		}
 		out, err2 = r.runCodexTurn(ctx, params, printer, plan, turn, metrics, agg, q, nth, &emitted)
 		if q != nil {
+			// Nothing is running from here until the next beginTurn, so a
+			// steer arriving now must not fire the sweep.
+			q.endTurn()
 			// A resumed process that reported no thread never opened one,
 			// so its steer was not delivered and must not be recorded as
 			// though it were. Runs on the error path too: that is exactly
