@@ -436,51 +436,40 @@ func TestCheckSteerAlreadyHandled_FailureFallsThrough(t *testing.T) {
 		"an unreadable timeline must not silently drop the work")
 }
 
-// stubWatcherSession builds a steerSession whose watcher already has
-// delivery batches recorded, so marker() can be exercised without a live run.
-func stubWatcherSession(t *testing.T, batches [][]int64) *steerSession {
-	t.Helper()
-	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
-		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
-	o := steerableOpts(t, srv)
-	sess := startSteerWatcher(context.Background(), o)
-	require.NotNil(t, sess)
-	t.Cleanup(sess.stop)
-
-	for _, ids := range batches {
-		runs := make([]forge.WorkflowRun, 0, len(ids))
-		for _, id := range ids {
-			runs = append(runs, forge.WorkflowRun{ID: int(id)})
-		}
-		sess.watcher.MarkSteeredForTest(ids[len(ids)-1], runs)
+func TestSteerMarkerFrom_OnlyAcknowledgedDeliveriesCount(t *testing.T) {
+	delivered := []steerwatch.DeliveredSteer{
+		{MessageID: 101, RunIDs: []int64{101}},
+		{MessageID: 102, RunIDs: []int64{102}},
 	}
-	return sess
-}
-
-func TestSteerMarker_OnlyAcknowledgedDeliveriesCount(t *testing.T) {
-	sess := stubWatcherSession(t, [][]int64{{101}, {102}})
 
 	// The runtime acknowledged the first message only — it died before
 	// acking the second.
-	m := sess.marker([]agentruntime.SteerResult{{FollowUpRunID: 101, Mode: "live"}})
+	m := steerMarkerFrom(delivered, "abc123", []agentruntime.SteerResult{{FollowUpRunID: 101, Mode: "live"}})
 
 	assert.Equal(t, []int64{101}, m.ConsumedRunIDs,
 		"an unacknowledged delivery must not make the queued run skip its work")
+	assert.Equal(t, "abc123", m.HeadSHA)
 }
 
-func TestSteerMarker_AckVouchesForTheWholeBatch(t *testing.T) {
+func TestSteerMarkerFrom_AckVouchesForTheWholeBatch(t *testing.T) {
 	// One poll accepted three follow-ups and folded them into one message
-	// named after the newest; the ack is per message.
-	sess := stubWatcherSession(t, [][]int64{{101, 102, 103}})
+	// named after the newest; the ack is per message, so a plain id
+	// intersection would drop all but that newest one.
+	delivered := []steerwatch.DeliveredSteer{{MessageID: 103, RunIDs: []int64{101, 102, 103}}}
 
-	m := sess.marker([]agentruntime.SteerResult{{FollowUpRunID: 103}})
+	m := steerMarkerFrom(delivered, "", []agentruntime.SteerResult{{FollowUpRunID: 103}})
 	assert.Equal(t, []int64{101, 102, 103}, m.ConsumedRunIDs)
 }
 
-func TestSteerMarker_NoAcksMeansNoMarkerEntries(t *testing.T) {
-	sess := stubWatcherSession(t, [][]int64{{101}})
-	m := sess.marker(nil)
+func TestSteerMarkerFrom_NoAcksMeansNoMarkerEntries(t *testing.T) {
+	delivered := []steerwatch.DeliveredSteer{{MessageID: 101, RunIDs: []int64{101}}}
+	assert.Empty(t, steerMarkerFrom(delivered, "abc", nil).ConsumedRunIDs)
+}
+
+func TestSteerMarkerFrom_NothingDelivered(t *testing.T) {
+	m := steerMarkerFrom(nil, "abc", []agentruntime.SteerResult{{FollowUpRunID: 101}})
 	assert.Empty(t, m.ConsumedRunIDs)
+	assert.Equal(t, "abc", m.HeadSHA)
 }
 
 func TestSteerMarker_NilSessionIsEmpty(t *testing.T) {
