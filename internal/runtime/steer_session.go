@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // steerMailboxName is the file an in-sandbox feeder tails into the agent's
@@ -264,6 +266,23 @@ func (f *steerFeed) stopFeeder(ctx context.Context) error {
 		return fmt.Errorf("stopping the steer feeder: exit %d: %s", exitCode, sanitizeOutput(strings.TrimSpace(stderr)))
 	}
 	return nil
+}
+
+// steerCloseFeedIf stops the feeder when the settle state machine says the
+// run may end. Shared by every live-steer runtime (Claude Code, pi): the
+// decision is the state machine's, and the consequence of getting it wrong
+// is identical either way, so the handling is too.
+//
+// A failed kill is a warning, not a run failure: the agent simply keeps
+// waiting on stdin and the run ends on params.Timeout instead, which is
+// worse but not wrong.
+func steerCloseFeedIf(ctx context.Context, shouldClose bool, f *steerFeed, printer *ui.Printer) {
+	if !shouldClose {
+		return
+	}
+	if err := f.stopFeeder(ctx); err != nil {
+		printer.StepWarn("Could not stop the steer feeder; the run will end on its timeout instead: " + sanitizeOutput(err.Error()))
+	}
 }
 
 // steerResults returns what was delivered, for Run to copy into

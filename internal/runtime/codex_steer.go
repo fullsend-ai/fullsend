@@ -53,6 +53,15 @@ type codexSteerQueue struct {
 	pending  []SteerMessage
 	settled  bool
 	results  []SteerResult
+	// inFlight is the steer the current process was resumed for, staked by
+	// nextCodexTurn and turned into a SteerResult only once that process
+	// proves it opened the thread. It is deliberately not recorded at stake
+	// time: the runner marks a follow-up run consumed from
+	// RunMetrics.Steers, so recording a resume that never started would
+	// make the queued follow-up run skip an update nobody ever acted on —
+	// the update would be lost outright rather than merely delayed.
+	inFlight   *SteerMessage
+	inFlightAt time.Time
 	// wake is signalled whenever the Run loop may have work: a steer
 	// arrived, or the run was settled. Buffered so a signal is never lost
 	// against a loop that is not waiting yet.
@@ -139,17 +148,40 @@ func (q *codexSteerQueue) isSettled() bool {
 	return q.settled
 }
 
-// recordDelivery notes that a resumed process is starting for msg. On
-// codex the delivery time is when the resume begins, because that is when
-// the message actually enters the thread.
-func (q *codexSteerQueue) recordDelivery(msg SteerMessage, at time.Time) {
+// stakeDelivery notes that a resumed process is about to start for msg.
+// The timestamp is taken here because that is when the message enters the
+// thread, but nothing is recorded until confirmDelivery.
+func (q *codexSteerQueue) stakeDelivery(msg SteerMessage, at time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.results = append(q.results, SteerResult{
-		FollowUpRunID: msg.FollowUpRunID,
-		DeliveredAt:   at,
-		Mode:          steerModeResume,
-	})
+	staked := msg
+	q.inFlight = &staked
+	q.inFlightAt = at
+}
+
+// confirmDelivery resolves a staked delivery once the resumed process has
+// been seen. delivered must be true only when that process reported a
+// thread of its own: codex emits thread.started on a resume (verified
+// live — the resumed process repeats the original thread_id), so an empty
+// thread id means the resume never took and the steer did NOT reach the
+// agent. Such a steer is dropped from the results rather than recorded, so
+// the runner leaves its follow-up run unconsumed and the queued run picks
+// the update up instead.
+func (q *codexSteerQueue) confirmDelivery(delivered bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.inFlight == nil {
+		return
+	}
+	if delivered {
+		q.results = append(q.results, SteerResult{
+			FollowUpRunID: q.inFlight.FollowUpRunID,
+			DeliveredAt:   q.inFlightAt,
+			Mode:          steerModeResume,
+		})
+	}
+	q.inFlight = nil
+	q.inFlightAt = time.Time{}
 }
 
 func (q *codexSteerQueue) steerResults() []SteerResult {
