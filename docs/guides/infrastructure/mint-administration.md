@@ -232,6 +232,8 @@ Opens the GitHub App manifest flow in your browser, stores the PEM in Secret Man
 
 The `fix` and `code` dispatch stages both mint the `coder` role and reuse the `coder` app — add role `coder` instead; there is no separate `fix` app or mint role to add.
 
+Adding or changing a **permission** on an existing role is a different procedure: the App registration must be updated and each installing org's owners must accept it before the mint can request it. See [Rolling out a GitHub App permission](app-permission-rollout.md).
+
 ### Removing a role
 
 `fullsend mint remove-role` removes a role from `ROLE_APP_IDS` and `ALLOWED_ROLES`. By default it also deletes the PEM secret from Secret Manager. Use `--keep-pem` to retain the secret for later re-registration.

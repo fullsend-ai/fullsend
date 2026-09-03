@@ -327,6 +327,10 @@ export default defineConfig({
               link: "/guides/infrastructure/infrastructure-reference",
             },
             { text: "Mint Administration", link: "/guides/infrastructure/mint-administration" },
+            {
+              text: "App Permission Rollout",
+              link: "/guides/infrastructure/app-permission-rollout",
+            },
             { text: "Standalone Mint", link: "/guides/infrastructure/standalone-mint" },
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
