@@ -48,8 +48,13 @@ if (( ${#summary} > MAX_SUMMARY_CHARS )); then
   echo "post-__AGENT_NAME__: summary exceeds ${MAX_SUMMARY_CHARS} characters" >&2
   exit 1
 fi
+# Truncate to MAX_COMMENT_CHARS *including* the marker, so the result never
+# exceeds the cap the schema declares.
+TRUNCATION_MARKER=$'\n\n_(truncated)_'
 if (( ${#comment} > MAX_COMMENT_CHARS )); then
-  comment="${comment:0:${MAX_COMMENT_CHARS}}"$'\n\n_(truncated)_'
+  keep=$(( MAX_COMMENT_CHARS - ${#TRUNCATION_MARKER} ))
+  if (( keep < 0 )); then keep=0; fi
+  comment="${comment:0:${keep}}${TRUNCATION_MARKER}"
 fi
 
 if [[ "${status}" == "ok" ]]; then

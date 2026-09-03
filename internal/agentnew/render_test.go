@@ -266,3 +266,26 @@ func hasPath(files []File, path string) bool {
 	}
 	return false
 }
+
+// TestPostScriptTruncatesWithinTheCap: the generated script advertises a
+// 16384-character limit and the result schema enforces it, so appending the
+// truncation marker after cutting at the cap would overshoot it.
+func TestPostScriptTruncatesWithinTheCap(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(fileByPath(t, files, "scripts/post-lint-docs.sh").Data)
+
+	if strings.Contains(script, `comment="${comment:0:${MAX_COMMENT_CHARS}}"`) {
+		t.Error("comment is cut at the cap and then has the marker appended, which overshoots it")
+	}
+	for _, want := range []string{
+		"TRUNCATION_MARKER=",
+		"keep=$(( MAX_COMMENT_CHARS - ${#TRUNCATION_MARKER} ))",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("truncation should reserve room for the marker; missing %q", want)
+		}
+	}
+}
