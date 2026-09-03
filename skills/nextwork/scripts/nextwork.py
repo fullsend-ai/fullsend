@@ -1451,6 +1451,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       id
+      title
       state
       blockedBy(first: 50) {
         nodes { number repository { nameWithOwner } }
@@ -1467,11 +1468,13 @@ query($owner: String!, $name: String!, $number: Int!) {
       __typename
       ... on Issue {
         id
+        title
         state
         assignees(first: 20) { nodes { login } }
       }
       ... on PullRequest {
         id
+        title
         state
         assignees(first: 20) { nodes { login } }
       }
@@ -1483,7 +1486,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 ISSUE_NODE_ID_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) { id state }
+    issue(number: $number) { id title state }
   }
 }
 """
@@ -2009,6 +2012,7 @@ def apply_trivial_actions(
             "repo": item["repo"],
             "number": item["number"],
             "status": item["status"],
+            "title": item.get("title") or "",
         }
 
         # Self-assign first (actionable unassigned side-action).
@@ -2105,9 +2109,11 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     node = (data or {}).get("repository", {}).get("issueOrPullRequest") if data else None
     if node is None:
         return {"ref": format_ref(repo, number), "action": "error", "detail": "ref not found"}
+    node_title = node.get("title") or ""
     if node.get("state") != "OPEN":
         return {
             "ref": format_ref(repo, number),
+            "title": node_title,
             "action": "error",
             "detail": f"ref is not open (state={node.get('state')})",
         }
@@ -2121,6 +2127,7 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     ):
         return {
             "ref": format_ref(repo, number),
+            "title": node_title,
             "action": "error",
             "detail": f"failed to assign {user}",
         }
@@ -2140,6 +2147,7 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
         ):
             return {
                 "ref": format_ref(repo, number),
+                "title": node_title,
                 "action": "error",
                 "detail": f"assigned {user} but failed to remove {login}",
             }
@@ -2147,7 +2155,12 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     detail = f"assigned to {user}"
     if removed:
         detail += f"; removed {', '.join(removed)}"
-    return {"ref": format_ref(repo, number), "action": "assigned", "detail": detail}
+    return {
+        "ref": format_ref(repo, number),
+        "title": node_title,
+        "action": "assigned",
+        "detail": detail,
+    }
 
 
 def link_blocker(
@@ -2177,9 +2190,11 @@ def link_blocker(
             "action": "error",
             "detail": "dependent ref is not an Issue (GitHub blocked-by is issue-only)",
         }
+    dep_title = issue.get("title") or ""
     if issue.get("state") != "OPEN":
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
             "detail": "dependent Issue is not open",
@@ -2191,6 +2206,7 @@ def link_blocker(
     if (blk_repo, blk_number) in existing:
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "already_linked",
             "detail": "blockedBy link already exists",
@@ -2209,14 +2225,18 @@ def link_blocker(
     if blocker_issue is None or not blocker_issue.get("id"):
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
             "detail": "blocker ref is not an Issue (GitHub blocked-by is issue-only)",
         }
+    blk_title = blocker_issue.get("title") or ""
     if blocker_issue.get("state") != "OPEN":
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
+            "blk_title": blk_title,
             "action": "error",
             "detail": "blocker Issue is not open",
         }
@@ -2229,13 +2249,17 @@ def link_blocker(
     if mutation is None:
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
+            "blk_title": blk_title,
             "action": "error",
             "detail": "failed to create blockedBy link",
         }
     return {
         "dependent": format_ref(dep_repo, dep_number),
+        "dep_title": dep_title,
         "blocker": format_ref(blk_repo, blk_number),
+        "blk_title": blk_title,
         "action": "linked",
         "detail": "created blockedBy link",
     }
@@ -2252,6 +2276,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
     for item in items:
         if item.get("kind") != "pull":
             continue
+        item_title = item.get("title") or ""
         threads = item.get("unresolved_threads") or []
         for thread in threads:
             if not thread.get("bot_only"):
@@ -2262,6 +2287,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_path": thread.get("path") or "unknown",
                         "action": "error",
                         "detail": "thread id not available (pre-enrichment data)",
@@ -2279,6 +2305,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_id": thread_id,
                         "thread_path": path,
                         "action": "error",
@@ -2290,6 +2317,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_id": thread_id,
                         "thread_path": path,
                         "action": "resolved",
@@ -2460,15 +2488,21 @@ def _format_mutation_line(entry: dict[str, Any]) -> str:
     detail = entry.get("detail")
     if "dependent" in entry and "blocker" in entry:
         # link-blocker: both sides are always issues (GitHub constraint).
-        line = f"- Issue {entry['dependent']} ← Issue {entry['blocker']}: {action}"
+        dep_desc = f" — {entry['dep_title']}" if entry.get("dep_title") else ""
+        blk_desc = f" — {entry['blk_title']}" if entry.get("blk_title") else ""
+        dep = f"Issue {entry['dependent']}{dep_desc}"
+        blk = f"Issue {entry['blocker']}{blk_desc}"
+        line = f"- {dep} ← {blk}: {action}"
     elif "ref" in entry:
-        line = f"- {entry['ref']}: {action}"
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- {entry['ref']}{title_desc}: {action}"
     elif "thread_path" in entry:
         # resolve-threads: always on PRs.
         repo = entry.get("repo") or "?"
         number = entry.get("number")
         path = entry["thread_path"]
-        line = f"- PR #{number} ({repo}) `{path}`: {action}"
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- PR #{number}{title_desc} ({repo}) `{path}`: {action}"
     else:
         kind = entry.get("kind")
         number = entry.get("number")
@@ -2479,7 +2513,8 @@ def _format_mutation_line(entry: dict[str, Any]) -> str:
             ref = f"PR #{number}" if number is not None else "PR"
         else:
             ref = f"#{number}" if number is not None else "item"
-        line = f"- {ref} ({repo}): {action}"
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- {ref}{title_desc} ({repo}): {action}"
     if detail:
         line = f"{line} — {detail}"
     return line

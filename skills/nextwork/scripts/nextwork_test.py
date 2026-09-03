@@ -2324,11 +2324,24 @@ class TestFormatMutationLine(unittest.TestCase):
             "repo": "acme/widget",
             "number": 1,
             "status": "needs_assign",
+            "title": "Fix the widget",
             "action": "assign:self",
         }
         line = _format_mutation_line(entry)
         self.assertIn("Issue #1", line)
         self.assertIn("assign:self", line)
+
+    def test_apply_issue_includes_title(self):
+        entry = {
+            "kind": "issue",
+            "repo": "acme/widget",
+            "number": 1,
+            "status": "needs_assign",
+            "title": "Fix the widget",
+            "action": "assign:self",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Fix the widget", line)
 
     def test_apply_pr_uses_typed_prefix(self):
         entry = {
@@ -2336,30 +2349,82 @@ class TestFormatMutationLine(unittest.TestCase):
             "repo": "acme/widget",
             "number": 99,
             "status": "trigger_review",
+            "title": "Add feature",
             "action": "comment:/fs-review",
         }
         line = _format_mutation_line(entry)
         self.assertIn("PR #99", line)
+        self.assertIn("Add feature", line)
 
     def test_link_blocker_uses_issue_prefix(self):
         entry = {
             "dependent": "acme/widget#1",
+            "dep_title": "Dependent issue",
             "blocker": "acme/widget#2",
+            "blk_title": "Blocking issue",
             "action": "linked",
         }
         line = _format_mutation_line(entry)
         self.assertIn("Issue acme/widget#1", line)
         self.assertIn("Issue acme/widget#2", line)
 
+    def test_link_blocker_includes_titles(self):
+        entry = {
+            "dependent": "acme/widget#1",
+            "dep_title": "Dependent issue",
+            "blocker": "acme/widget#2",
+            "blk_title": "Blocking issue",
+            "action": "linked",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Dependent issue", line)
+        self.assertIn("Blocking issue", line)
+
     def test_resolve_thread_uses_pr_prefix(self):
         entry = {
             "repo": "acme/widget",
             "number": 99,
+            "title": "Add feature",
             "thread_path": "internal/handler.go",
             "action": "resolved",
         }
         line = _format_mutation_line(entry)
         self.assertIn("PR #99", line)
+
+    def test_resolve_thread_includes_title(self):
+        entry = {
+            "repo": "acme/widget",
+            "number": 99,
+            "title": "Add feature",
+            "thread_path": "internal/handler.go",
+            "action": "resolved",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Add feature", line)
+
+    def test_ref_entry_includes_title(self):
+        entry = {
+            "ref": "acme/widget#42",
+            "title": "Take-over target",
+            "action": "assigned",
+            "detail": "assigned to alice",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("acme/widget#42", line)
+        self.assertIn("Take-over target", line)
+
+    def test_mutation_line_omits_title_when_absent(self):
+        entry = {
+            "kind": "issue",
+            "repo": "acme/widget",
+            "number": 1,
+            "status": "needs_assign",
+            "action": "assign:self",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Issue #1", line)
+        # No " — " title separator between ref and repo when title is absent
+        self.assertNotIn(" — ", line.split(":")[0])
 
 
 class TestFormatOutputs(unittest.TestCase):
