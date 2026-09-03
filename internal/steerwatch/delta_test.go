@@ -251,3 +251,70 @@ func TestBuildText_Truncates(t *testing.T) {
 	assert.LessOrEqual(t, len(text), maxDeltaBytes+len("\n[truncated]"))
 	assert.Contains(t, text, "[truncated]")
 }
+
+// The regression Qodo found: with the snapshot pinned to run start, a second
+// steer repeats the first steer's changes, and a field edited back to its
+// original value reads as unchanged and is never reported at all.
+func TestIssueSnapshotAdvancesOnlyOnDelivery(t *testing.T) {
+	items := &stubItems{notAPR: true, issue: &forge.Issue{
+		Number: 7, Title: "Old", Body: "B", Labels: []string{"bug"},
+	}}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
+		c.Item = WorkItem{Number: 7}
+	})
+
+	items.issue = &forge.Issue{Number: 7, Title: "New", Body: "B", Labels: []string{"bug"}}
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	require.Len(t, d.lines, 1)
+	assert.Contains(t, d.lines[0], "Title is now: New")
+
+	// A steer that was NOT delivered leaves the baseline alone, so the same
+	// change is still pending.
+	again, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	require.Len(t, again.lines, 1, "an undelivered change must stay in the next delta")
+
+	// Once delivered, it is not repeated.
+	w.markSteered([]forge.WorkflowRun{{ID: 101}}, d)
+	after, err := w.buildDelta(context.Background(), w.Baseline())
+	require.NoError(t, err)
+	assert.True(t, after.empty(), "a delivered change must not repeat, got %v", after.lines)
+}
+
+func TestIssueSnapshotAdvanceCatchesARevert(t *testing.T) {
+	items := &stubItems{notAPR: true, issue: &forge.Issue{Number: 7, Title: "Old", Body: "B"}}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
+		c.Item = WorkItem{Number: 7}
+	})
+
+	items.issue = &forge.Issue{Number: 7, Title: "New", Body: "B"}
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	w.markSteered([]forge.WorkflowRun{{ID: 101}}, d)
+
+	// Reverted to the original. Against a run-start snapshot this reads as
+	// "unchanged" and the agent is never told; against the delivered state
+	// it is a change and is reported.
+	items.issue = &forge.Issue{Number: 7, Title: "Old", Body: "B"}
+	after, err := w.buildDelta(context.Background(), w.Baseline())
+	require.NoError(t, err)
+	require.Len(t, after.lines, 1)
+	assert.Contains(t, after.lines[0], "Title is now: Old")
+}
+
+func TestHeadBaselineAdvancesOnDelivery(t *testing.T) {
+	items := &stubItems{headSHA: "bbb222"}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	require.True(t, d.headMoved)
+
+	w.markSteered([]forge.WorkflowRun{{ID: 101}}, d)
+	assert.Equal(t, "bbb222", w.Head())
+
+	after, err := w.buildDelta(context.Background(), w.Baseline())
+	require.NoError(t, err)
+	assert.False(t, after.headMoved, "a delivered head move must not repeat")
+}
