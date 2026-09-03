@@ -1240,8 +1240,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// steerMarker records what this run absorbed; the status-notification
 	// defer writes it onto the terminal comment so the run queued behind
-	// this one can skip work already covered (ADR 0101).
+	// this one can skip work already covered (ADR 0101). It is chosen after
+	// the iteration loop from iterSteerMarkers, which holds each
+	// iteration's own receipts.
 	var steerMarker statuscomment.SteerMarker
+	iterSteerMarkers := map[int]statuscomment.SteerMarker{}
 	// steerSeen and steerBaseline carry the judged follow-up run ids and the
 	// delta window across validation loop iterations, so a retry neither
 	// re-examines them nor re-sends content already delivered.
@@ -1305,7 +1308,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				notifier.SetSteerMarker(steerMarker)
+				notifier.SetSteerMarker(steerMarkerForStatus(status, steerMarker))
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
@@ -2382,7 +2385,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// a single writer: the marker records only what the runtime
 			// acknowledged the agent received.
 			steerSess.stop()
-			steerMarker = steerSess.marker(metrics.Steers)
+			iterSteerMarkers[iteration] = steerSess.marker(metrics.Steers)
 			steerSeen = steerSess.seenRunIDs()
 			steerBaseline = steerSess.baseline()
 		}
@@ -2646,6 +2649,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
 	}
+	steerMarker = shippedSteerMarker(iterSteerMarkers, h.ValidationLoop != nil, validatedIterNum, runCount)
 
 	// Write aggregated behavioral metrics.
 	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {

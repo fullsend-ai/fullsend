@@ -122,6 +122,26 @@ func boundToItem(run forge.WorkflowRun, runName string, number int) bool {
 	return runName != "" && run.DisplayTitle == runName
 }
 
+// isFollowUp reports whether a candidate was created after my own run.
+//
+// The comparison is against my run's server-side created_at rather than the
+// runner's clock, so a follow-up that landed while my job was still queued is
+// not stranded with the pending run. Both timestamps come from the same
+// server, so a same-second tie is real rather than clock skew, and it is
+// broken by run id: GitHub allocates them monotonically, so a larger id at
+// the same second was created later.
+func (w *Watcher) isFollowUp(run forge.WorkflowRun) bool {
+	created := runCreatedAt(run)
+	switch {
+	case created.After(w.freshAfter):
+		return true
+	case created.Equal(w.freshAfter):
+		return int64(run.ID) > w.cfg.RunID
+	default:
+		return false
+	}
+}
+
 // candidateChecks applies checks 2, 3, 6 of ADR 0101 §"provenance" — the
 // ones answerable from the run record alone, without a second API call.
 // Check 1 (same repository) is implicit in the API path.
@@ -138,8 +158,8 @@ func (w *Watcher) candidateChecks(run forge.WorkflowRun) *rejection {
 	if !allowedEvents[run.Event] {
 		return &rejection{"event", fmt.Sprintf("event %q is not a work-item update", run.Event)}
 	}
-	if !runCreatedAt(run).After(w.cfg.StartedAt) {
-		return &rejection{"fresh", "created before my run started"}
+	if !w.isFollowUp(run) {
+		return &rejection{"fresh", "not created after my own run"}
 	}
 	if !sameDispatchChain(w.myRun.ReferencedWorkflows, run.ReferencedWorkflows) {
 		return &rejection{"chain", "referenced_workflows differ from mine"}

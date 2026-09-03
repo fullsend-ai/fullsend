@@ -401,3 +401,36 @@ func checkSteerAlreadyHandled(ctx context.Context, o steerOpts) bool {
 	}
 	return handled
 }
+
+// steerMarkerForStatus returns the marker to write on the terminal status
+// comment for a run that ended with the given status.
+//
+// The marker is a receipt for work the agent finished, so it rides only on a
+// successful run. A run that absorbed an update and then failed, timed out,
+// was cancelled, or was skipped produced no output for it — and a marker
+// there would tell the run queued behind it to skip work nobody did, losing
+// the update. Validation failure arrives here as a "failure" status, because
+// an unvalidated run returns an error, so it is covered by the same rule.
+func steerMarkerForStatus(status string, m statuscomment.SteerMarker) statuscomment.SteerMarker {
+	if status != "success" {
+		return statuscomment.SteerMarker{}
+	}
+	return m
+}
+
+// shippedSteerMarker returns the receipts of the iteration whose output the
+// run ships: the validated iteration when there is a validation loop, the
+// last one otherwise — the same choice postScriptRepoEnv makes.
+//
+// Receipts are not unioned across iterations. A retry starts from a fresh
+// prompt and transcript, and the watcher does not re-deliver runs an earlier
+// iteration judged, so an update absorbed by an iteration that failed
+// validation never reaches the output that ships. Its receipt would tell the
+// run queued behind this one to skip that update. Without it, the queued run
+// does the work again, which costs a run but loses nothing.
+func shippedSteerMarker(byIteration map[int]statuscomment.SteerMarker, validationLoop bool, validatedIter, lastIter int) statuscomment.SteerMarker {
+	if validationLoop {
+		return byIteration[validatedIter]
+	}
+	return byIteration[lastIter]
+}

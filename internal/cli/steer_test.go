@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/steerwatch"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -494,4 +495,48 @@ func TestSteerMarker_NilSessionIsEmpty(t *testing.T) {
 	var s *steerSession
 	assert.Empty(t, s.marker([]agentruntime.SteerResult{{FollowUpRunID: 1}}).ConsumedRunIDs)
 	assert.Empty(t, s.seenRunIDs())
+}
+
+func TestSteerMarkerForStatus(t *testing.T) {
+	m := statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}, HeadSHA: "abc"}
+
+	assert.Equal(t, m, steerMarkerForStatus("success", m))
+
+	// A run that absorbed an update and then failed produced no output for
+	// it; a receipt would make the queued run skip work nobody did.
+	for _, status := range []string{"failure", "cancelled", "skipped", ""} {
+		t.Run(status, func(t *testing.T) {
+			got := steerMarkerForStatus(status, m)
+			assert.Empty(t, got.ConsumedRunIDs)
+			assert.Empty(t, got.HeadSHA)
+		})
+	}
+}
+
+func TestShippedSteerMarker(t *testing.T) {
+	absorbed := statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}, HeadSHA: "aaa"}
+
+	// Iteration 1 absorbed run 101 and failed validation; iteration 2
+	// absorbed nothing and passed. The retry never saw 101, so no receipt
+	// ships and the queued run does that update.
+	byIteration := map[int]statuscomment.SteerMarker{1: absorbed, 2: {}}
+	got := shippedSteerMarker(byIteration, true, 2, 2)
+	assert.Empty(t, got.ConsumedRunIDs)
+
+	// The post-loop sweep can validate an earlier iteration; its receipts
+	// are the ones that ship.
+	byIteration = map[int]statuscomment.SteerMarker{
+		1: absorbed,
+		2: {ConsumedRunIDs: []int64{102}, HeadSHA: "bbb"},
+	}
+	assert.Equal(t, absorbed, shippedSteerMarker(byIteration, true, 1, 2))
+
+	// No iteration passed: nothing ships.
+	assert.Empty(t, shippedSteerMarker(byIteration, true, 0, 2).ConsumedRunIDs)
+
+	// Without a validation loop the last iteration ships.
+	assert.Equal(t, byIteration[2], shippedSteerMarker(byIteration, false, 0, 2))
+
+	// An unsteered iteration has no entry and ships no receipt.
+	assert.Empty(t, shippedSteerMarker(map[int]statuscomment.SteerMarker{}, false, 0, 1).ConsumedRunIDs)
 }
