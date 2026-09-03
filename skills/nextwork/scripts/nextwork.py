@@ -2408,10 +2408,50 @@ def format_json_output(
     return json.dumps(payload, indent=2)
 
 
-def _format_item_line(item: dict[str, Any]) -> str:
-    link = f"[{item['kind']}#{item['number']}]({item['url']})"
-    title = item["title"].replace("|", "\\|")
-    return f"- {link} {title} — _{item['status']}_: {item['reason']}"
+def _item_type_label(item: dict[str, Any]) -> str:
+    """Return ``Issue``, ``PR``, or ``Draft PR`` based on kind and draft status."""
+    if item["kind"] == "issue":
+        return "Issue"
+    if item.get("is_draft"):
+        return "Draft PR"
+    return "PR"
+
+
+def _item_type_sort_key(item: dict[str, Any]) -> int:
+    """Sort key for type-based ordering: PRs (0) → Issues (1) → Draft PRs (2)."""
+    if item["kind"] == "pull" and not item.get("is_draft"):
+        return 0
+    if item["kind"] == "issue":
+        return 1
+    return 2  # draft PR
+
+
+def _format_item_id(item: dict[str, Any], default_repo: str) -> str:
+    """Format typed item ID as a markdown link.
+
+    Same-repo: ``[PR #99](url)``; cross-repo: ``[Issue acme/other#7](url)``.
+    """
+    label = _item_type_label(item)
+    if item["repo"] == default_repo:
+        ref = f"#{item['number']}"
+    else:
+        ref = f"{item['repo']}#{item['number']}"
+    return f"[{label} {ref}]({item['url']})"
+
+
+def _format_item_table(items: list[dict[str, Any]], default_repo: str) -> list[str]:
+    """Render items as a markdown table sorted by type: PRs → Issues → Draft PRs."""
+    sorted_items = sorted(items, key=_item_type_sort_key)
+    lines = [
+        "| ID | Description | Next action |",
+        "|-----|-------------|-------------|",
+    ]
+    for item in sorted_items:
+        item_id = _format_item_id(item, default_repo)
+        title = item["title"].replace("|", "\\|")
+        reason = item["reason"].replace("|", "\\|")
+        lines.append(f"| {item_id} | {title} | {reason} |")
+    return lines
 
 
 def _format_mutation_line(entry: dict[str, Any]) -> str:
@@ -2419,19 +2459,26 @@ def _format_mutation_line(entry: dict[str, Any]) -> str:
     action = entry.get("action") or "?"
     detail = entry.get("detail")
     if "dependent" in entry and "blocker" in entry:
-        line = f"- {entry['dependent']} ← {entry['blocker']}: {action}"
+        # link-blocker: both sides are always issues (GitHub constraint).
+        line = f"- Issue {entry['dependent']} ← Issue {entry['blocker']}: {action}"
     elif "ref" in entry:
         line = f"- {entry['ref']}: {action}"
     elif "thread_path" in entry:
+        # resolve-threads: always on PRs.
         repo = entry.get("repo") or "?"
         number = entry.get("number")
         path = entry["thread_path"]
-        line = f"- #{number} ({repo}) `{path}`: {action}"
+        line = f"- PR #{number} ({repo}) `{path}`: {action}"
     else:
-        kind = entry.get("kind") or "item"
+        kind = entry.get("kind")
         number = entry.get("number")
         repo = entry.get("repo") or "?"
-        ref = f"{kind}#{number}" if number is not None else kind
+        if kind == "issue":
+            ref = f"Issue #{number}" if number is not None else "Issue"
+        elif kind == "pull":
+            ref = f"PR #{number}" if number is not None else "PR"
+        else:
+            ref = f"#{number}" if number is not None else "item"
         line = f"- {ref} ({repo}): {action}"
     if detail:
         line = f"{line} — {detail}"
@@ -2458,7 +2505,7 @@ def format_markdown_output(
 
     lines = ["## Do now", ""]
     if do_now:
-        lines.extend(_format_item_line(i) for i in do_now)
+        lines.extend(_format_item_table(do_now, repo))
     else:
         lines.append("_Nothing actionable right now._")
     lines.append("")
@@ -2472,7 +2519,7 @@ def format_markdown_output(
             lines.append(f"## {title}")
             lines.append("")
             if group:
-                lines.extend(_format_item_line(i) for i in group)
+                lines.extend(_format_item_table(group, repo))
             else:
                 lines.append("_None._")
             lines.append("")

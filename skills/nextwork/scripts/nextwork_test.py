@@ -20,8 +20,13 @@ from nextwork import (  # noqa: E402
     REVIEW_BOT_LOGIN,
     GhFetcher,
     RefError,
+    _format_item_id,
+    _format_item_table,
+    _format_mutation_line,
     _is_agent_bot_comment,
     _is_trusted_fs_commenter,
+    _item_type_label,
+    _item_type_sort_key,
     agent_terminal_succeeded,
     apply_trivial_actions,
     build_pr_links_by_issue,
@@ -2186,6 +2191,177 @@ class TestSpecParsing(unittest.TestCase):
         )
 
 
+class TestItemTypeHelpers(unittest.TestCase):
+    def test_item_type_label_issue(self):
+        self.assertEqual(_item_type_label({"kind": "issue"}), "Issue")
+
+    def test_item_type_label_pr(self):
+        self.assertEqual(_item_type_label({"kind": "pull", "is_draft": False}), "PR")
+
+    def test_item_type_label_draft_pr(self):
+        self.assertEqual(_item_type_label({"kind": "pull", "is_draft": True}), "Draft PR")
+
+    def test_sort_key_pr_before_issue_before_draft(self):
+        pr = _item_type_sort_key({"kind": "pull", "is_draft": False})
+        issue = _item_type_sort_key({"kind": "issue"})
+        draft = _item_type_sort_key({"kind": "pull", "is_draft": True})
+        self.assertLess(pr, issue)
+        self.assertLess(issue, draft)
+
+    def test_format_item_id_same_repo(self):
+        item = {
+            "kind": "pull",
+            "is_draft": False,
+            "repo": "acme/widget",
+            "number": 99,
+            "url": "https://github.com/acme/widget/pull/99",
+        }
+        self.assertEqual(
+            _format_item_id(item, "acme/widget"),
+            "[PR #99](https://github.com/acme/widget/pull/99)",
+        )
+
+    def test_format_item_id_cross_repo(self):
+        item = {
+            "kind": "issue",
+            "repo": "acme/other",
+            "number": 7,
+            "url": "https://github.com/acme/other/issues/7",
+        }
+        self.assertEqual(
+            _format_item_id(item, "acme/widget"),
+            "[Issue acme/other#7](https://github.com/acme/other/issues/7)",
+        )
+
+    def test_format_item_id_draft_pr(self):
+        item = {
+            "kind": "pull",
+            "is_draft": True,
+            "repo": "acme/widget",
+            "number": 5,
+            "url": "https://github.com/acme/widget/pull/5",
+        }
+        self.assertEqual(
+            _format_item_id(item, "acme/widget"),
+            "[Draft PR #5](https://github.com/acme/widget/pull/5)",
+        )
+
+
+class TestFormatItemTable(unittest.TestCase):
+    def test_table_has_header_and_rows(self):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "An issue",
+                "url": "https://github.com/acme/widget/issues/1",
+                "reason": "Unassigned",
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        self.assertEqual(lines[0], "| ID | Description | Next action |")
+        self.assertTrue(lines[1].startswith("|---"))
+        self.assertIn("[Issue #1]", lines[2])
+        self.assertIn("An issue", lines[2])
+        self.assertIn("Unassigned", lines[2])
+
+    def test_table_sorts_pr_before_issue_before_draft(self):
+        items = [
+            {
+                "kind": "pull",
+                "is_draft": True,
+                "repo": "acme/widget",
+                "number": 3,
+                "title": "Draft fix",
+                "url": "https://github.com/acme/widget/pull/3",
+                "reason": "Draft PR; mark ready",
+            },
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "An issue",
+                "url": "https://github.com/acme/widget/issues/1",
+                "reason": "Unassigned",
+            },
+            {
+                "kind": "pull",
+                "is_draft": False,
+                "repo": "acme/widget",
+                "number": 2,
+                "title": "A PR",
+                "url": "https://github.com/acme/widget/pull/2",
+                "reason": "Waiting for review",
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        # Rows after header (2 header lines)
+        data_rows = lines[2:]
+        self.assertIn("[PR #2]", data_rows[0])
+        self.assertIn("[Issue #1]", data_rows[1])
+        self.assertIn("[Draft PR #3]", data_rows[2])
+
+    def test_table_escapes_pipe_in_title(self):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "Title | with pipe",
+                "url": "https://github.com/acme/widget/issues/1",
+                "reason": "Reason",
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        self.assertIn("Title \\| with pipe", lines[2])
+
+
+class TestFormatMutationLine(unittest.TestCase):
+    def test_apply_issue_uses_typed_prefix(self):
+        entry = {
+            "kind": "issue",
+            "repo": "acme/widget",
+            "number": 1,
+            "status": "needs_assign",
+            "action": "assign:self",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Issue #1", line)
+        self.assertIn("assign:self", line)
+
+    def test_apply_pr_uses_typed_prefix(self):
+        entry = {
+            "kind": "pull",
+            "repo": "acme/widget",
+            "number": 99,
+            "status": "trigger_review",
+            "action": "comment:/fs-review",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("PR #99", line)
+
+    def test_link_blocker_uses_issue_prefix(self):
+        entry = {
+            "dependent": "acme/widget#1",
+            "blocker": "acme/widget#2",
+            "action": "linked",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Issue acme/widget#1", line)
+        self.assertIn("Issue acme/widget#2", line)
+
+    def test_resolve_thread_uses_pr_prefix(self):
+        entry = {
+            "repo": "acme/widget",
+            "number": 99,
+            "thread_path": "internal/handler.go",
+            "action": "resolved",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("PR #99", line)
+
+
 class TestFormatOutputs(unittest.TestCase):
     def setUp(self):
         self.items = [
@@ -2229,6 +2405,12 @@ class TestFormatOutputs(unittest.TestCase):
         payload = json.loads(out)
         self.assertIn("body", payload["items"][0])
         self.assertIn("comments", payload["items"][0])
+
+    def test_markdown_uses_table_format(self):
+        out = format_markdown_output(self.items, "acme/widget", "alice", 6, [], show_blocked=False)
+        self.assertIn("| ID | Description | Next action |", out)
+        self.assertIn("[Issue #1]", out)
+        self.assertIn("Actionable \\| item", out)
 
     def test_markdown_hides_blocked_by_default(self):
         out = format_markdown_output(self.items, "acme/widget", "alice", 6, [], show_blocked=False)
@@ -2279,6 +2461,85 @@ class TestFormatOutputs(unittest.TestCase):
         )
         self.assertIn("Queue truncated", out)
         self.assertIn("7 remaining", out)
+
+    def test_markdown_output_self_describing_and_ordered(self):
+        """Verify markdown output uses typed prefixes, descriptions, tables, and ordering."""
+        items = [
+            {
+                "kind": "pull",
+                "is_draft": True,
+                "repo": "acme/widget",
+                "number": 50,
+                "title": "WIP: draft fix",
+                "url": "https://github.com/acme/widget/pull/50",
+                "status": "human_work",
+                "eliminated": False,
+                "reason": "Draft PR; mark ready for review when done",
+                "suggested_actions": [],
+                "blockers": [],
+            },
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 10,
+                "title": "Fix the widget",
+                "url": "https://github.com/acme/widget/issues/10",
+                "status": "needs_assign",
+                "eliminated": False,
+                "reason": "Unassigned; no automation signal",
+                "suggested_actions": ["assign:self"],
+                "blockers": [],
+            },
+            {
+                "kind": "pull",
+                "is_draft": False,
+                "repo": "acme/widget",
+                "number": 99,
+                "title": "Add feature",
+                "url": "https://github.com/acme/widget/pull/99",
+                "status": "trigger_review",
+                "eliminated": False,
+                "reason": "Stale review launch wait; re-trigger",
+                "suggested_actions": ["comment:/fs-review"],
+                "blockers": [],
+            },
+        ]
+        out = format_markdown_output(items, "acme/widget", "alice", 6, [], show_blocked=False)
+        # Table header present
+        self.assertIn("| ID | Description | Next action |", out)
+        # Every reference has typed prefix
+        self.assertIn("[PR #99]", out)
+        self.assertIn("[Issue #10]", out)
+        self.assertIn("[Draft PR #50]", out)
+        # Every reference has a description (title)
+        self.assertIn("Add feature", out)
+        self.assertIn("Fix the widget", out)
+        self.assertIn("WIP: draft fix", out)
+        # Row order: PRs → Issues → Draft PRs
+        pr_pos = out.index("[PR #99]")
+        issue_pos = out.index("[Issue #10]")
+        draft_pos = out.index("[Draft PR #50]")
+        self.assertLess(pr_pos, issue_pos)
+        self.assertLess(issue_pos, draft_pos)
+
+    def test_markdown_empty_do_now(self):
+        """Empty do-now section shows placeholder, no table header."""
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "Waiting item",
+                "url": "https://github.com/acme/widget/issues/1",
+                "status": "waiting_code",
+                "eliminated": True,
+                "reason": "Waiting for the code agent",
+                "suggested_actions": [],
+                "blockers": [],
+            },
+        ]
+        out = format_markdown_output(items, "acme/widget", "alice", 6, [], show_blocked=False)
+        self.assertIn("_Nothing actionable right now._", out)
 
     def test_decision_statuses_disjoint_from_trivial(self):
         from nextwork import TRIVIAL_STATUSES
