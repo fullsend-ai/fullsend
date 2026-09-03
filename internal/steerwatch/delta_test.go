@@ -92,20 +92,33 @@ func TestBuildDelta_PullRequestHeadUnchanged(t *testing.T) {
 }
 
 func TestBuildDelta_Issue(t *testing.T) {
+	// Start snapshots the issue as it was when the run began; the delta is
+	// computed against that snapshot, not against anything the caller
+	// supplied.
 	items := &stubItems{
+		notAPR: true,
 		issue: &forge.Issue{
 			Number: 7,
-			Title:  "New title",
-			Body:   "New body",
-			Labels: []string{"bug", "needs-info"},
-		},
-		comments: []forge.IssueComment{
-			{Author: "reporter", Body: "here is the log", CreatedAt: "2026-09-03T10:05:00Z"},
+			Title:  "Old title",
+			Body:   "Old body",
+			Labels: []string{"bug", "p1"},
 		},
 	}
 	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
-		c.Item = WorkItem{Number: 7, Title: "Old title", Body: "Old body", Labels: []string{"bug", "p1"}}
+		c.Item = WorkItem{Number: 7}
 	})
+	require.False(t, w.cfg.Item.IsPullRequest, "Start must recognise an issue")
+	require.Equal(t, "Old title", w.cfg.Item.Title, "Start must snapshot the baseline")
+
+	items.issue = &forge.Issue{
+		Number: 7,
+		Title:  "New title",
+		Body:   "New body",
+		Labels: []string{"bug", "needs-info"},
+	}
+	items.comments = []forge.IssueComment{
+		{Author: "reporter", Body: "here is the log", CreatedAt: "2026-09-03T10:05:00Z"},
+	}
 
 	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
 	require.NoError(t, err)
@@ -119,10 +132,73 @@ func TestBuildDelta_Issue(t *testing.T) {
 }
 
 func TestBuildDelta_ForgeError(t *testing.T) {
-	w := newWatcher(t, newFakeAPI(), &stubItems{err: errors.New("boom")}, &recorder{}, nil)
+	w := newWatcher(t, newFakeAPI(), &stubItems{}, &recorder{}, nil)
+	w.items = &stubItems{err: errors.New("boom")}
 	_, err := w.buildDelta(context.Background(), time.Now())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing comments")
+}
+
+// An unresolvable work item disables steering rather than steering against a
+// guessed baseline.
+func TestStart_ItemUnresolvable(t *testing.T) {
+	api := newFakeAPI()
+	api.myRun = runJSON(runOpts{id: myRunID, created: runStart})
+	api.myJobs = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
+	srv := api.server(t)
+
+	w := New(Config{
+		Repo: "org/repo", RunID: myRunID, APIBase: srv.URL,
+		StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond,
+		Item: WorkItem{Number: 7},
+	}, &stubItems{err: errors.New("403")}, nil, nil)
+
+	err := w.Start(context.Background(), "review")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is a pull request")
+}
+
+func TestStart_ResolvesAPullRequest(t *testing.T) {
+	// No PR_HEAD_SHA in the environment on the per-repo path, so the head
+	// comes from the forge and the item is recognised as a pull request.
+	items := &stubItems{headSHA: "live111"}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
+		c.Item = WorkItem{Number: 7}
+	})
+	assert.True(t, w.cfg.Item.IsPullRequest)
+	assert.Equal(t, "live111", w.Head())
+}
+
+func TestStart_CallerSuppliedHeadWins(t *testing.T) {
+	// The caller's head is the head at run start, a beat before this call;
+	// a head move must be measured against that, not against whatever the
+	// forge reports once the watcher gets going.
+	items := &stubItems{headSHA: "moved222"}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
+		c.Item = WorkItem{Number: 7, HeadSHA: "start111"}
+	})
+	assert.Equal(t, "start111", w.Head())
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	assert.True(t, d.headMoved)
+	assert.Equal(t, "moved222", d.newHead)
+}
+
+func TestStart_IssueSnapshotIsStable(t *testing.T) {
+	// The regression this guards: with an empty baseline every delta on an
+	// issue reports the whole body as edited and every label as added, so
+	// the run never settles.
+	items := &stubItems{notAPR: true, issue: &forge.Issue{
+		Number: 7, Title: "T", Body: "B", Labels: []string{"bug"},
+	}}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, func(c *Config) {
+		c.Item = WorkItem{Number: 7}
+	})
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart))
+	require.NoError(t, err)
+	assert.True(t, d.empty(), "an unchanged issue must produce no delta, got %v", d.lines)
 }
 
 func TestBuildText(t *testing.T) {

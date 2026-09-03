@@ -120,8 +120,8 @@ func (w *Watcher) candidateChecks(run workflowRun) *rejection {
 	if run.ID == w.cfg.RunID {
 		return &rejection{"self", "my own run"}
 	}
-	if w.consumed[run.ID] {
-		return &rejection{"once", "already consumed"}
+	if w.seen[run.ID] {
+		return &rejection{"once", "already judged"}
 	}
 	if run.Path != w.myRun.Path {
 		return &rejection{"shim", fmt.Sprintf("path %q is not the shim %q", run.Path, w.myRun.Path)}

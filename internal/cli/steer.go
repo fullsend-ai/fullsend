@@ -69,19 +69,24 @@ type steerOpts struct {
 	forgePlatform string
 	statusRepo    string
 	statusNum     int
-	isPullRequest bool
 	// jobToken is the GH_TOKEN the action passed in, captured before the
 	// runner swapped in the minted role token. It reads the Actions API.
 	jobToken string
 	// roleToken is the minted role token; it reads the work item.
 	roleToken string
 	runStart  time.Time
-	headSHA   string
+	// headSHA is the work item's head at run start when the environment
+	// knows it. The watcher resolves it from the forge when it is empty,
+	// along with whether the item is a pull request at all.
+	headSHA string
 	// timeout is the agent's own budget, which bounds the watch alongside
 	// the forge token's life.
 	timeout time.Duration
-	// consumed seeds the watcher on a validation-loop retry.
+	// consumed and baseline seed the watcher on a validation-loop retry, so
+	// a later iteration neither re-steers on absorbed runs nor rebuilds its
+	// first delta from the run's start.
 	consumed []int64
+	baseline time.Time
 	printer  *ui.Printer
 }
 
@@ -187,13 +192,13 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		Deadline:        steerDeadline(o.runStart, o.timeout),
 		MaxSteers:       o.harness.SteerMaxSteers(),
 		PollInterval:    o.harness.SteerPollInterval(),
+		DeltaBaseline:   o.baseline,
 		AlreadyConsumed: o.consumed,
 		JobToken:        o.jobToken,
 		APIBase:         steerAPIBase(),
 		Item: steerwatch.WorkItem{
-			IsPullRequest: o.isPullRequest,
-			Number:        o.statusNum,
-			HeadSHA:       o.headSHA,
+			Number:  o.statusNum,
+			HeadSHA: o.headSHA,
 		},
 	}, steerItemReader(o.roleToken), deliver, settle)
 
@@ -257,6 +262,15 @@ func (s *steerSession) marker() statuscomment.SteerMarker {
 		ConsumedRunIDs: s.watcher.Consumed(),
 		HeadSHA:        s.watcher.Head(),
 	}
+}
+
+// baseline returns the window the next iteration's watcher should compute
+// its first delta from.
+func (s *steerSession) baseline() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	return s.watcher.Baseline()
 }
 
 // steerTurnEndHandler wraps an event handler so agent turn ends reach the
