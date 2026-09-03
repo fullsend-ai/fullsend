@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -106,14 +105,11 @@ func buildSteerComment(stage, text string) (string, error) {
 	}
 }
 
-// steerCommentPoster is the write the command needs. github.LiveClient
-// satisfies it.
-type steerCommentPoster interface {
-	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
+// newSteerForgeClient is the CLI's normal forge composition path, held in a
+// variable so tests can substitute a fake client.
+var newSteerForgeClient = func() (forge.Client, error) {
+	return newForgeClient(repos.ForgeGitHub, "", "")
 }
-
-// newSteerCommentPoster is a variable so tests can substitute a fake.
-var newSteerCommentPoster = func(token string) steerCommentPoster { return gh.New(token) }
 
 func newSteerCmd() *cobra.Command {
 	var stage string
@@ -158,7 +154,7 @@ Authentication uses GH_TOKEN, then GITHUB_TOKEN, then 'gh auth token'.`,
 				return err
 			}
 
-			token, err := resolveToken()
+			client, err := newSteerForgeClient()
 			if err != nil {
 				return err
 			}
@@ -166,8 +162,7 @@ Authentication uses GH_TOKEN, then GITHUB_TOKEN, then 'gh auth token'.`,
 			printer.Header("Steer")
 			printer.KeyValue("Work item", fmt.Sprintf("%s/%s#%d", item.Owner, item.Repo, item.Number))
 
-			comment, err := newSteerCommentPoster(token).
-				CreateIssueComment(cmd.Context(), item.Owner, item.Repo, item.Number, body)
+			comment, err := client.CreateIssueComment(cmd.Context(), item.Owner, item.Repo, item.Number, body)
 			if err != nil {
 				return fmt.Errorf("posting the steer comment: %w", err)
 			}
