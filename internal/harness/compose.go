@@ -100,9 +100,11 @@ type ComposeOpts struct {
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
 //  2. If base absent: resolve URL-sourced resources → ResolveForge → ResolveOverlays → Validate → return
-//  3. If base present: loadBaseChain recursively, then mergeBaseIntoChild
+//  3. If base present: loadBaseChain recursively (each base layer resolves its
+//     own forge/overlays before returning — see resolveBaseForgeAndOverlays),
+//     then mergeBaseIntoChild with the flat base
 //  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
-//  5. ResolveForge and ResolveOverlays once on final merged result
+//  5. ResolveForge and ResolveOverlays on child's own forge/overlay blocks
 //  6. Validate
 //
 // When base is absent, this behaves identically to LoadWithOpts.
@@ -326,7 +328,10 @@ func loadBaseChain(
 		}
 
 		// Resolve script fields in the base by fetching them from the base's
-		// source URL. This extends ADR-0038: standalone script URL references
+		// source URL. Must run before resolveBaseForgeAndOverlays, which nils
+		// base.Forge — these functions access base.Forge to resolve forge-level
+		// script/resource/host-file paths into cache paths.
+		// This extends ADR-0038: standalone script URL references
 		// (pre_script: https://...) remain rejected, but scripts inherited
 		// through base: composition are fetched using the same integrity and
 		// allowlist infrastructure. After resolution, all script paths are
@@ -425,12 +430,76 @@ func loadBaseChain(
 		}
 		deps = append(deps, ancestorDeps...)
 
-		// Merge ancestor into base
+		// Merge ancestor into base. The recursive call already resolved
+		// the ancestor's forge/overlays, so ancestorBase is flat (no
+		// forge or overlay blocks remain).
 		mergeBaseIntoChild(ancestorBase, base)
 		base.Base = ""
 	}
 
+	// Resolve this base layer's forge and overlays before returning to
+	// the caller. This ensures the base is flat: forge/overlay values
+	// are consumed into top-level fields, so mergeBaseIntoChild on the
+	// caller side only sees top-level values. Without this, base forge
+	// values leak into the child's forge map via mergeForgeBlocks and
+	// then override the child's top-level values during the final
+	// ResolveForge — which is the bug described in #6798.
+	if err := resolveBaseForgeAndOverlays(base, opts); err != nil {
+		return nil, nil, err
+	}
+
 	return base, deps, nil
+}
+
+// resolveBaseForgeAndOverlays validates and resolves a base layer's forge and
+// overlay blocks in place, flattening them into top-level harness fields.
+// After this call, base.Forge is nil and base.Overlays is nil — the base is
+// "flat" and safe to merge into a child via mergeBaseIntoChild without forge
+// or overlay values leaking into the child's own blocks.
+//
+// Unlike the final ResolveForge call on the child harness, a missing platform
+// key is not an error here: the base may define forge blocks for platforms the
+// child doesn't use (e.g., a base with both github and gitlab forge blocks
+// used by a child that runs on github only). The non-matching platform's
+// config is simply discarded when the forge map is niled.
+func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
+	// Validate forge and overlays before resolving. Validation must run
+	// while both are still present so mutual-exclusion checks fire.
+	if base.Forge != nil {
+		if err := base.validateForge(); err != nil {
+			return fmt.Errorf("invalid base harness: %w", err)
+		}
+	}
+	if len(base.Overlays) > 0 {
+		if err := base.validateOverlays(); err != nil {
+			return fmt.Errorf("invalid base harness: %w", err)
+		}
+	}
+
+	// Resolve forge: merge the matching platform's config into top-level
+	// fields, then nil the forge map. If the platform is absent (base
+	// defines different platforms than the child uses), skip the merge
+	// but still nil the map so it doesn't leak into mergeBaseIntoChild.
+	// When ForgePlatform is empty (e.g., CLI validate paths), no forge
+	// block can match; the map is still niled since ResolveForge("") on
+	// the child would also be a no-op.
+	if base.Forge != nil && opts.ForgePlatform != "" {
+		if fc, ok := base.Forge[opts.ForgePlatform]; ok && fc != nil {
+			mergeForgeConfig(base, fc)
+		}
+	}
+	base.Forge = nil
+
+	// Resolve overlays: evaluate CEL conditions and merge matching
+	// entries into top-level fields.
+	if len(base.Overlays) > 0 {
+		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+			return fmt.Errorf("resolving base overlays: %w", err)
+		}
+	}
+	base.Overlays = nil
+
+	return nil
 }
 
 // fetchBaseURL fetches a URL-referenced base harness using the ADR-0038 infrastructure.
@@ -541,9 +610,19 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 //   - Maps (runner_env): base merged with child; child keys win
 //   - Pointer structs (validation_loop, security): child replaces if non-nil
 //   - host_files: concatenated with last-writer-wins dedup by Dest
-//   - forge: key-by-key merge; per-platform uses same rules
 //   - allowed_remote_resources: NOT merged (security; child must declare its own)
+//
+// Precondition: base.Forge and base.Overlays must be nil (already resolved
+// by resolveBaseForgeAndOverlays in loadBaseChain). This ensures base forge
+// and overlay values participate in the merge as top-level fields, not as
+// forge/overlay blocks that would compete with the child's own forge/overlay
+// values during the final ResolveForge/ResolveOverlays (#6798).
 func mergeBaseIntoChild(base, child *Harness) {
+	// Enforce precondition: base must be flat (forge/overlays resolved).
+	if base.Forge != nil || base.Overlays != nil {
+		panic("mergeBaseIntoChild: base.Forge and base.Overlays must be nil (call resolveBaseForgeAndOverlays first)")
+	}
+
 	// Scalars: child overrides if non-zero
 	if child.Agent == "" {
 		child.Agent = base.Agent
@@ -668,22 +747,6 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Security = base.Security
 	}
 
-	// Forge: key-by-key merge
-	if base.Forge != nil {
-		child.Forge = mergeForgeBlocks(base.Forge, child.Forge)
-	}
-
-	// Overlays: concatenated (base first, child appended) — same as plugins,
-	// providers, api_servers. Declaration order matters: ResolveOverlays
-	// merges all matching entries in order (later matches take precedence),
-	// so child entries (appended last) override base entries with the same
-	// when condition.
-	if base.Overlays != nil {
-		merged := make([]OverlayEntry, 0, len(base.Overlays)+len(child.Overlays))
-		merged = append(merged, base.Overlays...)
-		merged = append(merged, child.Overlays...)
-		child.Overlays = merged
-	}
 }
 
 // isFullsendCachePath reports whether p is a path already inside fullsend's
@@ -2163,6 +2226,10 @@ func mergeHostFiles(base, child []HostFile) []HostFile {
 	return result
 }
 
+// Deprecated: mergeForgeBlocks is no longer called in production. Since #6798,
+// base forge blocks are resolved by resolveBaseForgeAndOverlays before
+// mergeBaseIntoChild runs. Retained for test coverage only.
+//
 // mergeForgeBlocks merges forge maps key-by-key.
 // For each platform key present in both, the ForgeConfig fields are merged
 // using the same rules as mergeForgeConfig.
@@ -2185,6 +2252,9 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 	return child
 }
 
+// Deprecated: mergeForgeConfigInto is no longer called in production. See
+// mergeForgeBlocks deprecation note above.
+//
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
 // Similar to mergeForgeConfig in forge.go but prepends base skills and host files
 // (base + child order) rather than appending forge values to harness values.

@@ -66,7 +66,10 @@ per-overlay:
 
 When a forge block or overlay is merged into the harness top level, each
 field type follows specific merge semantics. The same rules apply during
-`base:` composition (base → child merging).
+`base:` composition (base → child merging). Each base layer's forge and
+overlay blocks are resolved into top-level fields before merging into the
+child, so inherited forge/overlay values cannot override the child's
+explicit top-level settings (see [#6798](https://github.com/fullsend-ai/fullsend/issues/6798)).
 
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
