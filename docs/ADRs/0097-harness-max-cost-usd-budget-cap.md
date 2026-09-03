@@ -58,9 +58,12 @@ not here.
 
 - A repo can bound the worst-case spend of a retrying harness without
   distorting `max_iterations` or `timeout_minutes`.
-- The cap is soft by one iteration — cost is only known at iteration
-  end — leaving the Claude runtime's native per-invocation budget flag
-  as an undecided future tightening for that runtime.
+- The cap is soft — by one iteration when every iteration reports its
+  cost (cost is only known at iteration end), and wider when they do
+  not (a crashed or unpriced iteration contributes $0 — see the
+  normative contract's cost-reporting section) — leaving the Claude
+  runtime's native per-invocation budget flag as an undecided future
+  tightening for that runtime.
 - `over_budget` in `metrics.json` lets post-scripts and dashboards
   attribute halted runs to the budget rather than to model failure.
 - Budget enforcement gains a compose-level subtlety (absent vs explicit

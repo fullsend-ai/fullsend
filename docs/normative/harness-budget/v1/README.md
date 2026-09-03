@@ -48,8 +48,10 @@ loop refuses to start another iteration. The boundary is deliberate — it is
 the runtime-agnostic layer. Cost arrives as a runtime-reported aggregate
 (Claude Code reports it once, in the final result event of a completed
 iteration) and not every runtime offers an in-flight budget control (pi has
-none), so fullsend does not interrupt an iteration already in flight and the
-cap is soft by at most one iteration. Claude Code's native per-invocation
+none), so fullsend does not interrupt an iteration already in flight. When
+every iteration reports its cost the cap is soft by at most one iteration;
+iterations that report no cost widen the overshoot (see Cost reporting
+below). Claude Code's native per-invocation
 `--max-budget-usd` flag is not used today; it could complement this cap as a
 tighter in-flight bound for that runtime.
 
