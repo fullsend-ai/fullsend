@@ -41,9 +41,11 @@ func TestBuildRunCommand_Steerable(t *testing.T) {
 			t.Errorf("steerable command missing %q:\n%s", want, cmd)
 		}
 	}
-	// The prompt must reach the agent through the mailbox, never argv:
-	// argv is world-readable in the sandbox and the prompt is
-	// attacker-influenced on a retry iteration.
+	// The prompt must reach the agent through the mailbox rather than the
+	// launch command, so it never lands on the long-lived agent process's
+	// command line, which a `ps` during the run would show. (It still
+	// transits the intermediate `sh -c` argv of the mailbox write; see
+	// buildRunCommand.)
 	if strings.Contains(cmd, DefaultAgentPrompt) {
 		t.Errorf("steerable command still passes the prompt on argv:\n%s", cmd)
 	}
@@ -52,7 +54,8 @@ func TestBuildRunCommand_Steerable(t *testing.T) {
 // TestBuildRunCommand_SteerableKeepsFeedbackPromptOffArgv covers the
 // validation loop's retry prompt specifically: it carries the previous
 // iteration's failure text, which is the most attacker-influenced string
-// the runner ever hands a runtime.
+// the runner ever hands a runtime, and it must not sit on the agent
+// process's own command line for the length of the run.
 func TestBuildRunCommand_SteerableKeepsFeedbackPromptOffArgv(t *testing.T) {
 	cmd := buildRunCommand(RunParams{RepoDir: "/repo", AgentBaseName: "fix", Prompt: "previous iteration failed: SECRETMARKER", Steerable: true})
 	if strings.Contains(cmd, "SECRETMARKER") {
