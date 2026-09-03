@@ -6150,6 +6150,96 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 	}
 }
 
+func TestFilterProfilesByDirIDs(t *testing.T) {
+	tests := []struct {
+		name          string
+		profiles      []resolve.ResolvedProfile
+		dirProfileIDs []string
+		wantImport    []string // IDs expected to be imported
+		wantSkipped   []string // IDs expected to be skipped
+	}{
+		{
+			name:       "no profiles",
+			profiles:   nil,
+			wantImport: nil,
+		},
+		{
+			name: "no directory profiles — all imported",
+			profiles: []resolve.ResolvedProfile{
+				{ID: "vertex-ai", LocalPath: "/tmp/vertex.yaml"},
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
+			dirProfileIDs: nil,
+			wantImport:    []string{"vertex-ai", "anthropic"},
+		},
+		{
+			name: "directory shadows one URL profile",
+			profiles: []resolve.ResolvedProfile{
+				{ID: "vertex-ai", LocalPath: "/tmp/vertex.yaml"},
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
+			dirProfileIDs: []string{"vertex-ai"},
+			wantImport:    []string{"anthropic"},
+			wantSkipped:   []string{"vertex-ai"},
+		},
+		{
+			name: "directory shadows all URL profiles",
+			profiles: []resolve.ResolvedProfile{
+				{ID: "vertex-ai", LocalPath: "/tmp/vertex.yaml"},
+			},
+			dirProfileIDs: []string{"vertex-ai", "other"},
+			wantSkipped:   []string{"vertex-ai"},
+		},
+		{
+			name: "directory has IDs not in URL profiles — no effect",
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", LocalPath: "/tmp/anthropic.yaml"},
+			},
+			dirProfileIDs: []string{"unrelated-profile"},
+			wantImport:    []string{"anthropic"},
+		},
+		{
+			name: "warm gateway scenario: URL copy changed but directory unchanged",
+			// This is the core scenario from #6977: the harness-resolved
+			// profile changed (so ImportProfile would cache-miss), but the
+			// directory copy is unchanged (so ImportProfiles would cache-hit).
+			// Without this filter, the URL copy would win on a warm gateway.
+			// With the filter, the URL import is skipped entirely, so the
+			// directory copy always wins regardless of cache state.
+			profiles: []resolve.ResolvedProfile{
+				{ID: "fullsend-vertex-ai", LocalPath: "/tmp/new-vertex.yaml", FromURL: true},
+			},
+			dirProfileIDs: []string{"fullsend-vertex-ai"},
+			wantSkipped:   []string{"fullsend-vertex-ai"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			toImport, skipped := filterProfilesByDirIDs(tt.profiles, tt.dirProfileIDs)
+
+			var importIDs []string
+			for _, rp := range toImport {
+				importIDs = append(importIDs, rp.ID)
+			}
+			var skippedIDs []string
+			for _, rp := range skipped {
+				skippedIDs = append(skippedIDs, rp.ID)
+			}
+
+			if tt.wantImport == nil {
+				assert.Empty(t, importIDs)
+			} else {
+				assert.Equal(t, tt.wantImport, importIDs)
+			}
+			if tt.wantSkipped == nil {
+				assert.Empty(t, skippedIDs)
+			} else {
+				assert.Equal(t, tt.wantSkipped, skippedIDs)
+			}
+		})
+	}
+}
+
 func TestDedupResolvedProfiles_ComposeScenario(t *testing.T) {
 	// Simulates base+child compose: base declares profile "anthropic" at one
 	// URL, child redeclares it at another. After concatenation (base first,
