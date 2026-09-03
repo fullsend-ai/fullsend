@@ -84,6 +84,7 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/lint-docs-result.schema.json
   max_iterations: 2
+  preflight_check: python3 -c "import jsonschema"
 env:
   runner:
     FULLSEND_FORGE: github
