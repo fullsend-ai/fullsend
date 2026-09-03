@@ -4679,3 +4679,35 @@ func TestListWorkflowRunJobs_SinglePageStops(t *testing.T) {
 	assert.Equal(t, 1, calls, "a short page is the last page")
 	assert.Len(t, jobs, 2)
 }
+
+func TestListIssueCommentsSince(t *testing.T) {
+	var gotSince string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSince = r.URL.Query().Get("since")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "hi", "user": map[string]any{"login": "octocat"},
+				"created_at": "2026-09-03T10:06:00Z"},
+		})
+	}))
+	defer srv.Close()
+
+	since := time.Date(2026, 9, 3, 10, 5, 0, 0, time.UTC)
+	comments, err := newTestClient(t, srv).ListIssueCommentsSince(context.Background(), "org", "repo", 7, since)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-03T10:05:00Z", gotSince)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "octocat", comments[0].Author)
+}
+
+func TestListIssueComments_SendsNoSinceWhenUnset(t *testing.T) {
+	var hadSince bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadSince = r.URL.Query()["since"]
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListIssueComments(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, hadSince, "the unfiltered listing must stay unfiltered")
+}

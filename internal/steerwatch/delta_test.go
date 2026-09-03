@@ -500,3 +500,16 @@ func TestBuildText_ContextIsTruncatedBeforeAmendments(t *testing.T) {
 	assert.Contains(t, text, "the important instruction", "the amendment survives a huge context block")
 	assert.Contains(t, text, "[truncated]")
 }
+
+func TestBuildDelta_PassesTheBaselineAsAServerSideFilter(t *testing.T) {
+	items := &stubItems{headSHA: "aaa111"}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+
+	baseline := mustTime(t, "2026-09-03T10:05:00Z")
+	_, err := w.buildDelta(context.Background(), baseline, nil)
+	require.NoError(t, err)
+
+	// Re-reading the whole comment history on every poll is pure waste on a
+	// busy item; the baseline is already the window.
+	assert.Equal(t, baseline, items.sinceSeen)
+}
