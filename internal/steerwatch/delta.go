@@ -20,7 +20,10 @@ const maxDeltaBytes = 16 * 1024
 // forge.Client satisfies it.
 type ItemReader interface {
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
-	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error)
+	// ListIssueCommentsSince returns comments updated at or after since. It
+	// is a bandwidth filter, not a semantic one — GitHub keys `since` on
+	// updated_at — so the caller still filters on CreatedAt.
+	ListIssueCommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]forge.IssueComment, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
 }
@@ -185,7 +188,9 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 		d.amendments = append(d.amendments, item)
 	}
 
-	comments, err := w.items.ListIssueComments(ctx, owner, repo, w.cfg.Item.Number)
+	// The baseline doubles as the server-side filter: re-reading the whole
+	// comment history on every poll is pure waste on a busy item.
+	comments, err := w.items.ListIssueCommentsSince(ctx, owner, repo, w.cfg.Item.Number, baseline)
 	if err != nil {
 		return d, fmt.Errorf("listing comments: %w", err)
 	}
