@@ -651,6 +651,12 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'triage'
     runs-on: ${{ inputs.runner_image }}
+    # Every stage job below carries the same cancel-in-progress expression.
+    # Unset, or anything but "true", is today's behaviour: a newer event on
+    # the same work item cancels the run in flight. Set to "true" in a
+    # consumer repository, the run in flight instead absorbs the update
+    # through the runner's follow-up run watcher, and the newer event waits
+    # as the single pending run `queue: single` allows (ADR 0101).
     concurrency:
       group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: ${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}
