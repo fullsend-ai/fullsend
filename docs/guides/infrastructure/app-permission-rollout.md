@@ -28,6 +28,22 @@ Five roles are involved, usually five different people:
 | **Installation owner** | An **owner** of an organization the App is installed on. Accepts the pending update for that organization. |
 | **CLI user / repo admin** | Upgrades the fullsend CLI and re-runs `fullsend github setup <owner/repo>` for their repository. |
 
+Each step-by-step section below is written for one of these people; find your row and skip to that
+section.
+
+### Before you start
+
+- **Contributor**: a fullsend checkout with Go and `make lint` working; write access to open a PR.
+- **App owner**: an **owner** of the GitHub organization that owns the App registration (for the
+  hosted set, `fullsend-ai`; for a self-managed set, your own org).
+- **Mint admin**: the fullsend CLI at the release that carries the change, deploy rights on the
+  mint's GCP project or Cloudflare account (see [Mint administration](mint-administration.md)), and
+  read access to its logs.
+- **Installation owner**: an **owner** of each organization the App is installed on. Members
+  cannot see or accept permission requests.
+- **CLI user / repo admin**: admin on the repository, `gh` authenticated, and the fullsend CLI at a
+  release cut after the mint deploy.
+
 The first three steps happen in a fixed order (code, then App registration, then mint deploy). After
 that, nobody waits for anybody: installation owners accept whenever they get to it, CLI users upgrade
 whenever they like, and every agent keeps working in the meantime. That is the whole point of the
