@@ -1,8 +1,8 @@
 Feature: Fork PR dispatch
 
   Background:
-    Given the enrolled test repository
-    And a fork "test-repo-fork" of the enrolled test repository
+    Given a test repository with fullsend installed
+    And a fork "fork" of the test repository
 
   Scenario: Fork PR label dispatches harness
     Given a custom harness "fork-pr-ping" with:

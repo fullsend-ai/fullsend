@@ -45,3 +45,13 @@ func TestModuleRoot(t *testing.T) {
 	dir := ModuleRoot(t)
 	assert.DirExists(t, dir)
 }
+
+func TestBehaviourOrg_Default(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ORG", "")
+	assert.Equal(t, DefaultBehaviourOrg, BehaviourOrg())
+}
+
+func TestBehaviourOrg_Override(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ORG", "custom-org")
+	assert.Equal(t, "custom-org", BehaviourOrg())
+}

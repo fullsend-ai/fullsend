@@ -2,11 +2,12 @@ package install
 
 import (
 	"context"
+	"os"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// mintDriver provisions and tears down fullsend in an acquired pool org.
+// mintDriver provisions and tears down a preview mint for behaviour tests.
 // Used only during suite setup (single-threaded) and not shared across
 // concurrent scenarios.
 //
@@ -25,7 +26,7 @@ type mintDriver interface {
 // performs suite setup (e.g. preview mint deploy) before returning so
 // setup failures fail the suite before scenarios run.
 //
-// All driver-specific inputs (PEMs, allowlists, mint URL, pool size)
+// All driver-specific inputs (PEMs, allowlists, mint URL)
 // are read from env or computed from the org inside the factory.
 // Runtime dependencies (forge client, token, CLI binary, GCP project,
 // logger) are passed as parameters.
@@ -36,37 +37,34 @@ type Factory func(
 	logf func(string, ...any),
 ) (Driver, error)
 
-// Driver owns mint/environment lifecycle and test-repo allocation for
+// Driver owns mint/environment lifecycle and test-repo creation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory
-// and threads it through World; scenarios call AllocateRepo to lease a
-// ready repo and DeallocateRepo to return it. Finalize tears down
-// suite-scoped resources and reclaims any outstanding leases.
+// and threads it through World; scenarios call CreateRepo to provision an
+// ephemeral repo. Repo deletion is handled by CleanupScenario (in the
+// steps package); the driver tracks created repos so Finalize can sweep
+// any that were not cleaned up (e.g. when a CI job is cancelled).
 //
 // Implementations must be safe for concurrent use by multiple godog
 // scenarios (GODOG_CONCURRENCY > 1).
 type Driver interface {
-	// AllocateRepo leases a slot and makes that repo ready (create if
-	// missing, install if needed). Blocks until a slot is free or ctx
-	// is cancelled. Returns the repo name only (org is fixed for the
+	// CreateRepo creates a fresh ephemeral repo for a scenario. The hint
+	// (typically the scenario name) is incorporated into the repo name
+	// for traceability. Returns the repo name only (org is fixed for the
 	// driver / World).
-	AllocateRepo(ctx context.Context) (repoName string, err error)
+	CreateRepo(ctx context.Context, hint string) (repoName string, err error)
 
-	// DeallocateRepo returns a previously allocated repo. Errors on
-	// unknown name or double-release.
-	DeallocateRepo(ctx context.Context, repoName string) error
+	// MarkDeleted removes a repo from the driver's tracking list after
+	// it has been successfully deleted by CleanupScenario.
+	MarkDeleted(repoName string)
 
-	// Finalize always tears down suite-scoped resources (e.g. preview
-	// mint). If leases are still outstanding, it reclaims them (logging
-	// the names), completes teardown, and returns an error so leaked
-	// After-hooks fail CI without stranding resources.
+	// Finalize deletes any repos still on the tracking list (handles
+	// cancelled runs), then tears down suite-scoped resources (e.g.
+	// preview mint). Respects E2E_KEEP_REPOS.
 	Finalize(ctx context.Context) error
 
-	// Capacity is the max concurrent outstanding allocations (the
-	// driver's real parallelism ceiling). Suite may default concurrency
-	// to Capacity() or honor GODOG_CONCURRENCY. If concurrency exceeds
-	// Capacity(), excess workers block in AllocateRepo — the suite
-	// emits an advisory warning but does not fail.
-	Capacity() int
+	// DefaultConcurrency returns the suggested concurrency for the test
+	// suite. The suite may use GODOG_CONCURRENCY instead.
+	DefaultConcurrency() int
 }
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
@@ -75,16 +73,22 @@ type Driver interface {
 type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
 
 const (
-	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
-	PerRepoTriageWorkflow = "fullsend.yaml"
+	// TriageWorkflow is the workflow file name for triage.
+	TriageWorkflow = "fullsend.yaml"
 
-	// PerRepoAgentWorkflow is the reusable workflow for the triage agent.
-	PerRepoAgentWorkflow = "reusable-triage.yml"
+	// AgentWorkflow is the reusable workflow for the triage agent.
+	AgentWorkflow = "reusable-triage.yml"
 
-	// PerRepoAgentArtifact is the upload-artifact name for triage output.
-	PerRepoAgentArtifact = "fullsend-triage"
+	// AgentArtifact is the upload-artifact name for triage output.
+	AgentArtifact = "fullsend-triage"
 
-	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
-	// Drivers use this as the default capacity when no override is set.
-	DefaultPoolSize = 12
+	// DefaultConcurrencyValue is the default number of concurrent
+	// scenarios when GODOG_CONCURRENCY is not set.
+	DefaultConcurrencyValue = 12
 )
+
+// KeepRepos reports whether test repos should be preserved after runs.
+// TODO: revert to `os.Getenv("E2E_KEEP_REPOS") == "true"` after debugging flaky url-dispatch failure.
+func KeepRepos() bool {
+	return true || os.Getenv("E2E_KEEP_REPOS") == "true"
+}

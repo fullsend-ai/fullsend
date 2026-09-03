@@ -20,15 +20,10 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-// suiteInstallRuntime is the runtime every pool repo is installed with
-// (`github setup … --runtime dummy`, asserted post-install).
+// suiteInstallRuntime is the runtime every test repo is installed with
+// (`repos install … --runtime dummy`, asserted post-install).
 const suiteInstallRuntime = "dummy"
 
-// Runtime steps cover the runtime layer that every other scenario takes
-// for granted: the repo's `runtime:` selects the backend (core, runs under
-// the dummy runtime on every suite run), and a real runtime can be
-// exercised end to end on the same leased repo by flipping that key for
-// one scenario (pi today — see features/runtime/pi.feature).
 func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the repository runtime is "([^"]+)"$`, func(ctx context.Context, name string) (context.Context, error) {
 		return ctx, givenRepositoryRuntime(world.FromContext(ctx), name)
@@ -62,13 +57,11 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-// givenRepositoryRuntime commits `runtime: <name>` into the enrolled
-// repo's .fullsend/config.yaml (the only place a runtime is selected —
-// there is no harness key or CLI flag) and records the previous value so
-// CleanupScenario can restore it. Mirrors the kill-switch step.
+// givenRepositoryRuntime commits `runtime: <name>` into the test
+// repo's .fullsend/config.yaml.
 func givenRepositoryRuntime(w *world.World, name string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before runtime operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before runtime operations")
 	}
 	name = strings.TrimSpace(name)
 	valid := false
@@ -86,18 +79,6 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 	if err != nil {
 		return err
 	}
-	if !w.RuntimeOverridden {
-		// ConfigRuntime resolves through the defaults layer (code default
-		// "claude" when the key is absent). The suite installs every pool
-		// repo with an explicit `runtime: dummy` and validates that after
-		// install, so anything else here means a slot is in an unexpected
-		// state; refuse rather than restore a real runtime later.
-		original := cfg.ConfigRuntime()
-		if original != suiteInstallRuntime {
-			return fmt.Errorf("repo runtime is %q before override, want %q (suite invariant; refusing to record it for restore)", original, suiteInstallRuntime)
-		}
-		w.RuntimeOriginal = original
-	}
 	cfg.SetRuntime(name)
 	merged, err := cfg.Marshal()
 	if err != nil {
@@ -106,7 +87,6 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: select runtime "+name, merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
-	w.RuntimeOverridden = true
 	return nil
 }
 
@@ -116,7 +96,7 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 
 // givenRuntimeAgent commits a complete agent definition (frontmatter +
-// body) to `.fullsend/agents/<name>.md` on the enrolled repo. The
+// body) to `.fullsend/agents/<name>.md` on the test repo. The
 // custom-harness step commits a placeholder for any relative `agent:` path
 // (the per-repo scaffold ships no agents — fleet agents are URL-sourced),
 // which is fine under the dummy runtime but gives a real runtime no task;
@@ -128,7 +108,7 @@ var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 // scenario is exercising.
 func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before agent operations")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || strings.ContainsAny(name, "/\\") {
@@ -164,7 +144,7 @@ func givenRuntimeAgent(w *world.World, name, doc string) error {
 	return nil
 }
 
-// readPerRepoConfig loads the enrolled repo's config.yaml as the per-repo
+// readPerRepoConfig loads the test repo's config.yaml as the per-repo
 // writer (the generic ConfigWriter has no runtime accessors).
 func readPerRepoConfig(w *world.World, cfgPath string) (config.PerRepoConfigWriter, error) {
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
@@ -183,15 +163,14 @@ func readPerRepoConfig(w *world.World, cfgPath string) (config.PerRepoConfigWrit
 }
 
 // givenRepositoryAgentSettings commits per-agent runtime/model/effort (a
-// YAML mapping of agent name → settings) into the enrolled repo's
+// YAML mapping of agent name → settings) into the test repo's
 // .fullsend/config.yaml as agents: entries — on the entry with that name
-// when present, else as a name-only entry for a built-in agent — and
-// records the pre-scenario agents list so CleanupScenario restores it.
-// The entries are validated the way `fullsend run` validates them, so a
+// when present, else as a name-only entry for a built-in agent. The
+// entries are validated the way `fullsend run` validates them, so a
 // scenario cannot commit a config the runner would refuse.
 func givenRepositoryAgentSettings(w *world.World, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before runtime operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before runtime operations")
 	}
 	var settings map[string]struct {
 		Runtime string `yaml:"runtime"`
@@ -203,11 +182,6 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 	}
 	if len(settings) == 0 {
 		return fmt.Errorf("agent settings docstring must hold at least one agent")
-	}
-	if !w.AgentsOverridden {
-		if err := snapshotAgents(w); err != nil {
-			return err
-		}
 	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfg, err := readPerRepoConfig(w, cfgPath)
@@ -239,32 +213,6 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: set agent settings", merged); err != nil {
-		return fmt.Errorf("updating config: %w", err)
-	}
-	return nil
-}
-
-// RestoreRuntime puts the install-time runtime back. Exported so
-// CleanupScenario can call it during scenario teardown.
-func RestoreRuntime(w *world.World) error {
-	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before runtime operations")
-	}
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfg, err := readPerRepoConfig(w, cfgPath)
-	if err != nil {
-		return err
-	}
-	restore := w.RuntimeOriginal
-	if restore == "" {
-		restore = suiteInstallRuntime
-	}
-	cfg.SetRuntime(restore)
-	merged, err := cfg.Marshal()
-	if err != nil {
-		return err
-	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore runtime", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil

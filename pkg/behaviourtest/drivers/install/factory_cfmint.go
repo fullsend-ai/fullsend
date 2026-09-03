@@ -1,7 +1,7 @@
-// repopool_cfmint_previews.go implements the RepoPoolCFMintPreviews
-// driver. It deploys a temporary Cloudflare Worker preview mint for
-// behaviour tests and constructs a unified Driver that owns allocation,
-// deallocation, ensure, and teardown.
+// factory_cfmint.go implements the CFMint factory. It deploys a
+// temporary Cloudflare Worker preview mint for behaviour tests and
+// constructs a unified Driver that owns repo creation, deletion, and
+// teardown.
 //
 // The preview mint is self-contained: all configuration (PEMs,
 // allowlists, provenance) is passed at deploy time. Teardown
@@ -17,12 +17,11 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
-// cfmintConfig holds parameters for the CF mint driver. This is an
-// internal type — the constructor reads values from env or computes
-// them from the org name. Callers do not construct or see this type.
+// cfmintConfig holds parameters for the CF mint driver.
 type cfmintConfig struct {
 	pemDir            string
 	suiteName         string
@@ -32,30 +31,22 @@ type cfmintConfig struct {
 	appSet            string
 }
 
-// NewRepoPoolCFMintPreviews is a Factory that deploys a CF preview
-// mint and returns a unified Driver owning allocation, deallocation,
-// ensure, and teardown.
+// NewCFMintFactory is a Factory that deploys a CF preview mint and
+// returns a unified Driver owning repo creation, deletion, and teardown.
 //
-// Driver-specific config is read from env: PEM dir from TEST_*_PEM
-// env vars (materialized internally), suite name from
-// BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
-// BEHAVIOUR_APP_SET (default "fullsend-test"). Pool size defaults to
-// DefaultPoolSize. WIF and workflow-host repo lists are computed from
-// the org and pool size.
-func NewRepoPoolCFMintPreviews(
+// PER_REPO_WIF_REPOS and WORKFLOW_HOST_REPOS are set to "*" so no
+// per-repo enrollment is needed. The fullsend ref is resolved via
+// EnvFullsendRef().
+func NewCFMintFactory(
 	org string,
 	client forge.Client,
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
 ) (Driver, error) {
-	poolSize := envPoolSize(logf)
-
 	pemDir, err := setupCFMintPEMDir()
 	if err != nil {
 		return nil, fmt.Errorf("cfmint factory: materializing PEMs: %w", err)
 	}
-	// PEMs are only needed for mint deploy. Clean up as soon as the
-	// factory returns (deploy has completed or failed by that point).
 	if pemDir != "" {
 		defer os.RemoveAll(pemDir)
 	}
@@ -63,9 +54,9 @@ func NewRepoPoolCFMintPreviews(
 	cfg := cfmintConfig{
 		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
-		allowedOrgs:       "", // per-repo mode — no org-level allowlist
-		perRepoWIFRepos:   buildRepoList(org, poolSize),
-		workflowHostRepos: buildRepoList(org, poolSize),
+		allowedOrgs:       "",
+		perRepoWIFRepos:   "*",
+		workflowHostRepos: "*",
 		appSet:            envAppSet(),
 	}
 
@@ -74,21 +65,17 @@ func NewRepoPoolCFMintPreviews(
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 	}
 
-	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, poolSize, logf)
+	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, logf)
 }
 
-// Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
-var _ Factory = NewRepoPoolCFMintPreviews
+var _ Factory = NewCFMintFactory
 
 // buildCFMintDriver deploys the mint and constructs the composed driver.
-// Extracted from NewRepoPoolCFMintPreviews so the deploy → compose path
-// can be tested with a fake mintDriver.
 func buildCFMintDriver(
 	org string,
 	md mintDriver,
 	client forge.Client,
 	token, binary, gcpProjectID string,
-	poolSize int,
 	logf func(string, ...any),
 ) (Driver, error) {
 	ctx := context.Background()
@@ -97,23 +84,17 @@ func buildCFMintDriver(
 		return nil, fmt.Errorf("cfmint factory: deploying mint: %w", err)
 	}
 
-	// Create the ensurer with the deployed mint URL.
+	fullsendRef := common.EnvFullsendRef()
 	e2eCfg := e2etest.EnvConfig{
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	ens := newRepoEnsurer(e2eCfg, client, token, binary, fullsendRef, logf)
 
-	// Construct and return the composed driver.
-	d, err := newComposedDriver(org, md, ens, poolSize, logf)
-	if err != nil {
-		return nil, err
-	}
-	return withRateLimitReporter(d, client), nil
+	return newComposedDriver(org, md, ens, client, logf), nil
 }
 
-// cfmintMintDriver deploys a CF Worker preview mint and uses the derived
-// preview URL as the mint endpoint for fullsend github setup.
+// cfmintMintDriver deploys a CF Worker preview mint.
 type cfmintMintDriver struct {
 	client       forge.Client
 	token        string
@@ -122,15 +103,12 @@ type cfmintMintDriver struct {
 	logf         func(string, ...any)
 	cfg          cfmintConfig
 	workerName   string
-	previewAlias string // set during Install
+	previewAlias string
 	cliRunner    CLIRunnerFunc
 }
 
-// Compile-time check that cfmintMintDriver implements mintDriver.
 var _ mintDriver = (*cfmintMintDriver)(nil)
 
-// newCFMintDriver creates a CF mint driver. Returns an error if the
-// configuration is invalid (missing PEMs, empty suite name).
 func newCFMintDriver(
 	client forge.Client,
 	token, binary, gcpProjectID string,
@@ -170,20 +148,10 @@ func newCFMintDriver(
 	}, nil
 }
 
-// CFMintWorkerName derives the CF Worker script name from a suite name.
-// The name clearly indicates it is the e2e/BT worker for that suite.
 func CFMintWorkerName(suiteName string) string {
 	return suiteName + "-mint"
 }
 
-// ParseCFMintURLFromOutput extracts the mint URL printed by `fullsend
-// mint deploy`. The CLI prints a line like:
-//
-//	Worker deployed at https://<alias>-<worker>.<subdomain>.workers.dev
-//
-// This is the canonical way to obtain the preview URL from a deploy
-// invocation; callers should not re-derive it because the correct
-// workers.dev subdomain is only known at deploy time.
 func ParseCFMintURLFromOutput(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -200,9 +168,6 @@ func ParseCFMintURLFromOutput(output string) string {
 	return ""
 }
 
-// GenerateCFMintPreviewAlias creates a unique preview alias for a BT run.
-// Format: bt-<8-hex-chars> (e.g., bt-a1b2c3d4). The alias satisfies
-// the CF preview alias validation: 2-63 lowercase alphanumeric or hyphens.
 func GenerateCFMintPreviewAlias() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -211,14 +176,6 @@ func GenerateCFMintPreviewAlias() (string, error) {
 	return fmt.Sprintf("bt-%x", b), nil
 }
 
-// CFMintDeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
-// Exported so unit tests can verify arg construction without shelling out.
-//
-// --allowed-orgs and --workflow-host-repos are always passed (even when
-// empty) so the CLI sees them as explicitly changed. The CLI uses
-// "flag changed" semantics: omitted flags preserve existing Worker
-// bindings, while explicitly-empty values clear them. For per-repo
-// mode the caller should set AllowedOrgs to "" to avoid dual-enrollment.
 func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 	args := []string{
 		"mint", "deploy",
@@ -236,8 +193,6 @@ func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 	return args
 }
 
-// CFMintTeardownArgs builds the CLI arguments for `fullsend mint delete --platform=cloudflare`.
-// Exported so unit tests can verify arg construction without shelling out.
 func CFMintTeardownArgs(previewAlias, workerName string) []string {
 	return []string{
 		"mint", "delete",
@@ -259,7 +214,6 @@ func (d *cfmintMintDriver) Install(_ context.Context, org string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
-
 	return mintURL, nil
 }
 
@@ -267,9 +221,6 @@ func (d *cfmintMintDriver) Teardown(_ context.Context) error {
 	return d.teardownPreview()
 }
 
-// deployCFMint deploys a Cloudflare Worker preview mint and returns the
-// deploy-reported preview URL (which includes the account's workers.dev
-// subdomain).
 func (d *cfmintMintDriver) deployCFMint(alias, org string) (string, error) {
 	args := CFMintDeployArgs(alias, d.workerName, d.cfg)
 
@@ -287,9 +238,6 @@ func (d *cfmintMintDriver) deployCFMint(alias, org string) (string, error) {
 	return mintURL, nil
 }
 
-// teardownPreview tears down the CF preview mint if one was deployed.
-// Returns an error on delete failure so Finalize can join it with any
-// lease-leak error.
 func (d *cfmintMintDriver) teardownPreview() error {
 	if d.previewAlias == "" {
 		return nil
@@ -306,7 +254,6 @@ func (d *cfmintMintDriver) teardownPreview() error {
 
 // --- Env helpers ---
 
-// envSuiteName returns the BT suite name from env or a default.
 func envSuiteName() string {
 	if v := os.Getenv("BEHAVIOUR_SUITE_NAME"); v != "" {
 		return v
@@ -314,7 +261,6 @@ func envSuiteName() string {
 	return "bt"
 }
 
-// envAppSet returns the app set for PEM bootstrap from env or a default.
 func envAppSet() string {
 	if v := os.Getenv("BEHAVIOUR_APP_SET"); v != "" {
 		return v
@@ -322,33 +268,8 @@ func envAppSet() string {
 	return "fullsend-test"
 }
 
-// envPoolSize returns the pool size from env or DefaultPoolSize.
-// When BEHAVIOUR_POOL_SIZE is set but cannot be parsed as a positive
-// integer, a warning is logged via logf and the default is used.
-func envPoolSize(logf func(string, ...any)) int {
-	if v := os.Getenv("BEHAVIOUR_POOL_SIZE"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
-			return n
-		}
-		logf("WARNING: BEHAVIOUR_POOL_SIZE=%q is not a valid positive integer, using default %d", v, DefaultPoolSize)
-	}
-	return DefaultPoolSize
-}
+// --- PEM materialization ---
 
-// buildRepoList constructs a comma-separated list of org/test-repo-NN.
-func buildRepoList(org string, poolSize int) string {
-	repos := make([]string, poolSize)
-	for i := range poolSize {
-		repos[i] = fmt.Sprintf("%s/test-repo-%02d", org, i+1)
-	}
-	return strings.Join(repos, ",")
-}
-
-// --- PEM materialization (cfmint-specific) ---
-
-// cfmintPEMRoleEnvVars maps PEM role names to the environment variables
-// the CI workflow provides (TEST_*_PEM secrets wired in e2e.yml).
 var cfmintPEMRoleEnvVars = map[string]string{
 	"fullsend":   "TEST_FULLSEND_PEM",
 	"triage":     "TEST_TRIAGE_PEM",
@@ -358,13 +279,6 @@ var cfmintPEMRoleEnvVars = map[string]string{
 	"prioritize": "TEST_PRIORITIZE_PEM",
 }
 
-// setupCFMintPEMDir materializes TEST_*_PEM environment variables into
-// {role}.pem files inside a temporary directory. Returns the directory
-// path, or "" when no PEM env vars are set (e.g. local dev). The caller
-// is responsible for removing the directory after deploy has used it.
-//
-// On any failure after creating the temp dir the directory is removed
-// before returning so PEM material is never leaked on disk.
 func setupCFMintPEMDir() (string, error) {
 	var found bool
 	for _, envVar := range cfmintPEMRoleEnvVars {
