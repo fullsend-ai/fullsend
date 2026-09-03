@@ -1272,8 +1272,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
 
-		// Import URL-resolved profiles to the gateway.
-		for _, rp := range result.Profiles {
+		// Import URL-resolved profiles to the gateway, skipping any
+		// whose id also appears in the profiles/ directory. The
+		// directory copy is the intended winner (#6977): importing the
+		// URL copy first would waste work and, on a warm gateway where
+		// the URL copy changed but the directory did not, leave the
+		// wrong copy live due to independent caches.
+		profilesToImport, skippedProfiles := filterProfilesByDirIDs(result.Profiles, dirProfileIDs)
+		for _, rp := range skippedProfiles {
+			printer.StepWarn(fmt.Sprintf(
+				"Skipping URL-resolved profile %q: overridden by profiles/ directory copy",
+				rp.ID))
+		}
+		for _, rp := range profilesToImport {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
 			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
@@ -5280,6 +5291,30 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 		}
 	}
 	return deduped
+}
+
+// filterProfilesByDirIDs partitions URL-resolved profiles into those that
+// should be imported (not present in the profiles/ directory) and those that
+// should be skipped (overridden by a directory copy). The directory copy is
+// the intended winner (#6977): skipping the URL import avoids wasted work
+// and eliminates the non-deterministic precedence caused by two independent
+// caches.
+func filterProfilesByDirIDs(profiles []resolve.ResolvedProfile, dirProfileIDs []string) (toImport, skipped []resolve.ResolvedProfile) {
+	if len(dirProfileIDs) == 0 {
+		return profiles, nil
+	}
+	dirSet := make(map[string]struct{}, len(dirProfileIDs))
+	for _, id := range dirProfileIDs {
+		dirSet[id] = struct{}{}
+	}
+	for _, rp := range profiles {
+		if _, shadowed := dirSet[rp.ID]; shadowed {
+			skipped = append(skipped, rp)
+		} else {
+			toImport = append(toImport, rp)
+		}
+	}
+	return toImport, skipped
 }
 
 // mergeProviderDefs merges local and URL-resolved provider definitions.
