@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   release:
+    needs: [validate-agents, resolve-agents]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,7 +54,7 @@ jobs:
           fi
 
   validate-agents:
-    needs: release
+    needs: resolve-agents
     # Permission contract of the called workflow. GitHub validates this at
     # parse time, before any job runs or `if:` is evaluated — a called
     # workflow may only downgrade the caller's grants, so every permission
@@ -87,7 +88,6 @@ jobs:
     # output), and tag-agents prefers that; this job's resolution is the
     # fallback if that output is ever empty, and the input for the
     # informational pin-drift check below (#6512).
-    needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -96,6 +96,25 @@ jobs:
       agents_sha: ${{ steps.resolve.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG_INFO=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+          TAG_TYPE=$(jq -r '.object.type' <<<"${TAG_INFO}")
+          TAG_SHA=$(jq -r '.object.sha' <<<"${TAG_INFO}")
+          if [[ "${TAG_TYPE}" == "tag" ]]; then
+            TAG_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.object.sha')
+          fi
+          if [[ "${TAG_SHA}" != "${EXPECTED_SHA}" ]]; then
+            echo "::error::Release tag ${TAG} resolves to ${TAG_SHA}, expected ${EXPECTED_SHA}"
+            exit 1
+          fi
+          echo "Release tag ${TAG} resolves to ${EXPECTED_SHA}"
 
       - name: Resolve agents main
         id: resolve
