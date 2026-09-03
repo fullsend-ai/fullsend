@@ -45,6 +45,11 @@ becomes exit 2 with the reason on stderr, a rewrite the runtime cannot apply bec
 `--dangerously-bypass-hook-trust`, justified by fullsend's own SHA-256 guard over the adapter,
 which is a stronger check than the trust hash it replaces.
 
+> **Implementation note (September 2026):** Security-sensitive and unclassified rewrites now
+> block and withhold the original result. Only context suppression and ANSI-only cleanup with
+> known-safe metadata pass unchanged; suppressed output runs through the full chain again with
+> suppression disabled first.
+
 Because the hook scripts and their directory stay agent-writable between iterations — the residue
 Claude Code and pi also have — codex additionally **re-verifies every script against runner-held digests
 before each invocation** — digests the runner records outside the sandbox at Bootstrap and injects into the launch command at Run, here carried in the codex process's
