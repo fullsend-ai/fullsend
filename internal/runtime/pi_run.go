@@ -870,7 +870,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 			// pi's rpc ack: the message left the mailbox and reached the
 			// agent. Only the steer path cares.
 			if feed != nil {
-				r.closeFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
+				steerCloseFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
 			}
 			return
 		case ResultEvent:
@@ -882,7 +882,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 				// Deferred so the turn is rendered before the feeder is
 				// stopped, while noteTurnEnd — the decision itself — is
 				// taken here, in stream order, ahead of any later event.
-				defer r.closeFeedIf(ctx, feed.noteTurnEnd(), feed, printer)
+				defer steerCloseFeedIf(ctx, feed.noteTurnEnd(), feed, printer)
 			}
 			metrics.NumTurns = e.NumTurns
 			metrics.TotalCostUSD = e.TotalCostUSD
@@ -994,18 +994,6 @@ func (r PiRuntime) startSteerFeed(ctx context.Context, params RunParams) (*steer
 	}
 	registerSteerFeed(params.SandboxName, f)
 	return f, sessionID, nil
-}
-
-// closeFeedIf stops the feeder when the state machine says the run may
-// end. A failed kill is a warning, not a run failure: pi simply keeps
-// waiting on stdin and the run ends on params.Timeout instead.
-func (PiRuntime) closeFeedIf(ctx context.Context, shouldClose bool, f *steerFeed, printer *ui.Printer) {
-	if !shouldClose {
-		return
-	}
-	if err := f.stopFeeder(ctx); err != nil {
-		printer.StepWarn("Could not stop the steer feeder; the run will end on its timeout instead: " + sanitizeOutput(err.Error()))
-	}
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left

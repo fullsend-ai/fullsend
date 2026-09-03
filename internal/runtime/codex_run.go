@@ -536,6 +536,13 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	)
 	for {
 		out, err2 = r.runCodexTurn(ctx, params, printer, plan, turn, metrics, agg, q, nth, &emitted)
+		if q != nil {
+			// A resumed process that reported no thread never opened one,
+			// so its steer was not delivered and must not be recorded as
+			// though it were. Runs on the error path too: that is exactly
+			// the case where the resume did not happen.
+			q.confirmDelivery(out.threadID != "")
+		}
 		if err2 != nil {
 			return out.exitCode, err2
 		}
@@ -588,7 +595,7 @@ func nextCodexTurn(ctx context.Context, q *codexSteerQueue) (codexTurn, bool) {
 			if tid == "" {
 				return codexTurn{}, false
 			}
-			q.recordDelivery(msg, time.Now())
+			q.stakeDelivery(msg, time.Now())
 			return codexTurn{ResumeThreadID: tid, Prompt: renderSteerEnvelope(msg)}, true
 		}
 		if q.isSettled() {

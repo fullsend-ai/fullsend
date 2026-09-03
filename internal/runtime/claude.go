@@ -188,7 +188,7 @@ func (rt ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.P
 			// today's overwrite exactly.
 			if feed != nil {
 				agg.onResult(e, metrics)
-				rt.closeFeedIf(ctx, feed.noteTurnEnd(), feed, printer)
+				steerCloseFeedIf(ctx, feed.noteTurnEnd(), feed, printer)
 				break
 			}
 			// Authoritative totals from the terminal result event overwrite
@@ -204,7 +204,7 @@ func (rt ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.P
 			// The agent has consumed a mailbox line: the delivery ack for
 			// the opening prompt and for every steer after it.
 			if feed != nil {
-				rt.closeFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
+				steerCloseFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
 			}
 		case ToolUseEvent:
 			metrics.ToolCalls.Add(1)
@@ -253,19 +253,6 @@ func (r ClaudeRuntime) startSteerFeed(ctx context.Context, params RunParams) (*s
 	}
 	registerSteerFeed(params.SandboxName, f)
 	return f, nil
-}
-
-// closeFeedIf stops the feeder when the state machine says the run may
-// end. A failed kill is a warning, not a run failure: the agent simply
-// keeps waiting on stdin and the run ends on params.Timeout instead, which
-// is worse but not wrong.
-func (ClaudeRuntime) closeFeedIf(ctx context.Context, shouldClose bool, f *steerFeed, printer *ui.Printer) {
-	if !shouldClose {
-		return
-	}
-	if err := f.stopFeeder(ctx); err != nil {
-		printer.StepWarn("Could not stop the steer feeder; the run will end on its timeout instead: " + sanitizeOutput(err.Error()))
-	}
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left

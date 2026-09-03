@@ -137,14 +137,78 @@ func TestNextCodexTurn_ResumesWithTheEnvelope(t *testing.T) {
 	if !strings.Contains(turn.Prompt, "cover the error path") {
 		t.Errorf("resume prompt lost the steer text: %q", turn.Prompt)
 	}
-	// Delivery is recorded when the resume starts, because that is when
-	// the message actually enters the thread.
-	got := q.steerResults()
-	if len(got) != 1 || got[0].Mode != steerModeResume || got[0].FollowUpRunID != 7 {
-		t.Errorf("unexpected steer results: %+v", got)
+	// Staked, not yet recorded: the resumed process has not run, so as far
+	// as the runner is concerned nothing has been delivered.
+	if got := q.steerResults(); len(got) != 0 {
+		t.Errorf("delivery recorded before the resumed process ran: %+v", got)
 	}
-	if got[0].DeliveredAt.IsZero() {
-		t.Error("DeliveredAt was not recorded")
+}
+
+// TestCodexSteerQueue_ConfirmedResumeIsRecorded is the delivery half: once
+// the resumed process reports a thread of its own, the steer really did
+// reach the agent and the runner may mark its follow-up run consumed.
+func TestCodexSteerQueue_ConfirmedResumeIsRecorded(t *testing.T) {
+	q, _ := newTestCodexQueue()
+	q.noteThreadID("01a066e2")
+	q.enqueue(SteerMessage{FollowUpRunID: 7, Text: "cover the error path"})
+
+	before := time.Now()
+	if _, ok := nextCodexTurn(context.Background(), q); !ok {
+		t.Fatal("expected a resume turn")
+	}
+	q.confirmDelivery(true)
+
+	got := q.steerResults()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one recorded delivery, got %d", len(got))
+	}
+	if got[0].FollowUpRunID != 7 {
+		t.Errorf("FollowUpRunID not carried through from the SteerMessage: %d", got[0].FollowUpRunID)
+	}
+	if got[0].Mode != steerModeResume {
+		t.Errorf("expected mode %q, got %q", steerModeResume, got[0].Mode)
+	}
+	// DeliveredAt is the resume's start, staked before the process ran.
+	if got[0].DeliveredAt.Before(before) || got[0].DeliveredAt.After(time.Now()) {
+		t.Errorf("DeliveredAt is not the resume start time: %v", got[0].DeliveredAt)
+	}
+}
+
+// TestCodexSteerQueue_UnconfirmedResumeIsNotRecorded is the finding this
+// two-phase record exists for. codex emits thread.started on a resume, so a
+// resumed process that reported no thread never opened one and the steer
+// did NOT reach the agent. Recording it anyway would let the runner mark
+// the follow-up run consumed from RunMetrics.Steers, and the queued run
+// would then skip an update nobody acted on — losing it outright rather
+// than merely delaying it.
+func TestCodexSteerQueue_UnconfirmedResumeIsNotRecorded(t *testing.T) {
+	q, _ := newTestCodexQueue()
+	q.noteThreadID("01a066e2")
+	q.enqueue(SteerMessage{FollowUpRunID: 7, Text: "cover the error path"})
+
+	if _, ok := nextCodexTurn(context.Background(), q); !ok {
+		t.Fatal("expected a resume turn")
+	}
+	// The resume failed to start, or codex never opened the thread.
+	q.confirmDelivery(false)
+
+	if got := q.steerResults(); len(got) != 0 {
+		t.Fatalf("a resume that never opened a thread was recorded as delivered: %+v", got)
+	}
+	// And it must not linger: a second confirm cannot resurrect it.
+	q.confirmDelivery(true)
+	if got := q.steerResults(); len(got) != 0 {
+		t.Errorf("a discarded delivery was recorded by a later confirm: %+v", got)
+	}
+}
+
+// TestCodexSteerQueue_ConfirmWithNothingStakedIsANoOp covers the first turn
+// of every run, which is not a resume and has nothing to confirm.
+func TestCodexSteerQueue_ConfirmWithNothingStakedIsANoOp(t *testing.T) {
+	q, _ := newTestCodexQueue()
+	q.confirmDelivery(true)
+	if got := q.steerResults(); len(got) != 0 {
+		t.Errorf("confirming with nothing staked invented a delivery: %+v", got)
 	}
 }
 

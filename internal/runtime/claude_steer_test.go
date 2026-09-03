@@ -1,11 +1,15 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // recordingCtxExec returns a sandboxExecCtxFunc that appends every command
@@ -244,6 +248,12 @@ func TestSteerFeed_FailedAppendIsNotCountedAsSent(t *testing.T) {
 	}
 	if !f.settle() {
 		t.Fatal("a failed append must not leave the session permanently unsettleable")
+	}
+	// And nothing may be reported as delivered: the runner marks a
+	// follow-up run consumed from RunMetrics.Steers, so a SteerResult for a
+	// write that never landed would lose the update entirely.
+	if got := f.steerResults(); len(got) != 0 {
+		t.Errorf("a failed mailbox write was recorded as a delivery: %+v", got)
 	}
 }
 
@@ -496,4 +506,39 @@ func TestClaudeSettle_LeavesTheFeederRunningMidTurn(t *testing.T) {
 	if len(calls) != 0 {
 		t.Fatalf("Settle killed the feeder mid-turn: %v", calls)
 	}
+}
+
+// TestSteerCloseFeedIf covers the shared close helper: the decision belongs
+// to the settle state machine, and a failed kill must degrade to a warning
+// rather than failing the run — the agent just keeps waiting on stdin and
+// the run ends on params.Timeout instead.
+func TestSteerCloseFeedIf(t *testing.T) {
+	t.Run("does nothing when the machine says not to close", func(t *testing.T) {
+		var calls []string
+		f := newTestFeed(&calls)
+		before := len(calls)
+		steerCloseFeedIf(context.Background(), false, f, ui.New(io.Discard))
+		if len(calls) != before {
+			t.Errorf("stopped the feeder without being told to: %v", calls)
+		}
+	})
+
+	t.Run("stops the feeder when told to", func(t *testing.T) {
+		var calls []string
+		f := newTestFeed(&calls)
+		steerCloseFeedIf(context.Background(), true, f, ui.New(io.Discard))
+		if len(calls) != 1 || !strings.Contains(calls[0], "kill \"$(cat ") {
+			t.Errorf("expected one kill command, got %v", calls)
+		}
+	})
+
+	t.Run("warns instead of failing when the kill fails", func(t *testing.T) {
+		var calls []string
+		f := newSteerFeed("sbx", "/cfg", recordingCtxExec(&calls, "no such process", 1, nil))
+		var out bytes.Buffer
+		steerCloseFeedIf(context.Background(), true, f, ui.New(&out))
+		if out.Len() == 0 {
+			t.Error("a failed kill should be reported to the operator")
+		}
+	})
 }
