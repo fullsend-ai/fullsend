@@ -266,9 +266,12 @@ func TestBuildText(t *testing.T) {
 	})
 	assert.Zero(t, findings)
 
+	assert.Contains(t, text, "Runner update: your task inputs changed after this run started.")
 	assert.Contains(t, text, "55")
 	assert.Contains(t, text, "pull_request_target")
 	assert.Contains(t, text, "@reviewer", "the triggering actor, not the run actor")
+	assert.Contains(t, text, "whose authorization the route job")
+	assert.Contains(t, text, "Amendments amend your task and take precedence")
 	// The checkout is a snapshot of the starting head; the envelope must say
 	// how to get to the new one rather than the runner rewriting the tree.
 	assert.Contains(t, text, "git fetch origin bbb222")

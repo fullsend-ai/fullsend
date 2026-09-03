@@ -1264,7 +1264,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				notifier.SetSteerMarker(steerMarker)
+				notifier.SetSteerMarker(steerMarkerForStatus(status, steerMarker))
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
@@ -2307,7 +2307,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// a single writer: the marker records only what the runtime
 			// acknowledged the agent received.
 			steerSess.stop()
-			steerMarker = steerSess.marker(metrics.Steers)
+			// Unioned, not replaced: each iteration runs its own watcher,
+			// so an iteration that absorbed nothing would otherwise erase
+			// the receipt an earlier one earned and the queued run would
+			// redo work that was already done.
+			steerMarker = mergeSteerMarkers(steerMarker, steerSess.marker(metrics.Steers))
 			steerSeen = steerSess.seenRunIDs()
 			steerBaseline = steerSess.baseline()
 		}

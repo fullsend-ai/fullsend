@@ -290,3 +290,46 @@ func TestRunsSince_MalformedRepo(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "owner/repo")
 }
+
+// The runner's clock starts when the job picks up a machine, which can be
+// well after the run was created. A follow-up that landed in that gap is a
+// genuine follow-up, and rejecting it strands the update with the pending run.
+func TestIsFollowUp(t *testing.T) {
+	api := newFakeAPI()
+	// My run was created at 10:00; the runner (StartedAt) only got going at
+	// 10:03.
+	api.myRun = runJSON(runOpts{id: myRunID, created: "2026-09-03T10:00:00Z"})
+	w := newWatcher(t, api, &stubItems{}, &recorder{}, func(c *Config) {
+		c.StartedAt = mustTime(t, "2026-09-03T10:03:00Z")
+	})
+
+	assert.Equal(t, mustTime(t, "2026-09-03T10:00:00Z"), w.freshAfter,
+		"the baseline is my run's server-side creation, not the runner's clock")
+
+	tests := []struct {
+		name string
+		run  runOpts
+		want bool
+	}{
+		{"created while my job was still queued", runOpts{id: myRunID + 1, created: "2026-09-03T10:01:00Z"}, true},
+		{"created after the runner started", runOpts{id: myRunID + 2, created: "2026-09-03T10:05:00Z"}, true},
+		{"created before my run", runOpts{id: myRunID - 5, created: "2026-09-03T09:59:00Z"}, false},
+		{"same second, larger id is later", runOpts{id: myRunID + 1, created: "2026-09-03T10:00:00Z"}, true},
+		{"same second, smaller id is earlier", runOpts{id: myRunID - 1, created: "2026-09-03T10:00:00Z"}, false},
+		{"undateable run is never a follow-up", runOpts{id: myRunID + 3, created: "not a time"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, w.isFollowUp(forgeRun(tt.run)))
+		})
+	}
+}
+
+func TestFreshAfter_FallsBackToRunnerStart(t *testing.T) {
+	api := newFakeAPI()
+	api.myRun = runJSON(runOpts{id: myRunID, created: "not a time"})
+	w := newWatcher(t, api, &stubItems{}, &recorder{}, func(c *Config) {
+		c.StartedAt = mustTime(t, runStart)
+	})
+	assert.Equal(t, mustTime(t, runStart), w.freshAfter)
+}
