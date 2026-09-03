@@ -14,11 +14,30 @@ This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) 
 
 ## Overview
 
+Building a custom agent takes four steps. `fullsend agent new` does the
+first one, which is most of the work:
+
+0. **Generate the skeleton** with `fullsend agent new` — harness, agent
+   definition, schema, post-script, trigger and registration. See below.
+1. **Fill in the agent definition** — the prompt is the only part the
+   generator cannot write for you.
+2. **Test locally** with `fullsend run`. See [Testing locally](#testing-locally).
+3. **Commit and trigger it in CI.**
+
+The rest of this guide explains what step 0 generated and how to change it.
+Read it when you need to go beyond the defaults, or when you are writing a
+harness by hand — the [four steps by hand](#the-four-steps-by-hand) below are
+the long form.
+
 ### Step 0: generate the skeleton
 
-Start here. [`fullsend agent new`](../../cli/agent.md#agent-new) writes a
-complete, valid, registered agent from a name and a role, so you edit prose
-rather than plumbing:
+First complete [Before you begin](#before-you-begin) — `agent new` needs the
+fullsend CLI on your PATH and a scaffolded repository, and running the agent
+afterwards needs the inference and GitHub App prerequisites listed there.
+
+Then [`fullsend agent new`](../../cli/agent.md#agent-new) writes a complete,
+valid, registered agent from a name and a role, so you edit prose rather than
+plumbing:
 
 ```bash
 fullsend agent new lint-docs --fullsend-dir .fullsend \
@@ -39,10 +58,9 @@ fullsend agent new lint-docs --fullsend-dir .fullsend \
   ✓ Added agent "lint-docs"
 ```
 
-That covers steps 1, 2 and 4 below. Fill in the marked sections of
-`agents/lint-docs.md`, then go to [Testing locally](#testing-locally). The rest
-of this guide explains what was generated and how to change it — read it when
-you need to go beyond the defaults, or when you are writing a harness by hand.
+That covers steps 1, 2 and 4 of the by-hand sequence below. Fill in the marked
+sections of `agents/lint-docs.md`, then go to
+[Testing locally](#testing-locally).
 
 ### The four steps, by hand
 
