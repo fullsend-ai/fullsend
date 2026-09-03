@@ -459,7 +459,8 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 	baseline := w.baseline
 	w.mu.Unlock()
 
-	d, err := w.buildDelta(ctx, baseline)
+	authorized := authorizedActors(accepted)
+	d, err := w.buildDelta(ctx, baseline, authorized)
 	if err != nil {
 		w.warnf("Building the work-item delta failed: %v", err)
 		return false
@@ -474,12 +475,37 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	text, findings := w.buildText(accepted, d)
+	text, findings, excluded := w.buildText(accepted, d)
 	if findings > 0 {
 		w.warnf("Unicode sanitization altered the steer text (%d finding(s) stripped)", findings)
 	}
 
+	// An amendment the text could not carry must not be receipted: its run
+	// still has work nobody did, and the marker is what would tell that run
+	// to skip. Mark those runs seen so this watcher stops re-examining
+	// them, and leave them out of the batch.
+	included := make([]forge.WorkflowRun, 0, len(accepted))
+	var dropped []forge.WorkflowRun
+	for _, r := range accepted {
+		if excluded[int64(r.ID)] {
+			dropped = append(dropped, r)
+			continue
+		}
+		included = append(included, r)
+	}
+	if len(dropped) > 0 {
+		w.markSeen(dropped...)
+		w.warnf("Steer text was too large to carry follow-up run(s) %s; leaving them to the queued run",
+			runIDs(dropped))
+	}
+
+	// The message id is the key the runtime acknowledges and the marker
+	// intersects on, so it must name a run that is actually being
+	// receipted; an excluded run's id would strand the whole batch.
 	newest := accepted[len(accepted)-1]
+	if len(included) > 0 {
+		newest = included[len(included)-1]
+	}
 	msg := agentruntime.SteerMessage{
 		FollowUpRunID: int64(newest.ID),
 		Event:         newest.Event,
@@ -499,8 +525,8 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	w.markSteered(msg.FollowUpRunID, accepted, d)
-	w.logf("Steered the agent with follow-up run(s) %s", runIDs(accepted))
+	w.markSteered(msg.FollowUpRunID, included, d)
+	w.logf("Steered the agent with follow-up run(s) %s", runIDs(included))
 	return true
 }
 
