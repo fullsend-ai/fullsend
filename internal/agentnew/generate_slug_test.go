@@ -81,3 +81,53 @@ func TestDeriveSlug(t *testing.T) {
 		t.Errorf("DeriveSlug fallback = %q", got)
 	}
 }
+
+// TestGitConfigOwnerInLinkedWorktree: in a linked worktree .git is a FILE
+// containing "gitdir: <path>", and the config lives in the MAIN repository's
+// common directory. Worktrees are the normal way to work in this project, so
+// a naive dir/.git/config read would silently fall back to the default slug
+// for most real users.
+func TestGitConfigOwnerInLinkedWorktree(t *testing.T) {
+	root := t.TempDir()
+
+	// The main repository.
+	mainGit := filepath.Join(root, "main", ".git")
+	if err := os.MkdirAll(filepath.Join(mainGit, "worktrees", "wt1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mainGit, "config"),
+		[]byte("[remote \"origin\"]\n\turl = git@github.com:my-org/my-repo.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The worktree's private gitdir points back at the common directory.
+	if err := os.WriteFile(filepath.Join(mainGit, "worktrees", "wt1", "commondir"),
+		[]byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The linked worktree: .git is a file, not a directory.
+	wt := filepath.Join(root, "wt1")
+	if err := os.MkdirAll(filepath.Join(wt, ".fullsend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"),
+		[]byte("gitdir: "+filepath.Join(mainGit, "worktrees", "wt1")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := GitConfigOwner(filepath.Join(wt, ".fullsend")); got != "my-org" {
+		t.Errorf("GitConfigOwner in a linked worktree = %q, want my-org", got)
+	}
+}
+
+// TestGitConfigOwnerMalformedWorktreePointer degrades to the fallback rather
+// than erroring.
+func TestGitConfigOwnerMalformedWorktreePointer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a pointer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := GitConfigOwner(dir); got != "" {
+		t.Errorf("malformed .git pointer should yield \"\", got %q", got)
+	}
+}

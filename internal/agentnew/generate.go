@@ -157,16 +157,13 @@ func DeriveSlug(name string, owner string) string {
 // repository, or "" when it cannot be determined.
 type RepoOwner func(dir string) string
 
-// GitConfigOwner reads .git/config for the origin remote and extracts the
-// owner. It understands the two URL forms git writes.
+// GitConfigOwner walks up from dir looking for a repository, and returns the
+// owner segment of its origin remote. Returns "" when there is no repository,
+// no origin, or an owner that would not be a valid slug segment.
 func GitConfigOwner(dir string) string {
 	for depth := 0; depth < 20; depth++ {
-		data, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
-		if err == nil {
-			return ownerFromGitConfig(string(data))
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return ""
+		if cfg, ok := readGitConfig(dir); ok {
+			return ownerFromGitConfig(cfg)
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -175,6 +172,53 @@ func GitConfigOwner(dir string) string {
 		dir = parent
 	}
 	return ""
+}
+
+// readGitConfig reads the config of the repository whose .git lives directly
+// in dir. In a linked worktree .git is a FILE containing "gitdir: <path>"
+// rather than a directory, and the config lives in the main repository's
+// common directory — so a naive dir/.git/config read finds nothing. Worktrees
+// are the normal way to work in this project, so that path matters.
+func readGitConfig(dir string) (string, bool) {
+	dotGit := filepath.Join(dir, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return "", false
+	}
+
+	gitDir := dotGit
+	if !info.IsDir() {
+		pointer, readErr := os.ReadFile(dotGit)
+		if readErr != nil {
+			return "", false
+		}
+		rest, found := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir:")
+		if !found {
+			return "", false
+		}
+		gitDir = strings.TrimSpace(rest)
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(dir, gitDir)
+		}
+		// <main>/.git/worktrees/<name> — config lives two levels up, in the
+		// main repository's .git directory.
+		if commonDir, commonErr := os.ReadFile(filepath.Join(gitDir, "commondir")); commonErr == nil {
+			common := strings.TrimSpace(string(commonDir))
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitDir, common)
+			}
+			gitDir = filepath.Clean(common)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(gitDir, "config"))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+		return "", false
+	}
+	return string(data), true
 }
 
 func ownerFromGitConfig(cfg string) string {
