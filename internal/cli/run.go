@@ -3268,33 +3268,7 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 // buildFeedbackPrompt handles that case by noting the content was sanitized
 // away rather than injecting a vacuous fence.
 func sanitizeFeedbackUnicode(feedback string) (string, int) {
-	result := security.NewUnicodeNormalizer().Scan(feedback)
-	if result.Safe {
-		return feedback, 0
-	}
-	// Compatibility characters are content, not an attack: NFKC rewrites
-	// fullwidth punctuation, ligatures and vulgar fractions that legitimately
-	// appear in a validator's output ("検証エラー：ﬁle ½" becomes
-	// "検証エラー:file 1⁄2"). Validation feedback routinely quotes file
-	// content the agent then edits, so handing it a normalized copy invites
-	// the agent to write the normalized form back. The PostToolUse chain made
-	// the same call for tool results (#6467): NFKC is used for detection, not
-	// rewriting. Mirror it here — when the only finding is the compatibility
-	// class, keep the original bytes and report nothing.
-	dangerous := 0
-	for _, f := range result.Findings {
-		if f.Name != "fullwidth" {
-			dangerous++
-		}
-	}
-	if dangerous == 0 {
-		return feedback, 0
-	}
-	// Mixed case: something genuinely non-rendering is present (zero-width,
-	// bidi, tag characters, NUL, escapes), so take the sanitized copy. It
-	// carries NFKC folding with it, which is the accepted cost of removing
-	// the dangerous characters with this normalizer.
-	return result.Sanitized, dangerous
+	return security.SanitizeAgentText(feedback)
 }
 
 // truncateUTF8 caps s at max bytes without splitting a multi-byte rune,
