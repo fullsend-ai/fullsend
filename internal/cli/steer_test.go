@@ -331,7 +331,7 @@ func (stubItemReader) GetIssue(context.Context, string, string, int) (*forge.Iss
 	return &forge.Issue{Number: 7}, nil
 }
 
-func (stubItemReader) ListIssueComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+func (stubItemReader) ListIssueCommentsSince(context.Context, string, string, int, time.Time) ([]forge.IssueComment, error) {
 	return nil, nil
 }
 

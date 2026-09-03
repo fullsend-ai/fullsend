@@ -2828,10 +2828,32 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 
 // ListIssueComments returns all comments on an issue, paginating automatically.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
+	return c.listIssueComments(ctx, owner, repo, number, time.Time{})
+}
+
+// ListIssueCommentsSince returns only comments updated at or after since.
+//
+// GitHub's `since` filters on updated_at, not created_at, so an old comment
+// edited recently still comes back — which is why this is a bandwidth
+// optimization and not a semantic filter. A caller that wants "created after
+// X" must still check CreatedAt itself; nothing it would have kept is
+// missing, because a comment created after X necessarily has an updated_at
+// after X too.
+func (c *LiveClient) ListIssueCommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]forge.IssueComment, error) {
+	return c.listIssueComments(ctx, owner, repo, number, since)
+}
+
+func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]forge.IssueComment, error) {
 	var result []forge.IssueComment
 
+	sinceParam := ""
+	if !since.IsZero() {
+		sinceParam = "&since=" + url.QueryEscape(since.UTC().Format(time.RFC3339))
+	}
+
 	for page := 1; page <= 100; page++ {
-		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100&page=%d", owner, repo, number, page))
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100&page=%d%s",
+			owner, repo, number, page, sinceParam))
 		if err != nil {
 			return nil, fmt.Errorf("list issue comments page %d: %w", page, err)
 		}
