@@ -102,8 +102,11 @@ type Watcher struct {
 	logf    func(string, ...any)
 	warnf   func(string, ...any)
 
-	myRun    forge.WorkflowRun
-	stageJob string
+	myRun forge.WorkflowRun
+	// freshAfter is the instant a candidate must have been created after to
+	// count as a follow-up. Set by Start from my own run's record.
+	freshAfter time.Time
+	stageJob   string
 
 	mu sync.Mutex
 	// seen is every follow-up run this watcher has already judged, so a
@@ -246,6 +249,17 @@ func (w *Watcher) Start(ctx context.Context, stageHint string) error {
 			"the dispatch-chain check has nothing to compare against", w.cfg.RunID)
 	}
 	w.myRun = *run
+
+	// The freshness baseline is my own run's server-side creation time, not
+	// the runner's clock. The runner starts when the job picks up a machine,
+	// which can be minutes after the run was created; anything created in
+	// that gap is a genuine follow-up that the runner's own start time would
+	// reject and strand with the pending run. Falls back to the runner's
+	// start when the record has no usable timestamp.
+	w.freshAfter = w.cfg.StartedAt
+	if created := runCreatedAt(*run); !created.IsZero() {
+		w.freshAfter = created
+	}
 
 	jobs, err := w.actions.ListWorkflowRunJobs(ctx, owner, repo, int(w.cfg.RunID))
 	if err != nil {
@@ -577,7 +591,7 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 // poll lists follow-up runs and returns the ones that pass every provenance
 // check, oldest first.
 func (w *Watcher) poll(ctx context.Context) []forge.WorkflowRun {
-	runs, err := w.runsSince(ctx, w.shimFile(), w.cfg.StartedAt)
+	runs, err := w.runsSince(ctx, w.shimFile(), w.freshAfter)
 	if err != nil {
 		w.warnf("Listing follow-up runs failed: %v", err)
 		return nil

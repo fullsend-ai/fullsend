@@ -410,3 +410,43 @@ func checkSteerAlreadyHandled(ctx context.Context, o steerOpts) bool {
 	}
 	return handled
 }
+
+// steerMarkerForStatus returns the marker to write on the terminal status
+// comment for a run that ended with the given status.
+//
+// The marker is a receipt for work the agent finished, so it rides only on a
+// successful run. A run that absorbed an update and then failed, timed out,
+// was cancelled, or was skipped produced no output for it — and a marker
+// there would tell the run queued behind it to skip work nobody did, losing
+// the update. Validation failure arrives here as a "failure" status, because
+// an unvalidated run returns an error, so it is covered by the same rule.
+func steerMarkerForStatus(status string, m statuscomment.SteerMarker) statuscomment.SteerMarker {
+	if status != "success" {
+		return statuscomment.SteerMarker{}
+	}
+	return m
+}
+
+// mergeSteerMarkers unions two markers, keeping the later head.
+//
+// The validation loop runs one watcher per iteration, and each reports only
+// what it absorbed. Replacing the marker per iteration would drop the
+// receipts an earlier iteration earned the moment a later one absorbed
+// nothing, and the run queued behind would redo work already done.
+func mergeSteerMarkers(prev, next statuscomment.SteerMarker) statuscomment.SteerMarker {
+	out := statuscomment.SteerMarker{HeadSHA: prev.HeadSHA}
+	if next.HeadSHA != "" {
+		out.HeadSHA = next.HeadSHA
+	}
+	seen := make(map[int64]bool, len(prev.ConsumedRunIDs)+len(next.ConsumedRunIDs))
+	for _, ids := range [][]int64{prev.ConsumedRunIDs, next.ConsumedRunIDs} {
+		for _, id := range ids {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out.ConsumedRunIDs = append(out.ConsumedRunIDs, id)
+		}
+	}
+	return out
+}
