@@ -426,6 +426,7 @@ if [ -n "$ENABLED_REPOS" ]; then
       EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
+        close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Shim already matches the current template"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi

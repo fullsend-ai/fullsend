@@ -363,7 +363,7 @@ fi
 echo "PASS: user license header preserved across shim update"
 
 # ===========================
-# Test 2: up-to-date shim with user header is not flagged as stale
+# Test 2: up-to-date shim closes a stale onboard PR
 # ===========================
 
 # Reset state for test 2.
@@ -374,7 +374,11 @@ UPTODATE_MANAGED=$(cat "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
 UPTODATE_REMOTE=$(printf '# Copyright 2026 Conforma\n# SPDX-License-Identifier: Apache-2.0\n%s\n' "$UPTODATE_MANAGED")
 UPTODATE_B64=$(printf '%s' "$UPTODATE_REMOTE" | /usr/bin/base64 | tr -d '\r\n')
 
-# Create a new gh mock that returns the up-to-date content.
+# Mark the stale PR as present for the first run.
+touch "${TMPDIR}/stale-onboard-pr"
+
+# Create a new gh mock that returns the up-to-date content and an optional
+# stale onboard PR.
 cat > "${MOCK_BIN}/gh" <<EOF2
 #!/usr/bin/env bash
 set -euo pipefail
@@ -383,6 +387,25 @@ for arg in "\$@"; do
   printf ' %q' "\$arg" >> "${GH_LOG}"
 done
 printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
+  repo_arg=""
+  head_arg=""
+  prev=""
+  for arg in "\$@"; do
+    case "\$prev" in
+      --repo) repo_arg="\$arg" ;;
+      --head) head_arg="\$arg" ;;
+    esac
+    prev="\$arg"
+  done
+  if [[ "\$repo_arg" == "test-org/test-repo" &&
+        "\$head_arg" == "fullsend/onboard" &&
+        -f "${TMPDIR}/stale-onboard-pr" ]]; then
+    echo "https://github.com/test-org/test-repo/pull/42"
+  fi
+  exit 0
+fi
 
 if [[ "\$1" == "pr" ]]; then
   exit 0
@@ -415,6 +438,9 @@ case "\$endpoint" in
   repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
     json='{"content":"${UPTODATE_B64}","sha":"file-sha"}'
     ;;
+  repos/test-org/removed-repo/contents/.github/workflows/fullsend.yaml)
+    rc=1
+    ;;
   repos/test-org/test-repo)
     json='{"default_branch":"main","private":false}'
     ;;
@@ -434,7 +460,11 @@ exit "\$rc"
 EOF2
 chmod +x "${MOCK_BIN}/gh"
 
-bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2.log" 2>&1 || true
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2.log" 2>&1; then
+  echo "FAIL: up-to-date shim with a stale PR returned an error"
+  cat "${TMPDIR}/stdout2.log"
+  exit 1
+fi
 
 if grep -q "shim is stale" "${TMPDIR}/stdout2.log"; then
   echo "FAIL: up-to-date shim with user header was flagged as stale"
@@ -448,13 +478,49 @@ if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout2.log"; then
   exit 1
 fi
 
+if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2.log"; then
+  echo "FAIL: up-to-date shim was not counted as skipped"
+  cat "${TMPDIR}/stdout2.log"
+  exit 1
+fi
+
 # Verify no blob was created (no update was needed).
 if [ -f "${TMPDIR}/blob-input-test-repo.json" ]; then
   echo "FAIL: blob was created for up-to-date shim"
   exit 1
 fi
 
-echo "PASS: up-to-date shim with user header not flagged as stale"
+if ! grep -q 'gh pr close https://github.com/test-org/test-repo/pull/42 .*Shim\\ already\\ matches\\ the\\ current\\ template.*--delete-branch' "${GH_LOG}"; then
+  echo "FAIL: stale onboard PR was not closed with an explanation and branch deletion"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: up-to-date shim closes stale onboard PR"
+
+# Run the same scenario without an open PR. Cleanup should remain idempotent
+# and delete any orphaned onboard branch directly.
+rm -f "${TMPDIR}/stale-onboard-pr" "${GH_LOG}"
+
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-no-pr.log" 2>&1; then
+  echo "FAIL: up-to-date shim without a stale PR returned an error"
+  cat "${TMPDIR}/stdout2-no-pr.log"
+  exit 1
+fi
+
+if grep -q 'gh pr close' "${GH_LOG}"; then
+  echo "FAIL: PR close was attempted when no stale onboard PR existed"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+if ! grep -q 'repos/test-org/test-repo/git/refs/heads/fullsend/onboard --method DELETE' "${GH_LOG}"; then
+  echo "FAIL: orphaned onboard branch cleanup was not attempted"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: up-to-date shim cleanup is idempotent without a stale PR"
 
 # ===========================
 # Test 3: pre-sentinel shim migration does not duplicate content
