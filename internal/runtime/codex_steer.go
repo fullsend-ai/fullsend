@@ -39,7 +39,9 @@ type codexSteerQueue struct {
 	sandboxName string
 	// sweep interrupts the in-sandbox codex. Killing the openshell client
 	// does not kill the process inside the sandbox, so the stray-process
-	// sweep is the primitive; injected for tests.
+	// sweep is the primitive; injected for tests. The default runs it with
+	// interruptStrayGrace rather than the iteration-boundary default —
+	// see interrupt().
 	sweep func(execFn sandboxExecFunc, sandboxName string) (int, error)
 	// exec runs the sweep in the sandbox (sandbox.Exec in production).
 	exec sandboxExecFunc
@@ -71,7 +73,7 @@ type codexSteerQueue struct {
 func newCodexSteerQueue(sandboxName string, exec sandboxExecFunc, warn io.Writer) *codexSteerQueue {
 	return &codexSteerQueue{
 		sandboxName: sandboxName,
-		sweep:       killStrayProcesses,
+		sweep:       interruptSweep,
 		exec:        exec,
 		warn:        warn,
 		wake:        make(chan struct{}, 1),
@@ -195,10 +197,28 @@ func (q *codexSteerQueue) steerResults() []SteerResult {
 	return out
 }
 
+// interruptSweep is the default codexSteerQueue.sweep: the stray-process
+// sweep with the longer TERM→KILL grace. It keeps the injectable field's
+// signature so tests can still replace the whole sweep.
+func interruptSweep(execFn sandboxExecFunc, sandboxName string) (int, error) {
+	return killStrayProcessesWithGrace(execFn, sandboxName, interruptStrayGrace)
+}
+
 // interrupt stops the in-sandbox codex so the Run loop can resume the
 // thread with the steer. A failed sweep is a warning, not an error: the
 // steer stays queued and is delivered when the current process ends on its
 // own, which is late rather than wrong.
+//
+// Every interrupt leaves a dangling tool call in the rollout — codex logs
+// "Custom tool call output is missing for call id: ..." on the resume and
+// tolerates it — so a steered run's transcript carries one per steer.
+// That is also why this sweep uses interruptStrayGrace (10s) instead of the
+// 2s the iteration boundary uses: unlike ClearIterationArtifacts, which
+// sweeps leftovers from a run that is already over, this stops a process
+// the runner intends to CONTINUE, and a fixed short grace leaves an agent
+// no room to flush state on SIGTERM before the KILL lands (#6753). The
+// exec timeout scales with the grace, so the longer wait is not truncated
+// by the bound that exists to catch a hung gateway.
 func (q *codexSteerQueue) interrupt() {
 	if _, err := q.sweep(q.exec, q.sandboxName); err != nil && q.warn != nil {
 		fmt.Fprintf(q.warn, "  Warning: could not interrupt the codex turn for a steer (it will be delivered when the current turn ends): %v\n",
