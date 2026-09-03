@@ -362,11 +362,17 @@ func buildCodexTurnCommand(params RunParams, model, effort string, hooksEnabled 
 	if turn.Prompt != "" {
 		prompt = turn.Prompt
 	}
-	// The prompt goes in on stdin, never argv: it is attacker-influenced text
-	// on a retry iteration (the validation loop injects the previous failure,
-	// #1050/#6494) and argv is world-readable in the sandbox. `-` is codex's
-	// explicit read-the-prompt-from-stdin sentinel; the pipe closes as soon as
-	// printf is done, so the read cannot hang the way pi's does.
+	// The prompt goes in on stdin rather than codex's own argv: it is
+	// attacker-influenced text on a retry iteration (the validation loop
+	// injects the previous failure, #1050/#6494) and argv is world-readable
+	// in the sandbox, so keeping it off the long-lived agent process's
+	// command line is what a mid-run `ps` would otherwise surface. It is not
+	// out of argv entirely — the printf below is part of the command string
+	// this exec runs as `sh -c`, so the text transits that shell's argv and
+	// OpenShell's command preview; #6983 tracks plumbing the exec request's
+	// stdin field so it does not. `-` is codex's explicit
+	// read-the-prompt-from-stdin sentinel; the pipe closes as soon as printf
+	// is done, so the read cannot hang the way pi's does.
 	if hooksEnabled {
 		// Exported after .env so nothing the agent wrote there can move it,
 		// and read by the adapter before every hook script it spawns.
