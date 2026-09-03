@@ -2413,6 +2413,38 @@ class TestFormatMutationLine(unittest.TestCase):
         self.assertIn("acme/widget#42", line)
         self.assertIn("Take-over target", line)
 
+    def test_ref_entry_issue_uses_typed_prefix(self):
+        entry = {
+            "ref": "acme/widget#42",
+            "title": "Take-over target",
+            "kind": "issue",
+            "action": "assigned",
+            "detail": "assigned to alice",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("Issue acme/widget#42", line)
+
+    def test_ref_entry_pr_uses_typed_prefix(self):
+        entry = {
+            "ref": "acme/widget#42",
+            "title": "Take-over target",
+            "kind": "pull",
+            "action": "assigned",
+            "detail": "assigned to alice",
+        }
+        line = _format_mutation_line(entry)
+        self.assertIn("PR acme/widget#42", line)
+
+    def test_ref_entry_no_kind_omits_typed_prefix(self):
+        entry = {
+            "ref": "acme/widget#42",
+            "title": "Take-over target",
+            "action": "assigned",
+            "detail": "assigned to alice",
+        }
+        line = _format_mutation_line(entry)
+        self.assertTrue(line.startswith("- acme/widget#42"))
+
     def test_mutation_line_omits_title_when_absent(self):
         entry = {
             "kind": "issue",

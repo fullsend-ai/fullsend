@@ -2110,14 +2110,16 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     if node is None:
         return {"ref": format_ref(repo, number), "action": "error", "detail": "ref not found"}
     node_title = node.get("title") or ""
+    node_kind = "issue" if node["__typename"] == "Issue" else "pull"
     if node.get("state") != "OPEN":
         return {
             "ref": format_ref(repo, number),
             "title": node_title,
+            "kind": node_kind,
             "action": "error",
             "detail": f"ref is not open (state={node.get('state')})",
         }
-    sub = "issue" if node["__typename"] == "Issue" else "pr"
+    sub = "issue" if node_kind == "issue" else "pr"
     if (
         run_gh_soft(
             [sub, "edit", str(number), "--repo", repo, "--add-assignee", user],
@@ -2128,6 +2130,7 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
         return {
             "ref": format_ref(repo, number),
             "title": node_title,
+            "kind": node_kind,
             "action": "error",
             "detail": f"failed to assign {user}",
         }
@@ -2148,6 +2151,7 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
             return {
                 "ref": format_ref(repo, number),
                 "title": node_title,
+                "kind": node_kind,
                 "action": "error",
                 "detail": f"assigned {user} but failed to remove {login}",
             }
@@ -2158,6 +2162,7 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     return {
         "ref": format_ref(repo, number),
         "title": node_title,
+        "kind": node_kind,
         "action": "assigned",
         "detail": detail,
     }
@@ -2494,8 +2499,15 @@ def _format_mutation_line(entry: dict[str, Any]) -> str:
         blk = f"Issue {entry['blocker']}{blk_desc}"
         line = f"- {dep} ← {blk}: {action}"
     elif "ref" in entry:
+        kind = entry.get("kind")
+        if kind == "issue":
+            typed_ref = f"Issue {entry['ref']}"
+        elif kind == "pull":
+            typed_ref = f"PR {entry['ref']}"
+        else:
+            typed_ref = entry["ref"]
         title_desc = f" — {entry['title']}" if entry.get("title") else ""
-        line = f"- {entry['ref']}{title_desc}: {action}"
+        line = f"- {typed_ref}{title_desc}: {action}"
     elif "thread_path" in entry:
         # resolve-threads: always on PRs.
         repo = entry.get("repo") or "?"
