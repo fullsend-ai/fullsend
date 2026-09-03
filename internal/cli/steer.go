@@ -94,10 +94,10 @@ type steerOpts struct {
 	// timeout is the agent's own budget, which bounds the watch alongside
 	// the forge token's life.
 	timeout time.Duration
-	// consumed and baseline seed the watcher on a validation-loop retry, so
-	// a later iteration neither re-steers on absorbed runs nor rebuilds its
-	// first delta from the run's start.
-	consumed []int64
+	// seen and baseline seed the watcher on a validation-loop retry, so a
+	// later iteration neither re-examines runs the previous one judged nor
+	// rebuilds its first delta from the run's start.
+	seen     []int64
 	baseline time.Time
 	printer  *ui.Printer
 }
@@ -197,15 +197,15 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 	}
 
 	w := steerwatch.New(steerwatch.Config{
-		Repo:            o.statusRepo,
-		RunID:           steerRunID(),
-		RunName:         steerRunName(o.statusRepo, o.statusNum),
-		StartedAt:       o.runStart,
-		Deadline:        steerDeadline(o.runStart, o.timeout),
-		MaxSteers:       o.harness.SteerMaxSteers(),
-		PollInterval:    o.harness.SteerPollInterval(),
-		DeltaBaseline:   o.baseline,
-		AlreadyConsumed: o.consumed,
+		Repo:          o.statusRepo,
+		RunID:         steerRunID(),
+		RunName:       steerRunName(o.statusRepo, o.statusNum),
+		StartedAt:     o.runStart,
+		Deadline:      steerDeadline(o.runStart, o.timeout),
+		MaxSteers:     o.harness.SteerMaxSteers(),
+		PollInterval:  o.harness.SteerPollInterval(),
+		DeltaBaseline: o.baseline,
+		AlreadySeen:   o.seen,
 		Item: steerwatch.WorkItem{
 			Number:  o.statusNum,
 			HeadSHA: o.headSHA,
@@ -264,14 +264,46 @@ func (s *steerSession) stop() {
 }
 
 // marker returns what the run absorbed, for the terminal status comment.
-func (s *steerSession) marker() statuscomment.SteerMarker {
+//
+// Only steers the runtime acknowledged count. Steer returning means the
+// message was handed over, not that the agent received it: the live runtimes
+// ack afterwards (Claude's replay echo, pi's response) and Codex when the
+// resumed process starts, and the runtime records each ack in
+// RunMetrics.Steers. If the runtime dies between the hand-off and the ack, a
+// marker built from attempts would tell the queued run its work was already
+// done and the update would be lost outright — so an unacknowledged delivery
+// is left out and the queued run does the work.
+func (s *steerSession) marker(acked []agentruntime.SteerResult) statuscomment.SteerMarker {
 	if s == nil {
 		return statuscomment.SteerMarker{}
 	}
+	ackedIDs := make(map[int64]bool, len(acked))
+	for _, r := range acked {
+		ackedIDs[r.FollowUpRunID] = true
+	}
+
+	var consumed []int64
+	for _, batch := range s.watcher.Delivered() {
+		if !ackedIDs[batch.MessageID] {
+			continue
+		}
+		// One message can carry several follow-up runs, so the ack for its
+		// id vouches for the whole batch.
+		consumed = append(consumed, batch.RunIDs...)
+	}
 	return statuscomment.SteerMarker{
-		ConsumedRunIDs: s.watcher.Consumed(),
+		ConsumedRunIDs: consumed,
 		HeadSHA:        s.watcher.Head(),
 	}
+}
+
+// seenRunIDs returns every follow-up run the watcher judged, for the next
+// validation-loop iteration.
+func (s *steerSession) seenRunIDs() []int64 {
+	if s == nil {
+		return nil
+	}
+	return s.watcher.SeenRunIDs()
 }
 
 // baseline returns the window the next iteration's watcher should compute

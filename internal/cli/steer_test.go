@@ -200,8 +200,8 @@ func TestSteerSession_NilIsInert(t *testing.T) {
 		s.notifyTurnEnd()
 		s.stop()
 	})
-	assert.Empty(t, s.marker().ConsumedRunIDs)
-	assert.Empty(t, s.marker().HeadSHA)
+	assert.Empty(t, s.marker(nil).ConsumedRunIDs)
+	assert.Empty(t, s.marker(nil).HeadSHA)
 }
 
 // fakeMarkerReader serves the skip check's two reads.
@@ -395,7 +395,7 @@ func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
 		t.Fatal("stop did not return")
 	}
 
-	m := sess.marker()
+	m := sess.marker(nil)
 	assert.Empty(t, m.ConsumedRunIDs, "nothing was steered")
 	// The head comes from the forge, not the environment: PR_HEAD_SHA is
 	// set only on the deprecated per-org dispatch path.
@@ -434,4 +434,57 @@ func TestCheckSteerAlreadyHandled_FailureFallsThrough(t *testing.T) {
 	}
 	assert.False(t, checkSteerAlreadyHandled(context.Background(), o),
 		"an unreadable timeline must not silently drop the work")
+}
+
+// stubWatcherSession builds a steerSession whose watcher already has
+// delivery batches recorded, so marker() can be exercised without a live run.
+func stubWatcherSession(t *testing.T, batches [][]int64) *steerSession {
+	t.Helper()
+	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
+		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
+	o := steerableOpts(t, srv)
+	sess := startSteerWatcher(context.Background(), o)
+	require.NotNil(t, sess)
+	t.Cleanup(sess.stop)
+
+	for _, ids := range batches {
+		runs := make([]forge.WorkflowRun, 0, len(ids))
+		for _, id := range ids {
+			runs = append(runs, forge.WorkflowRun{ID: int(id)})
+		}
+		sess.watcher.MarkSteeredForTest(ids[len(ids)-1], runs)
+	}
+	return sess
+}
+
+func TestSteerMarker_OnlyAcknowledgedDeliveriesCount(t *testing.T) {
+	sess := stubWatcherSession(t, [][]int64{{101}, {102}})
+
+	// The runtime acknowledged the first message only — it died before
+	// acking the second.
+	m := sess.marker([]agentruntime.SteerResult{{FollowUpRunID: 101, Mode: "live"}})
+
+	assert.Equal(t, []int64{101}, m.ConsumedRunIDs,
+		"an unacknowledged delivery must not make the queued run skip its work")
+}
+
+func TestSteerMarker_AckVouchesForTheWholeBatch(t *testing.T) {
+	// One poll accepted three follow-ups and folded them into one message
+	// named after the newest; the ack is per message.
+	sess := stubWatcherSession(t, [][]int64{{101, 102, 103}})
+
+	m := sess.marker([]agentruntime.SteerResult{{FollowUpRunID: 103}})
+	assert.Equal(t, []int64{101, 102, 103}, m.ConsumedRunIDs)
+}
+
+func TestSteerMarker_NoAcksMeansNoMarkerEntries(t *testing.T) {
+	sess := stubWatcherSession(t, [][]int64{{101}})
+	m := sess.marker(nil)
+	assert.Empty(t, m.ConsumedRunIDs)
+}
+
+func TestSteerMarker_NilSessionIsEmpty(t *testing.T) {
+	var s *steerSession
+	assert.Empty(t, s.marker([]agentruntime.SteerResult{{FollowUpRunID: 1}}).ConsumedRunIDs)
+	assert.Empty(t, s.seenRunIDs())
 }
