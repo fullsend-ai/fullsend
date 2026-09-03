@@ -20,6 +20,24 @@ const steerMailboxName = "steer-inbox.ndjson"
 // steerFeederPidName holds the feeder's pid, written by the launch command
 // before the agent reads anything. Settle reads it to stop the feeder,
 // which is what closes the agent's stdin and ends the run.
+//
+// Both this file and the mailbox live in the runtime's config directory,
+// which is outside the agent-writable workspace tree but is not beyond the
+// agent's reach either — the codex and pi config guards exist precisely
+// because an agent can write there between iterations. Two residuals, both
+// accepted rather than defended, for the same reason the research doc
+// gives for poisoned session files (section 5):
+//
+//   - An agent that appends to its own mailbox injects a user message into
+//     its own session. It already controls its own output, and a steer is
+//     content and never capability, so this grants nothing.
+//   - An agent that rewrites this pid file makes Settle send a TERM to
+//     some other pid as the sandbox user. That is a process it could have
+//     signalled directly anyway, and the worst case is that the feeder
+//     survives and the run ends on its timeout instead.
+//
+// Neither is a privilege gain; signing files in a directory the agent
+// controls would not change that.
 const steerFeederPidName = "steer-feeder.pid"
 
 // steerExecTimeout bounds a mailbox append and the feeder kill. Both are a
