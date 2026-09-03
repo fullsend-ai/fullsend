@@ -284,7 +284,7 @@ ungranted permissions listed in `optionalRolePermissions` (logging
 `installation permissions not granted: … dropped=…`), and returns
 `ErrRequiredPermissionsMissing` for any other ungranted permission, which the
 handler surfaces as `422`. When the installation lookup carries no `permissions`
-map at all, the full requested set is sent and GitHub validates it.
+map at all (or an empty one), the full requested set is sent and GitHub validates it.
 
 The optional entry is **temporary**. Once the mint logs stop showing drops for
 the permission, remove it in a follow-up PR; the permission then behaves like

@@ -134,7 +134,7 @@ installation's granted map before the token POST: permissions listed in
 for the `coder` and `fix` roles) are dropped when ungranted and logged as
 `installation permissions not granted: … dropped=…`, while any other ungranted
 permission fails immediately with `required permissions missing for role …`.
-When an installation lookup omits the `permissions` field entirely, the mint
+When an installation lookup omits the `permissions` field entirely (or returns it empty), the mint
 sends the full requested set and lets GitHub validate it at token creation time.
 `fullsend github setup` mirrors the same split: a pending optional permission is
 a warning that does not block setup, and any other missing permission is an

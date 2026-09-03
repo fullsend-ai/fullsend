@@ -28,8 +28,10 @@ Five roles are involved, usually five different people:
 | **Installation owner** | An **owner** of an organization the App is installed on. Accepts the pending update for that organization. |
 | **CLI user / repo admin** | Upgrades the fullsend CLI and re-runs `fullsend github setup <owner/repo>` for their repository. |
 
-Nobody in this list blocks anybody else. That is the whole point of the mechanism: the permission
-rolls out over days or weeks while every agent keeps working.
+The first three steps happen in a fixed order (code, then App registration, then mint deploy). After
+that, nobody waits for anybody: installation owners accept whenever they get to it, CLI users upgrade
+whenever they like, and every agent keeps working in the meantime. That is the whole point of the
+mechanism — the permission rolls out over days or weeks without a flag day.
 
 ## The rules
 
@@ -55,8 +57,8 @@ These five facts explain every step below. If a step ever looks optional, come b
    role) is dropped when ungranted, and the drop is logged. Any *other* ungranted permission fails
    immediately with `422` and no token. The CLI mirrors this: a missing optional permission is a
    warning and setup continues; a missing required permission is a setup error, exactly as it was
-   before this mechanism existed. If the installation lookup carries no `permissions` field at all,
-   the mint sends the full requested set and lets GitHub validate it.
+   before this mechanism existed. If the installation lookup carries no `permissions` field at all
+   (or an empty one), the mint sends the full requested set and lets GitHub validate it.
 5. **The order is fixed:** code merged → App registration updated → mint redeployed → CLI released →
    ongoing outreach to installation owners. The registration comes before the mint so that
    organizations which accept quickly already have the permission on the first mint that asks for
@@ -89,8 +91,9 @@ Do this once per App set you own. For the hosted apps the coder App slug is `ful
 your own app set it is `<app-set>-coder`.
 
 1. Open `https://github.com/organizations/<owner-org>/settings/apps/<app-slug>/permissions`.
-2. Under **Repository permissions**, set the permission — for the worked example, **Packages** to
-   **Read-only**.
+2. Find the permission in the section GitHub files it under — **Repository permissions** for most
+   (the worked example: **Packages** → **Read-only**), **Organization permissions** for org-level
+   ones such as organization projects — and set the level.
 3. Fill in the optional note to users. GitHub shows it to every organization owner alongside the
    request; one sentence saying what the agents need the permission for makes acceptance much
    faster.
@@ -142,12 +145,19 @@ whether the new permission is in it:
 granted scope: repos=[…] permissions=map[…] repo_selection=…
 ```
 
-The third is a hard failure for a permission that is *not* in the optional list. The same text is
-returned to the caller as the body of a `422`. Expect some of these right after the deploy for roles
-you did not touch; see [Troubleshooting](#troubleshooting):
+The third is a hard failure for a permission that is *not* in the optional list. Expect some of these
+right after the deploy for roles you did not touch; see [Troubleshooting](#troubleshooting). In the
+mint log it looks like this:
 
 ```text
 failed to mint token: org=<org> target_org=<org> role=coder err=required permissions missing for role "coder": <perm:level>; if the App already requests these permissions, Accept the pending update at https://github.com/organizations/<org>/settings/installations/<id>; otherwise the App owner must add them first
+```
+
+The caller receives HTTP `422` with only the message part as the `error` field — no
+`failed to mint token:` prefix and no `org=` fields:
+
+```json
+{"error": "required permissions missing for role \"coder\": <perm:level>; if the App already requests these permissions, Accept the pending update at https://github.com/organizations/<org>/settings/installations/<id>; otherwise the App owner must add them first"}
 ```
 
 To find lagging organizations, read the logs for the drop line. On GCP the filter shape is:
@@ -160,6 +170,8 @@ gcloud logging read \
 
 Swap `"permissions not granted"` for `"required permissions missing"` to find hard failures. Each
 line names the organization, so the two filters give you the outreach list and the breakage list.
+For a Cloudflare Worker mint, the same lines appear in the Worker logs (`npx wrangler tail
+<worker-name>` or the dashboard's Logs view); grep for the same two phrases.
 
 ### Installation owner: accept the update
 
@@ -174,7 +186,9 @@ You get an email from GitHub saying the App is requesting updated permissions. T
 
 **Only organization owners see this.** Members see the App page with no banner and no request — if
 someone reports that the Review request is missing, check whether they are an owner. If the App is
-not listed at all, it is not installed on that organization and there is nothing to accept.
+not listed at all, it is not installed on that organization and there is nothing to accept. For an
+App installed on a personal account rather than an organization, the equivalent page is
+`https://github.com/settings/installations`.
 
 To verify from the command line, before and after:
 
@@ -189,8 +203,10 @@ The endpoint needs organization-admin access.
 
 ### CLI user: upgrade the CLI and re-run setup
 
-Upgrade the fullsend CLI to a release cut *after* the mint was deployed, then re-run setup for your
-repository:
+Nothing in this step is needed for tokens to gain the permission — that happens the moment your
+organization's owner accepts. This step refreshes the repository's shim workflows to the release that
+knows about the new permission and shows you where your installation stands. Upgrade the fullsend CLI
+to a release cut *after* the mint was deployed, then re-run setup for your repository:
 
 ```bash
 fullsend github setup <owner/repo>
@@ -198,7 +214,7 @@ fullsend github setup <owner/repo>
 
 Re-running setup with no flags is the supported update path: it refreshes the shim workflows and
 reuses your existing secrets, and it leaves `.fullsend/config.yaml` alone unless you pass
-`--runtime`, `--agents`, `--mint-url` or an `--inference-*` flag.
+`--runtime`, `--agents`, `--mint-url`, an `--inference-*` or an `--openai-*` flag.
 
 What you see depends on the state of your organization's installation:
 
@@ -226,7 +242,7 @@ What you see depends on the state of your organization's installation:
 |-------|----------|----------------|-------------------------|
 | Update pending, permission is **optional** | `installation permissions not granted: … dropped=packages:read; …`, then `granted scope: …` | Role's permissions **minus** the pending one | `pending rollout permissions (setup continues): packages:read — …`, setup succeeds |
 | Update accepted | `granted scope: … permissions=map[… packages:read …]`, no drop line | Full role permission set | Nothing printed about permissions |
-| A **required** permission is ungranted | `failed to mint token: … err=required permissions missing for role "<role>": <perm:level>; …` | No token — the mint returns `422` with that message | `missing permissions: <perm:level> — …`, then setup fails with `apps have stale permissions:` |
+| A **required** permission is ungranted | `failed to mint token: … err=required permissions missing for role "<role>": <perm:level>; …` | No token — the mint returns `422` whose `error` field is the message after `err=` | `missing permissions: <perm:level> — …`, then setup fails with `apps have stale permissions:` |
 | Installation lookup returned no `permissions` map | No preflight line; GitHub validates the POST | Full requested set, or GitHub's `422` | `permissions not available, skipping check` |
 
 ## Finishing the rollout
