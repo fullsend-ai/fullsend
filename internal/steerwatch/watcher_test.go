@@ -83,9 +83,11 @@ func TestPollAndSteer_RejectedRunIsNotRetried(t *testing.T) {
 
 	assert.False(t, w.pollAndSteer(context.Background()))
 	assert.Empty(t, rec.delivered())
-	// Consumed so its verdict — which cannot change — is not re-fetched
-	// on every poll.
-	assert.Equal(t, []int64{101}, w.Consumed())
+	// Seen, so its verdict — which cannot change — is not re-fetched on
+	// every poll. But NOT consumed: the marker is what the queued run reads
+	// to decide whether to skip its own work, and this run's content never
+	// reached the agent.
+	assert.Empty(t, w.Consumed())
 
 	before := api.jobCalls[101]
 	assert.False(t, w.pollAndSteer(context.Background()))
@@ -102,7 +104,13 @@ func TestPollAndSteer_EmptyDeltaDoesNotSteer(t *testing.T) {
 
 	assert.False(t, w.pollAndSteer(context.Background()))
 	assert.Empty(t, rec.delivered())
-	assert.Equal(t, []int64{101}, w.Consumed())
+	// Seen so it is not re-examined, but nothing reached the agent, so the
+	// marker must not claim the queued run's work is covered.
+	assert.Empty(t, w.Consumed())
+
+	before := api.jobCalls[101]
+	assert.False(t, w.pollAndSteer(context.Background()))
+	assert.Equal(t, before, api.jobCalls[101])
 }
 
 func TestPollAndSteer_UnsupportedRuntimeDoesNotConsume(t *testing.T) {

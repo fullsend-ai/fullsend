@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
@@ -56,13 +57,21 @@ type Config struct {
 	// PollInterval is how often follow-up runs are listed. A turn end
 	// triggers an immediate poll regardless.
 	PollInterval time.Duration
-	// Item is the work item and its state at run start.
+	// Item is the work item. Only Number is required: Start resolves
+	// whether it is a pull request and fills in the baseline the delta is
+	// computed against, because the run's environment cannot tell the
+	// watcher either reliably.
 	Item WorkItem
 
 	// APIBase overrides the GitHub REST root (tests).
 	APIBase string
 	// HTTPClient overrides the client used for the Actions API (tests).
 	HTTPClient *http.Client
+	// DeltaBaseline seeds the delta window. Zero means StartedAt. The
+	// validation loop runs one watcher per iteration; without this, a retry
+	// would rebuild its first delta from the run's start and re-send
+	// content the previous iteration already steered on.
+	DeltaBaseline time.Time
 	// AlreadyConsumed seeds the consumed set. The validation loop runs one
 	// watcher per iteration; without this, a retry would re-examine and
 	// re-steer on follow-up runs the previous iteration already absorbed.
@@ -88,9 +97,15 @@ type Watcher struct {
 	myRun    workflowRun
 	stageJob string
 
-	mu       sync.Mutex
-	consumed map[int64]bool
-	order    []int64
+	mu sync.Mutex
+	// seen is every follow-up run this watcher has already judged, so a
+	// candidate is examined once however many times it appears in a poll.
+	seen map[int64]bool
+	// consumed is the subset whose content actually reached the agent, in
+	// delivery order. Only these go in the marker: the queued run reads it
+	// to decide whether to skip its own work, so a run that was seen and
+	// dropped must not look handled.
+	consumed []int64
 	steers   int
 	lastHead string
 	baseline time.Time
@@ -106,13 +121,17 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 	if cfg.MaxSteers <= 0 {
 		cfg.MaxSteers = 1
 	}
-	consumed := make(map[int64]bool, len(cfg.AlreadyConsumed))
-	order := make([]int64, 0, len(cfg.AlreadyConsumed))
+	seen := make(map[int64]bool, len(cfg.AlreadyConsumed))
+	consumed := make([]int64, 0, len(cfg.AlreadyConsumed))
 	for _, id := range cfg.AlreadyConsumed {
-		if !consumed[id] {
-			consumed[id] = true
-			order = append(order, id)
+		if !seen[id] {
+			seen[id] = true
+			consumed = append(consumed, id)
 		}
+	}
+	baseline := cfg.DeltaBaseline
+	if baseline.IsZero() {
+		baseline = cfg.StartedAt
 	}
 	return &Watcher{
 		cfg:      cfg,
@@ -122,10 +141,10 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 		settle:   settle,
 		logf:     func(string, ...any) {},
 		warnf:    func(string, ...any) {},
+		seen:     seen,
 		consumed: consumed,
-		order:    order,
 		lastHead: cfg.Item.HeadSHA,
-		baseline: cfg.StartedAt,
+		baseline: baseline,
 	}
 }
 
@@ -143,7 +162,15 @@ func (w *Watcher) SetWarnFunc(f func(string, ...any)) { w.warnf = f }
 func (w *Watcher) Consumed() []int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return append([]int64(nil), w.order...)
+	return append([]int64(nil), w.consumed...)
+}
+
+// Baseline returns the instant the next delta would be computed against. The
+// runner carries it into the next validation-loop iteration's watcher.
+func (w *Watcher) Baseline() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.baseline
 }
 
 // Head returns the work item head the run settled on, which is the head at
@@ -186,6 +213,60 @@ func (w *Watcher) Start(ctx context.Context, stageHint string) error {
 		return err
 	}
 	w.stageJob = name
+
+	return w.resolveItem(ctx)
+}
+
+// resolveItem asks the forge what the work item is and what it looked like
+// when the run started.
+//
+// The run's environment cannot answer either question: PR_HEAD_SHA is set
+// only on the deprecated per-org dispatch path, so a per-repo run has no
+// head SHA in its environment and no way to tell a pull request from an
+// issue. Guessing wrong is not cosmetic — an issue-shaped baseline of empty
+// title, body and labels makes every delta report the whole body as edited
+// and every label as added, forever, so the run never settles and the agent
+// is handed the same "update" on each steer.
+//
+// A caller-supplied HeadSHA still wins: it is the head at run start, which
+// is a beat earlier than this call and is the baseline a head move must be
+// measured against.
+func (w *Watcher) resolveItem(ctx context.Context) error {
+	owner, repo, err := splitRepo(w.cfg.Repo)
+	if err != nil {
+		return err
+	}
+
+	head, err := w.items.GetPullRequestHeadSHA(ctx, owner, repo, w.cfg.Item.Number)
+	switch {
+	case err == nil:
+		w.cfg.Item.IsPullRequest = true
+		if w.cfg.Item.HeadSHA == "" {
+			w.cfg.Item.HeadSHA = head
+		}
+		w.mu.Lock()
+		w.lastHead = w.cfg.Item.HeadSHA
+		w.mu.Unlock()
+		return nil
+	case forge.IsNotFound(err):
+		// Not a pull request; fall through to the issue snapshot.
+	default:
+		return fmt.Errorf("resolving whether %s#%d is a pull request: %w",
+			w.cfg.Repo, w.cfg.Item.Number, err)
+	}
+
+	issue, err := w.items.GetIssue(ctx, owner, repo, w.cfg.Item.Number)
+	if err != nil {
+		return fmt.Errorf("reading issue %s#%d: %w", w.cfg.Repo, w.cfg.Item.Number, err)
+	}
+	w.cfg.Item.IsPullRequest = false
+	w.cfg.Item.HeadSHA = ""
+	w.cfg.Item.Title = issue.Title
+	w.cfg.Item.Body = issue.Body
+	w.cfg.Item.Labels = issue.Labels
+	w.mu.Lock()
+	w.lastHead = ""
+	w.mu.Unlock()
 	return nil
 }
 
@@ -331,7 +412,7 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		// item's visible state did not change (a label event the agent does
 		// not read, an edit that reverted). Consume the ids anyway so the
 		// same runs are not re-examined every poll.
-		w.markConsumed(accepted, 0)
+		w.markSeen(accepted...)
 		w.logf("Follow-up run(s) %s carried no visible change; not steering", runIDs(accepted))
 		return false
 	}
@@ -361,7 +442,7 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	w.markConsumed(accepted, 1)
+	w.markSteered(accepted)
 	if d.headMoved {
 		w.mu.Lock()
 		w.lastHead = d.newHead
@@ -371,25 +452,43 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 	return true
 }
 
-// markConsumed records the accepted runs so they are not re-examined on
-// every poll. steers is the number of steers actually delivered for them.
-//
-// The delta baseline advances only when a steer was delivered: advancing it
-// for a run that produced no steer would move the window past content the
-// agent never saw, and that content would then never reach it.
-func (w *Watcher) markConsumed(runs []workflowRun, steers int) {
+// markSeen records that these runs have been judged, so they are not
+// re-examined on every poll. It says nothing about whether the agent saw
+// their content.
+func (w *Watcher) markSeen(runs ...workflowRun) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range runs {
-		if !w.consumed[r.ID] {
-			w.consumed[r.ID] = true
-			w.order = append(w.order, r.ID)
+		w.seen[r.ID] = true
+	}
+}
+
+// markSteered records that one steer carrying these runs' content reached
+// the agent, and advances the delta window.
+//
+// The baseline advances only here: moving it for a run that produced no
+// steer would push the window past content the agent never saw, and that
+// content would then never reach it.
+func (w *Watcher) markSteered(runs []workflowRun) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, r := range runs {
+		if !containsID(w.consumed, r.ID) {
+			w.consumed = append(w.consumed, r.ID)
+		}
+		w.seen[r.ID] = true
+	}
+	w.steers++
+	w.baseline = time.Now().UTC()
+}
+
+func containsID(ids []int64, id int64) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
 		}
 	}
-	if steers > 0 {
-		w.steers += steers
-		w.baseline = time.Now().UTC()
-	}
+	return false
 }
 
 // poll lists follow-up runs and returns the ones that pass every provenance
@@ -416,7 +515,7 @@ func (w *Watcher) poll(ctx context.Context) []workflowRun {
 			w.logf("Follow-up run %d rejected (%s)", run.ID, rej)
 			// A rejected-on-authorization run must not be retried every
 			// poll: its verdict cannot change.
-			w.markConsumed([]workflowRun{run}, 0)
+			w.markSeen(run)
 			continue
 		}
 		accepted = append(accepted, run)

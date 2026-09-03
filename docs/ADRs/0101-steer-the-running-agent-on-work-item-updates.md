@@ -128,7 +128,7 @@ cannot write:
 | 4 | The candidate's **`Route` job** concluded `success`, and the run was created after mine started | an unauthorized actor; a replayed old run |
 | 5 | My stage's job has `conclusion != "skipped"` | a fork author's `/fs-steer`, whose run has every stage job skipped |
 | 6 | Bound to my work item: `pull_requests[]`, else the shim's `run-name` as `display_title` | another item's run |
-| 7 | Not consumed before, by run id | a replay; a re-poll |
+| 7 | Not judged before, by run id | a replay; a re-poll |
 
 Check 4 deliberately **ignores the run's own conclusion**. Under `queue: single`, a later event
 cancels the earlier pending stage job and that run concludes `cancelled` — while the
@@ -142,6 +142,11 @@ the PR number, so the pair covers every event the shim listens for. A candidate 
 neither is skipped rather than guessed at: a wrong binding steers one work item's agent with
 another's content.
 
+A run the watcher has *judged* is never re-examined, but only a run whose content actually
+reached the agent is recorded as **consumed**. The marker is what the queued run reads to decide
+whether to skip its own work, so a candidate that was dropped — an empty delta, a failed
+delivery, a runtime that cannot steer — must not look handled.
+
 Every accepted candidate in one poll folds into a **single** steer — the delta is the item's
 current state against a baseline, so two comments that arrive together cost one turn, not two,
 and both run ids are recorded as consumed.
@@ -150,6 +155,17 @@ The delta text is a runner-authored envelope through the same Unicode sanitizer
 `buildFeedbackPrompt` uses (now `security.SanitizeAgentText`, shared so the two cannot drift),
 delivered via the mailbox and never via argv. Only non-bot activity counts, so a run never steers
 itself with its own start comment.
+
+### The work item's baseline
+
+The watcher asks the forge what the work item is, at startup, rather than reading it from the
+job's environment. `PR_HEAD_SHA` is set only on the deprecated per-org dispatch path, so a
+per-repo run has neither a head SHA nor any way to tell a pull request from an issue. Guessing
+wrong is not cosmetic: an issue-shaped baseline of empty title, body and labels makes every delta
+report the whole body as edited and every label as added, forever, so the run never settles and
+the agent is handed the same "update" on each steer. A head SHA the environment *does* supply
+still wins, because it is the head at run start and that is what a head move must be measured
+against.
 
 ### Settle
 
