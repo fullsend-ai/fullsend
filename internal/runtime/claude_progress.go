@@ -260,6 +260,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				})
 
 			case "message_start":
+				// A new message after a result means the stream is inside
+				// another turn (only a steered run gets here), so the
+				// cumulative-token salvage below applies again.
+				seenResult = false
 				var msg struct {
 					Message struct {
 						Usage struct {
@@ -311,6 +315,19 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				}
 			}
+
+		case "user":
+			// Both a replayed input line and a tool result arrive as
+			// "user". Only the replay carries isReplay, which makes it an
+			// unambiguous per-message delivery ack for the steer mailbox.
+			var ue struct {
+				IsReplay  bool   `json:"isReplay"`
+				Timestamp string `json:"timestamp"`
+			}
+			if err := json.Unmarshal(line, &ue); err != nil || !ue.IsReplay {
+				continue
+			}
+			onEvent(UserReplayEvent{At: steerEchoTime(ue.Timestamp)})
 
 		case "result":
 			seenResult = true

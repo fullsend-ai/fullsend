@@ -1,5 +1,7 @@
 package runtime
 
+import "time"
+
 // streamBufSize is the bufio.Reader buffer size used by both NDJSON stream
 // parsers (Claude and OpenCode). Lines exceeding this size are skipped.
 const streamBufSize = 1024 * 1024 // 1 MiB
@@ -47,6 +49,19 @@ type ToolUseEvent struct {
 }
 
 func (ToolUseEvent) agentEvent() {}
+
+// UserReplayEvent is emitted when the runtime echoes back a user message
+// it consumed from its input channel — Claude Code's --replay-user-messages
+// re-emits each stdin line as {"type":"user",...,"isReplay":true}. It is
+// the only observable proof that a steer reached the agent, because a
+// steer absorbed into a running turn produces no result of its own. At is
+// the runtime's own timestamp for the echo, or the parse time when the
+// stream carried none.
+type UserReplayEvent struct {
+	At time.Time
+}
+
+func (UserReplayEvent) agentEvent() {}
 
 // TokensEvent carries incremental token usage counters.
 type TokensEvent struct {
