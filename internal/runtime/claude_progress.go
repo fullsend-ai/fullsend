@@ -72,6 +72,7 @@ type systemEvent struct {
 	Type              string `json:"type"`
 	Subtype           string `json:"subtype"`
 	Model             string `json:"model"`
+	SessionID         string `json:"session_id"`
 	ClaudeCodeVersion string `json:"claude_code_version"`
 	Attempt           int    `json:"attempt"`
 	MaxRetries        int    `json:"max_retries"`
@@ -187,8 +188,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			switch se.Subtype {
 			case "init":
 				onEvent(InitEvent{
-					Model:   se.Model,
-					Version: se.ClaudeCodeVersion,
+					Model:     se.Model,
+					Version:   se.ClaudeCodeVersion,
+					SessionID: se.SessionID,
 				})
 			case "api_retry":
 				onEvent(RetryEvent{
@@ -388,6 +390,9 @@ func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error
 		case InitEvent:
 			if metrics.Model == "" {
 				metrics.Model = e.Model
+			}
+			if metrics.SessionID == "" {
+				metrics.SessionID = e.SessionID
 			}
 		case TokensEvent:
 			metrics.InputTokens = e.InputTokens

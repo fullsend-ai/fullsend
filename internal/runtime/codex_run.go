@@ -529,7 +529,14 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
+	threadID, parseErr := parseCodexStream(reader, handler)
+	// thread.started names the rollout a `codex exec resume` continues.
+	// It is recorded even when the parse failed part-way: the header
+	// arrives first, and a half-read stream still identifies the thread.
+	if threadID != "" {
+		metrics.SessionID = threadID
+	}
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)

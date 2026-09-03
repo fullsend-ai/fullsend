@@ -154,6 +154,12 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 			if metrics.Model == "" {
 				metrics.Model = e.Model
 			}
+			// The session_id on the system/init event names the session a
+			// later steer or --resume continues; it is constant for the
+			// life of the process, so the first one wins.
+			if metrics.SessionID == "" {
+				metrics.SessionID = e.SessionID
+			}
 		case TokensEvent:
 			// Capture cumulative token usage from the stream so cancelled
 			// runs (no ResultEvent) retain non-zero telemetry (#6905).
