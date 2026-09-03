@@ -277,3 +277,41 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 
 	return result
 }
+
+// SanitizeAgentText strips non-rendering characters from text that is about
+// to be injected into an agent prompt, returning the text to use and the
+// number of dangerous findings removed (0 when nothing was).
+//
+// Compatibility characters are content, not an attack: NFKC rewrites
+// fullwidth punctuation, ligatures and vulgar fractions that legitimately
+// appear in the text this guards (validation output, PR comments), and
+// injected text is routinely quoted back into files the agent then edits, so
+// handing the agent a normalized copy invites it to write the normalized
+// form back. The PostToolUse chain made the same call for tool results
+// (#6467): NFKC is used for detection, not rewriting. So when the only
+// finding is the compatibility class, the original bytes are kept and
+// nothing is reported.
+//
+// When something genuinely non-rendering is present (zero-width, bidi, tag
+// characters, NUL, escapes) the sanitized copy is taken. It carries NFKC
+// folding with it, which is the accepted cost of removing the dangerous
+// characters with this normalizer.
+//
+// Both the validation-feedback prompt and the steer envelope (ADR 0101) go
+// through this one function so the two treatments cannot drift.
+func SanitizeAgentText(text string) (string, int) {
+	result := NewUnicodeNormalizer().Scan(text)
+	if result.Safe {
+		return text, 0
+	}
+	dangerous := 0
+	for _, f := range result.Findings {
+		if f.Name != "fullwidth" {
+			dangerous++
+		}
+	}
+	if dangerous == 0 {
+		return text, 0
+	}
+	return result.Sanitized, dangerous
+}
