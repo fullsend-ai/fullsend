@@ -187,6 +187,9 @@ type stubItems struct {
 	// kinds of work item apart.
 	notAPR bool
 	err    error
+	// sinceSeen records the filter the watcher passed, so a test can assert
+	// the poll is not re-reading the whole history.
+	sinceSeen time.Time
 }
 
 func (s *stubItems) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
@@ -196,11 +199,21 @@ func (s *stubItems) GetIssue(context.Context, string, string, int) (*forge.Issue
 	return s.issue, nil
 }
 
-func (s *stubItems) ListIssueComments(context.Context, string, string, int) ([]forge.IssueComment, error) {
+func (s *stubItems) ListIssueCommentsSince(_ context.Context, _, _ string, _ int, since time.Time) ([]forge.IssueComment, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
-	return s.comments, nil
+	s.sinceSeen = since
+	// The real client filters on updated_at, which for an unedited comment
+	// is its creation; mirroring that keeps the stub honest about what the
+	// caller may assume.
+	var out []forge.IssueComment
+	for _, c := range s.comments {
+		if since.IsZero() || !parseForgeTime(c.CreatedAt).Before(since) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *stubItems) GetPullRequestHeadSHA(context.Context, string, string, int) (string, error) {
