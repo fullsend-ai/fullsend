@@ -11,9 +11,14 @@ type AgentEvent interface {
 }
 
 // InitEvent is emitted once at stream start with runtime metadata.
+// SessionID is the runtime's own id for the session (Claude Code's
+// session_id); it is empty for runtimes whose id does not arrive on the
+// stream header — codex reports a thread_id mid-stream and pi a session
+// event, both of which their parsers return instead.
 type InitEvent struct {
-	Model   string
-	Version string
+	Model     string
+	Version   string
+	SessionID string
 }
 
 func (InitEvent) agentEvent() {}
