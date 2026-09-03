@@ -1270,3 +1270,37 @@ func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
 		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
 	}
 }
+
+// TestParseClaudeStreamInitSessionID covers the session_id on the
+// system/init event: it names the session a steer feeds and a --resume
+// continues, and it is the only place Claude Code reports it on the
+// stream (the result event repeats it, the init event is the header).
+// Field shape captured from Claude Code 2.1.259.
+func TestParseClaudeStreamInitSessionID(t *testing.T) {
+	input := `{"type":"system","subtype":"init","cwd":"/sandbox/workspace","session_id":"5ecef1ea-af71-4f88-acc5-9441ebc57d8e","model":"claude-sonnet-5","claude_code_version":"2.1.259"}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	init, ok := events[0].(InitEvent)
+	if !ok {
+		t.Fatalf("expected InitEvent, got %T", events[0])
+	}
+	if init.SessionID != "5ecef1ea-af71-4f88-acc5-9441ebc57d8e" {
+		t.Errorf("expected session id 5ecef1ea-af71-4f88-acc5-9441ebc57d8e, got %q", init.SessionID)
+	}
+}
+
+// TestParseClaudeStreamInitNoSessionID keeps SessionID empty rather than
+// inventing one when the header omits it, so a runner cannot mistake a
+// blank id for a resumable session.
+func TestParseClaudeStreamInitNoSessionID(t *testing.T) {
+	events := collectEvents(t, `{"type":"system","subtype":"init","model":"claude-opus-4-6"}`)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	init := events[0].(InitEvent)
+	if init.SessionID != "" {
+		t.Errorf("expected empty session id, got %q", init.SessionID)
+	}
+}
