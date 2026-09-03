@@ -62,6 +62,7 @@ sequenceDiagram
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
+| Steer (absorb a work-item update mid-run, [ADR 0101](ADRs/0101-steer-the-running-agent-on-work-item-updates.md)) | Live — the message lands at the agent's next tool boundary, same process | Live — same, over `pi --mode rpc` | Interrupt and resume — the turn is stopped and the same session continues with the message; each interrupt leaves a dangling tool call in the transcript |
 
 All three run unattended in the same sandbox, behind the same egress allowlist. Stay on `claude`
 when you need a fallback chain. Choose `pi` when you want a non-Anthropic model, several vendors

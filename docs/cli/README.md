@@ -25,6 +25,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 | Command | Description |
 |---------|-------------|
 | [`fullsend run`](run.md) | Execute an agent locally in a sandbox. See [running agents locally](../guides/user/running-agents-locally.md). |
+| `fullsend steer <url> "<text>"` | Send an update to the agent already running on an issue or PR. Posts a `/fs-steer` comment; see [ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md). |
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
 | `fullsend scan` | Run security scanners on agent input/output |
 | `fullsend eval-measure` | Score wild-run traces into `eval-measurements.jsonl`. See [Eval measurements](../guides/infrastructure/eval-measurements.md). |
