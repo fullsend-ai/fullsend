@@ -136,9 +136,9 @@ func RoleHelp() string {
 		sort.Strings(perms)
 		suffix := ""
 		if name == DefaultRole {
-			suffix = " (default)"
+			suffix = "  (default)"
 		}
-		fmt.Fprintf(&b, "  %-11s%s %s\n", name, suffix, strings.Join(perms, ", "))
+		fmt.Fprintf(&b, "  %-11s %s%s\n", name, strings.Join(perms, ", "), suffix)
 	}
 	b.WriteString("\n\"scribe\" is recognised by the mint but is not wired for dispatch, so it is\n")
 	b.WriteString("not offered here. To use a role the hosted mint does not serve you need\n")
