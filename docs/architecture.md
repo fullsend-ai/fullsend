@@ -270,13 +270,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Event-driven stage dispatch runs synchronously via `workflow_call` to preserve run correlation in the GitHub Actions UI (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Routing moves from workflow bash to harness CEL `trigger` expressions
   evaluated by `fullsend dispatch` with pluggable input/output drivers
-  operating on a `NormalizedEvent` struct
-  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
-- Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
-  input drivers to discover work from remote systems (Jira first), coordinates
-  via source-native write-then-verify locks, and feeds the same dispatch pipeline
-  as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
-  scope is per-repo mode only.
+  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)); the predicate context is
+  governed by the entity-first decision below.
+- Harness routing uses one CEL predicate over a required normalized entity and
+  an optional prompting event. Webhooks provide low-latency candidates;
+  `fullsend poll` and its input drivers enumerate and resolve scheduled
+  candidates without reconstructing a complete event stream. Entity activity
+  retains actor and authorization provenance, while durable per-harness
+  processing receipts distinguish handled work
+  ([ADR 0099](ADRs/0099-entity-first-harness-evaluation.md), superseding
+  [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
@@ -298,10 +301,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 **Open questions:**
 
-- Is GitHub's event system sufficient for forge-native duplicate protection, or
-  do we need additional coordination beyond label/state conventions and agent
-  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh.)
+- What normative entity-history, query-planning, and processing-receipt contract
+  can support entity-first harness evaluation without unbounded provider reads
+  ([ADR 0099](ADRs/0099-entity-first-harness-evaluation.md))?
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
