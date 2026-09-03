@@ -288,7 +288,24 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //   - whether the hook adapter is required is decided from the runner's own
 //     signal (params.HooksSettingsPath, the same one ClaudeRuntime uses for
 //     --settings), never from the agent-writable manifest.
+//
+// codexTurn describes one process of a (possibly steered) codex run. The
+// zero value is the ordinary first turn: no thread to resume and the
+// prompt taken from RunParams.
+type codexTurn struct {
+	// ResumeThreadID, when set, continues that rollout instead of starting
+	// a new one.
+	ResumeThreadID string
+	// Prompt, when set, replaces the run's prompt for this process. A
+	// resume carries the steer envelope here.
+	Prompt string
+}
+
 func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
+	return buildCodexTurnCommand(params, model, effort, hooksEnabled, digests, codexTurn{})
+}
+
+func buildCodexTurnCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet, turn codexTurn) string {
 	r := CodexRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 
@@ -341,6 +358,9 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {
 		prompt = params.Prompt
+	}
+	if turn.Prompt != "" {
+		prompt = turn.Prompt
 	}
 	// The prompt goes in on stdin, never argv: it is attacker-influenced text
 	// on a retry iteration (the validation loop injects the previous failure,
@@ -397,10 +417,17 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 	if effort != "" {
 		parts = append(parts, "-c "+shellQuote("model_reasoning_effort="+effort))
 	}
-	parts = append(parts,
-		"-o "+shellQuote(r.ConfigDir()+"/"+codexLastMessageFile),
-		"-",
-	)
+	parts = append(parts, "-o "+shellQuote(r.ConfigDir()+"/"+codexLastMessageFile))
+	if turn.ResumeThreadID != "" {
+		// `resume` is a subcommand of `codex exec`, so every flag stays
+		// BEFORE it: verified against 0.152.1, whose `codex exec resume
+		// --help` offers -c, -m, -o, --json, --skip-git-repo-check and the
+		// two --dangerously-bypass-* flags but NOT -C/--cd, which exists
+		// only on `codex exec` itself. The composed form was run locally
+		// and parsed through to reading the prompt from stdin.
+		parts = append(parts, "resume", shellQuote(turn.ResumeThreadID))
+	}
+	parts = append(parts, "-")
 	if params.Debug != "" {
 		parts = append(parts, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile))
 	}
@@ -478,17 +505,136 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
 
-	cmd := buildCodexRunCommand(params, modelID, effort, hooksEnabled, digests)
+	// The stream carries neither the CLI version nor the model, so the
+	// InitEvent is emitted here from what the runner already knows and the
+	// parser emits none. It is emitted once for the run, not once per
+	// process: a steered run is several processes on one thread.
+	metrics.Model = modelID
+	plan := codexRunPlan{
+		model:        modelID,
+		effort:       effort,
+		hooksEnabled: hooksEnabled,
+		digests:      digests,
+		version:      m.CodexVersion,
+	}
+
+	var q *codexSteerQueue
+	if params.Steerable {
+		q = newCodexSteerQueue(params.SandboxName, sandbox.Exec, os.Stderr)
+		registerCodexSteerQueue(params.SandboxName, q)
+		defer unregisterCodexSteerQueue(params.SandboxName)
+		defer func() { metrics.Steers = q.steerResults() }()
+	}
+
+	agg := &codexSteerAggregator{}
+	var (
+		out     codexTurnOutcome
+		err2    error
+		turn    codexTurn
+		nth     int
+		emitted bool
+	)
+	for {
+		out, err2 = r.runCodexTurn(ctx, params, printer, plan, turn, metrics, agg, q, nth, &emitted)
+		if err2 != nil {
+			return out.exitCode, err2
+		}
+		if q == nil {
+			break
+		}
+		q.noteThreadID(out.threadID)
+		// Bank this process's counters: the next `codex exec` starts its
+		// own totals at zero, so they add rather than replace.
+		agg.processEnded()
+
+		next, more := nextCodexTurn(ctx, q)
+		if !more {
+			break
+		}
+		turn = next
+		nth++
+	}
+	return r.codexVerdict(out, printer)
+}
+
+// codexRunPlan is what the runner resolved once for the whole run and
+// every process of it reuses.
+type codexRunPlan struct {
+	model        string
+	effort       string
+	hooksEnabled bool
+	digests      codexRunnerHeldDigestSet
+	version      string
+}
+
+// codexTurnOutcome is what one codex process produced. On a steered run
+// only the LAST process's outcome becomes the run's verdict: an
+// interrupted process reports a killed, incomplete turn, which is the
+// steer working as intended rather than a failure.
+type codexTurnOutcome struct {
+	exitCode   int
+	lastResult *ResultEvent
+	threadID   string
+}
+
+// nextCodexTurn blocks until there is another process to run — a steer to
+// deliver — or the run is over. It returns false when the run was settled
+// with nothing pending, when the context ended, or when a steer is queued
+// but no thread ever started, which leaves nothing to resume onto.
+func nextCodexTurn(ctx context.Context, q *codexSteerQueue) (codexTurn, bool) {
+	for {
+		if msg, ok := q.takePending(); ok {
+			tid := q.currentThreadID()
+			if tid == "" {
+				return codexTurn{}, false
+			}
+			q.recordDelivery(msg, time.Now())
+			return codexTurn{ResumeThreadID: tid, Prompt: renderSteerEnvelope(msg)}, true
+		}
+		if q.isSettled() {
+			return codexTurn{}, false
+		}
+		if !q.waitForWork(ctx) {
+			return codexTurn{}, false
+		}
+	}
+}
+
+// runCodexTurn runs one codex process and parses its stream. It is a
+// separate function so that a steered run's per-process cleanup (the
+// stream cancel and the output file) is released at the end of each
+// process instead of piling up on Run's own defer stack.
+func (r CodexRuntime) runCodexTurn(
+	ctx context.Context,
+	params RunParams,
+	printer *ui.Printer,
+	plan codexRunPlan,
+	turn codexTurn,
+	metrics *RunMetrics,
+	agg *codexSteerAggregator,
+	q *codexSteerQueue,
+	nth int,
+	emittedInit *bool,
+) (codexTurnOutcome, error) {
+	outcome := codexTurnOutcome{exitCode: -1}
+
+	cmd := buildCodexTurnCommand(params, plan.model, plan.effort, plan.hooksEnabled, plan.digests, turn)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
-		return -1, err
+		return outcome, err
 	}
 	defer cancel()
 
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
-		f, ferr := os.Create(params.OutputPath)
+		// A resumed process appends: opening with os.Create would truncate
+		// the artifact and throw away every turn before this one.
+		flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		if nth > 0 {
+			flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+		}
+		f, ferr := os.OpenFile(params.OutputPath, flags, 0o600)
 		if ferr != nil {
 			printer.StepWarn(fmt.Sprintf("Failed to create %s: ", params.OutputPath) + ferr.Error())
 		} else {
@@ -513,19 +659,32 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		handler = renderer.Handle
 	}
 
-	// The stream carries neither the CLI version nor the model, so the
-	// InitEvent is emitted here from what the runner already knows and the
-	// parser emits none.
-	metrics.Model = modelID
-	handler(InitEvent{Model: modelID, Version: m.CodexVersion})
+	if !*emittedInit {
+		handler(InitEvent{Model: plan.model, Version: plan.version})
+		*emittedInit = true
+	}
 
-	var lastResult *ResultEvent
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
-		if e, ok := evt.(ResultEvent); ok {
-			lastResult = &e
+		switch e := evt.(type) {
+		case ResultEvent:
+			outcome.lastResult = &e
 		}
-		applyCodexMetrics(metrics, evt)
+		if q == nil {
+			applyCodexMetrics(metrics, evt)
+			innerHandler(evt)
+			return
+		}
+		// A steered run's counters span several processes, so a result is
+		// folded into the run-wide total rather than assigned over it.
+		// ToolCalls is an atomic counter and accumulates across processes
+		// on its own.
+		switch e := evt.(type) {
+		case ResultEvent:
+			agg.onResult(e, metrics)
+		case ToolUseEvent:
+			metrics.ToolCalls.Add(1)
+		}
 		innerHandler(evt)
 	}
 
@@ -533,6 +692,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// thread.started names the rollout a `codex exec resume` continues.
 	// It is recorded even when the parse failed part-way: the header
 	// arrives first, and a half-read stream still identifies the thread.
+	outcome.threadID = threadID
 	if threadID != "" {
 		metrics.SessionID = threadID
 	}
@@ -543,33 +703,37 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	}
 
 	waitErr := execCmd.Wait()
-	exitCode := -1
 	if execCmd.ProcessState != nil {
-		exitCode = execCmd.ProcessState.ExitCode()
+		outcome.exitCode = execCmd.ProcessState.ExitCode()
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
-		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
+		return outcome, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
-	if exitCode == codexHooksMissingExit {
-		return exitCode, fmt.Errorf(
+	return outcome, nil
+}
+
+// codexVerdict turns the last process's outcome into the run's exit code.
+func (r CodexRuntime) codexVerdict(out codexTurnOutcome, printer *ui.Printer) (int, error) {
+	if out.exitCode == codexHooksMissingExit {
+		return out.exitCode, fmt.Errorf(
 			"codex config, hook adapter or auth script missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)",
 			r.ConfigDir())
 	}
-	if exitCode == codexConfigTamperedExit {
-		return exitCode, fmt.Errorf(
+	if out.exitCode == codexConfigTamperedExit {
+		return out.exitCode, fmt.Errorf(
 			"codex config.toml in %s no longer pins the run-scoped provider endpoint, its auth command, or leaves the project untrusted; refusing to run because any of those can redirect or replace the runner's credential (did the agent write there between iterations?)",
 			r.ConfigDir())
 	}
 
-	if exitCode == 0 && lastResult != nil && lastResult.IsError {
-		msg := lastResult.ErrorMessage
+	if out.exitCode == 0 && out.lastResult != nil && out.lastResult.IsError {
+		msg := out.lastResult.ErrorMessage
 		if msg == "" {
-			msg = "stream ended without a completed turn (" + lastResult.Subtype + ")"
+			msg = "stream ended without a completed turn (" + out.lastResult.Subtype + ")"
 		}
 		printer.StepWarn("codex exited 0 but the stream reports an error: " + sanitizeOutput(msg))
 		return 1, nil
 	}
-	return exitCode, nil
+	return out.exitCode, nil
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left
