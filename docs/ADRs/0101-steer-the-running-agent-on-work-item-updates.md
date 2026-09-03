@@ -88,16 +88,13 @@ concurrency:
   cancel-in-progress: ${{ vars.FULLSEND_STEER != 'true' }}
 ```
 
-<!-- DECISION PENDING: the FULLSEND_STEER gate. Exactly one of the two sentences
-     below is live; the other is deleted when the question is settled. -->
-
-**Gated (current):** unset — the default everywhere — keeps today's cancelling
-behaviour, and a consumer opts into ADR 0098's `cancel-in-progress: false` together
-with steering by setting the variable to `"true"`.
-
-**Ungated (if adopted):** `cancel-in-progress: false` unconditionally, because ADR
-0098 makes preserve-and-coalesce the policy for every agent trigger rather than an
-opt-in, and steering remains separately gated by the harness `steer.enabled` flag.
+**Gated for now.** Unset — the default everywhere — keeps today's cancelling behaviour, and a
+consumer opts into `cancel-in-progress: false` together with steering by setting the variable to
+`"true"`. The gate exists only because ADR 0098 (fullsend#6909) is not merged at the time of
+writing: once 0098 makes preserve-and-coalesce the policy for every agent trigger, the expression
+becomes a plain `cancel-in-progress: false`, the variable goes away, and steering stays separately
+gated by the harness `steer.enabled` flag. That follow-up removes the mixed state described under
+"Rollout order".
 
 `queue: max` is deliberately unused: it is incompatible with
 `cancel-in-progress: true`, and N pending full runs is the failure mode
