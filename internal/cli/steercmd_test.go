@@ -56,7 +56,7 @@ func TestParseWorkItemURL(t *testing.T) {
 		{
 			name:    "a non-numeric item",
 			url:     "https://github.com/org/repo/pull/abc",
-			wantErr: "could not read the item number",
+			wantErr: "is not a valid item number",
 		},
 		{
 			name:    "wrong scheme",

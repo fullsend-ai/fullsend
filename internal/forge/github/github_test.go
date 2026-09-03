@@ -4548,3 +4548,89 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
+
+func TestListWorkflowRunsSince(t *testing.T) {
+	var gotPath, gotCreated, gotPerPage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCreated = r.URL.Query().Get("created")
+		gotPerPage = r.URL.Query().Get("per_page")
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{
+					"id": 33740015232, "name": "fullsend",
+					"path": ".github/workflows/fullsend.yml", "event": "issue_comment",
+					"status": "completed", "conclusion": "cancelled",
+					"created_at": "2026-09-03T10:05:00Z", "display_title": "org/repo#7",
+					"actor":            map[string]any{"login": "octocat"},
+					"triggering_actor": map[string]any{"login": "reviewer"},
+					"pull_requests":    []map[string]any{{"number": 7}},
+					"referenced_workflows": []map[string]any{{
+						"path": "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main",
+						"ref":  "refs/heads/main",
+						"sha":  "2a103497",
+					}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	since := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yml", since, 50)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/repos/org/repo/actions/workflows/fullsend.yml/runs", gotPath)
+	assert.Equal(t, ">=2026-09-03T10:00:00Z", gotCreated, "the created filter must survive URL encoding")
+	assert.Equal(t, "50", gotPerPage)
+
+	require.Len(t, runs, 1)
+	r := runs[0]
+	assert.Equal(t, 33740015232, r.ID)
+	assert.Equal(t, ".github/workflows/fullsend.yml", r.Path)
+	assert.Equal(t, "issue_comment", r.Event)
+	assert.Equal(t, "org/repo#7", r.DisplayTitle)
+	assert.Equal(t, "octocat", r.Actor)
+	assert.Equal(t, "reviewer", r.TriggeringActor)
+	assert.Equal(t, []int{7}, r.PullRequestNumbers)
+	require.Len(t, r.ReferencedWorkflows, 1)
+	assert.Equal(t, "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main", r.ReferencedWorkflows[0].Path)
+	assert.Equal(t, "refs/heads/main", r.ReferencedWorkflows[0].Ref)
+	assert.Equal(t, "2a103497", r.ReferencedWorkflows[0].SHA)
+}
+
+func TestListWorkflowRunsSince_DefaultsPerPage(t *testing.T) {
+	var gotPerPage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPerPage = r.URL.Query().Get("per_page")
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListWorkflowRunsSince(
+		context.Background(), "org", "repo", "fullsend.yml", time.Now(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+	assert.Equal(t, "50", gotPerPage)
+}
+
+func TestGetWorkflowRun_CarriesProvenance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42, "path": ".github/workflows/fullsend.yml", "event": "pull_request_target",
+			"created_at": "2026-09-03T10:00:00Z",
+			"referenced_workflows": []map[string]any{
+				{"path": "o/r/.github/workflows/reusable-dispatch.yml@main", "ref": "refs/heads/main", "sha": "abc"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	run, err := newTestClient(t, srv).GetWorkflowRun(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, ".github/workflows/fullsend.yml", run.Path)
+	require.Len(t, run.ReferencedWorkflows, 1)
+	assert.Equal(t, "abc", run.ReferencedWorkflows[0].SHA)
+}
