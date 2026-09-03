@@ -97,10 +97,6 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 		return "", err
 	}
 
-	if err := e.provisionInference(target); err != nil {
-		return "", err
-	}
-
 	if err := e.installFullsend(org, repoName, target); err != nil {
 		return "", err
 	}
@@ -144,20 +140,11 @@ func (e *repoEnsurer) awaitGitReady(ctx context.Context, org, repoName, target s
 	return fmt.Errorf("git layer on %s not ready after %d attempts", target, gitReadyMaxAttempts)
 }
 
-func (e *repoEnsurer) provisionInference(target string) error {
-	project := e.e2eCfg.GCPProjectID
-	if project == "" {
-		return nil
-	}
-	_, err := common.ProvisionInference(e.binary, e.token, target, project, e.runCLI, e.logf)
-	return err
-}
-
 func (e *repoEnsurer) installFullsend(org, repoName, target string) error {
 	fullTarget := org + "/" + repoName
 	return common.RunReposInstall(
 		e.binary, e.token, fullTarget,
-		e.e2eCfg.MintURL, e.fullsendRef, e.e2eCfg.GCPProjectID,
+		e.e2eCfg.MintURL, e.fullsendRef, e.e2eCfg.GCPProjectID, e.e2eCfg.WIFProvider,
 		e.runCLI, e.logf,
 	)
 }
