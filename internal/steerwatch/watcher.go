@@ -63,6 +63,10 @@ type Config struct {
 	APIBase string
 	// HTTPClient overrides the client used for the Actions API (tests).
 	HTTPClient *http.Client
+	// AlreadyConsumed seeds the consumed set. The validation loop runs one
+	// watcher per iteration; without this, a retry would re-examine and
+	// re-steer on follow-up runs the previous iteration already absorbed.
+	AlreadyConsumed []int64
 	// JobToken is the JOB token — the GH_TOKEN the action passed in before
 	// the runner swapped in the minted role token. It is the token every
 	// stage job already grants `actions: write`, and reading runs needs no
@@ -102,6 +106,14 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 	if cfg.MaxSteers <= 0 {
 		cfg.MaxSteers = 1
 	}
+	consumed := make(map[int64]bool, len(cfg.AlreadyConsumed))
+	order := make([]int64, 0, len(cfg.AlreadyConsumed))
+	for _, id := range cfg.AlreadyConsumed {
+		if !consumed[id] {
+			consumed[id] = true
+			order = append(order, id)
+		}
+	}
 	return &Watcher{
 		cfg:      cfg,
 		actions:  newActionsClient(cfg.HTTPClient, cfg.APIBase, cfg.JobToken, cfg.Repo),
@@ -110,7 +122,8 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 		settle:   settle,
 		logf:     func(string, ...any) {},
 		warnf:    func(string, ...any) {},
-		consumed: map[int64]bool{},
+		consumed: consumed,
+		order:    order,
 		lastHead: cfg.Item.HeadSHA,
 		baseline: cfg.StartedAt,
 	}

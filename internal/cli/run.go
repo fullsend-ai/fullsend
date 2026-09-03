@@ -879,6 +879,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
+	// The JOB token, captured before minting swaps GH_TOKEN for the role
+	// token. The steer watcher reads the Actions API with it: that is the
+	// token every stage job already grants `actions: write`, and os.Setenv
+	// is not goroutine-safe, so the value has to be taken here rather than
+	// read from the watcher's goroutine.
+	steerJobToken := os.Getenv("GH_TOKEN")
+
 	var minted bool
 	var mintCleanup func()
 	if forgePlatform == "gitlab" {
@@ -1185,6 +1192,46 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
 
+	// The head this run started on. runStartedAt is captured at the top of
+	// runAgent by the base change; the watcher computes its delta against
+	// that same pair, so the two never disagree about when the run began.
+	runStartHeadSHA := runHeadSHA(forgePlatform)
+
+	// steerMarker records what this run absorbed; the status-notification
+	// defer writes it onto the terminal comment so the run queued behind
+	// this one can skip work already covered (ADR 0101).
+	var steerMarker statuscomment.SteerMarker
+	// steerConsumed carries the absorbed follow-up run ids across validation
+	// loop iterations, so a retry does not re-steer on them.
+	var steerConsumed []int64
+
+	// The runtime, sandbox name and timeout are not resolved yet; the
+	// iteration loop fills them in before starting the watcher. The skip
+	// check below needs none of them.
+	baseSteerOpts := steerOpts{
+		harness:       h,
+		forgePlatform: forgePlatform,
+		statusRepo:    sOpts.statusRepo,
+		statusNum:     sOpts.statusNum,
+		isPullRequest: runStartHeadSHA != "",
+		jobToken:      steerJobToken,
+		roleToken:     os.Getenv("GH_TOKEN"),
+		runStart:      runStartedAt,
+		headSHA:       runStartHeadSHA,
+		printer:       printer,
+	}
+
+	// Skip check: the run in flight ahead of this one may already have
+	// absorbed the very event that dispatched this run. Checked before the
+	// start comment and before the pre-script, whose side effects (label
+	// changes, prior-review lookups) are not free.
+	if checkSteerAlreadyHandled(ctx, baseSteerOpts) {
+		printer.StepDone(fmt.Sprintf(
+			"Update already absorbed by the run in flight (follow-up run %s); nothing to do",
+			os.Getenv("GITHUB_RUN_ID")))
+		return nil
+	}
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -1216,6 +1263,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
+				notifier.SetSteerMarker(steerMarker)
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
@@ -1890,7 +1938,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(),
-		runFacts{headSHA: runHeadSHA(forgePlatform), startedAt: runStartedAt}, fetchEnvVal); err != nil {
+		runFacts{headSHA: runStartHeadSHA, startedAt: runStartedAt}, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2196,6 +2244,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
+		// The follow-up run watcher runs beside the heartbeat: it absorbs
+		// work-item updates into this run instead of letting the run queued
+		// behind it redo the work (ADR 0101). Nil when steering is off or
+		// the runtime cannot take a message into a running session, in
+		// which case Steerable stays false and Run is single-turn as today.
+		iterSteerOpts := baseSteerOpts
+		iterSteerOpts.runtime = rt
+		iterSteerOpts.sandboxName = sandboxName
+		iterSteerOpts.timeout = timeout
+		iterSteerOpts.consumed = steerConsumed
+		steerSess := startSteerWatcher(ctx, iterSteerOpts)
+
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
@@ -2223,9 +2283,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
-			OnEvent:           contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
+			Steerable:         steerSess != nil,
+			OnEvent: steerTurnEndHandler(
+				contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector), steerSess),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+		if steerSess != nil {
+			steerSess.stop()
+			steerMarker = steerSess.marker()
+			steerConsumed = steerMarker.ConsumedRunIDs
+		}
 		lastIterElapsed = time.Since(agentStart)
 
 		// Attach content immediately before each finalize path ends the
