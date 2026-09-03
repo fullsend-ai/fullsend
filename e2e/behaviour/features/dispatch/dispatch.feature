@@ -1,7 +1,7 @@
 Feature: Harness CEL dispatch
 
   Background:
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
 
   Scenario: Issue label dispatches issue-only harness
     Given a custom harness "issue-ping" with:

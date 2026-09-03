@@ -47,7 +47,7 @@ resolve through fullsend's pinned alias table, and a bare id gets the provider f
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
 > `--keep-sandbox`), plus the placeholder-generation experiments recorded in the ADR. The WIF path
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
-> until an OpenAI organization is mapped to the pool repositories.
+> until an OpenAI organization is mapped to the test org's repositories.
 
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus

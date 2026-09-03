@@ -4,7 +4,7 @@
 Feature: Manual triage via ready-for-triage label
 
   Scenario: Triage applies ready-to-code and sandbox blocks disallowed URL
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And a dummy agent that would:
       | description      | op            | args                                                      |
       | Search for foo   | url_get       | https://www.google.com/search?q=foo                       |

@@ -150,3 +150,13 @@ func TestTokenForOrg_WithoutMint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "local-token", token)
 }
+
+func TestTokenForOrg_Exported(t *testing.T) {
+	t.Setenv("GH_TOKEN", "exported-token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	cfg := EnvConfig{UseMint: false}
+	token, err := TokenForOrg(context.Background(), cfg, "test-org")
+	require.NoError(t, err)
+	assert.Equal(t, "exported-token", token)
+}

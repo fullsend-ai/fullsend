@@ -43,13 +43,11 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-// givenKillSwitchActive sets kill_switch: true in the enrolled repo's
+// givenKillSwitchActive sets kill_switch: true in the test repo's
 // config.yaml, causing Dispatch to return an empty matrix for all agents.
-// It also marks w.KillSwitchActivated so CleanupScenario deactivates the
-// switch before the slot is reused by another scenario.
 func givenKillSwitchActive(w *world.World) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before kill-switch operations")
 	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
@@ -68,40 +66,12 @@ func givenKillSwitchActive(w *world.World) error {
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: activate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
-	w.KillSwitchActivated = true
-	return nil
-}
-
-// DeactivateKillSwitch sets kill_switch: false in the enrolled repo's
-// config.yaml. Exported so CleanupScenario (in package steps) can call
-// it during scenario teardown.
-func DeactivateKillSwitch(w *world.World) error {
-	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
-	}
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	cfg.SetKillSwitch(false)
-	merged, err := cfg.Marshal()
-	if err != nil {
-		return err
-	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
-		return fmt.Errorf("updating config: %w", err)
-	}
 	return nil
 }
 
 func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
@@ -116,11 +86,6 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 
 	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
 		return err
-	}
-
-	// Snapshot agents before modification so CleanupScenario can restore.
-	if err := snapshotAgents(w); err != nil {
-		return fmt.Errorf("snapshotting agents: %w", err)
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
@@ -159,7 +124,7 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 
 func givenCustomHarness(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
@@ -175,11 +140,6 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 
 	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
 		return err
-	}
-
-	// Snapshot agents before modification so CleanupScenario can restore.
-	if err := snapshotAgents(w); err != nil {
-		return fmt.Errorf("snapshotting agents: %w", err)
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
@@ -225,7 +185,7 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 // repo at the repo root.
 func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessName, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	var h struct {
 		Agent     string   `yaml:"agent"`
@@ -371,7 +331,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 
 func whenPullRequestOpened(w *world.World) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before PR operations")
 	}
 	w.ScenarioStart = time.Now()
 	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())

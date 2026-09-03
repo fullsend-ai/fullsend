@@ -8,9 +8,8 @@ import (
 
 // RunnerConfig holds behaviour test runner configuration from environment.
 type RunnerConfig struct {
-	SCM         string
-	CI          string
-	InstallMode string
+	SCM string
+	CI  string
 	// Environment is the mint/infra target the suite is talking to
 	// (`dev` or `stage`), from ENVIRONMENT. Empty defaults to `dev`
 	// so local `make behaviour-test` works without setting it. CI
@@ -29,7 +28,6 @@ func LoadRunnerConfig() RunnerConfig {
 	return RunnerConfig{
 		SCM:          stringsTrimOrDefault(os.Getenv("BEHAVIOUR_SCM"), "github"),
 		CI:           stringsTrimOrDefault(os.Getenv("BEHAVIOUR_CI"), "githubactions"),
-		InstallMode:  stringsTrimOrDefault(os.Getenv("BEHAVIOUR_INSTALL_MODE"), "per-repo"),
 		Environment:  stringsTrimOrDefault(os.Getenv("ENVIRONMENT"), "dev"),
 		Capabilities: splitCapabilities(os.Getenv("BEHAVIOUR_CAPABILITIES")),
 	}
@@ -56,13 +54,14 @@ func splitCapabilities(raw string) []string {
 }
 
 func (c RunnerConfig) Validate() error {
-	if c.InstallMode != "per-repo" {
-		return fmt.Errorf("behaviour tests v1 only support BEHAVIOUR_INSTALL_MODE=per-repo, got %q", c.InstallMode)
-	}
-	if c.SCM != "github" && c.SCM != "gitlab" {
+	switch c.SCM {
+	case "github", "gitlab":
+	default:
 		return fmt.Errorf("unsupported BEHAVIOUR_SCM %q", c.SCM)
 	}
-	if c.CI != "githubactions" {
+	switch c.CI {
+	case "githubactions", "gitlabci":
+	default:
 		return fmt.Errorf("unsupported BEHAVIOUR_CI %q", c.CI)
 	}
 	if c.Environment != "dev" && c.Environment != "stage" {
