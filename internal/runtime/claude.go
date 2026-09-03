@@ -479,9 +479,15 @@ func buildRunCommand(params RunParams) string {
 	)
 	if !params.Steerable {
 		// A steerable run takes its opening prompt from the mailbox
-		// instead, so that a steer is the same kind of message as the
-		// prompt and neither is visible in the sandbox's world-readable
-		// argv.
+		// instead, so a steer is the same kind of message as the prompt
+		// and neither reaches the agent CLI's argv.
+		//
+		// Precisely: the text still transits the argv of the intermediate
+		// `sh -c` that runs the mailbox `printf`, because sandbox exec
+		// wires no stdin today. What this keeps it out of is the long-lived
+		// `claude` process's own argv, which is what a `ps` during the run
+		// would show. Plumbing the exec request's stdin field is tracked as
+		// a follow-up on #6959.
 		parts = append(parts, fmt.Sprintf("'%s'", strings.ReplaceAll(claudePrompt(params), "'", "'\\''")))
 	}
 

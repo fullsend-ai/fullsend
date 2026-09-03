@@ -25,12 +25,66 @@ func newTestCodexQueue() (*codexSteerQueue, *int) {
 // queued and delivered when the current process ends.
 func TestCodexSteerQueue_EarlySteerIsNotInterrupted(t *testing.T) {
 	q, _ := newTestCodexQueue()
+	q.beginTurn()
 	if q.enqueue(SteerMessage{FollowUpRunID: 1}) {
 		t.Fatal("interrupted a process whose thread id was still unknown")
 	}
 	q.noteThreadID("01a066e2")
 	if !q.enqueue(SteerMessage{FollowUpRunID: 2}) {
-		t.Fatal("expected an interrupt once the thread id was known")
+		t.Fatal("expected an interrupt once the thread id was known and a turn was running")
+	}
+}
+
+// TestCodexSteerQueue_IdleSteerDoesNotSweep is the defect this gate exists
+// for. codex emits its single ResultEvent at stream EOF, so the runner's
+// turn-end signal IS process exit: every steer after the first turn arrives
+// while the Run loop is parked in waitForWork with nothing running.
+// Interrupting there would spend the full TERM grace killing every process
+// of the sandbox user — including anything the agent left behind — to
+// interrupt nothing, while holding the runner's sandbox lock throughout.
+func TestCodexSteerQueue_IdleSteerDoesNotSweep(t *testing.T) {
+	q, sweeps := newTestCodexQueue()
+	q.noteThreadID("01a066e2")
+	q.beginTurn()
+	q.endTurn() // the first turn finished; the loop is now in waitForWork
+
+	registerCodexSteerQueue("sbx-idle", q)
+	defer unregisterCodexSteerQueue("sbx-idle")
+
+	rt := CodexRuntime{}
+	if err := rt.Steer(context.Background(), "sbx-idle", SteerMessage{FollowUpRunID: 8, Text: "late update"}); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if *sweeps != 0 {
+		t.Errorf("swept an idle sandbox with no codex process running (%d sweeps)", *sweeps)
+	}
+
+	// The steer must still be delivered — by the resume, not the sweep.
+	turn, ok := nextCodexTurn(context.Background(), q)
+	if !ok {
+		t.Fatal("an idle steer was not picked up by the resume loop")
+	}
+	if !strings.Contains(turn.Prompt, "late update") {
+		t.Errorf("resume lost the steer text: %q", turn.Prompt)
+	}
+}
+
+// TestCodexSteerQueue_SteerDuringALiveTurnInterrupts is the other side: a
+// turn really is running, so the sweep is what stops it.
+func TestCodexSteerQueue_SteerDuringALiveTurnInterrupts(t *testing.T) {
+	q, sweeps := newTestCodexQueue()
+	q.noteThreadID("01a066e2")
+	q.beginTurn()
+
+	registerCodexSteerQueue("sbx-live", q)
+	defer unregisterCodexSteerQueue("sbx-live")
+
+	rt := CodexRuntime{}
+	if err := rt.Steer(context.Background(), "sbx-live", SteerMessage{FollowUpRunID: 9, Text: "x"}); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if *sweeps != 1 {
+		t.Errorf("a steer during a live turn did not interrupt it (%d sweeps)", *sweeps)
 	}
 }
 
@@ -79,6 +133,7 @@ func TestCodexSteerQueue_SettleRejectsLaterSteers(t *testing.T) {
 func TestCodexSteerQueue_InterruptUsesTheSweep(t *testing.T) {
 	q, sweeps := newTestCodexQueue()
 	q.noteThreadID("t")
+	q.beginTurn()
 
 	rt := CodexRuntime{}
 	registerCodexSteerQueue("sbx-codex", q)
@@ -99,6 +154,7 @@ func TestCodexSteerQueue_FailedInterruptStillQueues(t *testing.T) {
 	q := newCodexSteerQueue("sbx", nil, io.Discard)
 	q.sweep = func(sandboxExecFunc, string) (int, error) { return 0, errors.New("gateway down") }
 	q.noteThreadID("t")
+	q.beginTurn()
 
 	registerCodexSteerQueue("sbx-badsweep", q)
 	defer unregisterCodexSteerQueue("sbx-badsweep")
@@ -452,6 +508,8 @@ func TestCodexSteerQueue_InterruptsDuringTheFirstTurn(t *testing.T) {
 	if q.currentThreadID() == "" {
 		t.Fatal("thread id never reached the queue")
 	}
+
+	q.beginTurn() // the first process is running while its stream is parsed
 
 	rt := CodexRuntime{}
 	if err := rt.Steer(context.Background(), "sbx-firstturn", SteerMessage{FollowUpRunID: 3, Text: "x"}); err != nil {

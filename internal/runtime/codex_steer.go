@@ -52,9 +52,19 @@ type codexSteerQueue struct {
 	// threadID is captured from thread.started. Until it is known there is
 	// nothing to resume, so an early steer is queued rather than acted on.
 	threadID string
-	pending  []SteerMessage
-	settled  bool
-	results  []SteerResult
+	// turnRunning is true only while a codex process is actually executing.
+	// The interrupt is a sweep that kills every process of the sandbox
+	// user, so firing it with nothing running is not merely wasted work: it
+	// spends the whole TERM grace, kills anything the agent left running,
+	// and — because the runner holds sandboxMu across Steer — blocks the
+	// credential refreshers for the duration, all to interrupt nothing.
+	// It is set before each process starts rather than after, so the error
+	// is always a spurious sweep (harmless, self-correcting) rather than a
+	// missed interrupt.
+	turnRunning bool
+	pending     []SteerMessage
+	settled     bool
+	results     []SteerResult
 	// inFlight is the steer the current process was resumed for, staked by
 	// nextCodexTurn and turned into a SteerResult only once that process
 	// proves it opened the thread. It is deliberately not recorded at stake
@@ -107,11 +117,20 @@ func (q *codexSteerQueue) currentThreadID() string {
 	return q.threadID
 }
 
-// enqueue records a steer and reports whether the running process should
-// be interrupted for it. It should not be when the thread id is still
-// unknown: the process is in its first moments, there is nothing to resume
-// onto, and killing it would throw the run away rather than steer it. Such
-// a steer is delivered when the current process ends on its own instead.
+// enqueue records a steer and reports whether a running process should be
+// interrupted for it. Two conditions must both hold.
+//
+// The thread id must be known: before thread.started there is nothing to
+// resume onto, so killing the process would throw the run away rather than
+// steer it.
+//
+// And a turn must actually be running. Between turns the Run loop is parked
+// in waitForWork with no codex process alive — which on codex is the common
+// case, because its single ResultEvent arrives at stream EOF, so the
+// runner's turn-end signal IS process exit and every steer after the first
+// turn lands while idle. Interrupting there would sweep an idle sandbox for
+// nothing. When idle, recording the steer and ringing the doorbell is
+// enough: waitForWork wakes and nextCodexTurn resumes the thread with it.
 func (q *codexSteerQueue) enqueue(msg SteerMessage) (interrupt bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -119,7 +138,23 @@ func (q *codexSteerQueue) enqueue(msg SteerMessage) (interrupt bool) {
 		return false
 	}
 	q.pending = append(q.pending, msg)
-	return q.threadID != ""
+	return q.threadID != "" && q.turnRunning
+}
+
+// beginTurn marks a codex process as about to run. It is called before the
+// process starts, so a steer arriving early in a turn still interrupts it.
+func (q *codexSteerQueue) beginTurn() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.turnRunning = true
+}
+
+// endTurn marks the process as finished, so a steer arriving while the loop
+// waits for more work does not sweep a sandbox with nothing to kill.
+func (q *codexSteerQueue) endTurn() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.turnRunning = false
 }
 
 // takePending removes the next steer to deliver.
