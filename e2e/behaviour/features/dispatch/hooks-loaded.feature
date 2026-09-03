@@ -10,7 +10,7 @@ Feature: Sandbox security hooks are loaded via --settings
   runtime (capability-gated) and by unit tests.
 
   Scenario: SSRF PreToolUse hook blocks a disallowed URL
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And a custom harness "hooks-smoke" with:
       """
       agent: agents/triage.md

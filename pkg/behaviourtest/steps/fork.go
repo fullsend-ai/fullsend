@@ -12,7 +12,7 @@ import (
 )
 
 func registerForkSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^a fork "([^"]+)" of the enrolled test repository$`, func(ctx context.Context, forkName string) (context.Context, error) {
+	sc.Step(`^a fork "([^"]+)" of the test repository$`, func(ctx context.Context, forkName string) (context.Context, error) {
 		return ctx, givenFork(world.FromContext(ctx), forkName)
 	})
 	sc.Step(`^a fork pull request is opened$`, func(ctx context.Context) (context.Context, error) {
@@ -46,26 +46,9 @@ const createBranchMaxAttempts = 5
 // createBranchPoll is the delay between CreateBranch retries.
 const createBranchPoll = 2 * time.Second
 
-// givenFork creates a fork of the enrolled test repository if absent, or
-// reuses it if it already exists. The fork is created within the same
-// organization as the source repository.
-//
-// After creation, givenFork polls GetBranchRef until the fork's
-// default-branch git ref is readable. GitHub's fork API returns before
-// the fork's Git data is fully replicated; GetRepo may report a
-// default_branch name while the underlying git ref does not yet exist.
-// Without this ref-level poll, subsequent steps (e.g. CreateBranch)
-// can fail with a 409 "Git Repository is empty" error under parallel
-// godog concurrency.
-//
-// When the world uses a leased repo (w.LeasedRepoName is set), the
-// logical fork name from the Gherkin feature file is mapped to
-// {RepoName}-suffix so the fork targets the correct parent. For example,
-// Gherkin "test-repo-fork" with leased "test-repo-07" resolves to
-// "test-repo-07-fork". See resolveForkName.
 func givenFork(w *world.World, forkName string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before fork operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before fork operations")
 	}
 
 	resolved := resolveForkName(w, forkName)
@@ -149,27 +132,12 @@ func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, max
 	)
 }
 
-// resolveForkName maps a logical fork name from a Gherkin feature file to
-// the actual GitHub repository name. When a leased repo is in use
-// (w.LeasedRepoName is set), the logical name's suffix (relative to the
-// default "test-repo" base) is appended to the leased repo name.
+// resolveForkName derives the fork repo name from the ephemeral repo name.
+// The logical name from the Gherkin feature file is used as a suffix:
 //
-// Examples:
-//
-//	"test-repo-fork" + leased "test-repo-07" → "test-repo-07-fork"
-//	"test-repo-fork" + no lease             → "test-repo-fork" (unchanged)
-//	"custom-fork"    + leased "test-repo-07" → "custom-fork"   (no match)
-func resolveForkName(w *world.World, logicalName string) string {
-	if w.LeasedRepoName == "" {
-		return logicalName
-	}
-	const defaultTestRepo = "test-repo"
-	suffix := strings.TrimPrefix(logicalName, defaultTestRepo)
-	if suffix == logicalName {
-		// Logical name doesn't start with the default base — use as-is.
-		return logicalName
-	}
-	return w.RepoName + suffix
+//	w.RepoName="bt-a1b2c3d4-triage" forkName="fork" → "bt-a1b2c3d4-triage-fork"
+func resolveForkName(w *world.World, forkName string) string {
+	return w.RepoName + "-" + forkName
 }
 
 // isReplicationError reports whether err looks like a GitHub fork

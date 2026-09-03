@@ -28,7 +28,7 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 		return fmt.Errorf("no workflow trigger time: create an issue and label it first")
 	}
 	ctx := context.Background()
-	run, err := w.CI.WaitForWorkflow(ctx, w.Org, w.RepoName, install.PerRepoTriageWorkflow, w.ScenarioStart, triageWorkflowEvent(w))
+	run, err := w.CI.WaitForWorkflow(ctx, w.Org, w.RepoName, install.TriageWorkflow, w.ScenarioStart, triageWorkflowEvent(w))
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	}
 	// The agent workflow uploads `fullsend-<agent>`; follow the harness
 	// this scenario dispatched rather than assuming the triage stage.
-	artifactName := install.PerRepoAgentArtifact
+	artifactName := install.AgentArtifact
 	if w.DispatchAgent != "" {
 		artifactName = "fullsend-" + w.DispatchAgent
 	}
@@ -96,7 +96,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	}
 
 	// Reusable triage uploads artifacts on the nested agent workflow run, not the shim.
-	if agentRun, err := w.CI.FindCompletedWorkflowRun(ctx, w.Org, w.RepoName, install.PerRepoAgentWorkflow, w.ScenarioStart); err == nil && agentRun != nil {
+	if agentRun, err := w.CI.FindCompletedWorkflowRun(ctx, w.Org, w.RepoName, install.AgentWorkflow, w.ScenarioStart); err == nil && agentRun != nil {
 		if err := tryDownloadRun(agentRun.ID); err == nil {
 			w.ArtifactDir = dest
 			return nil

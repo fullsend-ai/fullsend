@@ -14,21 +14,21 @@ import (
 
 func TestClone_CopiesAllFields(t *testing.T) {
 	original := &World{
-		Org:            "test-org",
-		RepoFull:       "test-org/test-repo",
-		RepoOwner:      "test-org",
-		RepoName:       "test-repo",
-		Token:          "tok",
-		FixturesRoot:   "e2e/behaviour",
-		IssueNumber:    42,
-		PRNumber:       7,
-		DispatchAgent:  "triage",
-		ArtifactDir:    "/tmp/art",
-		ForkOwner:      "fork-org",
-		ForkRepo:       "fork-repo",
-		ForkPRNumber:   99,
-		ForkPRBranch:   "pr-branch",
-		LeasedRepoName: "test-repo-03",
+		Org:           "test-org",
+		RepoFull:      "test-org/test-repo",
+		RepoOwner:     "test-org",
+		RepoName:      "test-repo",
+		Token:         "tok",
+		FixturesRoot:  "e2e/behaviour",
+		IssueNumber:   42,
+		PRNumber:      7,
+		DispatchAgent: "triage",
+		ArtifactDir:   "/tmp/art",
+		ForkOwner:     "fork-org",
+		ForkRepo:      "fork-repo",
+		ForkPRNumber:  99,
+		ForkPRBranch:  "pr-branch",
+		ScenarioName:  "test-scenario",
 	}
 	clone := original.Clone()
 
@@ -45,7 +45,7 @@ func TestClone_CopiesAllFields(t *testing.T) {
 	assert.Equal(t, 42, clone.IssueNumber)
 	assert.Equal(t, 7, clone.PRNumber)
 	assert.Equal(t, "triage", clone.DispatchAgent)
-	assert.Equal(t, "test-repo-03", clone.LeasedRepoName)
+	assert.Equal(t, "test-scenario", clone.ScenarioName)
 }
 
 func TestClone_IndependentMutation(t *testing.T) {
@@ -79,7 +79,7 @@ func TestClone_ConcurrentFieldIndependence(t *testing.T) {
 	t.Parallel()
 
 	template := &World{
-		Config:       env.RunnerConfig{SCM: "github", CI: "githubactions", InstallMode: "per-repo"},
+		Config:       env.RunnerConfig{SCM: "github", CI: "githubactions"},
 		Org:          "test-org",
 		RepoFull:     "test-org/test-repo",
 		RepoOwner:    "test-org",
@@ -105,7 +105,7 @@ func TestClone_ConcurrentFieldIndependence(t *testing.T) {
 			defer wg.Done()
 
 			// Read shared template fields (value copies).
-			_ = w.Config.InstallMode
+			_ = w.Config.SCM
 			_ = w.FixturesRoot
 
 			// Mutate scenario-specific fields independently.
