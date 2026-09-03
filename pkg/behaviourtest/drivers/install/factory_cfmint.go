@@ -65,7 +65,7 @@ func NewCFMintFactory(
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 	}
 
-	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, logf)
+	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, e2etest.TryRunCLI, logf)
 }
 
 var _ Factory = NewCFMintFactory
@@ -76,6 +76,7 @@ func buildCFMintDriver(
 	md mintDriver,
 	client forge.Client,
 	token, binary, gcpProjectID string,
+	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) (Driver, error) {
 	ctx := context.Background()
@@ -85,9 +86,20 @@ func buildCFMintDriver(
 	}
 
 	fullsendRef := common.EnvFullsendRef()
+
+	var wifProvider string
+	if gcpProjectID != "" {
+		var wifErr error
+		wifProvider, wifErr = common.ResolveOrgWIFProvider(binary, token, org, gcpProjectID, runCLI, logf)
+		if wifErr != nil {
+			return nil, fmt.Errorf("cfmint factory: resolving org WIF provider: %w", wifErr)
+		}
+	}
+
 	e2eCfg := e2etest.EnvConfig{
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
+		WIFProvider:  wifProvider,
 	}
 	ens := newRepoEnsurer(e2eCfg, client, token, binary, fullsendRef, logf)
 

@@ -319,12 +319,16 @@ func (m *testCFMintMintDriver) Teardown(_ context.Context) error {
 	return m.teardownErr
 }
 
+func fakeInferenceStatusCLI(_, _ string, args ...string) (string, error) {
+	return `{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc"}`, nil
+}
+
 func TestBuildCFMintDriver_HappyPath(t *testing.T) {
 	mint := &testCFMintMintDriver{
 		installMintURL: "https://mint.test",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, DefaultConcurrencyValue, d.DefaultConcurrency())
@@ -335,7 +339,7 @@ func TestBuildCFMintDriver_InstallFails(t *testing.T) {
 		installErr: fmt.Errorf("deploy boom"),
 	}
 
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
 	assert.Contains(t, err.Error(), "deploy boom")
@@ -346,7 +350,7 @@ func TestBuildCFMintDriver_EmptyMintURL(t *testing.T) {
 		installMintURL: "",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, DefaultConcurrencyValue, d.DefaultConcurrency())
