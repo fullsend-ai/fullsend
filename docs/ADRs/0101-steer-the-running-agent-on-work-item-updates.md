@@ -11,6 +11,10 @@ topics:
   - runtime
 ---
 
+<!-- Builds on ADR 0098 (serialize agent runs and coalesce subsequent events),
+     open as fullsend#6909; link it as 0098-serialize-agent-runs-and-coalesce-subsequent-events.md
+     once that PR merges. -->
+
 # 101. Steer the running agent on work-item updates instead of cancelling the run
 
 Date: 2026-09-03
@@ -21,40 +25,58 @@ Accepted
 
 ## Context
 
-Every stage job in `reusable-dispatch.yml` declares `cancel-in-progress: true`. When a second
-event lands on the same work item while an agent is running — a push during a review, a comment
-during triage — the run in flight is killed and a fresh one starts from nothing. Everything the
-first run read is thrown away, and the same diff is read again from scratch.
+[ADR 0098](https://github.com/fullsend-ai/fullsend/pull/6909) adopts
+preserve-and-coalesce scheduling: the active run finishes, the execution platform
+retains one pending run for the newest matching event, and the next run reconciles
+the subject's current state. On GitHub Actions that is a subject-scoped concurrency
+group, `cancel-in-progress: false`, and the default single-pending queue. The
+dispatch half of this ADR is that policy, implemented.
 
-The complaints this produces have been filed repeatedly and from both directions: as wasted
-dispatches on a burst of pushes ([#1014](https://github.com/fullsend-ai/fullsend/issues/1014),
+Preserve-and-coalesce stops discarding work, but on its own it leaves two costs
+standing. The run in flight finishes on the state it started with and posts output
+that is already stale — a review of a commit that no longer exists, which is
+[#1207](https://github.com/fullsend-ai/fullsend/issues/1207). The pending run then
+does the full job over the same diff, which is the waste behind
+[#1014](https://github.com/fullsend-ai/fullsend/issues/1014),
 [#4960](https://github.com/fullsend-ai/fullsend/issues/4960),
-[#1422](https://github.com/fullsend-ai/fullsend/issues/1422),
-[#6573](https://github.com/fullsend-ai/fullsend/issues/6573)), and as an agent missing an update
-that arrived while it worked ([#1207](https://github.com/fullsend-ai/fullsend/issues/1207)).
-[#1637](https://github.com/fullsend-ai/fullsend/issues/1637) asked for the concurrency and cancel
-semantics to be written down after ADR 0041; this ADR is that content.
+[#1422](https://github.com/fullsend-ai/fullsend/issues/1422) and
+[#6573](https://github.com/fullsend-ai/fullsend/issues/6573). Tokens are saved only
+when the active run absorbs the retained event before the pending run starts.
 
-**Flipping `cancel-in-progress` alone does not help.** GitHub Actions allows at most one pending
-run per concurrency group by default (`queue: single`); a newer queued run replaces the pending
-one, and `cancel-in-progress: true` additionally kills the running one. With the flag off and
-nothing else changed, the run in flight finishes on the stale head and posts stale output — a
-review of a commit that no longer exists, which is exactly #1207 — and the pending run then does
-the full job anyway. Tokens are saved only when the run in flight *absorbs* the change and the
-queued run skips work already covered. Those are two separate changes, and both are needed.
-
-`queue: max` is not the answer either: it is incompatible with `cancel-in-progress: true`, and
-N pending full runs is the failure mode this design removes. `queue: single` is the right
-primitive — exactly one pending run, always representing the latest event, holding no VM.
-
-The runner has no inbound path. It runs inside a CI job that can only make outbound calls, and
-GitHub Actions has no API for delivering input to a running job.
+The runner cannot be handed that event. It runs inside a CI job that can only make
+outbound calls, and GitHub Actions has no API for delivering input to a running job.
+[ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) fixes the shape of the
+dispatch chain this has to work within, and
+[#1637](https://github.com/fullsend-ai/fullsend/issues/1637) asked for the
+concurrency semantics to be written down, which the rest of this ADR does.
 
 ## Decision
 
-A run in flight absorbs work-item updates through a **follow-up run watcher** in the runner, and
-the run queued behind it **skips work the settled run already covered**. The concurrency flip
-that makes this possible is gated on a repository variable and ships inert.
+Adopt ADR 0098's scheduling, and add an **opt-in** extension on top of it: while the
+active run holds the subject, it absorbs the retained event itself, so the pending
+run finds the work already done and exits. With the extension off — the default —
+behaviour is exactly ADR 0098's.
+
+### Relationship to ADR 0098's rejected polling option
+
+ADR 0098 rejects "poll for later events within `fullsend run`" because it would
+require every input driver to support polling and race-safe cursors, and would move
+scheduling and repeated invocation into the execution command. This design is not
+that option, and the difference is the thing to check when reviewing it:
+
+- It polls the **execution platform's own run records**, never forge events. There is
+  no cursor, no normalization, no ordering guarantee to preserve, and no input driver
+  is involved — a follow-up run is only accepted because its own `Route` job already
+  ran the normal authorization path.
+- It **invokes nothing**. Scheduling stays with the platform: every follow-up event
+  still creates its pending run, exactly as ADR 0098 requires. The active run only
+  reads what the platform already decided.
+- It is **bounded** — `max_steers` per run, and a remaining-time floor below which the
+  watcher settles rather than starting a turn it cannot finish.
+- It **never extends the active run's timeout**, which ADR 0098 states explicitly. The
+  budget is `min(stage timeout, forge token life − margin)` and the run settles inside it.
+- Each run still **reconciles the subject's current state**, as ADR 0098 requires; a
+  steer is a prompt to reconcile sooner, not a substitute for reconciling.
 
 ### Concurrency
 
@@ -66,10 +88,20 @@ concurrency:
   cancel-in-progress: ${{ vars.FULLSEND_STEER != 'true' }}
 ```
 
-Unset — the default everywhere — is today's behaviour byte for byte. Set to `"true"` in a
-consumer repository, the run in flight survives and the newer event waits as the single pending
-run `queue: single` allows. The per-role grouping is unchanged: review dispatches still do not
-cancel triage.
+<!-- DECISION PENDING: the FULLSEND_STEER gate. Exactly one of the two sentences
+     below is live; the other is deleted when the question is settled. -->
+
+**Gated (current):** unset — the default everywhere — keeps today's cancelling
+behaviour, and a consumer opts into ADR 0098's `cancel-in-progress: false` together
+with steering by setting the variable to `"true"`.
+
+**Ungated (if adopted):** `cancel-in-progress: false` unconditionally, because ADR
+0098 makes preserve-and-coalesce the policy for every agent trigger rather than an
+opt-in, and steering remains separately gated by the harness `steer.enabled` flag.
+
+`queue: max` is deliberately unused: it is incompatible with
+`cancel-in-progress: true`, and N pending full runs is the failure mode
+preserve-and-coalesce removes.
 
 ### The steer contract
 
@@ -198,7 +230,11 @@ otherwise `Run` would hold a session open for a watcher that has stopped watchin
 ### The skip check
 
 After the run, the terminal status comment carries
-`<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->`. In `fullsend run`'s pre-flight — before
+`<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->`. It is a **processing
+receipt** in the sense of the entity-first evaluation ADR
+([fullsend#6956](https://github.com/fullsend-ai/fullsend/pull/6956)): a durable,
+App-authored record on the subject of what a run actually handled, which is what
+lets a later run decide whether its own trigger is already covered. In `fullsend run`'s pre-flight — before
 the start comment and before the pre-script, whose side effects are not free — a queued run reads
 the latest **App-authored** marker on the work item and exits 0 without starting the agent when
 its own `GITHUB_RUN_ID` is listed.
@@ -238,54 +274,65 @@ The runner sets `RunParams.Steerable` only when all of: the harness opted in, th
 implements `Steerer`, and the job is a GitHub Actions run. Otherwise `Steerable` stays false and
 `Run` is single-turn exactly as today.
 
-## Consequences
+### What changes for each stage
 
-**What each stage's contract becomes.** Review produces one review per *settled* head rather than
-per dispatched head; the steered turn re-diffs A..B in-session, which is the incremental review
-at zero re-read cost, and the existing `prior_sha` output becomes the skip key. Fix counts its
-iteration once at start and treats a steered continuation as the same iteration, so the queued
-run's skip check replaces its reliance on the concurrency group for TOCTOU. Triage receives the
-new comment or title mid-run, which is #1207 closed — its `needs-info` flips must be idempotent,
-which ADR 0063 already asks for. Code stops watching once the branch is pushed, since after the
-PR exists the update belongs to fix or review.
+Review produces one review per *settled* head rather than per dispatched head; the steered turn
+re-diffs A..B in-session, which is the incremental review at zero re-read cost, and the existing
+`prior_sha` output becomes the skip key. Fix counts its iteration once at start and treats a
+steered continuation as the same iteration, so the queued run's skip check replaces its reliance
+on the concurrency group for TOCTOU. Triage receives the new comment or title mid-run, which is
+[#1207](https://github.com/fullsend-ai/fullsend/issues/1207) closed — its `needs-info` flips must
+be idempotent, which [ADR 0063](0063-polling-based-work-discovery.md) already asks for. Code stops
+watching once the branch is pushed, since after the PR exists the update belongs to fix or review.
 
-**Parsers see N results per run.** A steered run emits one `ResultEvent` per turn. Anything that
-assumed one result per iteration — the Claude parser's `seenResult`
+### Known limits
+
+**Parsers see N results per run.** A steered run emits one `ResultEvent` per turn, so anything
+that assumed one result per iteration — the Claude parser's `seenResult`
 ([#6932](https://github.com/fullsend-ai/fullsend/issues/6932)), `RunMetrics`, the agent span,
-`eval-measure` — is now 1:N. `RunMetrics.Steers` records every delivered steer, written by `Run`
-alone so the watcher's goroutine never races it.
+`eval-measure` — is now 1:N. `RunMetrics.Steers` records every acknowledged steer, written by
+`Run` alone so the watcher's goroutine never races it.
 
-**Prompt injection surface grows.** The steer text is built from PR bodies, comments and commit
-messages, and under `/fs-steer` from an authorized human. That is the same trust dispatch already
-places in that person; the sanitizer and the sandbox hooks remain the controls. An authorized
+**The prompt-injection surface grows.** The steer text is built from PR bodies, comments and
+commit messages, and under `/fs-steer` from an authorized human — the same trust dispatch already
+places in that person. The sanitizer and the sandbox hooks remain the controls; an authorized
 human pasting attacker-supplied text is still an injection, and this design does not change that.
 
-**The sandbox checkout is not refreshed.** It is a snapshot of the head the run started on.
-Refreshing it from the runner would clobber uncommitted work for the fix and code stages, which
-write to that tree, so on a head move the envelope names the new SHA and tells the agent to fetch
-it with the forge token it already holds. A runner-side refresh for read-only stages is a
+**The sandbox checkout is not refreshed.** It stays a snapshot of the head the run started on,
+because refreshing it from the runner would clobber uncommitted work for the fix and code stages,
+which write to that tree. On a head move the envelope names the new SHA and tells the agent to
+fetch it with the forge token it already holds; a runner-side refresh for read-only stages is a
 possible follow-up, not part of this decision.
 
-**GitLab is not wired.** GitLab pipelines already queue rather than cancel, and its provenance
+**GitLab is not wired.** GitLab pipelines already queue rather than cancel, and the provenance
 join is different — `GET /pipelines/:id/variables` exposes the poller-set `STAGE` and
-`RESOURCE_KEY`, already covered by the HMAC dispatch signature. The watcher is GitHub-only for
-now and says so when it declines to start.
+`RESOURCE_KEY`, already covered by the HMAC dispatch signature. The watcher is GitHub-only for now
+and says so when it declines to start.
 
-**A steer that lands after the run settled is not consumed.** The queued run does the work, and
-its skip check finds no marker for it. This is the residual race, and it is bounded by one run.
+**A steer needs time left.** The exec hosting a live session cannot be extended once running, so
+the watcher settles rather than steering when less than `MinRemaining` (default five minutes) of
+the run budget remains, and the update falls to the queued run.
 
-**Rollout is inert, and the two switches must be flipped in order.** Nothing changes until a
-consumer sets `FULLSEND_STEER=true` *and* an agent's harness sets `steer.enabled`. Repositories
-that do neither keep today's cancelling behaviour. The mixed state `FULLSEND_STEER=true` without
+### Rollout order
+
+The two switches must be flipped in order, because the mixed state `FULLSEND_STEER=true` without
 `steer.enabled` is worse than today: the run in flight finishes on stale input and posts stale
-output, and the run queued behind it does the full work again with no marker to skip on. So the
-order is: merge this change, enable `steer:` in the fleet harnesses (fullsend-ai/agents), and
-only then set the repository variable, one repository at a time, after one real steer of each
-runtime has been observed on OpenShell.
+output, and the run queued behind it does the full work again with no marker to skip on. So:
+merge this change, enable `steer:` in the fleet harnesses, and only then set the repository
+variable, one repository at a time, after one real steer of each runtime has been observed.
 
-**A steer needs time left.** The exec that hosts a live session cannot be extended once running,
-so the watcher settles instead of steering when less than `MinRemaining` (default five minutes)
-of the run budget is left; the update falls to the queued run.
+## Consequences
+
+- A burst of events on one work item produces one agent run that absorbs them plus at most one
+  short follow-up, instead of a cancelled run and a full re-run per event.
+- Agents stop posting output computed from state the subject has already moved past, which is the
+  complaint in [#1207](https://github.com/fullsend-ai/fullsend/issues/1207).
+- The runner gains a dependency on the execution platform's run records and its per-stage
+  `actions: write` grant, and steering is unavailable on any platform that exposes neither.
+- A run now holds its sandbox until it settles rather than ending at its first result, so a
+  steered run occupies a VM longer and can cost as much again per absorbed update.
+- Nothing changes for a repository that does not opt in, and the fallback in every failure path —
+  no ack, no time left, cap reached, runtime cannot steer — is exactly ADR 0098's behaviour.
 
 Related: [#5445](https://github.com/fullsend-ai/fullsend/issues/5445) and
 [#2388](https://github.com/fullsend-ai/fullsend/issues/2388) — `/fs-cancel` gains a second
