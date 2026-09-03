@@ -34,7 +34,7 @@ must be replicated independently.
 ## Level 1: Configure the default agent
 
 Use the extension points the default agent was designed for. These keep you
-in [configured-default territory](default-vs-custom.md) and require no
+in [configured-default territory](default-vs-custom-agents.md) and require no
 changes to the agent's identity-defining fields. Some rows need a thin
 `base`-composed harness (still Level 1); others need no harness at all.
 
@@ -100,7 +100,7 @@ includes:
 ## Level 3: Derive from the default agent
 
 Inherit the default harness via `base` and replace only the components that
-must differ. This is a [derived agent](default-vs-custom.md) — it tracks
+must differ. This is a [derived agent](default-vs-custom-agents.md) — it tracks
 upstream improvements for everything you did not override, but the
 components you replaced are now your responsibility.
 
@@ -118,7 +118,7 @@ slug: my-org-code                       # Custom identity
 
 See [Configuring Agent Behavior](../../guides/user/customizing-agents.md#configuration-with-base-composition)
 for the full pattern and
-[Classification by harness field](default-vs-custom.md#classification-by-harness-field)
+[Classification by harness field](default-vs-custom-agents.md#classification-by-harness-field)
 for which fields cross the derived threshold.
 
 **What you maintain:**
@@ -182,7 +182,7 @@ Before creating a derived or replacement agent for a core role, confirm:
 
 ## See also
 
-- [Default, derived, and custom agents](default-vs-custom.md) — how to
+- [Default, derived, and custom agents](default-vs-custom-agents.md) — how to
   classify your agent after making changes
 - [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
   building and registering custom agents

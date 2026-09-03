@@ -118,5 +118,5 @@ fullsend agent remove triage --fullsend-dir .fullsend
 ## See also
 
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — building custom agents and configuring existing ones
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — terminology and classification
+- [Default, derived, and custom agents](../guides/user/default-vs-custom-agents.md) — terminology and classification
 - [Configuring with skills](../guides/user/customizing-with-skills.md) — extending agents with skills

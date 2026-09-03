@@ -9,9 +9,9 @@ fullsend installation.
 
 Before building from scratch, consider whether extending a default agent would
 meet your needs. Start with the
-[escalation ladder](../../agents/topics/escalation-ladder.md) to exhaust
+[escalation ladder](escalation-ladder.md) to exhaust
 lighter options first, and see
-[Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+[Default, derived, and custom agents](default-vs-custom-agents.md)
 for the distinction and when each approach makes sense.
 
 For the config-driven approach to building or configuring agents, see

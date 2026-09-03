@@ -54,7 +54,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Custom Poller Example](user/custom-poller-example.md) — Create a custom poller workflow that invokes fullsend harness agents with a pre-computed matrix
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
+- [Default, derived, and custom agents](user/default-vs-custom-agents.md) — When configuration crosses into derived or custom agent territory
 
 ### Integrations & observability
 
