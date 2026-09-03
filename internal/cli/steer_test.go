@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/steerwatch"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -476,4 +477,48 @@ func TestSteerMarker_NilSessionIsEmpty(t *testing.T) {
 	var s *steerSession
 	assert.Empty(t, s.marker([]agentruntime.SteerResult{{FollowUpRunID: 1}}).ConsumedRunIDs)
 	assert.Empty(t, s.seenRunIDs())
+}
+
+func TestSteerMarkerForStatus(t *testing.T) {
+	m := statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}, HeadSHA: "abc"}
+
+	assert.Equal(t, m, steerMarkerForStatus("success", m))
+
+	// A run that absorbed an update and then failed produced no output for
+	// it; a receipt would make the queued run skip work nobody did.
+	for _, status := range []string{"failure", "cancelled", "skipped", ""} {
+		t.Run(status, func(t *testing.T) {
+			got := steerMarkerForStatus(status, m)
+			assert.Empty(t, got.ConsumedRunIDs)
+			assert.Empty(t, got.HeadSHA)
+		})
+	}
+}
+
+func TestMergeSteerMarkers(t *testing.T) {
+	// Iteration 1 absorbed run 101; iteration 2 absorbed nothing. The
+	// receipt for 101 must survive, or its queued run redoes the work.
+	got := mergeSteerMarkers(
+		statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}, HeadSHA: "aaa"},
+		statuscomment.SteerMarker{},
+	)
+	assert.Equal(t, []int64{101}, got.ConsumedRunIDs)
+	assert.Equal(t, "aaa", got.HeadSHA, "an iteration that steered nothing does not clear the head")
+
+	// A later head wins.
+	got = mergeSteerMarkers(
+		statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}, HeadSHA: "aaa"},
+		statuscomment.SteerMarker{ConsumedRunIDs: []int64{102}, HeadSHA: "bbb"},
+	)
+	assert.Equal(t, []int64{101, 102}, got.ConsumedRunIDs)
+	assert.Equal(t, "bbb", got.HeadSHA)
+
+	// The same run absorbed twice is recorded once.
+	got = mergeSteerMarkers(
+		statuscomment.SteerMarker{ConsumedRunIDs: []int64{101}},
+		statuscomment.SteerMarker{ConsumedRunIDs: []int64{101, 102}},
+	)
+	assert.Equal(t, []int64{101, 102}, got.ConsumedRunIDs)
+
+	assert.Empty(t, mergeSteerMarkers(statuscomment.SteerMarker{}, statuscomment.SteerMarker{}).ConsumedRunIDs)
 }

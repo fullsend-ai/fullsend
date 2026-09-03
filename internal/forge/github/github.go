@@ -3427,30 +3427,49 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
+// maxWorkflowJobPages bounds the job listing. 100 pages of 100 jobs is far
+// past any real matrix and stops a paging bug from looping forever.
+const maxWorkflowJobPages = 100
+
 // ListWorkflowRunJobs returns the jobs within a workflow run.
+//
+// Paginated: a caller looking for one job by name — the steer watcher's
+// provenance checks do exactly that — would otherwise silently miss it on a
+// run whose matrix expanded past the first page, and read the absence as a
+// verdict.
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
-	var result struct {
-		Jobs []struct {
-			ID         int    `json:"id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"jobs"`
-	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
-	}
-	jobs := make([]forge.WorkflowJob, len(result.Jobs))
-	for i, j := range result.Jobs {
-		jobs[i] = forge.WorkflowJob{
-			ID:         j.ID,
-			Name:       j.Name,
-			Status:     j.Status,
-			Conclusion: j.Conclusion,
+	var jobs []forge.WorkflowJob
+
+	for page := 1; page <= maxWorkflowJobPages; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100&page=%d",
+			owner, repo, runID, page))
+		if err != nil {
+			return nil, fmt.Errorf("list workflow run jobs: %w", err)
+		}
+		var result struct {
+			TotalCount int `json:"total_count"`
+			Jobs       []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+		}
+		for _, j := range result.Jobs {
+			jobs = append(jobs, forge.WorkflowJob{
+				ID:         j.ID,
+				Name:       j.Name,
+				Status:     j.Status,
+				Conclusion: j.Conclusion,
+			})
+		}
+		// A short page is the last page. total_count is also consulted so a
+		// server that fills the final page exactly still terminates.
+		if len(result.Jobs) < 100 || (result.TotalCount > 0 && len(jobs) >= result.TotalCount) {
+			break
 		}
 	}
 	return jobs, nil

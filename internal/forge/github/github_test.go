@@ -4634,3 +4634,48 @@ func TestGetWorkflowRun_CarriesProvenance(t *testing.T) {
 	require.Len(t, run.ReferencedWorkflows, 1)
 	assert.Equal(t, "abc", run.ReferencedWorkflows[0].SHA)
 }
+
+func TestListWorkflowRunJobs_Paginates(t *testing.T) {
+	// A large matrix pushes the stage job onto page 2. A caller looking for
+	// one job by name must not read its absence from page 1 as a verdict.
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		jobs := make([]map[string]any, 0, 100)
+		if page == "1" {
+			for i := 0; i < 100; i++ {
+				jobs = append(jobs, map[string]any{"id": i, "name": fmt.Sprintf("matrix-%d", i),
+					"status": "completed", "conclusion": "success"})
+			}
+		} else {
+			jobs = append(jobs, map[string]any{"id": 999, "name": "dispatch / Review",
+				"status": "in_progress", "conclusion": ""})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 101, "jobs": jobs})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "dispatch / Review", jobs[100].Name)
+}
+
+func TestListWorkflowRunJobs_SinglePageStops(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "jobs": []map[string]any{
+			{"id": 1, "name": "dispatch / Route", "status": "completed", "conclusion": "success"},
+			{"id": 2, "name": "dispatch / Review", "status": "queued"},
+		}})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "a short page is the last page")
+	assert.Len(t, jobs, 2)
+}
