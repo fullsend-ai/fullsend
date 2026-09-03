@@ -124,7 +124,7 @@ cannot write:
 |---|---|---|
 | 1 | Same repository | implicit in the API path |
 | 2 | `path` is the shim and `event` is a work-item update (`issue_comment`, `issues`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`) | `push`, `pull_request`, `workflow_dispatch`, and any other workflow |
-| 3 | `referenced_workflows` (path, ref, sha) equals my own run's | a foreign or renamed reusable workflow, by inequality — no version knowledge needed |
+| 3 | `referenced_workflows` (path and ref) equals my own run's | a foreign or renamed reusable workflow, or one at another ref, by inequality — no version knowledge needed. The sha is not compared: a branch-pinned shim (`@main`, as on this repository) resolves to a new sha whenever the branch advances, which would drop every steer there |
 | 4 | The candidate's **`Route` job** concluded `success`, and the run was created after mine started | an unauthorized actor; a replayed old run |
 | 5 | My stage's job has `conclusion != "skipped"` | a fork author's `/fs-steer`, whose run has every stage job skipped |
 | 6 | Bound to my work item: `pull_requests[]`, else the shim's `run-name` as `display_title` | another item's run |
@@ -274,8 +274,18 @@ now and says so when it declines to start.
 **A steer that lands after the run settled is not consumed.** The queued run does the work, and
 its skip check finds no marker for it. This is the residual race, and it is bounded by one run.
 
-**Rollout is inert.** Nothing changes until a consumer sets `FULLSEND_STEER=true` *and* an agent's
-harness sets `steer.enabled`. Repositories that do neither keep today's cancelling behaviour.
+**Rollout is inert, and the two switches must be flipped in order.** Nothing changes until a
+consumer sets `FULLSEND_STEER=true` *and* an agent's harness sets `steer.enabled`. Repositories
+that do neither keep today's cancelling behaviour. The mixed state `FULLSEND_STEER=true` without
+`steer.enabled` is worse than today: the run in flight finishes on stale input and posts stale
+output, and the run queued behind it does the full work again with no marker to skip on. So the
+order is: merge this change, enable `steer:` in the fleet harnesses (fullsend-ai/agents), and
+only then set the repository variable, one repository at a time, after one real steer of each
+runtime has been observed on OpenShell.
+
+**A steer needs time left.** The exec that hosts a live session cannot be extended once running,
+so the watcher settles instead of steering when less than `MinRemaining` (default five minutes)
+of the run budget is left; the update falls to the queued run.
 
 Related: [#5445](https://github.com/fullsend-ai/fullsend/issues/5445) and
 [#2388](https://github.com/fullsend-ai/fullsend/issues/2388) — `/fs-cancel` gains a second
