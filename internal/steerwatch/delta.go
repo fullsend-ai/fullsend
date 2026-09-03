@@ -47,6 +47,11 @@ type delta struct {
 	headMoved bool
 	newHead   string
 	lines     []string
+	// issue is the issue as it was read while building this delta. It
+	// becomes the new baseline once — and only once — the steer carrying
+	// these lines has been delivered; see markSteered. Nil for a pull
+	// request, whose baseline is the head SHA.
+	issue *forge.Issue
 }
 
 func (d delta) empty() bool { return !d.headMoved && len(d.lines) == 0 }
@@ -121,6 +126,10 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time) (delta, er
 	if err != nil {
 		return d, fmt.Errorf("reading issue: %w", err)
 	}
+	// Recorded whether or not anything changed, so a delivered steer can
+	// move the baseline forward to exactly the state the agent was told
+	// about — no more, no less.
+	d.issue = issue
 	if issue.Title != w.cfg.Item.Title {
 		d.lines = append(d.lines, fmt.Sprintf("Title is now: %s", issue.Title))
 	}
