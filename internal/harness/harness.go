@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -219,6 +220,57 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
+// SteerConfig controls the follow-up run watcher (ADR 0101). When enabled
+// and the selected runtime implements runtime.Steerer, the runner keeps the
+// agent session open and delivers work-item updates that arrive mid-run
+// instead of letting a queued follow-up run redo the work. Disabled by
+// default: enabling it changes how long a run holds its VM.
+type SteerConfig struct {
+	Enabled bool `yaml:"enabled,omitempty"` // default: false (opt-in)
+	// MaxSteers caps how many updates one run absorbs. Beyond the cap the
+	// run settles and the queued follow-up run does the work. 0 = default (2).
+	MaxSteers int `yaml:"max_steers,omitempty"`
+	// PollIntervalSeconds is how often the watcher lists follow-up runs.
+	// 0 = default (30). Lower values cost Actions API quota; a turn-end
+	// event triggers an immediate poll regardless of this interval.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds,omitempty"`
+}
+
+// DefaultSteerMaxSteers is the per-run steer cap when max_steers is unset.
+// Two covers the burst patterns the design was written against (#6573,
+// #4960) without letting one run absorb an indefinitely active work item.
+const DefaultSteerMaxSteers = 2
+
+// DefaultSteerPollInterval is the follow-up run poll interval when
+// poll_interval_seconds is unset.
+const DefaultSteerPollInterval = 30 * time.Second
+
+// maxSteerPollInterval bounds poll_interval_seconds. A longer interval than
+// this makes a steer arrive after most runs have already settled.
+const maxSteerPollInterval = 10 * time.Minute
+
+// SteerEnabled reports whether the follow-up run watcher is configured on.
+func (h *Harness) SteerEnabled() bool {
+	return h.Steer != nil && h.Steer.Enabled
+}
+
+// SteerMaxSteers returns the per-run steer cap, applying the default.
+func (h *Harness) SteerMaxSteers() int {
+	if h.Steer == nil || h.Steer.MaxSteers <= 0 {
+		return DefaultSteerMaxSteers
+	}
+	return h.Steer.MaxSteers
+}
+
+// SteerPollInterval returns the follow-up run poll interval, applying the
+// default.
+func (h *Harness) SteerPollInterval() time.Duration {
+	if h.Steer == nil || h.Steer.PollIntervalSeconds <= 0 {
+		return DefaultSteerPollInterval
+	}
+	return time.Duration(h.Steer.PollIntervalSeconds) * time.Second
+}
+
 // BoolDefault returns the value of a *bool, or the default if nil.
 func BoolDefault(b *bool, def bool) bool {
 	if b == nil {
@@ -348,6 +400,7 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // follow-up run watcher (ADR 0101); default off
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
@@ -530,6 +583,18 @@ func (h *Harness) Validate() error {
 		}
 		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
 			return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
+		}
+	}
+	if h.Steer != nil {
+		if h.Steer.MaxSteers < 0 {
+			return fmt.Errorf("steer.max_steers must not be negative, got %d", h.Steer.MaxSteers)
+		}
+		if h.Steer.PollIntervalSeconds < 0 {
+			return fmt.Errorf("steer.poll_interval_seconds must not be negative, got %d", h.Steer.PollIntervalSeconds)
+		}
+		if h.SteerPollInterval() > maxSteerPollInterval {
+			return fmt.Errorf("steer.poll_interval_seconds must be at most %d, got %d",
+				int(maxSteerPollInterval.Seconds()), h.Steer.PollIntervalSeconds)
 		}
 	}
 	if err := h.validateForge(); err != nil {

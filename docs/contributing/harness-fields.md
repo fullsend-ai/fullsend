@@ -61,6 +61,7 @@ per-overlay:
 | `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
+| `steer`            | Follow-up run watcher settings are operational, not forge-specific (ADR-0101) |
 
 ## Merge and inheritance rules
 
