@@ -140,6 +140,18 @@ func TestAgentNewDryRunWritesNothing(t *testing.T) {
 	if !strings.Contains(out, "Nothing was written") {
 		t.Errorf("dry run should say nothing was written:\n%s", out)
 	}
+	// A dry run that reports nothing is useless: it must list what would be
+	// created and show the rendered bodies.
+	for _, want := range []string{
+		"harness/lint-docs.yaml",
+		"agents/lint-docs.md",
+		"--- harness/lint-docs.yaml ---",
+		"role: triage",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run output should contain %q:\n%s", want, out)
+		}
+	}
 	if after := treeSnapshot(t, dir); after != before {
 		t.Errorf("dry run modified the directory\nbefore: %s\nafter:  %s", before, after)
 	}

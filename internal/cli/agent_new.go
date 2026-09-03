@@ -222,8 +222,15 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 
 	if f.dryRun {
 		printer.StepInfo(fmt.Sprintf("Dry run: would create agent %q in %s", opts.Name, f.fullsendDir))
-		for _, f := range result.Written {
-			printer.Raw("  " + f + "\n")
+		for _, w := range result.Written {
+			printer.Raw("  " + w + "\n")
+		}
+		for _, s := range result.SkippedShared {
+			printer.Raw("  " + s + "  (already present, would be left unchanged)\n")
+		}
+		for _, rf := range result.Rendered {
+			printer.Raw("\n--- " + rf.Path + " ---\n")
+			printer.Raw(string(rf.Data))
 		}
 		printer.StepInfo("Nothing was written and no agent was registered")
 		return nil

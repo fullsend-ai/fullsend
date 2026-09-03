@@ -98,16 +98,26 @@ trigger: >
     && event.transition.label.action == "added"
 ```
 
-**Run on a slash command (on a PR, non-fork):**
+**Run on a slash command (issues and non-fork PRs):**
 ```yaml
 trigger: >
   event.transition.kind == "comment_added"
     && has(event.transition.comment.command)
     && event.transition.comment.command == "/my-command"
-    && event.entity.kind == "work_item"
-    && event.state.change_proposal != null
-    && !event.state.change_proposal.is_fork
+    && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
 ```
+
+This is exactly what [`fullsend agent new --on command:/my-command`](../../cli/agent.md#agent-new)
+emits, so a generated trigger and a hand-written one stay the same expression.
+
+Use `!has(...)` rather than `!= null` for the fork guard. `state.change_proposal`
+is **absent** on a comment posted to a plain issue, not present-and-null — the
+[NormalizedEvent schema](../../normative/normalized-event/v1/normalized-event.schema.json)
+requires only `labels` under `state`. Comparing an absent key against `null`
+raises a missing-key error, and dispatch reports that as
+`::error:: harness dispatch: skipping agent <name>: trigger eval failed` on
+**every** issue comment in the repository, so the agent looks permanently
+broken. The `!has(...)` form evaluates cleanly on both surfaces.
 
 **Run when a PR is opened or updated (non-fork):**
 ```yaml

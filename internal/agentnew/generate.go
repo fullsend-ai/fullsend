@@ -14,8 +14,11 @@ import (
 // Result describes what Generate did, so the caller can print next steps and
 // tests can assert on it without reparsing output.
 type Result struct {
-	// Written lists the files created, in generation order.
+	// Written lists the files created, in generation order. On a dry run it
+	// lists what would have been created.
 	Written []string
+	// Rendered carries the same files with their bodies, for --dry-run.
+	Rendered []File
 	// SkippedShared lists shared scaffold assets that were already present
 	// and therefore left alone.
 	SkippedShared []string
@@ -72,6 +75,13 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 	if err := validateInTempTree(absDir, opts, files, result); err != nil {
 		return nil, err
 	}
+
+	// Planned before the write loop so --dry-run can report exactly what a
+	// real run would create, including the rendered bodies.
+	for _, f := range writable {
+		result.Written = append(result.Written, f.Path)
+		result.Rendered = append(result.Rendered, f)
+	}
 	if dryRun {
 		return result, nil
 	}
@@ -86,7 +96,6 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 		if err := os.WriteFile(path, f.Data, os.FileMode(f.Mode)); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", f.Path, err)
 		}
-		result.Written = append(result.Written, f.Path)
 	}
 	return result, nil
 }

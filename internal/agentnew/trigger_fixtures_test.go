@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
@@ -182,4 +183,57 @@ func TestLabelPreset(t *testing.T) {
 	if !got {
 		t.Error("label preset did not match the ready-to-code-labeled fixture")
 	}
+}
+
+// TestCommandPresetMatchesTheReferenceDoc keeps the generator and the
+// documentation from drifting apart. The reference page tells users to write
+// this expression by hand; `agent new --on command:` emits it for them. If
+// either changes without the other, this fails.
+func TestCommandPresetMatchesTheReferenceDoc(t *testing.T) {
+	const docPath = "../../docs/guides/user/cel-triggers-reference.md"
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const heading = "**Run on a slash command (issues and non-fork PRs):**"
+	idx := strings.Index(string(data), heading)
+	if idx < 0 {
+		t.Fatalf("could not find the slash-command section in %s", docPath)
+	}
+	block, ok := firstYAMLBlock(string(data)[idx:])
+	if !ok {
+		t.Fatalf("could not find a yaml block after %q", heading)
+	}
+
+	// The doc uses a folded scalar (trigger: >) and two-space continuation;
+	// compare the expression's significant tokens, not its layout.
+	docExpr := strings.TrimPrefix(strings.TrimSpace(block), "trigger: >")
+	preset, err := ExpandTrigger("command:/my-command", "irrelevant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normaliseCEL(docExpr) != normaliseCEL(preset) {
+		t.Errorf("the reference doc and the --on command: preset have drifted\n doc: %s\npreset: %s",
+			normaliseCEL(docExpr), normaliseCEL(preset))
+	}
+}
+
+func firstYAMLBlock(s string) (string, bool) {
+	start := strings.Index(s, "```yaml\n")
+	if start < 0 {
+		return "", false
+	}
+	rest := s[start+len("```yaml\n"):]
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		return "", false
+	}
+	return rest[:end], true
+}
+
+// normaliseCEL collapses all whitespace so layout differences between a
+// folded YAML scalar and generated text do not matter.
+func normaliseCEL(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

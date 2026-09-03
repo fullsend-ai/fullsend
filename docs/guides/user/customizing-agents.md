@@ -8,6 +8,8 @@ disabling agents.
 For a quick overview of all customization options, see
 [Customizing Agents](customizing-overview.md). For the complete harness field
 reference, see [Harness Field Reference](../../reference/harness-reference.md).
+To create a new agent rather than configure an existing one, start with
+[`fullsend agent new`](../../cli/agent.md#agent-new).
 
 ## What you can configure
 
