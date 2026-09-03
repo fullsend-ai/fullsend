@@ -397,7 +397,10 @@ func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
 
 	m := sess.marker()
 	assert.Empty(t, m.ConsumedRunIDs, "nothing was steered")
-	assert.Equal(t, "", m.HeadSHA, "an issue-shaped run carries no head")
+	// The head comes from the forge, not the environment: PR_HEAD_SHA is
+	// set only on the deprecated per-org dispatch path.
+	assert.Equal(t, "aaa111", m.HeadSHA)
+	assert.False(t, sess.baseline().IsZero(), "the next iteration inherits the delta window")
 }
 
 func TestStartSteerWatcher_AmbiguousStageFailsClosed(t *testing.T) {

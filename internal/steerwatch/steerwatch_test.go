@@ -181,7 +181,11 @@ type stubItems struct {
 	comments []forge.IssueComment
 	reviews  []forge.PullRequestReview
 	headSHA  string
-	err      error
+	// notAPR makes GetPullRequestHeadSHA report ErrNotFound, which is how
+	// the forge answers for an issue number and how Start tells the two
+	// kinds of work item apart.
+	notAPR bool
+	err    error
 }
 
 func (s *stubItems) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
@@ -201,6 +205,9 @@ func (s *stubItems) ListIssueComments(context.Context, string, string, int) ([]f
 func (s *stubItems) GetPullRequestHeadSHA(context.Context, string, string, int) (string, error) {
 	if s.err != nil {
 		return "", s.err
+	}
+	if s.notAPR {
+		return "", fmt.Errorf("get pull request: %w", forge.ErrNotFound)
 	}
 	return s.headSHA, nil
 }
