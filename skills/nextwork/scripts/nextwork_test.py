@@ -20,10 +20,12 @@ from nextwork import (  # noqa: E402
     REVIEW_BOT_LOGIN,
     GhFetcher,
     RefError,
+    _can_auto_apply,
     _format_item_id,
     _format_item_table,
     _format_mutation_line,
     _is_agent_bot_comment,
+    _is_auto_apply_action,
     _is_trusted_fs_commenter,
     _item_type_label,
     _item_type_sort_key,
@@ -2247,6 +2249,47 @@ class TestItemTypeHelpers(unittest.TestCase):
         )
 
 
+class TestAutoApplyHelpers(unittest.TestCase):
+    def test_is_auto_apply_assign(self):
+        self.assertTrue(_is_auto_apply_action("assign:self"))
+
+    def test_is_auto_apply_comment(self):
+        self.assertTrue(_is_auto_apply_action("comment:/fs-review"))
+
+    def test_is_auto_apply_remove_label(self):
+        self.assertTrue(_is_auto_apply_action("remove-label:blocked"))
+
+    def test_is_not_auto_apply_decision(self):
+        self.assertFalse(_is_auto_apply_action("decision: close this issue"))
+
+    def test_is_not_auto_apply_freetext(self):
+        self.assertFalse(_is_auto_apply_action("Break this issue into smaller sub-issues"))
+
+    def test_can_auto_apply_all_trivial(self):
+        item = {"suggested_actions": ["assign:self", "comment:/fs-code"]}
+        self.assertTrue(_can_auto_apply(item))
+
+    def test_can_auto_apply_single_trivial(self):
+        item = {"suggested_actions": ["assign:self"]}
+        self.assertTrue(_can_auto_apply(item))
+
+    def test_cannot_auto_apply_mixed(self):
+        item = {"suggested_actions": ["assign:self", "Review and decide the next step"]}
+        self.assertFalse(_can_auto_apply(item))
+
+    def test_cannot_auto_apply_empty(self):
+        item = {"suggested_actions": []}
+        self.assertFalse(_can_auto_apply(item))
+
+    def test_cannot_auto_apply_missing(self):
+        item = {}
+        self.assertFalse(_can_auto_apply(item))
+
+    def test_cannot_auto_apply_human_only(self):
+        item = {"suggested_actions": ["Resolve merge conflicts"]}
+        self.assertFalse(_can_auto_apply(item))
+
+
 class TestFormatItemTable(unittest.TestCase):
     def test_table_has_header_and_rows(self):
         items = [
@@ -2315,6 +2358,82 @@ class TestFormatItemTable(unittest.TestCase):
         ]
         lines = _format_item_table(items, "acme/widget")
         self.assertIn("Title \\| with pipe", lines[2])
+
+    def test_table_auto_apply_indicator_present(self):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "Needs assignment",
+                "url": "https://github.com/acme/widget/issues/1",
+                "reason": "Unassigned; no automation signal",
+                "suggested_actions": ["assign:self"],
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        self.assertIn("[auto apply]", lines[2])
+
+    def test_table_auto_apply_indicator_absent_for_human_action(self):
+        items = [
+            {
+                "kind": "pull",
+                "is_draft": True,
+                "repo": "acme/widget",
+                "number": 5,
+                "title": "WIP fix",
+                "url": "https://github.com/acme/widget/pull/5",
+                "reason": "Draft PR; mark ready for review when done",
+                "suggested_actions": ["Mark ready for review when complete"],
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        self.assertNotIn("[auto apply]", lines[2])
+
+    def test_table_auto_apply_indicator_absent_when_no_actions(self):
+        items = [
+            {
+                "kind": "issue",
+                "repo": "acme/widget",
+                "number": 1,
+                "title": "Blocked item",
+                "url": "https://github.com/acme/widget/issues/1",
+                "reason": "Blocked by open issue(s)",
+                "suggested_actions": [],
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        self.assertNotIn("[auto apply]", lines[2])
+
+    def test_table_mixed_auto_apply_rows(self):
+        items = [
+            {
+                "kind": "pull",
+                "is_draft": False,
+                "repo": "acme/widget",
+                "number": 99,
+                "title": "Add feature",
+                "url": "https://github.com/acme/widget/pull/99",
+                "reason": "Stale review; re-trigger",
+                "suggested_actions": ["comment:/fs-review"],
+            },
+            {
+                "kind": "pull",
+                "is_draft": True,
+                "repo": "acme/widget",
+                "number": 50,
+                "title": "WIP fix",
+                "url": "https://github.com/acme/widget/pull/50",
+                "reason": "Draft PR; mark ready when done",
+                "suggested_actions": ["Mark ready for review when complete"],
+            },
+        ]
+        lines = _format_item_table(items, "acme/widget")
+        data_rows = lines[2:]
+        # PR #99 has auto-apply action
+        self.assertIn("[auto apply]", data_rows[0])
+        # Draft PR #50 has human action
+        self.assertNotIn("[auto apply]", data_rows[1])
 
 
 class TestFormatMutationLine(unittest.TestCase):
@@ -2618,6 +2737,14 @@ class TestFormatOutputs(unittest.TestCase):
         draft_pos = out.index("[Draft PR #50]")
         self.assertLess(pr_pos, issue_pos)
         self.assertLess(issue_pos, draft_pos)
+        # Auto-apply indicator on trivial actions, absent on human-decision items
+        lines = out.split("\n")
+        pr_line = [ln for ln in lines if "[PR #99]" in ln][0]
+        issue_line = [ln for ln in lines if "[Issue #10]" in ln][0]
+        draft_line = [ln for ln in lines if "[Draft PR #50]" in ln][0]
+        self.assertIn("[auto apply]", pr_line)
+        self.assertIn("[auto apply]", issue_line)
+        self.assertNotIn("[auto apply]", draft_line)
 
     def test_markdown_empty_do_now(self):
         """Empty do-now section shows placeholder, no table header."""

@@ -180,6 +180,10 @@ like production dispatch: first whitespace token of the first comment line.
    - When referencing items in prose summaries, use typed prefixes
      (`Issue #N`, `PR #N`, `Draft PR #N`) and include the item title.
      Match the script's `--format markdown` table layout.
+   - When listing next actions, append `[auto apply]` to actions that
+     `--apply` can perform automatically (assign, slash-command comment,
+     label removal). Omit the indicator for actions that require a human
+     decision or manual intervention.
    - Remaining `assign:self` and `remove-label:blocked` suggestions (after
      step 4) are trivial side-actions — include them when offering apply.
    - "Decisions only": re-run with `--apply --confirmed --decisions-only` —

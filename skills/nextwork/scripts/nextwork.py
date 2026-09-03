@@ -2441,6 +2441,17 @@ def format_json_output(
     return json.dumps(payload, indent=2)
 
 
+def _is_auto_apply_action(action: str) -> bool:
+    """Return True if ``action`` can be performed automatically by ``--apply``."""
+    return action.startswith(("assign:", "comment:", "remove-label:"))
+
+
+def _can_auto_apply(item: dict[str, Any]) -> bool:
+    """Return True when every suggested action on *item* is auto-apply-able."""
+    actions = item.get("suggested_actions") or []
+    return bool(actions) and all(_is_auto_apply_action(a) for a in actions)
+
+
 def _item_type_label(item: dict[str, Any]) -> str:
     """Return ``Issue``, ``PR``, or ``Draft PR`` based on kind and draft status."""
     if item["kind"] == "issue":
@@ -2483,6 +2494,8 @@ def _format_item_table(items: list[dict[str, Any]], default_repo: str) -> list[s
         item_id = _format_item_id(item, default_repo)
         title = item["title"].replace("|", "\\|")
         reason = item["reason"].replace("|", "\\|")
+        if _can_auto_apply(item):
+            reason = f"{reason} [auto apply]"
         lines.append(f"| {item_id} | {title} | {reason} |")
     return lines
 
