@@ -179,7 +179,8 @@ like production dispatch: first whitespace token of the first comment line.
      only if the user asked, or pass `--show-blocked`.
    - When referencing items in prose summaries, use typed prefixes
      (`Issue #N`, `PR #N`, `Draft PR #N`) and include the item title.
-     Match the script's `--format markdown` table layout.
+     Items within each section are ordered PRs, then Issues, then
+     Draft PRs. Match the script's `--format markdown` table layout.
    - When listing next actions, append `[auto apply]` to actions that
      `--apply` can perform automatically (assign, slash-command comment,
      label removal). Omit the indicator for actions that require a human
