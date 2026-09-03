@@ -76,7 +76,7 @@ func ProvisionInference(
 // runtime. Each call uses a unique temp manifest path so concurrent
 // scenarios don't collide; repos install creates the file automatically.
 func RunReposInstall(
-	binary, token, target, mintURL, fullsendRef, gcpProjectID string,
+	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
@@ -98,6 +98,9 @@ func RunReposInstall(
 	}
 	if project := strings.TrimSpace(gcpProjectID); project != "" {
 		args = append(args, "--inference-project", project)
+	}
+	if wif := strings.TrimSpace(wifProvider); wif != "" {
+		args = append(args, "--inference-wif-provider", wif)
 	}
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))
