@@ -176,7 +176,7 @@ func diffLabels(before, after []string) (added, removed []string) {
 // and code stages, which write to that tree, so on a head move the envelope
 // names the new SHA and tells the agent to fetch it with the forge token it
 // already holds, rather than the runner rewriting the tree underneath it.
-func (w *Watcher) buildText(runs []workflowRun, d delta) (string, int) {
+func (w *Watcher) buildText(runs []forge.WorkflowRun, d delta) (string, int) {
 	var b strings.Builder
 	b.WriteString("The work item you are running against was updated while you were working. ")
 	b.WriteString("Absorb this update into your current task instead of finishing on the state you started with.\n\n")
@@ -186,7 +186,7 @@ func (w *Watcher) buildText(runs []workflowRun, d delta) (string, int) {
 	events := map[string]bool{}
 	for _, r := range runs {
 		ids = append(ids, fmt.Sprintf("%d", r.ID))
-		if a := r.actorLogin(); a != "" {
+		if a := actorLogin(r); a != "" {
 			actors[a] = true
 		}
 		events[r.Event] = true

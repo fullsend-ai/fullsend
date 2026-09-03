@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
@@ -39,14 +38,15 @@ const steerTurnEndBuffer = 16
 // with. Both are variables so tests can substitute a stub; production always
 // gets the live GitHub client holding the minted role token.
 var (
-	steerItemReader   = func(token string) steerwatch.ItemReader { return github.New(token) }
-	steerMarkerClient = func(token string) steerMarkerReader { return github.New(token) }
+	// steerActionsReader reads the execution platform's run records with the
+	// JOB token — the GH_TOKEN the action passed in, which is the token
+	// every stage job already grants `actions: write`.
+	steerActionsReader = func(token string) steerwatch.ActionsReader { return newGitHubLiveClient(token, "") }
+	// steerItemReader and steerMarkerClient read the work item with the
+	// minted role token.
+	steerItemReader   = func(token string) steerwatch.ItemReader { return newGitHubLiveClient(token, "") }
+	steerMarkerClient = func(token string) steerMarkerReader { return newGitHubLiveClient(token, "") }
 )
-
-// steerAPIBase is the GitHub REST root the Actions API is read from.
-// GITHUB_ACTIONS sets GITHUB_API_URL on every runner, and it differs on
-// GitHub Enterprise Server, so it is read rather than assumed.
-func steerAPIBase() string { return os.Getenv("GITHUB_API_URL") }
 
 // steerSession is the watcher wiring for one agent iteration: the watcher
 // itself, the channel the runtime's turn ends arrive on, and the goroutine
@@ -194,13 +194,11 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		PollInterval:    o.harness.SteerPollInterval(),
 		DeltaBaseline:   o.baseline,
 		AlreadyConsumed: o.consumed,
-		JobToken:        o.jobToken,
-		APIBase:         steerAPIBase(),
 		Item: steerwatch.WorkItem{
 			Number:  o.statusNum,
 			HeadSHA: o.headSHA,
 		},
-	}, steerItemReader(o.roleToken), deliver, settle)
+	}, steerActionsReader(o.jobToken), steerItemReader(o.roleToken), deliver, settle)
 
 	w.SetLogFunc(func(format string, args ...any) {
 		o.printer.StepInfo(fmt.Sprintf(format, args...))
@@ -209,7 +207,9 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		o.printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
-	if err := w.Start(ctx, o.harness.Slug); err != nil {
+	// GITHUB_JOB (review, fix, ...) names a stage job; the slug names a
+	// matrix agent's job.
+	if err := w.Start(ctx, os.Getenv("GITHUB_JOB"), o.harness.Slug); err != nil {
 		o.printer.StepWarn("Steering disabled: " + err.Error())
 		return nil
 	}

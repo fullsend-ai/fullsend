@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/forge/github"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
@@ -275,23 +276,62 @@ func newWatcher(t *testing.T, api *fakeAPI, items ItemReader, rec *recorder, mut
 		MaxSteers:    2,
 		PollInterval: time.Millisecond,
 		Item:         WorkItem{IsPullRequest: true, Number: 7, HeadSHA: "aaa111"},
-		APIBase:      srv.URL,
-		JobToken:     "job-token",
 	}
 	if mutate != nil {
 		mutate(&cfg)
 	}
 
-	w := New(cfg, items, rec.deliver, rec.settle)
+	// A real forge client pointed at the fake API, so the adapter's own
+	// decoding is exercised rather than stubbed past.
+	w := New(cfg, testGitHubClient(srv.URL), items, rec.deliver, rec.settle)
 	require.NoError(t, w.Start(context.Background(), "review"))
 	return w
 }
 
-// decodeInto round-trips a fixture map through JSON so tests exercise the
-// same decoding the API client does.
-func decodeInto(t *testing.T, v any, out any) {
-	t.Helper()
-	raw, err := json.Marshal(v)
-	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal(raw, out))
+// testGitHubClient is a forge client pointed at the fake API, with its retry
+// backoff collapsed so a test that exercises a 5xx path does not sleep
+// through the real schedule.
+func testGitHubClient(baseURL string) *github.LiveClient {
+	return github.New("job-token").WithBaseURL(baseURL).
+		WithAfterFunc(func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- time.Now()
+			return ch
+		})
+}
+
+// forgeRun builds the decoded run the check functions take, from the same
+// options runJSON renders on the wire. The wire-to-forge decoding itself is
+// exercised through the real adapter wherever a test goes via the fake API.
+func forgeRun(o runOpts) forge.WorkflowRun {
+	if o.path == "" {
+		o.path = shimPath
+	}
+	if o.event == "" {
+		o.event = "issue_comment"
+	}
+	if o.created == "" {
+		o.created = "2026-09-03T10:05:00Z"
+	}
+	if o.refs == nil {
+		o.refs = refWorkflows()
+	}
+	run := forge.WorkflowRun{
+		ID:              int(o.id),
+		Name:            "fullsend",
+		Path:            o.path,
+		Event:           o.event,
+		Status:          "completed",
+		Conclusion:      o.conclusion,
+		CreatedAt:       o.created,
+		DisplayTitle:    o.title,
+		Actor:           "octocat",
+		TriggeringActor: "reviewer",
+	}
+	run.PullRequestNumbers = append(run.PullRequestNumbers, o.prNumbers...)
+	for _, w := range o.refs {
+		run.ReferencedWorkflows = append(run.ReferencedWorkflows,
+			forge.ReferencedWorkflow{Path: w["path"], Ref: w["ref"], SHA: w["sha"]})
+	}
+	return run
 }

@@ -47,6 +47,8 @@ func baseOpts(t *testing.T) steerOpts {
 	t.Helper()
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_RUN_ID", "33740015232")
+	// A CI runner sets its own GITHUB_JOB; tests that need one set it.
+	t.Setenv("GITHUB_JOB", "")
 	return steerOpts{
 		harness:       steerHarness(true),
 		runtime:       fakeRuntime{name: "claude"},
@@ -401,6 +403,22 @@ func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
 	// set only on the deprecated per-org dispatch path.
 	assert.Equal(t, "aaa111", m.HeadSHA)
 	assert.False(t, sess.baseline().IsZero(), "the next iteration inherits the delta window")
+}
+
+// TestStartSteerWatcher_StageJobBesideHarnessDispatch is the fleet's job
+// listing when the watcher starts: Harness dispatch is still running next to
+// the stage job, and the harness slug names neither, so the job id must.
+func TestStartSteerWatcher_StageJobBesideHarnessDispatch(t *testing.T) {
+	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Harness dispatch","status":"in_progress","conclusion":""},`+
+		`{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
+		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
+	o := steerableOpts(t, srv)
+	o.harness.Slug = "fullsend-ai-review"
+	t.Setenv("GITHUB_JOB", "review")
+
+	sess := startSteerWatcher(context.Background(), o)
+	require.NotNil(t, sess, "the job id resolves the stage job")
+	sess.stop()
 }
 
 func TestStartSteerWatcher_AmbiguousStageFailsClosed(t *testing.T) {

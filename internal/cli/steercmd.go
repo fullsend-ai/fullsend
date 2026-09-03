@@ -80,7 +80,7 @@ func workItemFromSegments(segs []string, kinds map[string]bool) (string, string,
 		}
 		n, err := strconv.Atoi(segs[i+1])
 		if err != nil || n <= 0 {
-			return "", "", 0, fmt.Errorf("could not read the item number from")
+			return "", "", 0, fmt.Errorf("the segment after issues/pull is not a valid item number in")
 		}
 		return segs[i-2], segs[i-1], n, nil
 	}
