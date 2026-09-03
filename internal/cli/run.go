@@ -1201,9 +1201,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// defer writes it onto the terminal comment so the run queued behind
 	// this one can skip work already covered (ADR 0101).
 	var steerMarker statuscomment.SteerMarker
-	// steerConsumed carries the absorbed follow-up run ids across validation
-	// loop iterations, so a retry does not re-steer on them.
+	// steerConsumed and steerBaseline carry the absorbed follow-up run ids
+	// and the delta window across validation loop iterations, so a retry
+	// neither re-steers on them nor re-sends content already delivered.
 	var steerConsumed []int64
+	var steerBaseline time.Time
 
 	// The runtime, sandbox name and timeout are not resolved yet; the
 	// iteration loop fills them in before starting the watcher. The skip
@@ -1213,7 +1215,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		forgePlatform: forgePlatform,
 		statusRepo:    sOpts.statusRepo,
 		statusNum:     sOpts.statusNum,
-		isPullRequest: runStartHeadSHA != "",
 		jobToken:      steerJobToken,
 		roleToken:     os.Getenv("GH_TOKEN"),
 		runStart:      runStartedAt,
@@ -2254,9 +2255,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts.sandboxName = sandboxName
 		iterSteerOpts.timeout = timeout
 		iterSteerOpts.consumed = steerConsumed
+		iterSteerOpts.baseline = steerBaseline
 		steerSess := startSteerWatcher(ctx, iterSteerOpts)
 
-		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		// A steered run outlives a single-turn budget, and params.Timeout
+		// bounds one exec — on Codex that is each exec in the resume loop,
+		// not the loop. So the whole-run budget rides on the context, which
+		// every runtime already honours. Settle is what normally ends the
+		// run; this is the backstop if the watcher never gets there.
+		runCtx := ctx
+		if steerSess != nil {
+			var cancelRun context.CancelFunc
+			runCtx, cancelRun = context.WithDeadline(ctx, steerDeadline(runStartedAt, timeout))
+			defer cancelRun()
+		}
+
+		agentCtx, agentSpan := tracer.Start(runCtx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert.
@@ -2292,6 +2306,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			steerSess.stop()
 			steerMarker = steerSess.marker()
 			steerConsumed = steerMarker.ConsumedRunIDs
+			steerBaseline = steerSess.baseline()
 		}
 		lastIterElapsed = time.Since(agentStart)
 

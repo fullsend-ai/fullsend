@@ -143,7 +143,7 @@ func TestCandidateChecks_Accepts(t *testing.T) {
 	assert.Nil(t, w.candidateChecks(run))
 
 	// Once consumed, the same run is never taken again.
-	w.markConsumed([]workflowRun{run}, 1)
+	w.markSteered([]workflowRun{run})
 	rej := w.candidateChecks(run)
 	require.NotNil(t, rej)
 	assert.Equal(t, "once", rej.check)
