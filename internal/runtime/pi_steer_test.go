@@ -279,3 +279,66 @@ func TestPiSettle_StopsTheFeederWhenSettled(t *testing.T) {
 		t.Fatalf("Settle did not stop the feeder: %v", calls)
 	}
 }
+
+// TestPiSteer_DeliveryIsRecordedOnlyOnTheAck ties pi's runtime to the
+// shared delivery accounting: the SteerResult must appear only once pi has
+// acked the mailbox line (rpc `response` with command=prompt and
+// success=true, surfaced as UserReplayEvent), never at append time. The
+// runner marks a follow-up run consumed from RunMetrics.Steers, so a
+// result recorded before the ack would let the queued run skip an update
+// pi had not taken yet.
+func TestPiSteer_DeliveryIsRecordedOnlyOnTheAck(t *testing.T) {
+	var calls []string
+	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "", 0, nil))
+	f.noteInitialPrompt()
+	registerSteerFeed("sbx-pi-ack", f)
+	defer unregisterSteerFeed("sbx-pi-ack")
+
+	rt := PiRuntime{}
+	if err := rt.Steer(context.Background(), "sbx-pi-ack", SteerMessage{FollowUpRunID: 21, Text: "new commits on the branch"}); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if got := f.steerResults(); len(got) != 0 {
+		t.Fatalf("delivery recorded at append time, before pi acked: %+v", got)
+	}
+
+	// pi consumes the opening prompt, then the steer.
+	f.noteEcho(steerEchoTime(""))
+	if got := f.steerResults(); len(got) != 0 {
+		t.Fatalf("the opening prompt's ack was credited to the steer: %+v", got)
+	}
+	f.noteEcho(steerEchoTime(""))
+
+	got := f.steerResults()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one recorded delivery after the steer's ack, got %d", len(got))
+	}
+	if got[0].FollowUpRunID != 21 {
+		t.Errorf("FollowUpRunID not carried through from the SteerMessage: %d", got[0].FollowUpRunID)
+	}
+	if got[0].Mode != steerModeLive {
+		t.Errorf("expected mode %q, got %q", steerModeLive, got[0].Mode)
+	}
+	if got[0].DeliveredAt.IsZero() {
+		t.Error("DeliveredAt was not recorded")
+	}
+}
+
+// TestPiSteer_FailedAppendRecordsNoDelivery: pi's mailbox write is the same
+// shared path as Claude's, and a write that never landed must not appear as
+// a delivery.
+func TestPiSteer_FailedAppendRecordsNoDelivery(t *testing.T) {
+	var calls []string
+	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "disk full", 1, nil))
+	f.noteInitialPrompt()
+	registerSteerFeed("sbx-pi-fail", f)
+	defer unregisterSteerFeed("sbx-pi-fail")
+
+	rt := PiRuntime{}
+	if err := rt.Steer(context.Background(), "sbx-pi-fail", SteerMessage{FollowUpRunID: 22, Text: "x"}); err == nil {
+		t.Fatal("expected the failed mailbox write to surface as an error")
+	}
+	if got := f.steerResults(); len(got) != 0 {
+		t.Errorf("a failed mailbox write was recorded as a delivery: %+v", got)
+	}
+}
