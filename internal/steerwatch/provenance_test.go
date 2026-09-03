@@ -27,8 +27,14 @@ func TestSameDispatchChain(t *testing.T) {
 		theirs := []referencedWorkflow{mine[1], mine[0]}
 		assert.True(t, sameDispatchChain(mine, theirs))
 	})
-	t.Run("a different sha fails", func(t *testing.T) {
+	t.Run("a different sha at the same path and ref passes", func(t *testing.T) {
+		// A branch-pinned shim (@main) resolves to a new sha whenever the
+		// branch advances; that is the same trusted workflow, newer.
 		theirs := []referencedWorkflow{mine[0], {Path: mine[1].Path, Ref: mine[1].Ref, SHA: "zzz"}}
+		assert.True(t, sameDispatchChain(mine, theirs))
+	})
+	t.Run("a different ref fails", func(t *testing.T) {
+		theirs := []referencedWorkflow{mine[0], {Path: mine[1].Path, Ref: "refs/tags/v0.1.0", SHA: mine[1].SHA}}
 		assert.False(t, sameDispatchChain(mine, theirs))
 	})
 	t.Run("a renamed reusable workflow fails", func(t *testing.T) {

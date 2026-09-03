@@ -32,6 +32,11 @@ type Settle func(ctx context.Context) error
 // context and the runtime never learns the run is over.
 const settleTimeout = 30 * time.Second
 
+// defaultMinRemaining is Config.MinRemaining when unset: a steered turn on
+// a large diff re-reads the delta and re-runs tools, so a few minutes is the
+// least it can need before the exec timeout would cut it off.
+const defaultMinRemaining = 5 * time.Minute
+
 // Config is everything the watcher needs that it cannot discover itself.
 type Config struct {
 	// Repo is "owner/repo" — the consumer repository, which is also where
@@ -54,6 +59,13 @@ type Config struct {
 	Deadline time.Time
 	// MaxSteers caps how many updates this run absorbs.
 	MaxSteers int
+	// MinRemaining is the floor of run budget a steer needs. Below it the
+	// watcher settles instead of steering: the exec that hosts a live
+	// session cannot be extended once running, so a steer taken with less
+	// time than a turn needs would push the whole run into its timeout and
+	// lose everything, the opposite of what steering is for. The update is
+	// left to the run queued behind this one. Zero means the default.
+	MinRemaining time.Duration
 	// PollInterval is how often follow-up runs are listed. A turn end
 	// triggers an immediate poll regardless.
 	PollInterval time.Duration
@@ -120,6 +132,9 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 	}
 	if cfg.MaxSteers <= 0 {
 		cfg.MaxSteers = 1
+	}
+	if cfg.MinRemaining <= 0 {
+		cfg.MinRemaining = defaultMinRemaining
 	}
 	seen := make(map[int64]bool, len(cfg.AlreadyConsumed))
 	consumed := make([]int64, 0, len(cfg.AlreadyConsumed))
@@ -337,6 +352,10 @@ func (w *Watcher) Watch(ctx context.Context, turnEnd <-chan struct{}) {
 			w.logf("Steer deadline reached; settling the run")
 			return
 		case <-ticker.C:
+			if w.lowOnTime() {
+				w.logf("Less than %s of run budget left; settling instead of steering", w.cfg.MinRemaining)
+				return
+			}
 			w.pollAndSteer(ctx)
 			if w.capReached() {
 				w.logf("Steer cap of %d reached; settling the run", w.cfg.MaxSteers)
@@ -344,6 +363,10 @@ func (w *Watcher) Watch(ctx context.Context, turnEnd <-chan struct{}) {
 			}
 		case _, ok := <-turnEnd:
 			if !ok {
+				return
+			}
+			if w.lowOnTime() {
+				w.logf("Less than %s of run budget left; settling instead of steering", w.cfg.MinRemaining)
 				return
 			}
 			if !w.pollAndSteer(ctx) {
@@ -355,6 +378,12 @@ func (w *Watcher) Watch(ctx context.Context, turnEnd <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// lowOnTime reports whether the run budget left is below MinRemaining. A
+// zero Deadline never runs low.
+func (w *Watcher) lowOnTime() bool {
+	return !w.cfg.Deadline.IsZero() && time.Until(w.cfg.Deadline) < w.cfg.MinRemaining
 }
 
 func (w *Watcher) capReached() bool {

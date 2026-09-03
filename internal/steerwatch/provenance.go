@@ -38,14 +38,21 @@ func routeJobName(name string) bool {
 }
 
 // sameDispatchChain reports whether two runs called the same reusable
-// workflows at the same ref and sha. This is the check that makes version
-// knowledge unnecessary: a foreign or renamed reusable workflow, or one
-// pinned to a different sha, fails by inequality.
+// workflows at the same ref. This is the check that makes version knowledge
+// unnecessary: a foreign or renamed reusable workflow, or one pinned to a
+// different ref, fails by inequality.
+//
+// The sha is deliberately not compared. A shim pinned to a branch
+// (`@main`, which the fullsend repo's own shim uses) resolves to a new sha
+// every time that branch advances, which on an active repo is between most
+// pairs of events; comparing it would silently drop every steer there. Path
+// plus ref already names the trusted workflow: a newer sha at the same
+// `refs/heads/main` of the same path is the same trusted workflow, newer.
 func sameDispatchChain(mine, theirs []referencedWorkflow) bool {
 	if len(mine) != len(theirs) {
 		return false
 	}
-	key := func(w referencedWorkflow) string { return w.Path + "\x00" + w.Ref + "\x00" + w.SHA }
+	key := func(w referencedWorkflow) string { return w.Path + "\x00" + w.Ref }
 	a := make([]string, 0, len(mine))
 	for _, w := range mine {
 		a = append(a, key(w))

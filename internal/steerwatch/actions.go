@@ -36,7 +36,7 @@ const listPerPage = 50
 const apiTimeout = 30 * time.Second
 
 // referencedWorkflow is one entry of a run's referenced_workflows: the
-// reusable workflows that run called, pinned by ref and sha.
+// reusable workflows that run called, pinned by ref (and reporting the sha).
 type referencedWorkflow struct {
 	Path string `json:"path"`
 	Ref  string `json:"ref"`
