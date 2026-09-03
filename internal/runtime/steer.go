@@ -49,6 +49,17 @@ var ErrSteerUnsupported = errors.New("runtime does not support steering")
 //
 // Both methods are called from a goroutine other than the one blocked in
 // Run, and must be safe against Run returning early on error or timeout.
+//
+// CALLER OBLIGATION: the runner must hold its sandbox write lock
+// (internal/cli's sandboxMu) across every Steer and Settle call, exactly
+// as it does across ClearIterationArtifacts. Both methods write into the
+// running sandbox — the mailbox append and the feeder kill for the live
+// runtimes, the stray-process sweep for interrupt-and-resume — and those
+// races the OIDC refresher and the OpenAI re-seeder, which the runner
+// already serializes through that lock. The sweep is the sharp edge: it
+// kills every process of the sandbox user, so a refresher upload running
+// concurrently would be killed mid-write and leave a truncated
+// credential. The lock cannot be taken here: it lives in internal/cli.
 type Steerer interface {
 	// Steer delivers msg into the session started by the in-flight Run.
 	Steer(ctx context.Context, sandboxName string, msg SteerMessage) error
