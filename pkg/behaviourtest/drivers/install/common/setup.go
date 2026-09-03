@@ -71,10 +71,9 @@ func ProvisionInference(
 }
 
 // RunReposInstall runs `fullsend repos install` for the given target with
-// ref-pinned resolution and mint URL. Unlike RunGitHubSetup, it does not
-// vendor a binary — the ref-pinned action.yml resolves the binary at
-// runtime. Each call uses a unique temp manifest path so concurrent
-// scenarios don't collide; repos install creates the file automatically.
+// ref-pinned resolution, vendored binary, and mint URL. Each call uses a
+// unique temp manifest path so concurrent scenarios don't collide; repos
+// install creates the file automatically.
 func RunReposInstall(
 	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
 	runCLI CLIRunnerFunc,
@@ -85,6 +84,7 @@ func RunReposInstall(
 
 	args := []string{
 		"repos", "install", target,
+		"--vendor",
 		"--runtime", "dummy",
 		"--direct",
 		"--forge", "github",
