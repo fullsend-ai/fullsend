@@ -407,6 +407,10 @@ if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
   exit 0
 fi
 
+if [[ "\$1" == "pr" && "\$2" == "close" && -f "${TMPDIR}/cleanup-fails" ]]; then
+  exit 1
+fi
+
 if [[ "\$1" == "pr" ]]; then
   exit 0
 fi
@@ -416,13 +420,16 @@ if [[ "\$1" != "api" ]]; then
 fi
 
 jq_filter=""
+method="GET"
 shift
 endpoint="\$1"; shift
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --jq) jq_filter="\$2"; shift 2 ;;
     --input) shift 2 ;;
-    --method|--field) shift 2 ;;
+    --method) method="\$2"; shift 2 ;;
+    --field) shift 2 ;;
+    --include) shift ;;
     --silent) shift ;;
     *) shift ;;
   esac
@@ -440,6 +447,17 @@ case "\$endpoint" in
     ;;
   repos/test-org/removed-repo/contents/.github/workflows/fullsend.yaml)
     rc=1
+    ;;
+  repos/test-org/test-repo/git/ref/heads/fullsend/onboard)
+    if [[ -f "${TMPDIR}/branch-absent" ]]; then
+      printf 'HTTP/2.0 404 Not Found\n'
+      rc=1
+    fi
+    ;;
+  repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
+    if [[ "\$method" != "DELETE" || -f "${TMPDIR}/branch-delete-fails" ]]; then
+      rc=1
+    fi
     ;;
   repos/test-org/test-repo)
     json='{"default_branch":"main","private":false}'
@@ -521,6 +539,82 @@ if ! grep -q 'repos/test-org/test-repo/git/refs/heads/fullsend/onboard --method 
 fi
 
 echo "PASS: up-to-date shim cleanup is idempotent without a stale PR"
+
+# A missing onboard branch is the other successful idempotent case. It should
+# not trigger a DELETE request or count the repository as failed.
+rm -f "${GH_LOG}"
+touch "${TMPDIR}/branch-absent"
+
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-no-branch.log" 2>&1; then
+  echo "FAIL: up-to-date shim without an onboard branch returned an error"
+  cat "${TMPDIR}/stdout2-no-branch.log"
+  exit 1
+fi
+
+if grep -q 'repos/test-org/test-repo/git/refs/heads/fullsend/onboard --method DELETE' "${GH_LOG}"; then
+  echo "FAIL: deletion was attempted for a missing onboard branch"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: missing onboard branch cleanup is idempotent"
+
+# A failed stale PR cleanup must count as a reconciliation failure rather than
+# reporting the repo as successfully skipped.
+rm -f "${TMPDIR}/branch-absent"
+touch "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails"
+rm -f "${GH_LOG}"
+
+if bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-failed-cleanup.log" 2>&1; then
+  echo "FAIL: failed stale onboard PR cleanup returned success"
+  cat "${TMPDIR}/stdout2-failed-cleanup.log"
+  exit 1
+fi
+
+if ! grep -q "Failed: 1" "${TMPDIR}/stdout2-failed-cleanup.log"; then
+  echo "FAIL: failed stale onboard PR cleanup was not counted as failed"
+  cat "${TMPDIR}/stdout2-failed-cleanup.log"
+  exit 1
+fi
+
+if grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-failed-cleanup.log"; then
+  echo "FAIL: repo with failed stale PR cleanup was counted as skipped"
+  cat "${TMPDIR}/stdout2-failed-cleanup.log"
+  exit 1
+fi
+
+if ! grep -q "::warning::Failed to close PR on fullsend/onboard for test-repo" "${TMPDIR}/stdout2-failed-cleanup.log"; then
+  echo "FAIL: failed stale onboard PR cleanup did not emit a warning"
+  cat "${TMPDIR}/stdout2-failed-cleanup.log"
+  exit 1
+fi
+
+echo "PASS: stale onboard PR cleanup failure is reported"
+
+# Failure to delete an orphaned onboard branch is also a reconciliation
+# failure, even when there is no PR to close.
+rm -f "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails" "${GH_LOG}"
+touch "${TMPDIR}/branch-delete-fails"
+
+if bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-failed-delete.log" 2>&1; then
+  echo "FAIL: failed orphaned onboard branch cleanup returned success"
+  cat "${TMPDIR}/stdout2-failed-delete.log"
+  exit 1
+fi
+
+if ! grep -q "::warning::Failed to delete branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-failed-delete.log"; then
+  echo "FAIL: failed orphaned onboard branch cleanup did not emit a warning"
+  cat "${TMPDIR}/stdout2-failed-delete.log"
+  exit 1
+fi
+
+if ! grep -q "Failed: 1" "${TMPDIR}/stdout2-failed-delete.log"; then
+  echo "FAIL: failed orphaned onboard branch cleanup was not counted as failed"
+  cat "${TMPDIR}/stdout2-failed-delete.log"
+  exit 1
+fi
+
+echo "PASS: orphaned onboard branch cleanup failure is reported"
 
 # ===========================
 # Test 3: pre-sentinel shim migration does not duplicate content
