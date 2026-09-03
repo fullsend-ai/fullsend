@@ -777,7 +777,14 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parsePiStream(reader, handler); parseErr != nil {
+	sessionID, parseErr := parsePiStream(reader, handler)
+	// The session event names the session file under --session-dir, which
+	// is what a later resume or steer reattaches to. Recorded even on a
+	// failed parse: the header arrives before any turn does.
+	if sessionID != "" {
+		metrics.SessionID = sessionID
+	}
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
