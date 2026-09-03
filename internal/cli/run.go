@@ -3511,6 +3511,7 @@ func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
 		attribute.Int("fullsend.tool_calls", agg.ToolCalls),
 		attribute.Float64("fullsend.cost_usd", roundUSD(agg.TotalCostUSD)),
 		attribute.Int("fullsend.iterations", runCount),
+		attribute.Bool("fullsend.over_budget", agg.OverBudget),
 	}
 }
 

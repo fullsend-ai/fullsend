@@ -332,16 +332,23 @@ func TestRootSpanEndAttrs(t *testing.T) {
 		ToolCalls:    7,
 	}
 	a := rootSpanEndAttrs(agg, 3)
-	require.Len(t, a, 4)
+	require.Len(t, a, 5)
 	assert.Contains(t, a, attribute.Int("fullsend.num_turns", 12))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 7))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.iterations", 3))
+	assert.Contains(t, a, attribute.Bool("fullsend.over_budget", false))
 
 	for _, kv := range a {
 		assert.False(t, strings.HasPrefix(string(kv.Key), "gen_ai."),
 			"root span must not carry gen_ai.* attributes, found %s", kv.Key)
 	}
+}
+
+func TestRootSpanEndAttrs_OverBudget(t *testing.T) {
+	agg := aggregateMetrics{OverBudget: true}
+	a := rootSpanEndAttrs(agg, 1)
+	assert.Contains(t, a, attribute.Bool("fullsend.over_budget", true))
 }
 
 func TestAgentSpanEndAttrs(t *testing.T) {
