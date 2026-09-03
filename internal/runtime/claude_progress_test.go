@@ -1304,3 +1304,63 @@ func TestParseClaudeStreamInitNoSessionID(t *testing.T) {
 		t.Errorf("expected empty session id, got %q", init.SessionID)
 	}
 }
+
+// TestParseClaudeStreamUserReplayAck covers the delivery ack for a steer:
+// --replay-user-messages re-emits each consumed stdin line with
+// isReplay:true. Shape captured from Claude Code 2.1.259.
+func TestParseClaudeStreamUserReplayAck(t *testing.T) {
+	input := `{"type":"user","message":{"role":"user","content":"STEER: also check the error path"},"session_id":"6810411e","uuid":"654fa708","timestamp":"2026-09-03T10:48:29Z","isReplay":true}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	ack, ok := events[0].(UserReplayEvent)
+	if !ok {
+		t.Fatalf("expected UserReplayEvent, got %T", events[0])
+	}
+	if !ack.At.Equal(time.Date(2026, 9, 3, 10, 48, 29, 0, time.UTC)) {
+		t.Errorf("expected the echo's own timestamp, got %v", ack.At)
+	}
+}
+
+// TestParseClaudeStreamToolResultIsNotAnAck is the discriminator that
+// makes the ack trustworthy: tool results arrive as "user" too, and
+// counting one as a delivery would let the run settle while a steer was
+// still sitting unread in the mailbox.
+func TestParseClaudeStreamToolResultIsNotAnAck(t *testing.T) {
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"ok"}]},"session_id":"6810411e"}`
+	for _, evt := range collectEvents(t, input) {
+		if _, ok := evt.(UserReplayEvent); ok {
+			t.Fatal("a tool result was counted as a steer delivery ack")
+		}
+	}
+}
+
+// TestParseClaudeStreamTokensSalvagedAfterAnEarlierResult covers a steered
+// run killed during a later turn: seenResult must not latch from turn 1,
+// or the cumulative token salvage added for #6905 would be suppressed for
+// every turn after the first.
+func TestParseClaudeStreamTokensSalvagedAfterAnEarlierResult(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","num_turns":1,"usage":{"input_tokens":10,"output_tokens":5}}`,
+		// Turn 2 begins and the stream is cut off before its result.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":9000,"cache_read_input_tokens":1000}}}}`,
+	}
+	var tokens []TokensEvent
+	err := parseClaudeStream(strings.NewReader(strings.Join(lines, "\n")+"\n"), func(evt AgentEvent) {
+		if e, ok := evt.(TokensEvent); ok {
+			tokens = append(tokens, e)
+		}
+	})
+	if err != nil {
+		t.Fatalf("parseClaudeStream: %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("no cumulative TokensEvent emitted for the turn that was cut off")
+	}
+	last := tokens[len(tokens)-1]
+	if last.InputTokens != 9000 || last.CacheRead != 1000 {
+		t.Errorf("unexpected salvaged totals: %+v", last)
+	}
+}
