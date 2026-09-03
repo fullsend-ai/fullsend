@@ -389,3 +389,19 @@ func TestActionsClient_DefaultsToTheRealAPI(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWatcher_lowOnTime(t *testing.T) {
+	t.Run("zero deadline never runs low", func(t *testing.T) {
+		w := New(Config{}, nil, nil, nil)
+		assert.False(t, w.lowOnTime())
+		assert.Equal(t, defaultMinRemaining, w.cfg.MinRemaining)
+	})
+	t.Run("below the floor", func(t *testing.T) {
+		w := New(Config{Deadline: time.Now().Add(time.Minute), MinRemaining: 5 * time.Minute}, nil, nil, nil)
+		assert.True(t, w.lowOnTime())
+	})
+	t.Run("above the floor", func(t *testing.T) {
+		w := New(Config{Deadline: time.Now().Add(time.Hour), MinRemaining: 5 * time.Minute}, nil, nil, nil)
+		assert.False(t, w.lowOnTime())
+	})
+}
