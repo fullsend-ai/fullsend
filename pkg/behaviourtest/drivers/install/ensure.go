@@ -101,7 +101,7 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 		return "", err
 	}
 
-	if err := ValidatePostInstallRefPinned(ctx, e.client, org, repoName); err != nil {
+	if err := ValidatePostInstall(ctx, e.client, org, repoName); err != nil {
 		return "", fmt.Errorf("post-install validation for %s: %w", target, err)
 	}
 

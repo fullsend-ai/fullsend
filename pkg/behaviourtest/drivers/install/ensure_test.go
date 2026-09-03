@@ -152,6 +152,10 @@ func installedGetFileFn(_ context.Context, _, _, path string) ([]byte, error) {
 		return []byte("# shim"), nil
 	case ".fullsend/config.yaml":
 		return []byte(validPerRepoConfig), nil
+	case ".defaults/action.yml":
+		return []byte("# vendored marker"), nil
+	case ".fullsend/bin/fullsend":
+		return []byte("#!/bin/sh"), nil
 	default:
 		return nil, forge.ErrNotFound
 	}
