@@ -13,6 +13,17 @@ import (
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
+// deliveredIDs flattens the follow-up runs handed to the runtime, in order.
+// It is deliberately not the marker: the marker is the acknowledged subset,
+// which only the runner can compute from RunMetrics.Steers.
+func deliveredIDs(w *Watcher) []int64 {
+	var out []int64
+	for _, b := range w.Delivered() {
+		out = append(out, b.RunIDs...)
+	}
+	return out
+}
+
 // prItems is a work item whose head has moved and that has one new
 // human comment — enough for a non-empty delta.
 func prItems() *stubItems {
@@ -47,12 +58,12 @@ func TestPollAndSteer_DeliversAndConsumes(t *testing.T) {
 	assert.Equal(t, "bbb222", msgs[0].HeadSHA)
 	assert.Contains(t, msgs[0].Text, "re-check the migration")
 
-	assert.Equal(t, []int64{101}, w.Consumed())
+	assert.Equal(t, []int64{101}, deliveredIDs(w))
 	assert.Equal(t, "bbb222", w.Head(), "the head advances so the next delta does not repeat it")
 
 	// A second poll over the same listing consumes nothing new.
 	assert.False(t, w.pollAndSteer(context.Background()))
-	assert.Equal(t, []int64{101}, w.Consumed())
+	assert.Equal(t, []int64{101}, deliveredIDs(w))
 	assert.Len(t, rec.delivered(), 1)
 }
 
@@ -67,7 +78,7 @@ func TestPollAndSteer_FoldsSimultaneousFollowUpsIntoOneSteer(t *testing.T) {
 	// Two updates that arrived together cost one turn, not two, and both
 	// run ids are recorded so neither queued run redoes the work.
 	assert.Len(t, rec.delivered(), 1)
-	assert.Equal(t, []int64{101, 102}, w.Consumed())
+	assert.Equal(t, []int64{101, 102}, deliveredIDs(w))
 	assert.False(t, w.capReached(), "one steer against a cap of 2")
 }
 
@@ -85,7 +96,7 @@ func TestPollAndSteer_RejectedRunIsNotRetried(t *testing.T) {
 	// every poll. But NOT consumed: the marker is what the queued run reads
 	// to decide whether to skip its own work, and this run's content never
 	// reached the agent.
-	assert.Empty(t, w.Consumed())
+	assert.Empty(t, deliveredIDs(w))
 
 	before := api.jobCalls[101]
 	assert.False(t, w.pollAndSteer(context.Background()))
@@ -104,7 +115,7 @@ func TestPollAndSteer_EmptyDeltaDoesNotSteer(t *testing.T) {
 	assert.Empty(t, rec.delivered())
 	// Seen so it is not re-examined, but nothing reached the agent, so the
 	// marker must not claim the queued run's work is covered.
-	assert.Empty(t, w.Consumed())
+	assert.Empty(t, deliveredIDs(w))
 
 	before := api.jobCalls[101]
 	assert.False(t, w.pollAndSteer(context.Background()))
@@ -121,7 +132,7 @@ func TestPollAndSteer_UnsupportedRuntimeDoesNotConsume(t *testing.T) {
 	// Nothing was delivered, so nothing is marked consumed — the queued
 	// follow-up run must still do the work, and the marker must not claim
 	// otherwise.
-	assert.Empty(t, w.Consumed())
+	assert.Empty(t, deliveredIDs(w))
 }
 
 func TestPollAndSteer_DeliveryFailureDoesNotConsume(t *testing.T) {
@@ -131,7 +142,7 @@ func TestPollAndSteer_DeliveryFailureDoesNotConsume(t *testing.T) {
 	w := newWatcher(t, api, prItems(), rec, nil)
 
 	assert.False(t, w.pollAndSteer(context.Background()))
-	assert.Empty(t, w.Consumed())
+	assert.Empty(t, deliveredIDs(w))
 }
 
 func TestPollAndSteer_ListFailureIsSurvivable(t *testing.T) {
@@ -169,7 +180,7 @@ func TestPollAndSteer_StopsAtCap(t *testing.T) {
 	items.headSHA = "ddd444"
 	assert.False(t, w.pollAndSteer(context.Background()), "the cap stops the third steer")
 	assert.Len(t, rec.delivered(), 2)
-	assert.Equal(t, []int64{101, 102}, w.Consumed())
+	assert.Equal(t, []int64{101, 102}, deliveredIDs(w))
 }
 
 func TestWatch_TurnEndWithNothingNewSettles(t *testing.T) {
