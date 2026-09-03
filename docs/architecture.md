@@ -280,6 +280,17 @@ The existing design principle is that [the repo is the coordinator](problems/age
 **Decided:**
 
 - Event-driven stage dispatch runs synchronously via `workflow_call` to preserve run correlation in the GitHub Actions UI (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
+- Preserve-and-coalesce scheduling is extended so the **active run absorbs the
+  retained event** instead of leaving it entirely to the pending run: the runner
+  watches the execution platform's own follow-up run records, accepts one only
+  when that run's `Route` job already authorized it and its dispatch chain
+  matches, and delivers the delta into the live agent session through the
+  optional `runtime.Steerer` capability. It polls run records rather than forge
+  events, invokes nothing, and settles inside the stage timeout, so scheduling
+  stays with the platform. Opt-in per agent and per repository; off, behaviour is
+  unchanged. The terminal status comment carries a processing receipt naming the
+  follow-up runs the agent acknowledged, which is how the pending run knows to
+  skip ([ADR 0101](ADRs/0101-steer-the-running-agent-on-work-item-updates.md)).
 - Routing moves from workflow bash to harness CEL `trigger` expressions
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
