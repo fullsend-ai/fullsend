@@ -2544,28 +2544,97 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 		return nil, fmt.Errorf("get workflow run %d: %w", runID, err)
 	}
 
-	var run struct {
-		ID         int    `json:"id"`
-		Name       string `json:"name"`
-		Event      string `json:"event"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
-		HTMLURL    string `json:"html_url"`
-		CreatedAt  string `json:"created_at"`
-	}
+	var run workflowRunJSON
 	if err := decodeJSON(resp, &run); err != nil {
 		return nil, fmt.Errorf("decode workflow run: %w", err)
 	}
 
-	return &forge.WorkflowRun{
-		ID:         run.ID,
-		Name:       run.Name,
-		Event:      run.Event,
-		Status:     run.Status,
-		Conclusion: run.Conclusion,
-		HTMLURL:    run.HTMLURL,
-		CreatedAt:  run.CreatedAt,
-	}, nil
+	return run.toForge(), nil
+}
+
+// workflowRunJSON is the wire shape of a workflow run, including the
+// provenance fields a caller needs to establish that two runs came through
+// the same dispatch chain (ADR 0101).
+type workflowRunJSON struct {
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Path            string                 `json:"path"`
+	Event           string                 `json:"event"`
+	Status          string                 `json:"status"`
+	Conclusion      string                 `json:"conclusion"`
+	HTMLURL         string                 `json:"html_url"`
+	CreatedAt       string                 `json:"created_at"`
+	DisplayTitle    string                 `json:"display_title"`
+	Actor           struct{ Login string } `json:"actor"`
+	TriggeringActor struct{ Login string } `json:"triggering_actor"`
+	PullRequests    []struct {
+		Number int `json:"number"`
+	} `json:"pull_requests"`
+	ReferencedWorkflows []struct {
+		Path string `json:"path"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+	} `json:"referenced_workflows"`
+}
+
+func (r workflowRunJSON) toForge() *forge.WorkflowRun {
+	out := &forge.WorkflowRun{
+		ID:              r.ID,
+		Name:            r.Name,
+		Path:            r.Path,
+		Event:           r.Event,
+		Status:          r.Status,
+		Conclusion:      r.Conclusion,
+		HTMLURL:         r.HTMLURL,
+		CreatedAt:       r.CreatedAt,
+		DisplayTitle:    r.DisplayTitle,
+		Actor:           r.Actor.Login,
+		TriggeringActor: r.TriggeringActor.Login,
+	}
+	for _, pr := range r.PullRequests {
+		out.PullRequestNumbers = append(out.PullRequestNumbers, pr.Number)
+	}
+	for _, w := range r.ReferencedWorkflows {
+		out.ReferencedWorkflows = append(out.ReferencedWorkflows,
+			forge.ReferencedWorkflow{Path: w.Path, Ref: w.Ref, SHA: w.SHA})
+	}
+	return out
+}
+
+// ListWorkflowRunsSince returns runs of one workflow file created at or
+// after since, newest first as GitHub returns them, with the provenance
+// fields populated.
+//
+// The per-workflow endpoint is used rather than the repository-wide one so
+// runs of other workflows are filtered out server-side. There is no event
+// filter: the endpoint accepts a single event value, so a caller that cares
+// about several must filter client-side.
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]forge.WorkflowRun, error) {
+	if perPage <= 0 {
+		perPage = 50
+	}
+	q := url.Values{}
+	q.Set("created", ">="+since.UTC().Format(time.RFC3339))
+	q.Set("per_page", strconv.Itoa(perPage))
+
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?%s",
+		owner, repo, url.PathEscape(workflowFile), q.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow runs since %s: %w", since.UTC().Format(time.RFC3339), err)
+	}
+
+	var result struct {
+		WorkflowRuns []workflowRunJSON `json:"workflow_runs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow runs: %w", err)
+	}
+
+	runs := make([]forge.WorkflowRun, 0, len(result.WorkflowRuns))
+	for _, r := range result.WorkflowRuns {
+		runs = append(runs, *r.toForge())
+	}
+	return runs, nil
 }
 
 // DispatchWorkflow triggers a workflow_dispatch event on a workflow file.

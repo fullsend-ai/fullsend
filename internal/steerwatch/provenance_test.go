@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 func TestRouteJobName(t *testing.T) {
@@ -18,27 +20,27 @@ func TestRouteJobName(t *testing.T) {
 }
 
 func TestSameDispatchChain(t *testing.T) {
-	mine := []referencedWorkflow{
+	mine := []forge.ReferencedWorkflow{
 		{Path: "o/r/.github/workflows/reusable-dispatch.yml@main", Ref: "refs/heads/main", SHA: "abc"},
 		{Path: "o/r/.github/workflows/other.yml@main", Ref: "refs/heads/main", SHA: "def"},
 	}
 
 	t.Run("same set in a different order matches", func(t *testing.T) {
-		theirs := []referencedWorkflow{mine[1], mine[0]}
+		theirs := []forge.ReferencedWorkflow{mine[1], mine[0]}
 		assert.True(t, sameDispatchChain(mine, theirs))
 	})
 	t.Run("a different sha at the same path and ref passes", func(t *testing.T) {
 		// A branch-pinned shim (@main) resolves to a new sha whenever the
 		// branch advances; that is the same trusted workflow, newer.
-		theirs := []referencedWorkflow{mine[0], {Path: mine[1].Path, Ref: mine[1].Ref, SHA: "zzz"}}
+		theirs := []forge.ReferencedWorkflow{mine[0], {Path: mine[1].Path, Ref: mine[1].Ref, SHA: "zzz"}}
 		assert.True(t, sameDispatchChain(mine, theirs))
 	})
 	t.Run("a different ref fails", func(t *testing.T) {
-		theirs := []referencedWorkflow{mine[0], {Path: mine[1].Path, Ref: "refs/tags/v0.1.0", SHA: mine[1].SHA}}
+		theirs := []forge.ReferencedWorkflow{mine[0], {Path: mine[1].Path, Ref: "refs/tags/v0.1.0", SHA: mine[1].SHA}}
 		assert.False(t, sameDispatchChain(mine, theirs))
 	})
 	t.Run("a renamed reusable workflow fails", func(t *testing.T) {
-		theirs := []referencedWorkflow{mine[0], {Path: "o/r/.github/workflows/evil.yml@main", Ref: mine[1].Ref, SHA: mine[1].SHA}}
+		theirs := []forge.ReferencedWorkflow{mine[0], {Path: "o/r/.github/workflows/evil.yml@main", Ref: mine[1].Ref, SHA: mine[1].SHA}}
 		assert.False(t, sameDispatchChain(mine, theirs))
 	})
 	t.Run("a different length fails", func(t *testing.T) {
@@ -64,7 +66,7 @@ func TestJobSelected(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jobs := []job{{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			jobs := []forge.WorkflowJob{{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
 				{Name: stageName, Status: tt.status, Conclusion: tt.conclusion}}
 			selected, found := jobSelected(jobs, stageName)
 			require.True(t, found)
@@ -74,7 +76,7 @@ func TestJobSelected(t *testing.T) {
 }
 
 func TestJobSelected_JobAbsent(t *testing.T) {
-	_, found := jobSelected([]job{{Name: "dispatch / Triage"}}, stageName)
+	_, found := jobSelected([]forge.WorkflowJob{{Name: "dispatch / Triage"}}, stageName)
 	assert.False(t, found)
 }
 
@@ -82,7 +84,7 @@ func TestRouteSucceeded(t *testing.T) {
 	// Under queue: single a later event cancels the earlier pending stage
 	// job and the run concludes cancelled — but the Route job's success is
 	// what carries the authorization, so the run is still a valid steer.
-	jobs := []job{
+	jobs := []forge.WorkflowJob{
 		{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
 		{Name: stageName, Status: "completed", Conclusion: "cancelled"},
 	}
@@ -91,19 +93,17 @@ func TestRouteSucceeded(t *testing.T) {
 	jobs[0].Conclusion = "failure"
 	assert.False(t, routeSucceeded(jobs))
 
-	assert.False(t, routeSucceeded([]job{{Name: stageName}}), "no Route job at all")
+	assert.False(t, routeSucceeded([]forge.WorkflowJob{{Name: stageName}}), "no Route job at all")
 }
 
 func TestBoundToItem(t *testing.T) {
-	prRun := workflowRun{PullRequests: []struct {
-		Number int `json:"number"`
-	}{{Number: 7}}}
+	prRun := forge.WorkflowRun{PullRequestNumbers: []int{7}}
 	assert.True(t, boundToItem(prRun, "", 7))
 	assert.False(t, boundToItem(prRun, "", 8))
 
 	// issue_comment runs carry no pull_requests[], so the shim's run-name
 	// (returned as display_title) is what binds them.
-	commentRun := workflowRun{DisplayTitle: "org/repo#7"}
+	commentRun := forge.WorkflowRun{DisplayTitle: "org/repo#7"}
 	assert.True(t, boundToItem(commentRun, "org/repo#7", 7))
 	assert.False(t, boundToItem(commentRun, "org/repo#8", 8))
 	assert.False(t, boundToItem(commentRun, "", 7), "no run-name and no pull_requests means no binding")
@@ -131,8 +131,7 @@ func TestCandidateChecks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var run workflowRun
-			decodeInto(t, runJSON(tt.run), &run)
+			run := forgeRun(tt.run)
 			rej := w.candidateChecks(run)
 			require.NotNil(t, rej, "candidate should have been rejected")
 			assert.Equal(t, tt.wantCheck, rej.check, rej.String())
@@ -144,12 +143,11 @@ func TestCandidateChecks_Accepts(t *testing.T) {
 	api := newFakeAPI()
 	w := newWatcher(t, api, &stubItems{}, &recorder{}, nil)
 
-	var run workflowRun
-	decodeInto(t, runJSON(runOpts{id: 100, event: "pull_request_target", prNumbers: []int{7}}), &run)
+	run := forgeRun(runOpts{id: 100, event: "pull_request_target", prNumbers: []int{7}})
 	assert.Nil(t, w.candidateChecks(run))
 
 	// Once consumed, the same run is never taken again.
-	w.markSteered([]workflowRun{run})
+	w.markSteered([]forge.WorkflowRun{run})
 	rej := w.candidateChecks(run)
 	require.NotNil(t, rej)
 	assert.Equal(t, "once", rej.check)
@@ -187,8 +185,7 @@ func TestJobChecks(t *testing.T) {
 			api.jobsByID[42] = tt.jobs
 			w := newWatcher(t, api, &stubItems{}, &recorder{}, nil)
 
-			var run workflowRun
-			decodeInto(t, runJSON(runOpts{id: 42, prNumbers: []int{7}}), &run)
+			run := forgeRun(runOpts{id: 42, prNumbers: []int{7}})
 			rej, err := w.jobChecks(context.Background(), run)
 			require.NoError(t, err)
 			if tt.wantCheck == "" {
@@ -203,7 +200,7 @@ func TestJobChecks(t *testing.T) {
 
 func TestResolveStageJob(t *testing.T) {
 	t.Run("the single in-progress job is mine", func(t *testing.T) {
-		name, err := resolveStageJob([]job{
+		name, err := resolveStageJob([]forge.WorkflowJob{
 			{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
 			{Name: stageName, Status: "in_progress"},
 			{Name: "dispatch / Fix", Status: "completed", Conclusion: "skipped"},
@@ -213,7 +210,7 @@ func TestResolveStageJob(t *testing.T) {
 	})
 
 	t.Run("the harness fan-out needs the hint", func(t *testing.T) {
-		jobs := []job{
+		jobs := []forge.WorkflowJob{
 			{Name: "dispatch / Harness Run (reviewer)", Status: "in_progress"},
 			{Name: "dispatch / Harness Run (fixer)", Status: "in_progress"},
 		}
@@ -223,7 +220,7 @@ func TestResolveStageJob(t *testing.T) {
 	})
 
 	t.Run("an ambiguous job list fails closed", func(t *testing.T) {
-		jobs := []job{
+		jobs := []forge.WorkflowJob{
 			{Name: "dispatch / Harness Run (a)", Status: "in_progress"},
 			{Name: "dispatch / Harness Run (b)", Status: "in_progress"},
 		}
@@ -233,12 +230,12 @@ func TestResolveStageJob(t *testing.T) {
 	})
 
 	t.Run("no in-progress job fails", func(t *testing.T) {
-		_, err := resolveStageJob([]job{{Name: "dispatch / Route", Status: "completed"}}, "")
+		_, err := resolveStageJob([]forge.WorkflowJob{{Name: "dispatch / Route", Status: "completed"}}, "")
 		require.Error(t, err)
 	})
 
 	t.Run("the route job is never mistaken for my stage", func(t *testing.T) {
-		_, err := resolveStageJob([]job{{Name: "dispatch / Route", Status: "in_progress"}}, "")
+		_, err := resolveStageJob([]forge.WorkflowJob{{Name: "dispatch / Route", Status: "in_progress"}}, "")
 		require.Error(t, err)
 	})
 }
@@ -249,8 +246,9 @@ func TestStart_Errors(t *testing.T) {
 		api.myRun = runJSON(runOpts{id: myRunID, created: runStart, refs: []map[string]string{}})
 		api.myJobs = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
 		srv := api.server(t)
-		w := New(Config{Repo: "org/repo", RunID: myRunID, APIBase: srv.URL,
-			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond}, &stubItems{}, nil, nil)
+		w := New(Config{Repo: "org/repo", RunID: myRunID,
+			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond},
+			testGitHubClient(srv.URL), &stubItems{}, nil, nil)
 		err := w.Start(context.Background(), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "references no reusable workflow")
@@ -260,8 +258,9 @@ func TestStart_Errors(t *testing.T) {
 		api := newFakeAPI()
 		api.status["/actions/runs/"] = 403
 		srv := api.server(t)
-		w := New(Config{Repo: "org/repo", RunID: myRunID, APIBase: srv.URL,
-			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond}, &stubItems{}, nil, nil)
+		w := New(Config{Repo: "org/repo", RunID: myRunID,
+			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond},
+			testGitHubClient(srv.URL), &stubItems{}, nil, nil)
 		err := w.Start(context.Background(), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "403")

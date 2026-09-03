@@ -39,14 +39,26 @@ const steerTurnEndBuffer = 16
 // with. Both are variables so tests can substitute a stub; production always
 // gets the live GitHub client holding the minted role token.
 var (
-	steerItemReader   = func(token string) steerwatch.ItemReader { return github.New(token) }
-	steerMarkerClient = func(token string) steerMarkerReader { return github.New(token) }
+	// steerActionsReader reads the execution platform's run records with the
+	// JOB token — the GH_TOKEN the action passed in, which is the token
+	// every stage job already grants `actions: write`.
+	steerActionsReader = func(token string) steerwatch.ActionsReader { return newSteerGitHubClient(token) }
+	// steerItemReader and steerMarkerClient read the work item with the
+	// minted role token.
+	steerItemReader   = func(token string) steerwatch.ItemReader { return newSteerGitHubClient(token) }
+	steerMarkerClient = func(token string) steerMarkerReader { return newSteerGitHubClient(token) }
 )
 
-// steerAPIBase is the GitHub REST root the Actions API is read from.
-// GITHUB_ACTIONS sets GITHUB_API_URL on every runner, and it differs on
-// GitHub Enterprise Server, so it is read rather than assumed.
-func steerAPIBase() string { return os.Getenv("GITHUB_API_URL") }
+// newSteerGitHubClient builds the forge client the steer paths use. It
+// honours GITHUB_API_URL, which every Actions runner sets and which differs
+// on GitHub Enterprise Server, so the root is read rather than assumed.
+func newSteerGitHubClient(token string) *github.LiveClient {
+	c := github.New(token)
+	if base := os.Getenv("GITHUB_API_URL"); base != "" {
+		c = c.WithBaseURL(base)
+	}
+	return c
+}
 
 // steerSession is the watcher wiring for one agent iteration: the watcher
 // itself, the channel the runtime's turn ends arrive on, and the goroutine
@@ -194,13 +206,11 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		PollInterval:    o.harness.SteerPollInterval(),
 		DeltaBaseline:   o.baseline,
 		AlreadyConsumed: o.consumed,
-		JobToken:        o.jobToken,
-		APIBase:         steerAPIBase(),
 		Item: steerwatch.WorkItem{
 			Number:  o.statusNum,
 			HeadSHA: o.headSHA,
 		},
-	}, steerItemReader(o.roleToken), deliver, settle)
+	}, steerActionsReader(o.jobToken), steerItemReader(o.roleToken), deliver, settle)
 
 	w.SetLogFunc(func(format string, args ...any) {
 		o.printer.StepInfo(fmt.Sprintf(format, args...))

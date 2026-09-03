@@ -3,8 +3,6 @@ package steerwatch
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -315,19 +313,22 @@ func TestWatch_TickerPollSteersMidTurn(t *testing.T) {
 }
 
 func TestNew_AppliesDefaults(t *testing.T) {
-	w := New(Config{Repo: "org/repo"}, &stubItems{}, nil, nil)
+	w := New(Config{Repo: "org/repo"}, nil, &stubItems{}, nil, nil)
 	assert.Equal(t, 30*time.Second, w.cfg.PollInterval)
-	assert.Equal(t, 1, w.cfg.MaxSteers)
+	// Must match harness.DefaultSteerMaxSteers and ADR 0101, both of which
+	// say 2; a floor of 1 here would silently halve the documented cap for
+	// any caller that passed none.
+	assert.Equal(t, 2, w.cfg.MaxSteers)
 }
 
 func TestDoSettle_NilSettleIsSafe(t *testing.T) {
-	w := New(Config{Repo: "org/repo"}, &stubItems{}, nil, nil)
+	w := New(Config{Repo: "org/repo"}, nil, &stubItems{}, nil, nil)
 	assert.NotPanics(t, func() { w.doSettle(context.Background()) })
 }
 
 func TestDoSettle_WarnsOnFailure(t *testing.T) {
 	var warned string
-	w := New(Config{Repo: "org/repo"}, &stubItems{}, nil,
+	w := New(Config{Repo: "org/repo"}, nil, &stubItems{}, nil,
 		func(context.Context) error { return errors.New("nope") })
 	w.SetWarnFunc(func(f string, a ...any) { warned = f })
 	w.doSettle(context.Background())
@@ -346,62 +347,18 @@ func TestSetLogFunc(t *testing.T) {
 	assert.Contains(t, logged[0], "rejected")
 }
 
-func TestActionsClient_QueryShape(t *testing.T) {
-	api := newFakeAPI()
-	api.listed = [][]map[string]any{{}}
-	var gotPath, gotQuery, gotAuth string
-	srv := api.server(t)
-
-	c := newActionsClient(srv.Client(), srv.URL, "job-token", "org/repo")
-	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
-		return srv.Client().Transport.RoundTrip(r)
-	})}
-
-	_, err := c.RunsSince(context.Background(), "fullsend.yml", mustTime(t, runStart))
-	require.NoError(t, err)
-
-	assert.Equal(t, "/repos/org/repo/actions/workflows/fullsend.yml/runs", gotPath)
-	assert.Contains(t, gotQuery, "created=%3E%3D2026-09-03T10%3A00%3A00Z", "the created filter must be URL-encoded")
-	assert.Contains(t, gotQuery, "per_page=50")
-	assert.NotContains(t, gotQuery, "event=", "five allowed events cannot be expressed server-side")
-	assert.Equal(t, "Bearer job-token", gotAuth)
-}
-
-func TestActionsClient_BadJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("not json"))
-	}))
-	t.Cleanup(srv.Close)
-
-	c := newActionsClient(srv.Client(), srv.URL, "", "org/repo")
-	_, err := c.Run(context.Background(), 1)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decoding")
-}
-
-func TestActionsClient_DefaultsToTheRealAPI(t *testing.T) {
-	c := newActionsClient(nil, "", "", "org/repo")
-	assert.Equal(t, defaultAPIBase, c.baseURL)
-	assert.NotNil(t, c.http)
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
 func TestWatcher_lowOnTime(t *testing.T) {
 	t.Run("zero deadline never runs low", func(t *testing.T) {
-		w := New(Config{}, nil, nil, nil)
+		w := New(Config{}, nil, nil, nil, nil)
 		assert.False(t, w.lowOnTime())
 		assert.Equal(t, defaultMinRemaining, w.cfg.MinRemaining)
 	})
 	t.Run("below the floor", func(t *testing.T) {
-		w := New(Config{Deadline: time.Now().Add(time.Minute), MinRemaining: 5 * time.Minute}, nil, nil, nil)
+		w := New(Config{Deadline: time.Now().Add(time.Minute), MinRemaining: 5 * time.Minute}, nil, nil, nil, nil)
 		assert.True(t, w.lowOnTime())
 	})
 	t.Run("above the floor", func(t *testing.T) {
-		w := New(Config{Deadline: time.Now().Add(time.Hour), MinRemaining: 5 * time.Minute}, nil, nil, nil)
+		w := New(Config{Deadline: time.Now().Add(time.Hour), MinRemaining: 5 * time.Minute}, nil, nil, nil, nil)
 		assert.False(t, w.lowOnTime())
 	})
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"path"
 	"strings"
 	"sync"
@@ -26,6 +25,11 @@ type Deliver func(ctx context.Context, msg agentruntime.SteerMessage) error
 // after the agent finishes the turn it is on. Like Deliver, the runner's
 // closure takes sandboxMu. Settling twice is a no-op.
 type Settle func(ctx context.Context) error
+
+// defaultMaxSteers is the per-run steer cap when the caller passes none. It
+// matches harness.DefaultSteerMaxSteers, which is where the number is
+// decided; this is only the floor for a caller that supplied nothing.
+const defaultMaxSteers = 2
 
 // settleTimeout bounds the final Settle when the watcher is exiting on a
 // cancelled context. Without its own deadline the settle inherits a dead
@@ -75,10 +79,6 @@ type Config struct {
 	// watcher either reliably.
 	Item WorkItem
 
-	// APIBase overrides the GitHub REST root (tests).
-	APIBase string
-	// HTTPClient overrides the client used for the Actions API (tests).
-	HTTPClient *http.Client
 	// DeltaBaseline seeds the delta window. Zero means StartedAt. The
 	// validation loop runs one watcher per iteration; without this, a retry
 	// would rebuild its first delta from the run's start and re-send
@@ -88,25 +88,20 @@ type Config struct {
 	// watcher per iteration; without this, a retry would re-examine and
 	// re-steer on follow-up runs the previous iteration already absorbed.
 	AlreadyConsumed []int64
-	// JobToken is the JOB token — the GH_TOKEN the action passed in before
-	// the runner swapped in the minted role token. It is the token every
-	// stage job already grants `actions: write`, and reading runs needs no
-	// more than that.
-	JobToken string
 }
 
 // Watcher turns follow-up workflow runs into steers. One watcher serves one
 // agent run; it is not reusable.
 type Watcher struct {
 	cfg     Config
-	actions *actionsClient
+	actions ActionsReader
 	items   ItemReader
 	deliver Deliver
 	settle  Settle
 	logf    func(string, ...any)
 	warnf   func(string, ...any)
 
-	myRun    workflowRun
+	myRun    forge.WorkflowRun
 	stageJob string
 
 	mu sync.Mutex
@@ -126,12 +121,12 @@ type Watcher struct {
 }
 
 // New builds a watcher. Nothing is fetched yet — call Start.
-func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher {
+func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, settle Settle) *Watcher {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 30 * time.Second
 	}
 	if cfg.MaxSteers <= 0 {
-		cfg.MaxSteers = 1
+		cfg.MaxSteers = defaultMaxSteers
 	}
 	if cfg.MinRemaining <= 0 {
 		cfg.MinRemaining = defaultMinRemaining
@@ -150,7 +145,7 @@ func New(cfg Config, items ItemReader, deliver Deliver, settle Settle) *Watcher 
 	}
 	return &Watcher{
 		cfg:      cfg,
-		actions:  newActionsClient(cfg.HTTPClient, cfg.APIBase, cfg.JobToken, cfg.Repo),
+		actions:  actions,
 		items:    items,
 		deliver:  deliver,
 		settle:   settle,
@@ -206,7 +201,11 @@ func (w *Watcher) Head() string {
 // (the harness fan-out runs one job per matrix agent); it is matched
 // case-insensitively as a substring of the job name.
 func (w *Watcher) Start(ctx context.Context, stageHint string) error {
-	run, err := w.actions.Run(ctx, w.cfg.RunID)
+	owner, repo, err := splitRepo(w.cfg.Repo)
+	if err != nil {
+		return err
+	}
+	run, err := w.actions.GetWorkflowRun(ctx, owner, repo, int(w.cfg.RunID))
 	if err != nil {
 		return fmt.Errorf("reading my own run %d: %w", w.cfg.RunID, err)
 	}
@@ -217,9 +216,9 @@ func (w *Watcher) Start(ctx context.Context, stageHint string) error {
 		return fmt.Errorf("my own run %d references no reusable workflow; "+
 			"the dispatch-chain check has nothing to compare against", w.cfg.RunID)
 	}
-	w.myRun = run
+	w.myRun = *run
 
-	jobs, err := w.actions.Jobs(ctx, w.cfg.RunID)
+	jobs, err := w.actions.ListWorkflowRunJobs(ctx, owner, repo, int(w.cfg.RunID))
 	if err != nil {
 		return fmt.Errorf("reading my own run's jobs: %w", err)
 	}
@@ -289,7 +288,7 @@ func (w *Watcher) resolveItem(ctx context.Context) error {
 // in-progress job is me; when several are in progress the hint decides.
 // An unresolvable job name fails closed — no steering at all beats steering
 // on another stage's authorization.
-func resolveStageJob(jobs []job, hint string) (string, error) {
+func resolveStageJob(jobs []forge.WorkflowJob, hint string) (string, error) {
 	var running []string
 	for _, j := range jobs {
 		if j.Status == "in_progress" && !routeJobName(j.Name) {
@@ -453,10 +452,10 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 
 	newest := accepted[len(accepted)-1]
 	msg := agentruntime.SteerMessage{
-		FollowUpRunID: newest.ID,
+		FollowUpRunID: int64(newest.ID),
 		Event:         newest.Event,
-		Actor:         newest.actorLogin(),
-		CreatedAt:     newest.CreatedAt,
+		Actor:         actorLogin(newest),
+		CreatedAt:     runCreatedAt(newest),
 		HeadSHA:       d.newHead,
 		Text:          text,
 	}
@@ -484,11 +483,11 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 // markSeen records that these runs have been judged, so they are not
 // re-examined on every poll. It says nothing about whether the agent saw
 // their content.
-func (w *Watcher) markSeen(runs ...workflowRun) {
+func (w *Watcher) markSeen(runs ...forge.WorkflowRun) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range runs {
-		w.seen[r.ID] = true
+		w.seen[int64(r.ID)] = true
 	}
 }
 
@@ -498,14 +497,14 @@ func (w *Watcher) markSeen(runs ...workflowRun) {
 // The baseline advances only here: moving it for a run that produced no
 // steer would push the window past content the agent never saw, and that
 // content would then never reach it.
-func (w *Watcher) markSteered(runs []workflowRun) {
+func (w *Watcher) markSteered(runs []forge.WorkflowRun) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range runs {
-		if !containsID(w.consumed, r.ID) {
-			w.consumed = append(w.consumed, r.ID)
+		if !containsID(w.consumed, int64(r.ID)) {
+			w.consumed = append(w.consumed, int64(r.ID))
 		}
-		w.seen[r.ID] = true
+		w.seen[int64(r.ID)] = true
 	}
 	w.steers++
 	w.baseline = time.Now().UTC()
@@ -522,14 +521,14 @@ func containsID(ids []int64, id int64) bool {
 
 // poll lists follow-up runs and returns the ones that pass every provenance
 // check, oldest first.
-func (w *Watcher) poll(ctx context.Context) []workflowRun {
-	runs, err := w.actions.RunsSince(ctx, w.shimFile(), w.cfg.StartedAt)
+func (w *Watcher) poll(ctx context.Context) []forge.WorkflowRun {
+	runs, err := w.runsSince(ctx, w.shimFile(), w.cfg.StartedAt)
 	if err != nil {
 		w.warnf("Listing follow-up runs failed: %v", err)
 		return nil
 	}
 
-	var accepted []workflowRun
+	var accepted []forge.WorkflowRun
 	for _, run := range runs {
 		if rej := w.candidateChecks(run); rej != nil {
 			w.logf("Follow-up run %d rejected (%s)", run.ID, rej)
@@ -552,7 +551,7 @@ func (w *Watcher) poll(ctx context.Context) []workflowRun {
 	return accepted
 }
 
-func runIDs(runs []workflowRun) string {
+func runIDs(runs []forge.WorkflowRun) string {
 	ids := make([]string, 0, len(runs))
 	for _, r := range runs {
 		ids = append(ids, fmt.Sprintf("%d", r.ID))
