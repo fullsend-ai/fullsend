@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // allowedEvents are the forge events whose runs execute the shim from the
@@ -48,11 +50,11 @@ func routeJobName(name string) bool {
 // pairs of events; comparing it would silently drop every steer there. Path
 // plus ref already names the trusted workflow: a newer sha at the same
 // `refs/heads/main` of the same path is the same trusted workflow, newer.
-func sameDispatchChain(mine, theirs []referencedWorkflow) bool {
+func sameDispatchChain(mine, theirs []forge.ReferencedWorkflow) bool {
 	if len(mine) != len(theirs) {
 		return false
 	}
-	key := func(w referencedWorkflow) string { return w.Path + "\x00" + w.Ref }
+	key := func(w forge.ReferencedWorkflow) string { return w.Path + "\x00" + w.Ref }
 	a := make([]string, 0, len(mine))
 	for _, w := range mine {
 		a = append(a, key(w))
@@ -80,7 +82,7 @@ func sameDispatchChain(mine, theirs []referencedWorkflow) bool {
 // count as selected. `cancelled` also counts: a later event replaced this
 // run's pending stage job, but the authorization the Route job established
 // still stands.
-func jobSelected(jobs []job, stageJob string) (bool, bool) {
+func jobSelected(jobs []forge.WorkflowJob, stageJob string) (bool, bool) {
 	for _, j := range jobs {
 		if j.Name != stageJob {
 			continue
@@ -94,7 +96,7 @@ func jobSelected(jobs []job, stageJob string) (bool, bool) {
 // success. The run's own conclusion is deliberately ignored: under
 // `queue: single` a later event cancels the earlier pending stage job and
 // the run concludes `cancelled` while its authorization stands.
-func routeSucceeded(jobs []job) bool {
+func routeSucceeded(jobs []forge.WorkflowJob) bool {
 	for _, j := range jobs {
 		if routeJobName(j.Name) {
 			return j.Conclusion == "success"
@@ -111,9 +113,9 @@ func routeSucceeded(jobs []job) bool {
 // API returns as display_title. A candidate that matches neither is skipped
 // rather than guessed at — a wrong binding steers one work item's agent with
 // another's content.
-func boundToItem(run workflowRun, runName string, number int) bool {
-	for _, pr := range run.PullRequests {
-		if pr.Number == number {
+func boundToItem(run forge.WorkflowRun, runName string, number int) bool {
+	for _, n := range run.PullRequestNumbers {
+		if n == number {
 			return true
 		}
 	}
@@ -123,11 +125,11 @@ func boundToItem(run workflowRun, runName string, number int) bool {
 // candidateChecks applies checks 2, 3, 6 of ADR 0101 §"provenance" — the
 // ones answerable from the run record alone, without a second API call.
 // Check 1 (same repository) is implicit in the API path.
-func (w *Watcher) candidateChecks(run workflowRun) *rejection {
-	if run.ID == w.cfg.RunID {
+func (w *Watcher) candidateChecks(run forge.WorkflowRun) *rejection {
+	if int64(run.ID) == w.cfg.RunID {
 		return &rejection{"self", "my own run"}
 	}
-	if w.seen[run.ID] {
+	if w.seen[int64(run.ID)] {
 		return &rejection{"once", "already judged"}
 	}
 	if run.Path != w.myRun.Path {
@@ -136,7 +138,7 @@ func (w *Watcher) candidateChecks(run workflowRun) *rejection {
 	if !allowedEvents[run.Event] {
 		return &rejection{"event", fmt.Sprintf("event %q is not a work-item update", run.Event)}
 	}
-	if !run.CreatedAt.After(w.cfg.StartedAt) {
+	if !runCreatedAt(run).After(w.cfg.StartedAt) {
 		return &rejection{"fresh", "created before my run started"}
 	}
 	if !sameDispatchChain(w.myRun.ReferencedWorkflows, run.ReferencedWorkflows) {
@@ -150,8 +152,12 @@ func (w *Watcher) candidateChecks(run workflowRun) *rejection {
 
 // jobChecks applies checks 4 and 5, which need the candidate's job list:
 // its Route job authorized the event, and my stage was the one selected.
-func (w *Watcher) jobChecks(ctx context.Context, run workflowRun) (*rejection, error) {
-	jobs, err := w.actions.Jobs(ctx, run.ID)
+func (w *Watcher) jobChecks(ctx context.Context, run forge.WorkflowRun) (*rejection, error) {
+	owner, repo, err := splitRepo(w.cfg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := w.actions.ListWorkflowRunJobs(ctx, owner, repo, run.ID)
 	if err != nil {
 		return nil, err
 	}
