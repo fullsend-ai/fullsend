@@ -389,3 +389,75 @@ func TestCodexSettle_DoesNotKillTheCurrentTurn(t *testing.T) {
 		t.Error("Settle did not mark the run settled")
 	}
 }
+
+// TestParseCodexStreamWith_PublishesThreadIDMidStream is the regression
+// guard for the defect that made steering a no-op on codex: the thread id
+// was only published when the stream ended, but a steer can interrupt only
+// once there is a thread to resume onto — and for codex the first process
+// is normally the whole run. The reader below blocks after thread.started,
+// so the assertion can only pass if the id was published while the stream
+// was still open.
+func TestParseCodexStreamWith_PublishesThreadIDMidStream(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+
+	got := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		_, _ = parseCodexStreamWith(pr, func(AgentEvent) {}, func(id string) { got <- id })
+		close(done)
+	}()
+
+	if _, err := io.WriteString(pw, `{"type":"thread.started","thread_id":"01a066e2-a54e"}`+"\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case id := <-got:
+		if id != "01a066e2-a54e" {
+			t.Errorf("wrong thread id published: %q", id)
+		}
+	case <-done:
+		t.Fatal("the parser finished before publishing the thread id")
+	case <-time.After(5 * time.Second):
+		t.Fatal("thread id was not published until the stream ended: a steer during the first turn could never interrupt")
+	}
+}
+
+// TestCodexSteerQueue_InterruptsDuringTheFirstTurn wires the parser hook to
+// the queue exactly as runCodexTurn does, and checks the end-to-end
+// consequence: a steer arriving after thread.started but before the process
+// ends takes the interrupt path.
+func TestCodexSteerQueue_InterruptsDuringTheFirstTurn(t *testing.T) {
+	q, sweeps := newTestCodexQueue()
+	registerCodexSteerQueue("sbx-firstturn", q)
+	defer unregisterCodexSteerQueue("sbx-firstturn")
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	parsed := make(chan struct{})
+	go func() {
+		_, _ = parseCodexStreamWith(pr, func(AgentEvent) {}, q.noteThreadID)
+		close(parsed)
+	}()
+
+	if _, err := io.WriteString(pw, `{"type":"thread.started","thread_id":"01a066e2"}`+"\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Wait for the hook to land rather than racing it.
+	deadline := time.Now().Add(5 * time.Second)
+	for q.currentThreadID() == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if q.currentThreadID() == "" {
+		t.Fatal("thread id never reached the queue")
+	}
+
+	rt := CodexRuntime{}
+	if err := rt.Steer(context.Background(), "sbx-firstturn", SteerMessage{FollowUpRunID: 3, Text: "x"}); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if *sweeps != 1 {
+		t.Errorf("a steer during the first turn did not interrupt it (%d sweeps): it would have waited for the turn to end on its own", *sweeps)
+	}
+}
