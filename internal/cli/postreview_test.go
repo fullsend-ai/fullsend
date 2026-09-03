@@ -1807,3 +1807,19 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		assert.Equal(t, "", body)
 	})
 }
+
+func TestNewPostReviewCmd_FullsendDirDefaultsToEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "/path/to/.fullsend")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "/path/to/.fullsend", f.DefValue, "fullsend-dir should default to $FULLSEND_DIR")
+}
+
+func TestNewPostReviewCmd_FullsendDirDefaultsEmptyWithoutEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "", f.DefValue, "fullsend-dir should default to empty when $FULLSEND_DIR is unset")
+}
