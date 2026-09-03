@@ -119,6 +119,12 @@ overlays:
 # ── Security ──────────────────────────────────────────────────
 security:
   fail_mode: closed                  # "closed" (default) or "open"
+
+# ── Steering (ADR 0101) ───────────────────────────────────────
+steer:
+  enabled: false                     # default: false — opt in per agent
+  max_steers: 2                      # default: 2 — updates one run absorbs
+  poll_interval_seconds: 30          # default: 30 — max 600
 ```
 
 > **Naming convention:** Prefix settings that tune one agent's behavior with
@@ -177,6 +183,12 @@ A pi-format entry must also satisfy pi's own loader rule:
 `plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a `/fs-steer` — instead of being cancelled and restarted from nothing ([ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md)). Off by default: enabling it means a run holds its sandbox until it settles rather than ending at its first result.
+
+It takes effect only when three things line up: `enabled: true` here, a runtime that can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)), and a consumer repository that has set the `FULLSEND_STEER` repository variable to `true`. Miss any one and the run behaves exactly as it does today; the runner prints why it declined.
+
+`max_steers` caps how many updates one run absorbs before it settles and lets the queued run take over — a steered turn on a large diff can cost as much as a fresh run. `poll_interval_seconds` (1–600) only paces the background poll: a turn end always triggers an immediate check, so lowering it buys latency on a mid-turn update at the cost of Actions API quota.
 
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
 
