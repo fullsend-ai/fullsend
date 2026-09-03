@@ -238,7 +238,6 @@ func (s stubBootstrapInput) SandboxName() string    { return s.sandboxName }
 func (s stubBootstrapInput) AgentPath() string      { return "" }
 func (s stubBootstrapInput) AgentName() string      { return "test" }
 func (s stubBootstrapInput) SkillDirs() []string    { return nil }
-func (s stubBootstrapInput) PluginDirs() []string   { return nil }
 func (s stubBootstrapInput) Plugins() []PluginInput { return nil }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
