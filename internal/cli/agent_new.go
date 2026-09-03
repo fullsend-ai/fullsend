@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/agentnew"
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -197,6 +199,11 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	}
 	opts.Image = image
 
+	if runtimeName != "" && !slices.Contains(config.ValidRuntimes(), runtimeName) {
+		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
+			runtimeName, strings.Join(config.ValidRuntimes(), ", "))
+	}
+
 	if validateErr := opts.Validate(); validateErr != nil {
 		return opts, "", "", validateErr
 	}
@@ -210,6 +217,20 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 	}
 	if slugWarning != "" {
 		printer.StepWarn(slugWarning)
+	}
+
+	// Reported first so a missing directory does not surface as a failure to
+	// read config.yaml from inside it.
+	if err := agentnew.ValidateFullsendDir(f.fullsendDir); err != nil {
+		return err
+	}
+	// Checked before Generate writes anything: registration happens last, so
+	// a name already in config.yaml would otherwise be reported only after
+	// the files had landed, leaving the directory changed by a failed run.
+	if !f.noRegister {
+		if err := ensureAgentNameFree(f.fullsendDir, opts.Name); err != nil {
+			return err
+		}
 	}
 
 	result, err := agentnew.Generate(opts, f.fullsendDir, f.force, f.dryRun)
@@ -300,4 +321,22 @@ func slashCommandFromTrigger(trigger string) string {
 		return ""
 	}
 	return rest[1 : 1+end]
+}
+
+// ensureAgentNameFree reports whether an agent of this name is already
+// registered, without mutating anything. It mirrors the check runAgentAdd
+// makes, so the two cannot disagree about what counts as a collision.
+func ensureAgentNameFree(fullsendDir, name string) error {
+	absDir, err := filepath.Abs(fullsendDir)
+	if err != nil {
+		return fmt.Errorf("resolving fullsend dir: %w", err)
+	}
+	cfg, err := loadAgentConfig(filepath.Join(absDir, config.OverlayConfigFile))
+	if err != nil {
+		return err
+	}
+	if _, found := findAgentByName(cfg.AgentEntries(), name); found {
+		return fmt.Errorf("agent %q already exists in config; pick another name or run `fullsend agent remove %s` first", name, name)
+	}
+	return nil
 }

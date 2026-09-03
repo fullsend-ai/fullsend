@@ -11,6 +11,21 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
+// ValidateFullsendDir reports whether fullsendDir is usable as a target.
+// Exported so a caller can fail with this message before running any other
+// check, rather than reporting a missing directory as some downstream error.
+func ValidateFullsendDir(fullsendDir string) error {
+	absDir, err := filepath.Abs(fullsendDir)
+	if err != nil {
+		return fmt.Errorf("resolving fullsend dir: %w", err)
+	}
+	info, err := os.Stat(absDir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("fullsend dir %s does not exist; run `fullsend github setup` first", fullsendDir)
+	}
+	return nil
+}
+
 // Result describes what Generate did, so the caller can print next steps and
 // tests can assert on it without reparsing output.
 type Result struct {
@@ -39,8 +54,8 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 	if err != nil {
 		return nil, fmt.Errorf("resolving fullsend dir: %w", err)
 	}
-	if info, statErr := os.Stat(absDir); statErr != nil || !info.IsDir() {
-		return nil, fmt.Errorf("fullsend dir %s does not exist; run `fullsend github setup` first", fullsendDir)
+	if err := ValidateFullsendDir(fullsendDir); err != nil {
+		return nil, err
 	}
 
 	files, err := Render(opts)
@@ -51,12 +66,23 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 	// Collisions are checked before anything is written. --force overwrites
 	// the four files this agent owns, but never a shared scaffold asset:
 	// those belong to every agent in the directory.
+	//
+	// Lstat, not Stat: a symlink at a destination — or at any directory
+	// leading to one — would otherwise be followed, and a repository that
+	// ships a `.fullsend/harness` symlink could redirect a generated file
+	// outside the fullsend directory entirely.
 	var collisions []string
 	writable := make([]File, 0, len(files))
 	result := &Result{HarnessPath: filepath.Join("harness", opts.Name+".yaml")}
 	for _, f := range files {
-		_, statErr := os.Stat(filepath.Join(absDir, f.Path))
+		if err := checkNoSymlinks(absDir, f.Path); err != nil {
+			return nil, err
+		}
+		info, statErr := os.Lstat(filepath.Join(absDir, f.Path))
 		exists := statErr == nil
+		if exists && !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s exists and is not a regular file; refusing to write it", f.Path)
+		}
 		switch {
 		case exists && f.Shared:
 			result.SkippedShared = append(result.SkippedShared, f.Path)
@@ -86,18 +112,59 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 		return result, nil
 	}
 
+	// Files created by this call, for rollback. A failure part-way through
+	// would otherwise leave a partial agent behind: some files present, the
+	// harness perhaps missing, and nothing registered.
+	var created []string
+	rollback := func() {
+		for i := len(created) - 1; i >= 0; i-- {
+			_ = os.Remove(created[i])
+		}
+	}
+
 	for _, f := range writable {
 		path := filepath.Join(absDir, f.Path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			rollback()
 			return nil, fmt.Errorf("creating %s: %w", filepath.Dir(f.Path), err)
 		}
 		// Written directly rather than renamed in from the temp tree: a
 		// rename across filesystems fails, and the bytes are already here.
-		if err := os.WriteFile(path, f.Data, os.FileMode(f.Mode)); err != nil {
+		if err := writeFile(path, f.Data, os.FileMode(f.Mode)); err != nil {
+			rollback()
 			return nil, fmt.Errorf("writing %s: %w", f.Path, err)
 		}
+		created = append(created, path)
 	}
 	return result, nil
+}
+
+// writeFile is os.WriteFile, indirected so a test can inject a failure
+// part-way through the write loop and assert the rollback.
+var writeFile = os.WriteFile
+
+// checkNoSymlinks refuses a destination whose final component, or any parent
+// between the fullsend directory and it, is a symlink. Called before any
+// write, so a rejected path leaves the directory untouched.
+func checkNoSymlinks(absDir, relPath string) error {
+	current := absDir
+	for _, segment := range strings.Split(filepath.ToSlash(relPath), "/") {
+		current = filepath.Join(current, segment)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Nothing here yet: neither this segment nor anything below
+				// it can be a symlink.
+				return nil
+			}
+			return fmt.Errorf("checking %s: %w", relPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through a symlink: %s",
+				strings.TrimPrefix(current, absDir+string(filepath.Separator)))
+		}
+	}
+	return nil
 }
 
 // validateInTempTree writes the rendered files to a scratch directory and
@@ -117,8 +184,20 @@ func validateInTempTree(absDir string, opts Options, files []File, result *Resul
 	for _, f := range files {
 		data := f.Data
 		if f.Shared {
-			if existing, readErr := os.ReadFile(filepath.Join(absDir, f.Path)); readErr == nil {
+			// Validate against what is actually on disk, not the embedded
+			// copy: a hand-edited policy is common and its content matters.
+			// An existing-but-unreadable asset — a directory in its place,
+			// or bad permissions — must fail naming the path rather than
+			// silently validating a copy that will not be the one used.
+			target := filepath.Join(absDir, f.Path)
+			existing, readErr := os.ReadFile(target)
+			switch {
+			case readErr == nil:
 				data = existing
+			case errors.Is(readErr, os.ErrNotExist):
+				// Not there yet; this run writes it.
+			default:
+				return fmt.Errorf("reading the existing %s: %w", f.Path, readErr)
 			}
 		}
 		path := filepath.Join(tmp, f.Path)

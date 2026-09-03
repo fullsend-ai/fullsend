@@ -2,6 +2,7 @@ package agentnew
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,15 +51,22 @@ func ParseSpec(data []byte) (*AgentSpec, error) {
 
 	var spec AgentSpec
 	if err := dec.Decode(&spec); err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("spec file is empty")
 		}
 		return nil, fmt.Errorf("parsing spec file: %w", err)
 	}
-	// A second document would be silently ignored otherwise.
+	// A second document would be silently ignored otherwise. Only a real EOF
+	// means "there was nothing more": any other error is a malformed second
+	// document, which must be reported rather than treated as absence.
 	var extra AgentSpec
-	if err := dec.Decode(&extra); err == nil {
+	switch err := dec.Decode(&extra); {
+	case err == nil:
 		return nil, fmt.Errorf("spec file must contain exactly one YAML document")
+	case errors.Is(err, io.EOF):
+		// The expected case: one document, cleanly ended.
+	default:
+		return nil, fmt.Errorf("parsing spec file: %w", err)
 	}
 
 	if spec.Version != SpecVersion {

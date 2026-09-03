@@ -131,6 +131,12 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 			Script:        "scripts/validate-output-schema.sh",
 			Schema:        "schemas/" + opts.Name + "-result.schema.json",
 			MaxIterations: 2,
+			// The validation script hard-fails when python3 or the
+			// jsonschema package is missing, and it does so only after the
+			// agent has already run. preflight_check is evaluated before
+			// sandbox creation, so the same missing dependency is reported
+			// up front instead of costing a full inference run.
+			PreflightCheck: `python3 -c "import jsonschema"`,
 		}
 	}
 	return h, nil
