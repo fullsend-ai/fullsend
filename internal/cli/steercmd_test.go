@@ -112,10 +112,18 @@ func TestBuildSteerComment_Rejects(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be review, fix or triage")
 }
 
+// fakePoster is a forge.Client that records the one call the steer command
+// makes. Embedding the fake gives it the rest of the interface.
 type fakePoster struct {
+	*forge.FakeClient
 	owner, repo, body string
 	number            int
 	err               error
+	clientErr         error
+}
+
+func newFakePoster() *fakePoster {
+	return &fakePoster{FakeClient: forge.NewFakeClient()}
 }
 
 func (f *fakePoster) CreateIssueComment(_ context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
@@ -126,16 +134,21 @@ func (f *fakePoster) CreateIssueComment(_ context.Context, owner, repo string, n
 	return &forge.IssueComment{HTMLURL: "https://github.com/org/repo/pull/123#issuecomment-1"}, nil
 }
 
-func withFakePoster(t *testing.T, p steerCommentPoster) {
+func withFakePoster(t *testing.T, p *fakePoster) {
 	t.Helper()
-	prev := newSteerCommentPoster
-	newSteerCommentPoster = func(string) steerCommentPoster { return p }
-	t.Cleanup(func() { newSteerCommentPoster = prev })
+	prev := newSteerForgeClient
+	newSteerForgeClient = func() (forge.Client, error) {
+		if p.clientErr != nil {
+			return nil, p.clientErr
+		}
+		return p, nil
+	}
+	t.Cleanup(func() { newSteerForgeClient = prev })
 	t.Setenv("GH_TOKEN", "test-token")
 }
 
 func TestSteerCmd_PostsTheComment(t *testing.T) {
-	p := &fakePoster{}
+	p := newFakePoster()
 	withFakePoster(t, p)
 
 	cmd := newSteerCmd()
@@ -149,7 +162,7 @@ func TestSteerCmd_PostsTheComment(t *testing.T) {
 }
 
 func TestSteerCmd_StageFlag(t *testing.T) {
-	p := &fakePoster{}
+	p := newFakePoster()
 	withFakePoster(t, p)
 
 	cmd := newSteerCmd()
@@ -159,7 +172,7 @@ func TestSteerCmd_StageFlag(t *testing.T) {
 }
 
 func TestSteerCmd_GitLabIsNotSupportedYet(t *testing.T) {
-	withFakePoster(t, &fakePoster{})
+	withFakePoster(t, newFakePoster())
 
 	cmd := newSteerCmd()
 	cmd.SetArgs([]string{"https://gitlab.com/group/repo/-/merge_requests/4", "re-check"})
@@ -169,7 +182,7 @@ func TestSteerCmd_GitLabIsNotSupportedYet(t *testing.T) {
 }
 
 func TestSteerCmd_PostFailureSurfaces(t *testing.T) {
-	withFakePoster(t, &fakePoster{err: errors.New("403 Forbidden")})
+	withFakePoster(t, &fakePoster{FakeClient: forge.NewFakeClient(), err: errors.New("403 Forbidden")})
 
 	cmd := newSteerCmd()
 	cmd.SetArgs([]string{"https://github.com/org/repo/pull/123", "re-check"})
@@ -179,10 +192,12 @@ func TestSteerCmd_PostFailureSurfaces(t *testing.T) {
 }
 
 func TestSteerCmd_NoToken(t *testing.T) {
-	withFakePoster(t, &fakePoster{})
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("PATH", t.TempDir()) // no gh binary to fall back to
+	// The token chain lives in the shared forge composition path, so the
+	// command surfaces its error rather than resolving tokens itself.
+	withFakePoster(t, &fakePoster{
+		FakeClient: forge.NewFakeClient(),
+		clientErr:  errors.New("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login'"),
+	})
 
 	cmd := newSteerCmd()
 	cmd.SetArgs([]string{"https://github.com/org/repo/pull/123", "re-check"})
