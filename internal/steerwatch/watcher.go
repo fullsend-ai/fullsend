@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -84,10 +85,10 @@ type Config struct {
 	// would rebuild its first delta from the run's start and re-send
 	// content the previous iteration already steered on.
 	DeltaBaseline time.Time
-	// AlreadyConsumed seeds the consumed set. The validation loop runs one
-	// watcher per iteration; without this, a retry would re-examine and
-	// re-steer on follow-up runs the previous iteration already absorbed.
-	AlreadyConsumed []int64
+	// AlreadySeen seeds the judged set. The validation loop runs one watcher
+	// per iteration; without this, a retry would re-examine and re-steer on
+	// follow-up runs the previous iteration already absorbed.
+	AlreadySeen []int64
 }
 
 // Watcher turns follow-up workflow runs into steers. One watcher serves one
@@ -108,14 +109,14 @@ type Watcher struct {
 	// seen is every follow-up run this watcher has already judged, so a
 	// candidate is examined once however many times it appears in a poll.
 	seen map[int64]bool
-	// consumed is the subset whose content actually reached the agent, in
-	// delivery order. Only these go in the marker: the queued run reads it
-	// to decide whether to skip its own work, so a run that was seen and
-	// dropped must not look handled.
-	consumed []int64
-	steers   int
-	lastHead string
-	baseline time.Time
+	// delivered is one entry per Steer call that returned without error, in
+	// order. It is not yet proof the agent saw anything: the runtime
+	// acknowledges a delivery later, and only an acknowledged one may reach
+	// the marker. See DeliveredSteer.
+	delivered []DeliveredSteer
+	steers    int
+	lastHead  string
+	baseline  time.Time
 
 	settleOnce sync.Once
 }
@@ -131,13 +132,9 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 	if cfg.MinRemaining <= 0 {
 		cfg.MinRemaining = defaultMinRemaining
 	}
-	seen := make(map[int64]bool, len(cfg.AlreadyConsumed))
-	consumed := make([]int64, 0, len(cfg.AlreadyConsumed))
-	for _, id := range cfg.AlreadyConsumed {
-		if !seen[id] {
-			seen[id] = true
-			consumed = append(consumed, id)
-		}
+	seen := make(map[int64]bool, len(cfg.AlreadySeen))
+	for _, id := range cfg.AlreadySeen {
+		seen[id] = true
 	}
 	baseline := cfg.DeltaBaseline
 	if baseline.IsZero() {
@@ -152,7 +149,6 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 		logf:     func(string, ...any) {},
 		warnf:    func(string, ...any) {},
 		seen:     seen,
-		consumed: consumed,
 		lastHead: cfg.Item.HeadSHA,
 		baseline: baseline,
 	}
@@ -166,13 +162,46 @@ func (w *Watcher) SetLogFunc(f func(string, ...any)) { w.logf = f }
 // not reach the API). Defaults to a no-op.
 func (w *Watcher) SetWarnFunc(f func(string, ...any)) { w.warnf = f }
 
-// Consumed returns the follow-up run ids this watcher absorbed, in the order
-// it took them. The runner writes them into the steer marker on the terminal
-// status comment so the run queued behind it can skip work already covered.
-func (w *Watcher) Consumed() []int64 {
+// DeliveredSteer is one Steer call: the id the SteerMessage carried, and
+// every follow-up run whose content that one message folded in.
+//
+// The two are not the same thing. A poll that accepts several candidates
+// sends one message naming the newest of them, so the runtime's
+// acknowledgement — which is per message — vouches for the whole batch.
+type DeliveredSteer struct {
+	// MessageID is SteerMessage.FollowUpRunID, the key the runtime reports
+	// back in RunMetrics.Steers once the agent has actually received it.
+	MessageID int64
+	// RunIDs are the follow-up runs this message carried.
+	RunIDs []int64
+}
+
+// Delivered returns one entry per Steer call that returned without error,
+// in order.
+//
+// Steer returning is not proof the agent saw the message: the live runtimes
+// acknowledge a delivery afterwards (Claude's replay echo, pi's response)
+// and Codex when the resumed process starts. The caller intersects these
+// with the acknowledgements in RunMetrics.Steers before writing the marker,
+// because the marker is what makes the queued run skip its work — claiming
+// an unacknowledged delivery there loses the update outright.
+func (w *Watcher) Delivered() []DeliveredSteer {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return append([]int64(nil), w.consumed...)
+	return append([]DeliveredSteer(nil), w.delivered...)
+}
+
+// SeenRunIDs returns every follow-up run this watcher has judged, so the
+// next iteration's watcher does not re-examine them.
+func (w *Watcher) SeenRunIDs() []int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]int64, 0, len(w.seen))
+	for id := range w.seen {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Baseline returns the instant the next delta would be computed against. The
@@ -470,7 +499,7 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	w.markSteered(accepted, d)
+	w.markSteered(msg.FollowUpRunID, accepted, d)
 	w.logf("Steered the agent with follow-up run(s) %s", runIDs(accepted))
 	return true
 }
@@ -486,21 +515,21 @@ func (w *Watcher) markSeen(runs ...forge.WorkflowRun) {
 	}
 }
 
-// markSteered records that one steer carrying these runs' content reached
-// the agent, and advances the delta window.
+// markSteered records that one steer carrying these runs' content was
+// handed to the runtime, and advances the delta window.
 //
 // The baseline advances only here: moving it for a run that produced no
 // steer would push the window past content the agent never saw, and that
 // content would then never reach it.
-func (w *Watcher) markSteered(runs []forge.WorkflowRun, d delta) {
+func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	batch := DeliveredSteer{MessageID: messageID}
 	for _, r := range runs {
-		if !containsID(w.consumed, int64(r.ID)) {
-			w.consumed = append(w.consumed, int64(r.ID))
-		}
+		batch.RunIDs = append(batch.RunIDs, int64(r.ID))
 		w.seen[int64(r.ID)] = true
 	}
+	w.delivered = append(w.delivered, batch)
 	w.steers++
 	w.baseline = time.Now().UTC()
 
@@ -517,15 +546,6 @@ func (w *Watcher) markSteered(runs []forge.WorkflowRun, d delta) {
 	if d.headMoved {
 		w.lastHead = d.newHead
 	}
-}
-
-func containsID(ids []int64, id int64) bool {
-	for _, v := range ids {
-		if v == id {
-			return true
-		}
-	}
-	return false
 }
 
 // poll lists follow-up runs and returns the ones that pass every provenance

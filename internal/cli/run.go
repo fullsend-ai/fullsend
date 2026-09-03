@@ -1203,10 +1203,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// defer writes it onto the terminal comment so the run queued behind
 	// this one can skip work already covered (ADR 0101).
 	var steerMarker statuscomment.SteerMarker
-	// steerConsumed and steerBaseline carry the absorbed follow-up run ids
-	// and the delta window across validation loop iterations, so a retry
-	// neither re-steers on them nor re-sends content already delivered.
-	var steerConsumed []int64
+	// steerSeen and steerBaseline carry the judged follow-up run ids and the
+	// delta window across validation loop iterations, so a retry neither
+	// re-examines them nor re-sends content already delivered.
+	var steerSeen []int64
 	var steerBaseline time.Time
 
 	// The runtime, sandbox name and timeout are not resolved yet; the
@@ -2276,7 +2276,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts.runtime = rt
 		iterSteerOpts.sandboxName = sandboxName
 		iterSteerOpts.timeout = timeout
-		iterSteerOpts.consumed = steerConsumed
+		iterSteerOpts.seen = steerSeen
 		iterSteerOpts.baseline = steerBaseline
 		steerSess := startSteerWatcher(ctx, iterSteerOpts)
 
@@ -2325,9 +2325,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		if steerSess != nil {
+			// After rt.Run returns, so metrics.Steers is complete and has
+			// a single writer: the marker records only what the runtime
+			// acknowledged the agent received.
 			steerSess.stop()
-			steerMarker = steerSess.marker()
-			steerConsumed = steerMarker.ConsumedRunIDs
+			steerMarker = steerSess.marker(metrics.Steers)
+			steerSeen = steerSess.seenRunIDs()
 			steerBaseline = steerSess.baseline()
 		}
 		lastIterElapsed = time.Since(agentStart)
