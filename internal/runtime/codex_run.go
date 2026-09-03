@@ -549,6 +549,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		if q == nil {
 			break
 		}
+		// The id was already published mid-stream by runCodexTurn's hook;
+		// this covers only a stream that ended without a thread.started
+		// the hook could fire on, and is first-wins either way.
 		q.noteThreadID(out.threadID)
 		// Bank this process's counters: the next `codex exec` starts its
 		// own totals at zero, so they add rather than replace.
@@ -695,7 +698,14 @@ func (r CodexRuntime) runCodexTurn(
 		innerHandler(evt)
 	}
 
-	threadID, parseErr := parseCodexStream(reader, handler)
+	// The thread id is published as soon as the header names it, not when
+	// the stream ends: until the queue knows it, a steer has nothing to
+	// resume onto and cannot interrupt the turn (see parseCodexStreamWith).
+	var onThreadStarted func(string)
+	if q != nil {
+		onThreadStarted = q.noteThreadID
+	}
+	threadID, parseErr := parseCodexStreamWith(reader, handler, onThreadStarted)
 	// thread.started names the rollout a `codex exec resume` continues.
 	// It is recorded even when the parse failed part-way: the header
 	// arrives first, and a half-read stream still identifies the thread.
