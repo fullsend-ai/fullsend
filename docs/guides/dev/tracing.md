@@ -91,12 +91,13 @@ silently.
 
 ## Span lifecycle in run.go
 
-`run.go` creates three span types arranged in a parent-child hierarchy:
+`run.go` creates four span types arranged in a parent-child hierarchy:
 
 ```
 run (root)
 ├── sandbox_create    (gen_ai.operation.name=create_agent)
 └── agent             (one per iteration; gen_ai.operation.name=invoke_agent)
+    └── execute_tool  (one per tool call; gen_ai.operation.name=execute_tool)
 ```
 
 ### Root span
@@ -132,6 +133,35 @@ build the attribute slices. Start attributes: `iteration`,
 `exit_code`, `gen_ai.system`, model, token counts, `fullsend.cost_usd`,
 `fullsend.tool_calls`.
 
+### execute_tool spans
+
+One per tool call the runtime reports, a child of that iteration's agent
+span, named `execute_tool <tool name>`. `toolSpanTracker`
+(`internal/cli/tool_spans.go`) starts the span when the `ToolUseEvent`
+arrives and ends it when the matching `ToolResultEvent` arrives, so both
+timestamps are runner-side receipt instants on one clock — the start is
+arguments-complete, not execution start. Attributes:
+`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
+`gen_ai.tool.call.id`; a result flagged `is_error` sets
+`error.type=tool_error` and status Error. A call still open when the
+iteration ends — the runtime was stopped, or its result line exceeded the
+parser's 1 MiB cap — is closed by `Finish()` as `error.type=unanswered`; a
+result with no matching call (its `tool_use` line was skipped) becomes a
+near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without
+an id — pi and codex emit none, and the parser gives server-side tools
+(`server_tool_use`) none because their result never arrives as a
+`tool_result` — produce no span, so the child count can be below
+`fullsend.tool_calls`. The name passes through `security.OutputPipeline()`
+— Unicode normalization, then secret redaction, the same pipeline as span
+content — and is bounded to 256 bytes before it becomes the attribute; the
+span name keeps at most 128 bytes of it.
+The tracker records at most `maxToolSpansPerIteration` (1,024) spans per
+iteration and reports the overflow, which `runAgent` records as
+`fullsend.tool_spans.dropped` on the agent span — a burst of agent-controlled
+calls must not fill the OTLP batch queue and evict the agent span that ends
+right after `Finish()`. These spans are metadata: they carry no tool content
+and are emitted whether or not the Level 3 gate is on.
+
 ### Level 3 content on agent spans
 
 When the content-capture gate is on
@@ -143,10 +173,11 @@ spans — and tees the runtime's normalized event stream to it through
 
 **The tee trap:** supplying any `OnEvent` replaces the runtime's default
 console renderer (`internal/runtime/claude.go`), so the handler built by
-`contentEventHandler` always calls the renderer first and the collector
-second. With the gate off the collector is nil and `contentEventHandler`
-returns nil, leaving the default renderer path byte-identical to before
-Level 3 existed.
+`iterationEventHandler` always calls the renderer first, then the
+collector, then the tool-span tracker. The handler is always set — tool
+spans are emitted with the gate off — and with the gate off the collector
+is nil and inert, so console output stays byte-identical to the default
+renderer path.
 
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts and tool

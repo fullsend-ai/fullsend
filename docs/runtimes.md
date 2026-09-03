@@ -63,6 +63,7 @@ sequenceDiagram
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
 | Content capture (Level 3) | Text, reasoning, tool calls and tool results (correlating ids) | Text, reasoning, tool calls (no correlating ids) — pi's parser emits neither ids nor tool results yet | Text, reasoning, tool calls (no correlating ids) — codex's parser emits neither ids nor tool results |
+| Tool spans (`execute_tool`) | One per tool call, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids | None — the parser emits no call ids |
 
 All three run unattended in the same sandbox, behind the same egress allowlist. Stay on `claude`
 when you need a fallback chain. Choose `pi` when you want a non-Anthropic model, several vendors

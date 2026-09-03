@@ -55,17 +55,18 @@ func newContentCollectorIfEnabled() *contentCollector {
 	return nil
 }
 
-// contentEventHandler tees the normalized event stream to the console
-// renderer and the collector. A nil collector returns a nil handler so
-// the runtime keeps its default renderer path — supplying any OnEvent
-// replaces that renderer, and losing it silences CI output.
-func contentEventHandler(render func(agentruntime.AgentEvent), c *contentCollector) func(agentruntime.AgentEvent) {
-	if c == nil {
-		return nil
-	}
+// iterationEventHandler tees the normalized event stream to the console
+// renderer, the Level 3 collector and the tool-span tracker, in that
+// order. It is always non-nil: tool spans are metadata and are emitted
+// with the content gate off, and supplying any OnEvent replaces the
+// runtime's default renderer — losing it silences CI output — so the
+// renderer runs first whatever else is off. A nil collector (gate off)
+// and a nil tracker are inert.
+func iterationEventHandler(render func(agentruntime.AgentEvent), c *contentCollector, t *toolSpanTracker) func(agentruntime.AgentEvent) {
 	return func(evt agentruntime.AgentEvent) {
 		render(evt)
 		c.Handle(evt)
+		t.Handle(evt)
 	}
 }
 

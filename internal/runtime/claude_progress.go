@@ -247,7 +247,13 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				}
 				if cb.Type == "tool_use" || cb.Type == "server_tool_use" {
 					currentToolName = cb.Name
-					currentToolID = cb.ID
+					// A server-side tool's result arrives inside the assistant
+					// message, never as a user tool_result, so an id could never
+					// be matched: leave it empty.
+					currentToolID = ""
+					if cb.Type == "tool_use" {
+						currentToolID = cb.ID
+					}
 					toolInputJSON.Reset()
 				}
 

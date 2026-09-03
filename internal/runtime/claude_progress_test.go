@@ -1506,3 +1506,33 @@ func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
 		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
 	}
 }
+
+func TestParseClaudeStream_ServerToolUseCarriesNoID(t *testing.T) {
+	// A server-side tool's result arrives inside the assistant message, never
+	// as a user tool_result, so the call must not carry an id that a result
+	// could match — an id-less ToolUseEvent gets no execute_tool span.
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"web_search"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"otel\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`,
+	}
+	var uses []ToolUseEvent
+	if err := parseClaudeStream(strings.NewReader(strings.Join(lines, "\n")), func(e AgentEvent) {
+		if u, ok := e.(ToolUseEvent); ok {
+			uses = append(uses, u)
+		}
+	}); err != nil {
+		t.Fatalf("parseClaudeStream: %v", err)
+	}
+	if len(uses) != 2 {
+		t.Fatalf("expected 2 tool-use events, got %d: %+v", len(uses), uses)
+	}
+	if uses[0].Name != "web_search" || uses[0].ID != "" {
+		t.Errorf("server_tool_use must keep its name and carry no id, got %+v", uses[0])
+	}
+	if uses[1].Name != "Read" || uses[1].ID != "toolu_01" {
+		t.Errorf("client tool_use must keep its id, got %+v", uses[1])
+	}
+}

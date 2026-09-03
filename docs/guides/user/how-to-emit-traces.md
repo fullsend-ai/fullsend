@@ -131,6 +131,12 @@ access controls fit before enabling it.
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
 
+With the `claude` runtime, tool calls are visible at every level as
+`execute_tool` child spans of each `agent` span (tool name, call id, timing,
+error) — that is metadata, not content, and this variable does not affect
+it. The pi and codex runtimes emit none yet (see
+[Runtimes](../../runtimes.md)).
+
 ## Disable trace export
 
 Remove the endpoint variable and header secret from the repository or

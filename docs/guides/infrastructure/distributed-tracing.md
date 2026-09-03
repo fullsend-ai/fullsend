@@ -14,7 +14,8 @@ For implementation details, see the
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
 | 3 | Conversation content (assistant text, reasoning, tool calls and results) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
-All levels produce metadata (timing, token counts, tool names, errors).
+All levels produce metadata (timing, token counts, tool names, errors),
+including one `execute_tool` span per tool call under each `agent` span.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
 
@@ -129,7 +130,24 @@ of the same trace with identical span IDs.
 run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ├── sandbox_create (gen_ai.operation.name=create_agent)
 └── agent           (one per iteration; gen_ai.operation.name=invoke_agent)
+    └── execute_tool (one per tool call; gen_ai.operation.name=execute_tool)
 ```
+
+`execute_tool` spans are named `execute_tool <tool name>`. One starts when
+the runtime reports a tool call (its arguments complete) and ends when it
+reports the result — both are runner-side receipt times, so the span
+brackets execution rather than measuring it exactly. A call with no result
+by the end of the iteration is closed with `error.type=unanswered`; a
+result whose call was never reported (its stream line was skipped) is a
+near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
+emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
+do server-side tools, whose result never arrives as a `tool_result`. Tool
+names pass through the same sanitizer as span content (Unicode
+normalization, then secret redaction) and are bounded to 256 bytes for the
+attribute and 128 for the span name. At most 1,024 `execute_tool`
+spans are recorded per iteration; calls past that are counted in
+`fullsend.tool_spans.dropped` on the `agent` span. Tool content never rides
+these spans — see Content capture.
 
 ### SpanKind
 
@@ -139,6 +157,7 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 | `run` | Internal | No inbound `TRACEPARENT` (local/manual invocation) |
 | `sandbox_create` | Internal | Always |
 | `agent` | Internal | Always |
+| `execute_tool` | Internal | Always |
 
 ## Span attributes
 
@@ -149,8 +168,10 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 
 | Attribute | Example | Present on |
 |-----------|---------|------------|
-| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
+| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`; `execute_tool` on `execute_tool`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
+| `gen_ai.tool.name` | `Bash` | `execute_tool` (the runtime's tool name; absent when the call was never reported) |
+| `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` |
 | `gen_ai.system` / `gen_ai.provider.name` | `anthropic` | `agent` (model vendor; `system` deprecated in OTel GenAI semconv v1.37 — EM-001 accepts either) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
@@ -176,6 +197,8 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content |
 | `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes (content and ids) removed by the size budget |
 | `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
+| `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
+| `fullsend.tool_spans.dropped` | `agent` | Present when the iteration reported more than 1,024 tool calls: the number of calls past the cap that got no `execute_tool` span |
 
 ### Common attributes
 
@@ -183,6 +206,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or the result line exceeded the 1 MiB stream cap); absent on success |
 
 ### Resource attributes
 
@@ -285,7 +309,9 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 (`"NaN"`, `"Infinity"`, `"-Infinity"`).
 
 The file is written synchronously per span. Spans are flushed to disk as
-they complete; the file is the forensic record for crashed runs.
+they complete; the file is the forensic record for crashed runs. Every
+`execute_tool` span is one such line, so a tool-heavy iteration (a hundred
+or more calls) adds that many.
 
 ## Cross-run trace correlation
 
