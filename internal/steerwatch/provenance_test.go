@@ -267,3 +267,26 @@ func TestStart_Errors(t *testing.T) {
 		assert.NotContains(t, err.Error(), "job-token", "the token must never reach an error string")
 	})
 }
+
+func TestRunCreatedAt(t *testing.T) {
+	assert.Equal(t, 2026, runCreatedAt(forge.WorkflowRun{CreatedAt: "2026-09-03T10:00:00Z"}).Year())
+	// A run the watcher cannot date is a run it cannot prove is a follow-up,
+	// so the zero time is the safe answer: it fails the freshness check.
+	assert.True(t, runCreatedAt(forge.WorkflowRun{CreatedAt: "not a time"}).IsZero())
+	assert.True(t, runCreatedAt(forge.WorkflowRun{}).IsZero())
+}
+
+func TestActorLogin(t *testing.T) {
+	// The triggering actor is the human who commented; the run's actor can
+	// be whoever originally created it on a re-run.
+	assert.Equal(t, "reviewer", actorLogin(forge.WorkflowRun{Actor: "octocat", TriggeringActor: "reviewer"}))
+	assert.Equal(t, "octocat", actorLogin(forge.WorkflowRun{Actor: "octocat"}))
+	assert.Empty(t, actorLogin(forge.WorkflowRun{}))
+}
+
+func TestRunsSince_MalformedRepo(t *testing.T) {
+	w := New(Config{Repo: "norepo"}, nil, &stubItems{}, nil, nil)
+	_, err := w.runsSince(context.Background(), "fullsend.yml", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo")
+}

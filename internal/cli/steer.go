@@ -277,24 +277,27 @@ func (s *steerSession) marker(acked []agentruntime.SteerResult) statuscomment.St
 	if s == nil {
 		return statuscomment.SteerMarker{}
 	}
+	return steerMarkerFrom(s.watcher.Delivered(), s.watcher.Head(), acked)
+}
+
+// steerMarkerFrom intersects what the watcher handed to the runtime with what
+// the runtime acknowledged. One message can carry several follow-up runs,
+// since a poll folds simultaneous candidates together, so the ack for a
+// message id vouches for its whole batch.
+func steerMarkerFrom(delivered []steerwatch.DeliveredSteer, head string, acked []agentruntime.SteerResult) statuscomment.SteerMarker {
 	ackedIDs := make(map[int64]bool, len(acked))
 	for _, r := range acked {
 		ackedIDs[r.FollowUpRunID] = true
 	}
 
 	var consumed []int64
-	for _, batch := range s.watcher.Delivered() {
+	for _, batch := range delivered {
 		if !ackedIDs[batch.MessageID] {
 			continue
 		}
-		// One message can carry several follow-up runs, so the ack for its
-		// id vouches for the whole batch.
 		consumed = append(consumed, batch.RunIDs...)
 	}
-	return statuscomment.SteerMarker{
-		ConsumedRunIDs: consumed,
-		HeadSHA:        s.watcher.Head(),
-	}
+	return statuscomment.SteerMarker{ConsumedRunIDs: consumed, HeadSHA: head}
 }
 
 // seenRunIDs returns every follow-up run the watcher judged, for the next
