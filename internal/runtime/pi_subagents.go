@@ -134,16 +134,10 @@ func foldPiSubagentUsage(data []byte, parentSpec string, m *RunMetrics) (folded,
 	return len(records), skipped
 }
 
-// nonNegative and nonNegativeCost clamp a usage figure at zero. See the
-// call site in foldPiSubagentUsage. Only the float form has to consider the
-// non-finite values; an int can hold neither NaN nor an infinity.
-func nonNegative(v int) int {
-	if v < 0 {
-		return 0
-	}
-	return v
-}
-
+// nonNegativeCost clamps a usage figure at zero. See the call site in
+// foldPiSubagentUsage. Unlike nonNegative (codex_progress.go, same
+// clamp for an int), the float form has to consider non-finite values —
+// an int can hold neither NaN nor an infinity.
 func nonNegativeCost(v float64) float64 {
 	// The inverted comparison catches NaN and -Inf; math.IsInf catches the
 	// one non-finite value it lets through. Either would poison every total
