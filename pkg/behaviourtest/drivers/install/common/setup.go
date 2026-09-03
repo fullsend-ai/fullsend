@@ -152,6 +152,27 @@ func prHeadSHAFromEvent() string {
 	return event.PullRequest.Head.SHA
 }
 
+// ResolveOrgWIFProvider looks up the org-level WIF provider via
+// `fullsend inference status <org>` and returns the full provider path.
+func ResolveOrgWIFProvider(
+	binary, token, org, gcpProjectID string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) (string, error) {
+	statusArgs := []string{"inference", "status", org, "--project", gcpProjectID, "--format", "json"}
+	logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
+	out, err := runCLI(binary, token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	wifProvider, err := ParseInferenceStatusWIFProvider(out)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	logf("[install] org-scoped inference WIF provider: %s", wifProvider)
+	return wifProvider, nil
+}
+
 // ParseInferenceStatusWIFProvider extracts the WIF provider from fullsend
 // inference status JSON output.
 func ParseInferenceStatusWIFProvider(output string) (string, error) {
