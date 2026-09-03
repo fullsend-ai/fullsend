@@ -263,6 +263,46 @@ jobs:
                     fi
                   fi
                   ;;
+                /fs-steer)
+                  # Steer the run already in flight on this work item
+                  # (ADR 0101). The comment fires the shim like any other
+                  # event; the stage job it selects queues normally and the
+                  # runner's watcher consumes that run as the steer. An
+                  # explicit stage prefix wins, otherwise a PR steers review
+                  # and an issue steers triage. The authorization floor is
+                  # the target stage's own: fix is a mutation stage and
+                  # keeps its write floor, so `fix:` cannot be used to
+                  # reach fix from a triage-level account.
+                  STEER_TARGET="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+                  case "${STEER_TARGET}" in
+                    review:) STEER_STAGE="review" ;;
+                    fix:)    STEER_STAGE="fix" ;;
+                    triage:) STEER_STAGE="triage" ;;
+                    *)
+                      if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                        STEER_STAGE="review"
+                      else
+                        STEER_STAGE="triage"
+                      fi
+                      ;;
+                  esac
+                  if [[ "${STEER_STAGE}" == "fix" && "${ISSUE_IS_PR}" != "true" ]]; then
+                    STEER_STAGE=""
+                  fi
+                  if [[ "${STEER_STAGE}" == "review" && "${ISSUE_IS_PR}" != "true" ]]; then
+                    STEER_STAGE=""
+                  fi
+                  if [[ -n "${STEER_STAGE}" && "${COMMENT_USER_TYPE}" != "Bot" ]]; then
+                    if [[ "${STEER_STAGE}" == "fix" ]]; then
+                      if is_authorized; then
+                        STAGE="fix"
+                        TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
+                      fi
+                    elif is_authorized triage; then
+                      STAGE="${STEER_STAGE}"
+                    fi
+                  fi
+                  ;;
                 /fs-retro)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     STAGE="retro"
@@ -1123,7 +1163,16 @@ jobs:
           if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
+              # Strip whichever slash command carried the instruction. A
+              # /fs-steer comment routed here (ADR 0101) would otherwise
+              # keep "/fs-steer" (and an optional "fix:" target) as the
+              # first words of the instruction.
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              if [[ "${INSTRUCTION}" == "${COMMENT_BODY}" ]]; then
+                INSTRUCTION="${COMMENT_BODY#/fs-steer}"
+                INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
+                INSTRUCTION="${INSTRUCTION#fix:}"
+              fi
               INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
             fi
