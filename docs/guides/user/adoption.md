@@ -91,7 +91,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **Enable the retro agent** — it reviews agent runs and surfaces systematic problems, so you're not manually auditing agent behavior anymore. Its post-script files issues from retro findings automatically, following your team's conventions — right labels, context, and acceptance criteria.
 
-**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](../../agents/topics/default-vs-custom.md) for guidance.
+**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](default-vs-custom-agents.md) for guidance.
 
 **What you're learning:**
 

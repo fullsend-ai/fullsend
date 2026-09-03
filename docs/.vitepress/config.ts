@@ -35,6 +35,15 @@ const version =
   JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf-8"))
     .version ?? "dev";
 
+// docs/agents is a symlink into the _agents submodule; send those edit
+// links to fullsend-ai/agents instead of a 404 in this repo.
+function editLinkUrl({ relativePath }: { relativePath: string }): string {
+  if (relativePath.startsWith("agents/")) {
+    return `https://github.com/fullsend-ai/agents/edit/main/docs/${relativePath.slice("agents/".length)}`;
+  }
+  return `https://github.com/fullsend-ai/fullsend/edit/main/docs/${relativePath}`;
+}
+
 // Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
 // before markdown-it processes it. Code fence tracking uses backtick-count
 // matching per CommonMark spec to correctly handle nested fences.
@@ -237,16 +246,7 @@ export default defineConfig({
           text: "Agents",
           collapsed: true,
           link: "/agents/",
-          items: [
-            { text: "Triage", link: "/agents/triage" },
-            { text: "Code", link: "/agents/code" },
-            { text: "Review", link: "/agents/review" },
-            { text: "Fix", link: "/agents/fix" },
-            { text: "Retro", link: "/agents/retro" },
-            { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
-          ],
+          items: getMarkdownFiles("agents", "agents"),
         },
         {
           text: "User Guides",
@@ -261,6 +261,11 @@ export default defineConfig({
               collapsed: true,
               items: [
                 { text: "Overview", link: "/guides/user/customizing-overview" },
+                {
+                  text: "Default, derived and custom agents",
+                  link: "/guides/user/default-vs-custom-agents",
+                },
+                { text: "Agent escalation ladder", link: "/guides/user/escalation-ladder" },
                 {
                   text: "Configuring with AGENTS.md",
                   link: "/guides/user/customizing-with-agents-md",
@@ -413,7 +418,7 @@ export default defineConfig({
     socialLinks: [{ icon: "github", link: "https://github.com/fullsend-ai/fullsend" }],
 
     editLink: {
-      pattern: "https://github.com/fullsend-ai/fullsend/edit/main/docs/:path",
+      pattern: editLinkUrl,
       text: "Edit this page on GitHub",
     },
 
