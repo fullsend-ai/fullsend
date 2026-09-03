@@ -282,10 +282,10 @@ func TestParseOrgOrRepo_OrgMode(t *testing.T) {
 }
 
 func TestParseOrgOrRepo_RepoMode(t *testing.T) {
-	org, repo, err := parseOrgOrRepo("acme/widget")
+	org, repo, err := parseOrgOrRepo("acme--corp/widget")
 	require.NoError(t, err)
-	assert.Equal(t, "acme", org)
-	assert.Equal(t, "acme/widget", repo)
+	assert.Equal(t, "acme--corp", org)
+	assert.Equal(t, "acme--corp/widget", repo)
 }
 
 func TestParseOrgOrRepo_Invalid(t *testing.T) {

@@ -657,7 +657,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	}
 	seen := make(map[string]bool)
 	for _, org := range p.cfg.GitHubOrgs {
-		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
+		if err := mintcore.ValidateOrgName(org); err != nil {
 			return nil, fmt.Errorf("invalid GitHub org name: %q", org)
 		}
 		lower := strings.ToLower(org)
@@ -1522,7 +1522,7 @@ func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider
 		return "", "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
 	}
 	partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
-	if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
+	if err := mintcore.ValidateOrgName(partsLower[0]); err != nil {
 		return "", "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
 	}
 	if !githubRepoSlugPattern.MatchString(partsLower[1]) {
@@ -1577,7 +1577,7 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	orgs := make([]string, len(p.cfg.GitHubOrgs))
 	seen := make(map[string]bool)
 	for i, org := range p.cfg.GitHubOrgs {
-		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
+		if err := mintcore.ValidateOrgName(org); err != nil {
 			return "", fmt.Errorf("invalid GitHub org name: %q", org)
 		}
 		lower := strings.ToLower(org)

@@ -334,7 +334,7 @@ func TestAnalyzeCmd_RequiresOrg(t *testing.T) {
 }
 
 func TestValidateOrgName_Valid(t *testing.T) {
-	valid := []string{"my-org", "org123", "A", "abc-def-ghi", "ORG"}
+	valid := []string{"my-org", "my--org", "org123", "A", "abc-def-ghi", "ORG"}
 	for _, name := range valid {
 		t.Run(name, func(t *testing.T) {
 			assert.NoError(t, validateOrgName(name))

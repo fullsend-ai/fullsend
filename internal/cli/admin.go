@@ -116,9 +116,6 @@ func validateOrgName(org string) error {
 	if strings.HasPrefix(org, "-") || strings.HasSuffix(org, "-") {
 		return fmt.Errorf("organization name cannot start or end with a hyphen")
 	}
-	if strings.Contains(org, "--") {
-		return fmt.Errorf("organization name cannot contain consecutive hyphens")
-	}
 	for _, c := range org {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
 			return fmt.Errorf("organization name contains invalid character: %c", c)
@@ -128,8 +125,8 @@ func validateOrgName(org string) error {
 }
 
 // githubOwnerPattern matches valid GitHub usernames and org names
-// (alphanumeric and single hyphens only, no dots or underscores).
-var githubOwnerPattern = regexp.MustCompile(`^[a-zA-Z0-9](-?[a-zA-Z0-9])*$`)
+// (alphanumeric and hyphens only, no dots or underscores).
+var githubOwnerPattern = mintcore.GitHubOrgPattern
 
 // githubRepoPattern matches valid GitHub repository names
 // (alphanumeric, hyphens, dots, and underscores). Dot-prefixed repos such as

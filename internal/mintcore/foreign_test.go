@@ -25,7 +25,10 @@ func TestValidateTargetOrg(t *testing.T) {
 	if err := validateTargetOrg("halfsend-01"); err != nil {
 		t.Fatalf("valid org: %v", err)
 	}
-	if err := validateTargetOrg("bad--org"); err == nil {
+	if err := validateTargetOrg("half--send"); err != nil {
+		t.Fatalf("valid org with consecutive hyphens: %v", err)
+	}
+	if err := validateTargetOrg("-bad-org"); err == nil {
 		t.Fatal("expected invalid org")
 	}
 }

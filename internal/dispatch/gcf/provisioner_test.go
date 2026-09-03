@@ -250,7 +250,7 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ORGS":           "test--org",
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"ALLOWED_ROLES":          "coder",
 			"ALLOWED_WORKFLOW_FILES": "*",
@@ -259,7 +259,7 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 
 	p := newTestProvisioner(Config{
 		ProjectID:         "my-project",
-		GitHubOrgs:        []string{"test-org"},
+		GitHubOrgs:        []string{"test--org"},
 		AgentPEMs:         singleRolePEMs(),
 		AgentAppIDs:       singleRoleAppIDs(),
 		FunctionSourceDir: fakeFunctionSourceDir(t),
@@ -298,7 +298,7 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 	assert.Equal(t, "my-project", fake.projectIAMBindings[0].ProjectID)
 	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
 	assert.Contains(t, fake.projectIAMBindings[0].Member, "principalSet://iam.googleapis.com/")
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/test-org/.fullsend")
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/test--org/.fullsend")
 
 	// Verify PEMs were zeroed.
 	for role, pem := range p.cfg.AgentPEMs {
@@ -1905,7 +1905,7 @@ func TestProvisionWIF_HappyPath(t *testing.T) {
 	fake := newFakeGCFClient()
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme"},
+		GitHubOrgs: []string{"acme--corp"},
 	}, fake)
 
 	wifProvider, err := p.ProvisionWIF(context.Background())
@@ -1918,7 +1918,7 @@ func TestProvisionWIF_HappyPath(t *testing.T) {
 	assert.Contains(t, fake.calls, "CreateWIFProvider")
 	assert.Contains(t, fake.calls, "SetProjectIAMBinding")
 
-	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Equal(t, "assertion.repository_owner == 'acme--corp'", fake.lastWIFProviderConfig.AttributeCondition)
 }
 
 func TestProvisionWIF_MissingProjectID(t *testing.T) {
@@ -2076,19 +2076,19 @@ func TestProvisionWIF_RepoScoped(t *testing.T) {
 	fake := newFakeGCFClient()
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme"},
-		Repo:       "acme/widget",
+		GitHubOrgs: []string{"acme--corp"},
+		Repo:       "acme--corp/widget",
 	}, fake)
 
 	wifPath, err := p.ProvisionWIF(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, "gh-acme-widget", fake.lastWIFProviderID)
-	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
-	assert.Contains(t, wifPath, "gh-acme-widget")
+	assert.Equal(t, "gh-acme--corp-widget", fake.lastWIFProviderID)
+	assert.Equal(t, "assertion.repository == 'acme--corp/widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Contains(t, wifPath, "gh-acme--corp-widget")
 
 	require.Len(t, fake.projectIAMBindings, 1)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme--corp/widget")
 
 	assert.NotContains(t, fake.calls, "GetWIFProvider")
 }
@@ -2186,7 +2186,6 @@ func TestProvisionWIF_RepoScoped_RejectsInvalidRepo(t *testing.T) {
 		{"dot as repo", "owner/.", "cannot be"},
 		{"dotdot as repo", "owner/..", "cannot be"},
 		{"dot as owner", "./repo", "invalid repo owner"},
-		{"double-hyphen in owner", "org--name/repo", "invalid repo owner"},
 		{"git suffix", "owner/repo.git", "cannot end with"},
 	}
 	for _, tt := range tests {

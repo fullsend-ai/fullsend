@@ -11,7 +11,7 @@ import (
 // timestamps (exp, iat). Used by both STSVerifier and JWKSVerifier.
 const maxClockSkew = 30 * time.Second
 
-// GitHubOrgPattern validates GitHub org/user names: alphanumeric or single
+// GitHubOrgPattern validates GitHub org/user names: alphanumeric or
 // hyphens, cannot start or end with a hyphen, max 39 characters.
 var GitHubOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`)
 
@@ -22,10 +22,9 @@ var RepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9._-]{0,99}$`)
 // RolePattern restricts role to safe lowercase identifiers.
 var RolePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
-// ValidateOrgName checks that an org name matches GitHubOrgPattern and
-// does not contain double-hyphens (which would be ambiguous in secret names).
+// ValidateOrgName checks that an org name matches GitHubOrgPattern.
 func ValidateOrgName(org string) error {
-	if !GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
+	if !GitHubOrgPattern.MatchString(org) {
 		return fmt.Errorf("invalid org name %q", org)
 	}
 	return nil
