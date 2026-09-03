@@ -43,59 +43,66 @@ resource amplification
 The newest event takes priority immediately, but completed work is discarded
 and bursts can repeatedly consume tokens without producing a result.
 
-### Queue every triggering event
+### Serialize every triggering event
 
 No event is discarded, but a burst produces redundant runs whose inputs and
 effects may substantially overlap.
 
-### Finish the active run and coalesce later events
+### Poll for later events within `fullsend run`
 
-The first event starts work immediately; later events are considered together
-after the run, trading immediate reaction to each event for bounded, useful
-follow-up work.
+An execution loop can retrieve, authorize, and coalesce later events after each
+run, with portable ordering and a deterministic follow-up limit. It requires
+every input driver, including GitHub, to support polling and race-safe cursors,
+and moves scheduling and repeated invocation into the execution command.
+
+### Preserve the active run and coalesce pending runs
+
+The first event starts work immediately. The execution platform retains one
+pending run for the newest matching event while the agent is active, and the
+next agent run reconciles all current concerns on the subject.
 
 ## Decision
 
-Adopt finish-and-coalesce scheduling for automatic agent triggers. For a given
-harness and normalized event subject, the first matching event starts a run.
-Later events do not cancel or queue another run while that run is active.
+Adopt preserve-and-coalesce scheduling for automatic agent triggers. Every event
+still follows the normal input-driver normalization, authorization, harness
+selection, and CEL trigger path. A matching run enters a concurrency group keyed
+by harness and stable normalized-event subject. An event that fails
+authorization or does not match the harness trigger creates no pending run.
+
+The execution platform MUST allow the active run to finish and coalesce later
+matching events into one pending run representing the newest retained event.
+GitHub Actions provides these semantics with a subject-scoped concurrency group,
+`cancel-in-progress: false`, and its default single-pending queue
+([GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)).
+All workflow layers that share responsibility for agent concurrency MUST use
+compatible groups and cancellation settings. Integrations for platforms without
+equivalent semantics MUST emulate them outside the agent execution process.
+
+Each agent run MUST reconcile the subject's current state rather than assume the
+triggering event describes all outstanding work. The retained event may still
+select harness overlays and provide immediate context, but `fullsend run` does
+not poll for later events or invoke another run itself. A pending follow-up is a
+separate platform execution and does not extend the active run's timeout window.
 Explicit user or operator cancellation remains available and is outside this
 policy.
 
-`fullsend dispatch` remains responsible for normalizing and authorizing the
-initial event, evaluating harness triggers, and selecting runs. It MUST pass the
-initial `NormalizedEvent` to `fullsend run` as a first-class input. This becomes
-the canonical event input for execution; the existing legacy `event_payload`
-protocol MAY remain alongside it during migration for agents that do not yet
-use CEL dispatch.
-
-Input drivers MUST provide an operation that accepts the event that started a
-run and returns later events for the same subject as `NormalizedEvent` values.
-The execution loop within `fullsend run` calls this operation after the sandbox
-and runtime reach a terminal state. It applies the same platform authorization
-gate used for initial dispatch before evaluating the current harness's CEL
-`trigger` against each returned event. If any authorized event matches,
-`fullsend run` selects the newest matching event, resolves the harness and its
-CEL-guarded overlays against that event, and invokes a fresh sandbox and runtime
-run. Events coalesced into that follow-up do not each receive their own run.
-
-`fullsend run` repeats this check after each follow-up run, subject to a
-platform-enforced maximum number of consecutive runs. Reaching the maximum
-stops automatic continuation and produces an observable limit-exhausted result;
-it does not cancel the run that reached the limit. Drivers MUST define stable
-subject identity and event ordering so the check cannot move backwards or
-silently cross between subjects.
+Dispatch authorization covers the event that creates a run, not every comment
+or other piece of subject state the agent may read while reconciling. This
+decision does not authorize agents to treat arbitrary subject content as
+commands. How content provenance and actor authority constrain agent behavior is
+deferred to a separate ADR; existing deterministic authorization and input
+security controls remain in force.
 
 ## Consequences
 
 - Agent work already in progress completes, and bursts produce at most one
   follow-up run at a time, reducing token and sandbox waste.
-- A follow-up run sees the newest triggering context and may use different
-  harness overlays from the preceding run.
-- Input drivers must support ordered, race-safe retrieval of later events for a
-  subject; supporting current GitHub-event agents therefore requires GitHub
-  poll drivers.
-- `fullsend run` must receive the initial normalized event through a canonical
-  input protocol, while the legacy event payload may coexist during migration.
-- Follow-ups retain dispatch authorization guarantees but are delayed and
-  bounded, so limit exhaustion can leave work for a later trigger.
+- GitHub Actions can implement the policy without a poll driver or a new
+  `fullsend run` event protocol; other platforms may require extra coordination.
+- Agents must inspect current subject state, while transient intermediate events
+  that leave no durable state may be lost.
+- Trigger authorization remains deterministic, but authority over other content
+  discovered during reconciliation requires a future decision.
+- Per-run infrastructure timeouts remain effective, but a single pending slot
+  does not bound consecutive runs; sustained triggering still requires rate,
+  cost, or loop circuit breakers.

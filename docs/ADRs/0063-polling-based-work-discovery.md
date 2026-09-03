@@ -352,9 +352,9 @@ depth — but polling does not impose a new idempotency requirement beyond what
 event-driven dispatch already assumes under `cancel-in-progress`.
 
 > **Update (2026-09):** [ADR 0098](0098-serialize-agent-runs-and-coalesce-subsequent-events.md)
-> replaces automatic cancellation with serialized runs and bounded follow-up
-> event coalescing. Source-native locks and agent idempotency remain defense in
-> depth for duplicate dispatch and side effects.
+> replaces automatic cancellation with serialized runs and platform-native
+> pending-run coalescing. Source-native locks and agent idempotency remain
+> defense in depth for duplicate dispatch and side effects.
 
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:
@@ -485,6 +485,10 @@ required by the authorization gate. Implementations SHOULD track
 - **Write-then-verify races** — duplicate dispatch possible before GHA
   concurrency applies; mitigated by per-stage `cancel-in-progress` groups when
   `event_payload` projection is correct.
+
+  > **Update (2026-09):** [ADR 0098](0098-serialize-agent-runs-and-coalesce-subsequent-events.md)
+  > replaces cancellation of the active run with serialized, platform-native
+  > pending-run coalescing for the same harness and subject.
 - **Work item abstraction** — harnesses and pre-scripts may need
   `FULLSEND_WORK_ITEM_*` plumbing for non-GitHub sources.
 

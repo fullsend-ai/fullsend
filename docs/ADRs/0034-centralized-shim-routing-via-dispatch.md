@@ -147,8 +147,8 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   time, and the latest event takes priority.
 
 > **Update (2026-09):** [ADR 0098](0098-serialize-agent-runs-and-coalesce-subsequent-events.md)
-> replaces automatic cancellation with serialized runs and bounded follow-up
-> event coalescing.
+> replaces automatic cancellation with serialized runs and platform-native
+> pending-run coalescing.
 
 > **Note (2026-07, [#2452](https://github.com/fullsend-ai/fullsend/issues/2452)):** Per-org
 > workflow-call shims now use label-aware concurrency groups with
