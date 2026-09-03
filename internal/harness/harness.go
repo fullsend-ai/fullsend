@@ -41,6 +41,20 @@ func ValidPluginBasename(name string) bool {
 	return validPluginName.MatchString(name)
 }
 
+// ValidAgentBasename reports whether name is a safe agent name — the same
+// check Validate applies to the agent: basename (minus .md). Exported so a
+// caller that constructs a harness, rather than loading one, can reject an
+// unsafe name before writing it anywhere: the name reaches shell
+// interpolation, so this is a security check, not a style check.
+func ValidAgentBasename(name string) bool {
+	return validAgentName.MatchString(name)
+}
+
+// ValidSlug reports whether slug matches the allowed harness slug pattern.
+func ValidSlug(slug string) bool {
+	return validSlugName.MatchString(slug)
+}
+
 // ChmodPluginDir makes all files under dir executable (0755). It resolves
 // symlinks first so it operates on the real directory tree. Plugins may
 // contain scripts or MCP server binaries that need the execute bit.
