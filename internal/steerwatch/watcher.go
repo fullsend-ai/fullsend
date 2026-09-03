@@ -470,12 +470,7 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	w.markSteered(accepted)
-	if d.headMoved {
-		w.mu.Lock()
-		w.lastHead = d.newHead
-		w.mu.Unlock()
-	}
+	w.markSteered(accepted, d)
 	w.logf("Steered the agent with follow-up run(s) %s", runIDs(accepted))
 	return true
 }
@@ -497,7 +492,7 @@ func (w *Watcher) markSeen(runs ...forge.WorkflowRun) {
 // The baseline advances only here: moving it for a run that produced no
 // steer would push the window past content the agent never saw, and that
 // content would then never reach it.
-func (w *Watcher) markSteered(runs []forge.WorkflowRun) {
+func (w *Watcher) markSteered(runs []forge.WorkflowRun, d delta) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, r := range runs {
@@ -508,6 +503,20 @@ func (w *Watcher) markSteered(runs []forge.WorkflowRun) {
 	}
 	w.steers++
 	w.baseline = time.Now().UTC()
+
+	// Advance the content baseline to the state the agent was actually
+	// told about. Without this an issue's title, body and labels stay
+	// pinned to run start, so every later steer repeats changes the agent
+	// has already seen — and a field edited back to its original value
+	// reads as unchanged and is never reported at all.
+	if d.issue != nil {
+		w.cfg.Item.Title = d.issue.Title
+		w.cfg.Item.Body = d.issue.Body
+		w.cfg.Item.Labels = append([]string(nil), d.issue.Labels...)
+	}
+	if d.headMoved {
+		w.lastHead = d.newHead
+	}
 }
 
 func containsID(ids []int64, id int64) bool {
