@@ -41,8 +41,9 @@ Some doc content lives in separate repositories linked as git submodules:
 | Submodule | Path | Docs symlink |
 |-----------|------|-------------|
 | [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` -> `../experiments` |
+| [fullsend-ai/agents](https://github.com/fullsend-ai/agents) | `agents/` | `docs/agents` -> `../agents/docs/` |
 
-The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step.
+The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step. Note that when building locally or running `make lint`, you may need to run `git submodule update --init` manually.
 
 ## CI/CD
 

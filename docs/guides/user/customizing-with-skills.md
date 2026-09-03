@@ -194,5 +194,5 @@ Bring Your Own Agent covers the same decision frame in
   [tuning existing agents](customizing-agents.md#tuning-agents-with-augmentation-skills)
 - [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
   — discovery-driven authoring procedure for augmentations and sub-agents
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+- [Default, derived, and custom agents](default-vs-custom-agents.md)
   — adding skills keeps you in "configured default agent" territory
