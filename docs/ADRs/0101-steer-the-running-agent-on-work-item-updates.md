@@ -182,8 +182,13 @@ and both run ids are recorded as consumed.
 
 The delta text is a runner-authored envelope through the same Unicode sanitizer
 `buildFeedbackPrompt` uses (now `security.SanitizeAgentText`, shared so the two cannot drift),
-delivered via the mailbox and never via argv. Only non-bot activity counts, so a run never steers
-itself with its own start comment.
+delivered through the mailbox, so it never reaches the agent CLI's own argv. It is not out of
+argv entirely: the mailbox write is a `printf ... >> mailbox` command string that `sandbox exec`
+runs as `sh -c`, so the text is visible in that shell's argv inside the sandbox (to the sandbox
+user, which is the agent that is about to read it) and in OpenShell's host-side command preview.
+Plumbing the exec request's stdin field through the sandbox package would remove even that; it is
+tracked separately. Only non-bot activity counts, so a run never steers itself with its own start
+comment.
 
 ### The work item's baseline
 
