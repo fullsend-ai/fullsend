@@ -30,6 +30,10 @@ JWT = (
 )
 
 
+# Extra argv for every chain subprocess; checkout() names the boundary here.
+CHAIN_ARGS: list[str] = []
+
+
 def obfuscate_with_char(text: str, char: str) -> str:
     """Insert invisible character between each codepoint."""
     return char.join(text)
@@ -63,7 +67,7 @@ def run_hook(
     env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
     env.update(env_extra or {})
     proc = subprocess.run(
-        [sys.executable, script],
+        [sys.executable, script, *CHAIN_ARGS],
         input=json.dumps(body),
         capture_output=True,
         text=True,
@@ -491,7 +495,7 @@ class TestChainFailsClosedOnUnreadableInput(unittest.TestCase):
         if armed:
             env["FULLSEND_CANARY_TOKEN"] = CANARY
         proc = subprocess.run(
-            [sys.executable, CHAIN_HOOK],
+            [sys.executable, CHAIN_HOOK, *CHAIN_ARGS],
             input=raw,
             capture_output=True,
             text=True,
@@ -559,7 +563,7 @@ def run_raw(body: dict, env_extra: dict[str, str] | None = None) -> tuple[int, s
     env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
     env.update(env_extra or {})
     proc = subprocess.run(
-        [sys.executable, CHAIN_HOOK],
+        [sys.executable, CHAIN_HOOK, *CHAIN_ARGS],
         input=json.dumps(body),
         capture_output=True,
         text=True,
@@ -590,7 +594,14 @@ def checkout():
         ws = os.path.realpath(tmp)
         repo = os.path.join(ws, "repo")
         os.makedirs(os.path.join(repo, ".git"))
-        yield repo, os.path.join(ws, ".gcp-oidc-token")
+        # The tempdir stands in for the sandbox workspace; the hook takes the
+        # boundary only from its own command line, so the subprocess gets it
+        # there.
+        CHAIN_ARGS.append("--sandbox-workspace=" + ws)
+        try:
+            yield repo, os.path.join(ws, ".gcp-oidc-token")
+        finally:
+            CHAIN_ARGS.clear()
 
 
 class TestContentPreservedAndRewriteNotes(unittest.TestCase):
@@ -643,6 +654,28 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
         out = json.loads(stdout)
         self.assertNotIn(JWT, json.dumps(out["hookSpecificOutput"]["updatedToolOutput"]))
         self.assertIn("masked", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_boundary_is_not_read_from_the_environment(self):
+        # A checkout's .claude/settings.json env block reaches hook processes
+        # under Claude Code, so the chain takes the boundary only from its own
+        # command line: with the environment alone naming this workspace, the
+        # checkout is not below the real boundary and the JWT masks.
+        with checkout() as (repo, _token):
+            fixture = os.path.join(repo, "x_test.go")
+            with open(fixture, "w", encoding="utf-8") as f:
+                f.write("x")
+            CHAIN_ARGS.clear()
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f"{JWT}\n"),
+                key="tool_response",
+                tool_input={"file_path": fixture},
+                cwd=repo,
+                env_extra={"FULLSEND_SANDBOX_WORKSPACE": os.path.dirname(repo)},
+            )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn(JWT, json.dumps(out["hookSpecificOutput"]["updatedToolOutput"]))
 
     def test_redaction_adds_additional_context(self):
         rc, stdout, _ = run_hook(

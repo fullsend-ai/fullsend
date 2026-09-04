@@ -415,7 +415,8 @@ class TestBareJwtToolScope(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.ws = os.path.realpath(tmp.name)
+        self.tmp = os.path.realpath(tmp.name)
+        self.ws = os.path.join(self.tmp, "ws")
         self.repo = os.path.join(self.ws, "repo")
         os.makedirs(os.path.join(self.repo, ".git"))
         os.makedirs(os.path.join(self.repo, "pkg"))
@@ -424,11 +425,16 @@ class TestBareJwtToolScope(unittest.TestCase):
         Path(self.fixture).write_text("x")
         self.token = os.path.join(self.ws, ".gcp-oidc-token")
         Path(self.token).write_text("x")
-        # The outside-the-checkout cases need nothing above the tempdir to
-        # hold .git; a TMPDIR inside a checkout would fail them spuriously.
+        # The tempdir stands in for /sandbox/workspace: the checkout must be
+        # a proper subdirectory of it, so the boundary is bound per test.
         import secret_redact_posttool as sr
 
-        self.assertIsNone(sr._checkout_root(self.ws), f"{self.ws} lies under a checkout")
+        self._orig_workspace = sr.SANDBOX_WORKSPACE
+        sr.SANDBOX_WORKSPACE = self.ws
+        self.addCleanup(setattr, sr, "SANDBOX_WORKSPACE", self._orig_workspace)
+        self.assertIsNone(
+            sr._checkout_root(self.ws, self.ws), "the workspace itself is never a root"
+        )
 
     def _hook_input(self, tool_name, path=None, *, cwd=None, tool_input=None) -> dict:
         body: dict = {"tool_name": tool_name, "cwd": self.repo if cwd is None else cwd}
@@ -521,6 +527,148 @@ class TestBareJwtToolScope(unittest.TestCase):
             sr.content_skips(self._hook_input("Read", self.fixture, cwd=inward)), {"jwt"}
         )
 
+    def test_forged_git_above_the_checkout_never_becomes_the_root(self):
+        # An agent can create a .git entry at the workspace level and get
+        # its cwd to resolve there (a symlink inside the checkout, or a plain
+        # cd); the checkout must be a proper subdirectory of the sandbox
+        # workspace, so that entry can never widen the root to the runner's
+        # token file.
+        import secret_redact_posttool as sr
+
+        os.makedirs(os.path.join(self.ws, ".git"))
+        ws_link = os.path.join(self.repo, "ws")
+        os.symlink(self.ws, ws_link)
+        for cwd in (ws_link, self.ws):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", self.token, cwd=cwd)), frozenset()
+                )
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", ".gcp-oidc-token", cwd=cwd)),
+                    frozenset(),
+                )
+                grep = self._hook_input("Grep", cwd=cwd, tool_input={"pattern": "eyJ"})
+                self.assertEqual(sr.content_skips(grep), frozenset())
+        # A .git planted ABOVE the workspace is out of bounds the same way —
+        # including for a cwd inside the workspace but outside any checkout,
+        # where an unbounded walk would find it. The workspace-level plant is
+        # removed first so the one above is genuinely the nearest ancestor.
+        os.rmdir(os.path.join(self.ws, ".git"))
+        os.makedirs(os.path.join(self.tmp, ".git"))
+        plain = os.path.join(self.ws, "plain")
+        os.makedirs(plain)
+        for cwd in (self.ws, plain):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", self.token, cwd=cwd)), frozenset()
+                )
+        # The real checkout, a proper subdirectory of the workspace, still skips.
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture)), {"jwt"})
+
+    def test_runtime_rewritten_path_forms_never_skip(self):
+        # pi strips a leading '@', turns a file:// URL into a path and expands
+        # '~' before opening, while its adapter forwards the raw argument; the
+        # hook cannot see the rewrite, so those forms never skip — a rewritten
+        # form can name the token beside the checkout as easily as a fixture.
+        import secret_redact_posttool as sr
+
+        for path in (
+            "@" + self.token,
+            "@../.gcp-oidc-token",
+            "@~/.gcp-oidc-token",
+            "file://" + self.token,
+            "FILE://" + self.token,
+            "@" + self.fixture,
+            "file://" + self.fixture,
+        ):
+            with self.subTest(path=path):
+                read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": path}}
+                grep = {"tool_name": "Grep", "cwd": self.repo, "tool_input": {"path": path}}
+                self.assertEqual(sr.content_skips(read), frozenset())
+                self.assertEqual(sr.content_skips(grep), frozenset())
+
+    def test_workspace_boundary_is_resolved_before_comparison(self):
+        # The boundary is compared in resolved space, like cwd, so a symlink
+        # path for the workspace still finds the checkout below it.
+        import secret_redact_posttool as sr
+
+        link = os.path.join(self.tmp, "wslink")
+        os.symlink(self.ws, link)
+        sr.SANDBOX_WORKSPACE = link
+        read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": self.fixture}}
+        self.assertEqual(sr.content_skips(read), {"jwt"})
+
+    def test_boundary_comes_from_argv_never_from_the_environment(self):
+        # Claude Code applies a checkout's .claude/settings.json env block to
+        # hook processes over the launch environment, so the boundary is never
+        # taken from there: with only the environment naming this workspace,
+        # the checkout is not below the real boundary and the JWT masks; the
+        # command-line seam is what moves it.
+        import json
+        import subprocess
+        import sys
+
+        import secret_redact_posttool as sr
+
+        body = {
+            "tool_name": "Read",
+            "cwd": self.repo,
+            "tool_input": {"file_path": self.fixture},
+            "tool_response": self.JWT,
+        }
+        run = lambda *extra, env: subprocess.run(  # noqa: E731
+            [sys.executable, sr.__file__, *extra],
+            input=json.dumps(body),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        env_only = run(env={**os.environ, "FULLSEND_SANDBOX_WORKSPACE": self.ws})
+        self.assertEqual(env_only.returncode, 0, env_only.stderr)
+        self.assertNotIn(self.JWT, env_only.stdout)
+        self.assertIn("updatedToolOutput", env_only.stdout)
+        flagged = run("--sandbox-workspace=" + self.ws, env=os.environ.copy())
+        self.assertEqual(flagged.returncode, 0, flagged.stderr)
+        self.assertEqual(flagged.stdout.strip(), "")
+        # A relative value that WOULD resolve to this workspace from the
+        # process's cwd is still ignored, so the JWT masks.
+        relative = subprocess.run(
+            [sys.executable, sr.__file__, "--sandbox-workspace=" + os.path.basename(self.ws)],
+            input=json.dumps(body),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=os.environ.copy(),
+            cwd=self.tmp,
+        )
+        self.assertEqual(relative.returncode, 0, relative.stderr)
+        self.assertIn("updatedToolOutput", relative.stdout)
+
+    def test_sandbox_workspace_from_argv(self):
+        import secret_redact_posttool as sr
+
+        self.assertEqual(
+            sr.sandbox_workspace_from_argv(["--sandbox-workspace=" + self.ws]), self.ws
+        )
+        self.assertIsNone(sr.sandbox_workspace_from_argv(["--sandbox-workspace=relative/ws"]))
+        self.assertIsNone(sr.sandbox_workspace_from_argv(["--sandbox-workspace", self.ws]))
+        self.assertIsNone(sr.sandbox_workspace_from_argv([]))
+
+    def test_checkout_outside_the_workspace_never_skips(self):
+        # A .git-bearing directory that is not under the sandbox workspace is
+        # not a checkout the skip may trust, however it was reached.
+        import tempfile
+
+        import secret_redact_posttool as sr
+
+        with tempfile.TemporaryDirectory() as other:
+            repo = os.path.join(os.path.realpath(other), "repo")
+            os.makedirs(os.path.join(repo, ".git"))
+            f = os.path.join(repo, "x_test.go")
+            Path(f).write_text("x")
+            self.assertEqual(sr.content_skips(self._hook_input("Read", f, cwd=repo)), frozenset())
+
     def test_root_is_nearest_git_ancestor_of_cwd(self):
         # cwd follows the agent's persisted cd; the checkout is still the root.
         import secret_redact_posttool as sr
@@ -591,6 +739,7 @@ class TestBareJwtToolScope(unittest.TestCase):
     def test_skip_is_jwt_only(self):
         import secret_redact_posttool as sr
 
+        self.assertEqual(sr._CHECKOUT_SKIPS, frozenset({"jwt"}))
         ya29c = "ya29.c." + "b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS"
         ghs = "ghs_12345_" + self.JWT
         text, findings = sr.redact_text(
@@ -622,11 +771,12 @@ class TestBareJwtToolScope(unittest.TestCase):
                 "tool_result": tool_result,
             }
             proc = subprocess.run(
-                [sys.executable, HOOK],
+                [sys.executable, HOOK, "--sandbox-workspace=" + self.ws],
                 input=json.dumps(body),
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=os.environ.copy(),
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             return proc.stdout

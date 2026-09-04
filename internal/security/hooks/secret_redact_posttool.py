@@ -72,29 +72,32 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 # Tools whose response is file content, with the tool_input key naming the
 # path they read. A bare JWT has no fixture-shaped escape — a jwt.io example
-# in a test file is byte-for-byte a valid token — so masking it there
-# rewrites what the agent reads and edits against (the failure mode
-# described under the structural patterns below) without catching a live
-# credential: the STS/OIDC/WIF tokens the pattern exists for surface in
-# Bash, WebFetch and MCP output, which stays covered. The skip is limited to
-# paths inside the checkout because the runner delivers its own OIDC token
-# file to the sandbox workspace, beside the checkout, and a Read or Grep of
-# that must still mask. The checkout is found from the hook input's cwd:
-# the runtime starts there, and cwd follows the agent's persisted cd, so
-# the nearest ancestor holding .git is the root, and no .git means no
-# skip (a cd through a symlink out of the checkout resolves to a
-# directory without one). A cwd inside a submodule narrows the root to
-# the submodule, so superproject fixtures mask again there — the safe
-# direction. A path is normalized before it is resolved, because the
-# runtime opens the normalized path while a bare realpath would follow a
-# symlink before applying '..'; and any '..' segment refuses the skip
-# outright, as no fixture needs one. A copy or hard link of an outside
-# file into the checkout, or a .git planted above the checkout with cwd
-# moved under it, is a deliberate agent action the hook does not defend
-# against — the same class as a Bash transform of the token (base64,
-# cut), which it never caught. An adapter that sends no cwd (pi) gets no
-# skip, i.e. masks as before. Adapters translate tool names to Claude's
-# vocabulary before the chain runs, so the names here apply everywhere.
+# in a test file is byte-for-byte a valid token — so masking it there rewrites
+# what the agent reads and edits against (the failure mode described under the
+# structural patterns below) without catching a live credential: the
+# STS/OIDC/WIF tokens the pattern exists for surface in Bash, WebFetch and MCP
+# output, which stays covered. The skip is limited to paths inside the
+# checkout because the runner delivers its own OIDC token file to the sandbox
+# workspace, beside the checkout, and a Read or Grep of that must still mask.
+# The checkout is found from the hook input's cwd: the runtime starts there,
+# and cwd follows the agent's persisted cd, so the nearest ancestor holding
+# .git is the root — searched only strictly below SANDBOX_WORKSPACE, so a cd
+# that resolves out of the checkout, or a .git planted at or above the
+# workspace, yields no root and no skip. A cwd inside a submodule narrows the
+# root to the submodule, so superproject fixtures mask again there — the safe
+# direction. A path is normalized before it is resolved, because the runtime
+# opens the normalized path while a bare realpath would follow a symlink
+# before applying '..'; and any '..' segment refuses the skip outright, as no
+# fixture needs one. So do the forms a runtime rewrites before opening (pi
+# strips a leading '@', expands '~' and turns a file:// URL into a path, while
+# its adapter forwards the raw argument): the hook can only scope what it was
+# sent. A copy, hard link or move of an outside file into the checkout is file
+# content like any other and is not distinguished — the same class as a Bash
+# transform of the token (base64, cut), which the hook never caught. An
+# adapter that sends no cwd gets no skip, i.e. masks; Claude Code sends its
+# working directory and the pi adapter its process working directory. Adapters
+# translate tool names to Claude's vocabulary before the chain runs, so the
+# names here apply everywhere.
 _TOOL_PATH_KEY = {
     "Read": "file_path",
     "Edit": "file_path",
@@ -105,19 +108,69 @@ _TOOL_PATH_KEY = {
     "Grep": "path",
 }
 _CHECKOUT_SKIPS = frozenset({"jwt"})
+# Path forms a runtime rewrites before opening: pi strips a leading '@',
+# expands '~' and turns a file:// URL into a path, while its adapter forwards
+# the raw argument, so the hook cannot see what was opened and never skips
+# them. Any URL scheme is refused, broader than pi's rewrite on purpose.
+_REWRITTEN_PATH = re.compile(r"^(?:@|[A-Za-z][A-Za-z0-9+.\-]*://)")
+
+# The sandbox workspace: the checkout lives in a proper subdirectory of it and
+# the runner's own files (the OIDC token among them) beside it. The checkout
+# root is only ever looked for BELOW this boundary, so a .git entry an agent
+# plants at or above it can never widen the root to those files. The value is
+# the runner's constant (internal/sandbox.SandboxWorkspace); an override is
+# taken only from this process's command line (sandbox_workspace_from_argv,
+# the seam the subprocess tests use), which the runner-owned hooks.json and
+# the pi adapter build without it. It is not read from environment variables:
+# Claude Code applies a checkout's .claude/settings.json env block to hook
+# processes over the launch environment (observed locally on 2.1.235; the
+# sandbox image pins 2.1.260), and the sandbox .env every launch command
+# sources lives in the sandbox user's workspace. A checkout's settings can
+# also add hook invocations of their own, with any argv; one that skips prints
+# nothing, which the protocol reads as unchanged, so it does not undo the
+# runner's rewrite — repo-supplied hooks are the exposure
+# docs/runtimes/claude.md already names. Not covered here is the interpreter
+# itself: under claude and pi the hook runs as a bare python3 resolved through
+# a PATH that puts the agent-writable workspace bin first, with PYTHONPATH and
+# the user site directory honoured, so code the agent controls can run inside
+# any hook process (codex isolates its adapter, see codex_config.go); that
+# predates this change. Residual: the boundary is the workspace, not the
+# checkout, so a .git planted in another runner-owned subdirectory (.env.d,
+# host_files credentials) can still be a root through a plain cd into it or an
+# in-checkout symlink; only a bare JWT no structural shape covers would skip
+# there, and only for files under that subdirectory.
+SANDBOX_WORKSPACE: str = "/sandbox/workspace"
+_WORKSPACE_FLAG = "--sandbox-workspace="
 
 
-def _checkout_root(cwd: str) -> str | None:
+def sandbox_workspace_from_argv(argv: list[str]) -> str | None:
+    """The boundary override, taken only from this process's command line:
+    the seam the subprocess tests use. The runner-owned hooks.json and the pi
+    adapter build that command line and never pass it; SANDBOX_WORKSPACE says
+    what else can reach this process. The first --sandbox-workspace= flag
+    decides; a relative value yields no override."""
+    for arg in argv:
+        if arg.startswith(_WORKSPACE_FLAG):
+            value = arg[len(_WORKSPACE_FLAG) :]
+            return value if os.path.isabs(value) else None
+    return None
+
+
+def _checkout_root(cwd: str, workspace: str) -> str | None:
     """The nearest ancestor of cwd (itself included) holding a .git entry,
-    or None when there is none."""
+    searched only strictly below workspace; None when cwd is not under the
+    workspace, is the workspace itself, or no .git lies between them."""
+    try:
+        if os.path.commonpath([workspace, cwd]) != workspace:
+            return None
+    except ValueError:
+        return None
     probe = cwd
-    while True:
+    while probe != workspace:
         if os.path.lexists(os.path.join(probe, ".git")):
             return probe
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            return None
-        probe = parent
+        probe = os.path.dirname(probe)
+    return None
 
 
 def content_skips(hook_input: dict) -> frozenset[str]:
@@ -147,11 +200,11 @@ def content_skips(hook_input: dict) -> frozenset[str]:
         path = cwd
     if not isinstance(path, str) or not path:
         return frozenset()
-    if path.startswith("~") or ".." in path.split("/"):
+    if path.startswith("~") or _REWRITTEN_PATH.match(path) or ".." in path.split("/"):
         return frozenset()
     try:
         base = os.path.realpath(cwd)
-        root = _checkout_root(base)
+        root = _checkout_root(base, os.path.realpath(SANDBOX_WORKSPACE))
         if root is None:
             return frozenset()
         target = os.path.realpath(os.path.normpath(os.path.join(base, path)))
@@ -571,6 +624,10 @@ MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 def main():
+    global SANDBOX_WORKSPACE
+    override = sandbox_workspace_from_argv(sys.argv[1:])
+    if override:
+        SANDBOX_WORKSPACE = override
     try:
         raw = sys.stdin.read(MAX_INPUT_BYTES + 1)
         if len(raw) > MAX_INPUT_BYTES:

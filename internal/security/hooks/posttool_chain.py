@@ -231,7 +231,7 @@ def _handle_failure(hook_input: dict[str, Any]) -> None:
         try:
             redact_mod = _load_stage("redact")
             if redact_mod is not None:
-                skips = redact_mod.content_skips(hook_input)
+                skips = _content_skips(redact_mod, hook_input)
                 _, findings = redact_mod.redact_text(text, skip=skips)
                 # Same obfuscation cover as the success path: a fullwidth or
                 # mark-split credential is only visible in detection form.
@@ -285,6 +285,15 @@ def _handle_failure(hook_input: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):
             hook_io.emit_context("PostToolUseFailure", "\n".join(notes))
     sys.exit(0)
+
+
+def _content_skips(redact_mod, hook_input: dict) -> frozenset[str]:
+    """The redact stage's per-call skips, with the checkout boundary taken
+    from this process's own command line when the test seam names one."""
+    override = redact_mod.sandbox_workspace_from_argv(sys.argv[1:])
+    if override:
+        redact_mod.SANDBOX_WORKSPACE = override
+    return redact_mod.content_skips(hook_input)
 
 
 def main() -> None:
@@ -398,7 +407,7 @@ def main() -> None:
         try:
             redact_mod = _load_stage("redact")
             if redact_mod is not None:
-                skips = redact_mod.content_skips(hook_input)
+                skips = _content_skips(redact_mod, hook_input)
 
                 def _redact(text: str) -> str:
                     if not text:
