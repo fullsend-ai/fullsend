@@ -15,8 +15,8 @@ import (
 // `runtime: pi` (#6464).
 type PiRuntime struct{}
 
-// piVertexExtensionPath is the interim Claude-on-Vertex provider for pi
-// (twoGiants/pi-anthropic-vertex, pinned in the sandbox image by
+// piVertexExtensionPath is the Claude-on-Vertex provider for pi
+// (fullsend-ai/pi-anthropic-vertex, pinned in the sandbox image by
 // PI_ANTHROPIC_VERTEX_VERSION). pi's built-in google-vertex provider is
 // Gemini-only and the upstream anthropic-vertex provider
 // (earendil-works/pi#5262) is still open. Run loads it with `-e` alongside
@@ -29,10 +29,10 @@ type PiRuntime struct{}
 // google-auth-library reading GOOGLE_APPLICATION_CREDENTIALS — the WIF
 // external_account config plus the runner-refreshed OIDC token file the
 // harness delivers via host_files, the same path Claude Code on Vertex uses.
-// Its bundled Anthropic SDK would send a stray ANTHROPIC_API_KEY to Google
-// and honour ANTHROPIC_VERTEX_BASE_URL as the endpoint, so Run unsets the
-// ANTHROPIC_* variables for this provider. Swap for the upstream provider
-// once #5262 ships in a pinned pi release.
+// The extension reads no ANTHROPIC_* variable except
+// ANTHROPIC_VERTEX_PROJECT_ID, so Run's unset of the ANTHROPIC_* family is
+// belt-and-braces for this provider. Swap for the upstream provider once
+// #5262 ships in a pinned pi release.
 const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
 // piXaiVertexExtensionPath is the Grok-on-Vertex provider for pi

@@ -72,8 +72,8 @@
       "automerge": false
     },
     {
-      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256 and tracks specific pi versions; a bump needs the checksum refreshed and its compat.json checked against PI_VERSION (#6464)",
-      "matchPackageNames": ["twoGiants/pi-anthropic-vertex"],
+      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256; a bump needs the checksum refreshed (#7019)",
+      "matchPackageNames": ["fullsend-ai/pi-anthropic-vertex"],
       "automerge": false
     },
     {
@@ -136,12 +136,12 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#6464). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is — and the new tag's pi compatibility (sync/compat.json upstream) must be checked against PI_VERSION.",
+      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#7019). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is.",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_ANTHROPIC_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
-      "depNameTemplate": "twoGiants/pi-anthropic-vertex",
+      "depNameTemplate": "fullsend-ai/pi-anthropic-vertex",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
