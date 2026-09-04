@@ -19,12 +19,14 @@ func TestOptionsValidateRejects(t *testing.T) {
 		mutate  func(*Options)
 		wantErr string
 	}{
-		{"empty name", func(o *Options) { o.Name = "" }, "invalid characters"},
-		{"name with semicolon", func(o *Options) { o.Name = "a;rm -rf /" }, "invalid characters"},
-		{"name with slash", func(o *Options) { o.Name = "../escape" }, "invalid characters"},
-		{"name with space", func(o *Options) { o.Name = "lint docs" }, "invalid characters"},
-		{"name with dollar", func(o *Options) { o.Name = "a$(id)" }, "invalid characters"},
-		{"name with backtick", func(o *Options) { o.Name = "a`id`" }, "invalid characters"},
+		{"empty name", func(o *Options) { o.Name = "" }, "is not valid"},
+		{"name with semicolon", func(o *Options) { o.Name = "a;rm -rf /" }, "is not valid"},
+		{"name with slash", func(o *Options) { o.Name = "../escape" }, "is not valid"},
+		{"name with space", func(o *Options) { o.Name = "lint docs" }, "is not valid"},
+		{"name with dollar", func(o *Options) { o.Name = "a$(id)" }, "is not valid"},
+		{"name with backtick", func(o *Options) { o.Name = "a`id`" }, "is not valid"},
+		{"leading underscore", func(o *Options) { o.Name = "_lead" }, "is not valid"},
+		{"leading hyphen", func(o *Options) { o.Name = "-lead" }, "is not valid"},
 		{"unknown role", func(o *Options) { o.Role = "scribe" }, "unknown role"},
 		{"empty trigger", func(o *Options) { o.Trigger = "" }, "trigger is required"},
 		{"uncompilable trigger", func(o *Options) { o.Trigger = "this is not CEL" }, "does not compile"},

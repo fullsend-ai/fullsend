@@ -23,7 +23,7 @@ const yamlIndent = 2
 // agentNamePlaceholder and dryRunPlaceholder are replaced by fixed string
 // substitution, never by a template engine. The only user-supplied value that
 // reaches a generated shell script is the agent name, and it has already
-// passed harness.ValidAgentName by the time Render is called.
+// passed harness.ValidAgentBasename by the time Render is called.
 const (
 	agentNamePlaceholder = "__AGENT_NAME__"
 	dryRunPlaceholder    = "__DRY_RUN_VAR__"
@@ -186,9 +186,12 @@ func renderAgentDefinition(opts Options) ([]byte, error) {
 	if err := enc.Encode(agentFrontmatter{
 		Name:        opts.Name,
 		Description: opts.Description,
-		// Exactly what the generated body uses, no more: tools must stay
-		// consistent with the body (fullsend-ai/agents#992).
-		Tools: "Bash(gh,jq), Read, Grep, Glob",
+		// Must cover what the generated body actually instructs, and no
+		// more (fullsend-ai/agents#992). The body runs `gh` and `jq`,
+		// reads files to resolve links, and writes one JSON result — so
+		// Write is required, and under the pi runtime the Bash list is a
+		// hard first-token allowlist rather than a hint.
+		Tools: toolsFor(opts),
 		Model: opts.Model,
 	}); err != nil {
 		return nil, fmt.Errorf("marshalling agent frontmatter: %w", err)
@@ -198,16 +201,31 @@ func renderAgentDefinition(opts Options) ([]byte, error) {
 	}
 	buf.WriteString("---\n\n")
 	buf.Write(bytes.ReplaceAll(body, []byte(agentNamePlaceholder), []byte(opts.Name)))
+
+	// The in-sandbox self-check reads FULLSEND_OUTPUT_SCHEMA, which the
+	// runner only exports when validation_loop.schema is set (or via the
+	// deprecated runner_env, which this generator will not emit). Telling
+	// the agent to run it without that is telling it to run a command that
+	// always fails, so the instruction is rendered only when it will work.
+	if opts.ValidationLoop {
+		buf.WriteString("\nBefore you finish, run " +
+			"`fullsend-check-output \"$FULLSEND_OUTPUT_DIR/agent-result.json\"`\n" +
+			"to catch schema violations while you can still fix them.\n")
+	}
 	return buf.Bytes(), nil
 }
 
 func renderSchema(name string) ([]byte, error) {
-	// Built as an ordered document via json.RawMessage rather than a map so
-	// the property order is stable and readable; MarshalIndent on a map
-	// would sort keys and scatter the required list.
+	// encoding/json sorts map keys, so the emitted document is
+	// alphabetical rather than in the order written here. That is stable
+	// and diffable, which is what matters for a generated file; the golden
+	// fixtures pin the exact bytes.
 	schema := map[string]any{
-		"$schema":              "https://json-schema.org/draft/2020-12/schema",
-		"$id":                  name + "-result.schema.json",
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		// Absolute: JSON Schema 2020-12 requires $id to resolve to an
+		// absolute URI, and a file-local schema has no base to resolve a
+		// bare relative reference against.
+		"$id":                  "https://fullsend.sh/schemas/" + name + "-result.schema.json",
 		"title":                name + " Agent Result",
 		"description":          "Structured output from the " + name + " agent, consumed by scripts/post-" + name + ".sh.",
 		"type":                 "object",
@@ -236,9 +254,20 @@ func renderPostScript(name string) ([]byte, error) {
 	return out, nil
 }
 
+// toolsFor returns the frontmatter tools list matching the rendered body.
+// fullsend-check-output is only instructed when the validation loop is on,
+// so it only appears in the Bash allowlist then.
+func toolsFor(opts Options) string {
+	bash := "gh,jq"
+	if opts.ValidationLoop {
+		bash = "gh,jq,fullsend-check-output"
+	}
+	return "Bash(" + bash + "), Read, Grep, Glob, Write"
+}
+
 // DryRunEnvVar is the environment variable that makes a generated
 // post-script print instead of commenting. Derived from the agent name,
-// which has already passed harness.ValidAgentName, so the result is always a
+// which has already passed harness.ValidAgentBasename, so the result is always a
 // valid shell identifier.
 func DryRunEnvVar(name string) string {
 	return "POST_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_DRY_RUN"

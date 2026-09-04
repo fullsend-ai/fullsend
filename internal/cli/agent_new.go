@@ -130,8 +130,10 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		if !f.changed("effort") && spec.Effort != "" {
 			opts.Effort = spec.Effort
 		}
-		if !f.changed("timeout-minutes") && spec.TimeoutMinutes != 0 {
-			opts.TimeoutMinutes = spec.TimeoutMinutes
+		// Pointer, not zero-check: `timeout_minutes: 0` is a real choice
+		// (no timeout) and must not be read as "field omitted".
+		if !f.changed("timeout-minutes") && spec.TimeoutMinutes != nil {
+			opts.TimeoutMinutes = *spec.TimeoutMinutes
 		}
 		if !f.changed("validation-loop") {
 			opts.ValidationLoop = spec.ValidationLoop
@@ -181,7 +183,14 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	opts.Description = description
 
 	if slug == "" {
-		owner := agentnew.GitConfigOwner(f.fullsendDir)
+		// Absolute: GitConfigOwner cannot walk above "." from a relative
+		// path, so `--fullsend-dir sub/.fullsend` run from anywhere but the
+		// repository root would silently miss origin and fall back.
+		ownerDir := f.fullsendDir
+		if abs, absErr := filepath.Abs(ownerDir); absErr == nil {
+			ownerDir = abs
+		}
+		owner := agentnew.GitConfigOwner(ownerDir)
 		if owner == "" {
 			slugWarning = fmt.Sprintf("Could not read an owner from the origin remote; using slug %q. Pass --slug to set it.",
 				agentnew.DeriveSlug(name, ""))
@@ -199,9 +208,9 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	}
 	opts.Image = image
 
-	if runtimeName != "" && !slices.Contains(config.ValidRuntimes(), runtimeName) {
+	if runtimeName != "" && !slices.Contains(userFacingRuntimes(), runtimeName) {
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
-			runtimeName, strings.Join(config.ValidRuntimes(), ", "))
+			runtimeName, strings.Join(userFacingRuntimes(), ", "))
 	}
 
 	if validateErr := opts.Validate(); validateErr != nil {
@@ -339,4 +348,18 @@ func ensureAgentNameFree(fullsendDir, name string) error {
 		return fmt.Errorf("agent %q already exists in config; pick another name or run `fullsend agent remove %s` first", name, name)
 	}
 	return nil
+}
+
+// userFacingRuntimes is config.ValidRuntimes minus the dummy runtimes, which
+// exist only for behaviour tests. Offering them here would document a choice
+// that produces an agent doing no inference at all.
+func userFacingRuntimes() []string {
+	var out []string
+	for _, r := range config.ValidRuntimes() {
+		if strings.HasPrefix(r, "dummy") {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }

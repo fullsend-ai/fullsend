@@ -28,7 +28,7 @@ type AgentSpec struct {
 	Runtime        string `yaml:"runtime,omitempty"`
 	Slug           string `yaml:"slug,omitempty"`
 	Image          string `yaml:"image,omitempty"`
-	TimeoutMinutes int    `yaml:"timeout_minutes,omitempty"`
+	TimeoutMinutes *int   `yaml:"timeout_minutes,omitempty"`
 	ValidationLoop bool   `yaml:"validation_loop,omitempty"`
 }
 
@@ -78,8 +78,8 @@ func ParseSpec(data []byte) (*AgentSpec, error) {
 	if spec.On != "" && spec.Trigger != "" {
 		return nil, fmt.Errorf("spec fields \"on\" and \"trigger\" are mutually exclusive")
 	}
-	if spec.TimeoutMinutes < 0 {
-		return nil, fmt.Errorf("spec field \"timeout_minutes\" must not be negative, got %d", spec.TimeoutMinutes)
+	if spec.TimeoutMinutes != nil && *spec.TimeoutMinutes < 0 {
+		return nil, fmt.Errorf("spec field \"timeout_minutes\" must not be negative, got %d", *spec.TimeoutMinutes)
 	}
 	return &spec, nil
 }

@@ -22,6 +22,7 @@ func TestTriggerPresetsArePinned(t *testing.T) {
 			name: "command default",
 			on:   "command",
 			want: `event.transition.kind == "comment_added"
+  && event.entity.kind == "work_item"
   && has(event.transition.comment.command)
   && event.transition.comment.command == "/fs-lint-docs"
   && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
@@ -31,6 +32,7 @@ func TestTriggerPresetsArePinned(t *testing.T) {
 			name: "command explicit",
 			on:   "command:/review-docs",
 			want: `event.transition.kind == "comment_added"
+  && event.entity.kind == "work_item"
   && has(event.transition.comment.command)
   && event.transition.comment.command == "/review-docs"
   && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
@@ -40,6 +42,7 @@ func TestTriggerPresetsArePinned(t *testing.T) {
 			name: "command without leading slash is normalised",
 			on:   "command:review-docs",
 			want: `event.transition.kind == "comment_added"
+  && event.entity.kind == "work_item"
   && has(event.transition.comment.command)
   && event.transition.comment.command == "/review-docs"
   && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)

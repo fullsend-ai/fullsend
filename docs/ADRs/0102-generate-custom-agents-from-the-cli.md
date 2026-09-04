@@ -99,7 +99,7 @@ convenience:
    `.fullsend` behind.
 
 Templates are embedded with `go:embed`, matching how the repository already
-ships scaffold content, with `--template-dir` as an override.
+ships scaffold content.
 
 ## Consequences
 

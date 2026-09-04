@@ -19,9 +19,20 @@ func ValidateFullsendDir(fullsendDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
-	info, err := os.Stat(absDir)
-	if err != nil || !info.IsDir() {
+	// Lstat, not Stat: a symlink AT the root would be followed, and every
+	// path check below is relative to it — so a repository that ships
+	// .fullsend as a symlink could redirect every generated file outside
+	// the tree, which the per-segment check cannot see because it only
+	// walks segments beneath this directory.
+	info, err := os.Lstat(absDir)
+	if err != nil {
 		return fmt.Errorf("fullsend dir %s does not exist; run `fullsend github setup` first", fullsendDir)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("fullsend dir %s is a symlink; refusing to write through it", fullsendDir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("fullsend dir %s is not a directory", fullsendDir)
 	}
 	return nil
 }
@@ -112,13 +123,27 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 		return result, nil
 	}
 
-	// Files created by this call, for rollback. A failure part-way through
-	// would otherwise leave a partial agent behind: some files present, the
-	// harness perhaps missing, and nothing registered.
-	var created []string
+	// Undo log for a failure part-way through, which would otherwise leave a
+	// partial agent behind: some files present, the harness perhaps missing,
+	// and nothing registered. Under --force some destinations already exist,
+	// and deleting those would be worse than the failure — the user would
+	// lose a working agent definition — so their original bytes are kept and
+	// restored instead.
+	type undo struct {
+		path     string
+		existed  bool
+		original []byte
+		mode     os.FileMode
+	}
+	var written []undo
 	rollback := func() {
-		for i := len(created) - 1; i >= 0; i-- {
-			_ = os.Remove(created[i])
+		for i := len(written) - 1; i >= 0; i-- {
+			u := written[i]
+			if u.existed {
+				_ = os.WriteFile(u.path, u.original, u.mode)
+				continue
+			}
+			_ = os.Remove(u.path)
 		}
 	}
 
@@ -128,13 +153,33 @@ func Generate(opts Options, fullsendDir string, force, dryRun bool) (*Result, er
 			rollback()
 			return nil, fmt.Errorf("creating %s: %w", filepath.Dir(f.Path), err)
 		}
+
+		entry := undo{path: path, mode: os.FileMode(f.Mode)}
+		if prior, statErr := os.Stat(path); statErr == nil {
+			original, readErr := os.ReadFile(path)
+			if readErr != nil {
+				rollback()
+				return nil, fmt.Errorf("reading the existing %s before overwriting it: %w", f.Path, readErr)
+			}
+			entry.existed = true
+			entry.original = original
+			entry.mode = prior.Mode().Perm()
+		}
+
 		// Written directly rather than renamed in from the temp tree: a
 		// rename across filesystems fails, and the bytes are already here.
 		if err := writeFile(path, f.Data, os.FileMode(f.Mode)); err != nil {
 			rollback()
 			return nil, fmt.Errorf("writing %s: %w", f.Path, err)
 		}
-		created = append(created, path)
+		// os.WriteFile does not change the mode of a file that already
+		// exists, so an overwritten post-script would keep whatever bits it
+		// had — including no execute bit, which the runner needs.
+		if err := os.Chmod(path, os.FileMode(f.Mode)); err != nil {
+			rollback()
+			return nil, fmt.Errorf("setting the mode on %s: %w", f.Path, err)
+		}
+		written = append(written, entry)
 	}
 	return result, nil
 }
@@ -237,7 +282,9 @@ func DeriveSlug(name string, owner string) string {
 type RepoOwner func(dir string) string
 
 // GitConfigOwner walks up from dir looking for a repository, and returns the
-// owner segment of its origin remote. Returns "" when there is no repository,
+// owner segment of its origin remote. Pass an absolute path: the walk stops
+// when filepath.Dir stops changing, which for a relative path is ".", so a
+// relative one can never ascend above the process working directory. Returns "" when there is no repository,
 // no origin, or an owner that would not be a valid slug segment.
 func GitConfigOwner(dir string) string {
 	for depth := 0; depth < 20; depth++ {
@@ -292,9 +339,6 @@ func readGitConfig(dir string) (string, bool) {
 
 	data, err := os.ReadFile(filepath.Join(gitDir, "config"))
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", false
-		}
 		return "", false
 	}
 	return string(data), true
@@ -304,8 +348,12 @@ func ownerFromGitConfig(cfg string) string {
 	inOrigin := false
 	for _, line := range strings.Split(cfg, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[remote ") {
-			inOrigin = strings.Contains(trimmed, `"origin"`)
+		// Reset on ANY section header, not just [remote ...]. An origin
+		// section with no url line — a pushurl-only or insteadOf remote —
+		// would otherwise leave this true, and the next url anywhere in the
+		// file (a [submodule ...] one, say) would be read as origin's.
+		if strings.HasPrefix(trimmed, "[") {
+			inOrigin = strings.HasPrefix(trimmed, `[remote "origin"]`)
 			continue
 		}
 		if !inOrigin || !strings.HasPrefix(trimmed, "url") {

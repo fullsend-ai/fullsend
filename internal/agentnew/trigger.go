@@ -14,8 +14,12 @@ import (
 // the whole point of generating the trigger instead of asking the user to
 // write one. TestTriggerPresetsArePinned asserts the exact strings.
 const (
-	// PresetCommand fires on a slash command. The change_proposal clause
-	// uses has() rather than the reference doc's `!= null` because
+	// PresetCommand fires on a slash command. entity.kind pins it to issues
+	// and pull requests: a comment on a GitHub Discussion arrives with
+	// entity.kind "conversation", and without this clause the agent would
+	// fire there too and then fail in its post-script, which only accepts an
+	// issue or pull-request URL. The change_proposal clause uses has()
+	// rather than the reference doc's `!= null` because
 	// change_proposal is ABSENT from state on a non-PR comment (schema
 	// $defs.state requires only "labels"; see the jira-fs-triage-comment
 	// and discussion-fs-vouch-comment fixtures), so `!= null` raises a
@@ -59,6 +63,7 @@ func ExpandTrigger(on, name string) (string, error) {
 			return "", fmt.Errorf("--on %s: %w", on, err)
 		}
 		return fmt.Sprintf(`event.transition.kind == "comment_added"
+  && event.entity.kind == "work_item"
   && has(event.transition.comment.command)
   && event.transition.comment.command == %q
   && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)

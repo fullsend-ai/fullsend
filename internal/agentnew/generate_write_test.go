@@ -210,3 +210,95 @@ func TestGenerateRejectsMissingDir(t *testing.T) {
 		t.Fatal("a missing fullsend dir should be refused")
 	}
 }
+
+// TestGenerateRefusesSymlinkedRoot: checkNoSymlinks only walks segments
+// BENEATH the fullsend directory, so a symlink at the root itself is
+// invisible to it — every generated path is joined onto that root.
+func TestGenerateRefusesSymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := ValidateFullsendDir(link); err == nil {
+		t.Fatal("a symlinked fullsend dir should be refused")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should name the symlink: %v", err)
+	}
+	if _, err := Generate(testOptions("lint-docs", "triage"), link, false, false); err == nil {
+		t.Fatal("Generate through a symlinked root should be refused")
+	}
+	entries, _ := os.ReadDir(real)
+	if len(entries) != 0 {
+		t.Errorf("wrote %d entries through the symlink", len(entries))
+	}
+}
+
+// TestGenerateForceRollbackRestoresOriginals: under --force the destinations
+// already exist, so removing them on failure would destroy a working agent
+// definition rather than undo the run.
+func TestGenerateForceRollbackRestoresOriginals(t *testing.T) {
+	dir := newTargetDir(t)
+	opts := testOptions("lint-docs", "triage")
+	if _, err := Generate(opts, dir, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	harnessPath := filepath.Join(dir, "harness", "lint-docs.yaml")
+	original := []byte("# the user's working harness\n")
+	if err := os.WriteFile(harnessPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := writeFile
+	t.Cleanup(func() { writeFile = restore })
+	var calls int
+	writeFile = func(name string, data []byte, perm os.FileMode) error {
+		calls++
+		if calls == 3 {
+			return errors.New("injected failure on the third write")
+		}
+		return restore(name, data, perm)
+	}
+
+	if _, err := Generate(opts, dir, true, false); err == nil {
+		t.Fatal("the injected failure should have propagated")
+	}
+	got, err := os.ReadFile(harnessPath)
+	if err != nil {
+		t.Fatalf("the pre-existing harness was deleted rather than restored: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("harness was not restored\n got: %q\nwant: %q", got, original)
+	}
+}
+
+// TestGenerateForceRestoresExecutableBit: os.WriteFile leaves an existing
+// file's mode alone, so a post-script overwritten on top of a 0644 file would
+// stay non-executable and the runner could not invoke it.
+func TestGenerateForceRestoresExecutableBit(t *testing.T) {
+	dir := newTargetDir(t)
+	opts := testOptions("lint-docs", "triage")
+	if _, err := Generate(opts, dir, false, false); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "scripts", "post-lint-docs.sh")
+	if err := os.Chmod(script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(opts, dir, true, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("--force left the post-script non-executable: %v", info.Mode())
+	}
+}

@@ -174,8 +174,13 @@ func TestSchemaIsValidJSON(t *testing.T) {
 	if doc["additionalProperties"] != false {
 		t.Error("schema must set additionalProperties: false")
 	}
-	if doc["$id"] != "lint-docs-result.schema.json" {
+	// Absolute per JSON Schema 2020-12: a bare relative reference has no
+	// base URI to resolve against in a file-local schema.
+	if doc["$id"] != "https://fullsend.sh/schemas/lint-docs-result.schema.json" {
 		t.Errorf("$id = %v", doc["$id"])
+	}
+	if doc["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
+		t.Errorf("$schema = %v", doc["$schema"])
 	}
 }
 

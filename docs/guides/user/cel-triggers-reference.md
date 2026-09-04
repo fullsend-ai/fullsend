@@ -102,6 +102,7 @@ trigger: >
 ```yaml
 trigger: >
   event.transition.kind == "comment_added"
+    && event.entity.kind == "work_item"
     && has(event.transition.comment.command)
     && event.transition.comment.command == "/my-command"
     && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
@@ -109,6 +110,10 @@ trigger: >
 
 This is exactly what [`fullsend agent new --on command:/my-command`](../../cli/agent.md#agent-new)
 emits, so a generated trigger and a hand-written one stay the same expression.
+
+`event.entity.kind == "work_item"` restricts this to issues and pull requests.
+A comment on a GitHub Discussion arrives with `entity.kind` of `conversation`,
+so without that clause the agent also fires on discussions.
 
 Use `!has(...)` rather than `!= null` for the fork guard. `state.change_proposal`
 is **absent** on a comment posted to a plain issue, not present-and-null — the

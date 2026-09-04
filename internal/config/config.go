@@ -302,6 +302,14 @@ type orgConfig struct {
 // mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
 // registered with `fullsend mint add-role` before scaffold/workflow wiring
 // lands, and must not silently pass config validation.
+// ValidConfigAgentName reports whether name is acceptable as an agents:
+// entry name. Exported so a caller that generates an agent can apply the
+// same rule before writing anything, rather than discovering the mismatch
+// when registration fails after the files are already on disk.
+func ValidConfigAgentName(name string) bool {
+	return validConfigAgentName.MatchString(name)
+}
+
 func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }

@@ -27,7 +27,7 @@ validation_loop: true
 	if spec.Name != "lint-docs" || spec.Role != "triage" {
 		t.Errorf("unexpected spec: %+v", spec)
 	}
-	if spec.TimeoutMinutes != 20 || !spec.ValidationLoop {
+	if spec.TimeoutMinutes == nil || *spec.TimeoutMinutes != 20 || !spec.ValidationLoop {
 		t.Errorf("unexpected spec: %+v", spec)
 	}
 	if spec.Description != "Check docs changes for broken links" {
@@ -78,5 +78,26 @@ func TestLoadSpecFile(t *testing.T) {
 
 	if _, err := LoadSpecFile(filepath.Join(dir, "missing.yaml")); err == nil {
 		t.Error("LoadSpecFile on a missing path should fail")
+	}
+}
+
+// TestParseSpecDistinguishesZeroFromOmitted: `timeout_minutes: 0` is a real
+// choice, and reading the zero value as "omitted" would silently replace it
+// with the 15-minute default.
+func TestParseSpecDistinguishesZeroFromOmitted(t *testing.T) {
+	omitted, err := ParseSpec([]byte("version: \"1\"\nname: a\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if omitted.TimeoutMinutes != nil {
+		t.Errorf("an omitted timeout should be nil, got %v", *omitted.TimeoutMinutes)
+	}
+
+	zero, err := ParseSpec([]byte("version: \"1\"\nname: a\ntimeout_minutes: 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zero.TimeoutMinutes == nil || *zero.TimeoutMinutes != 0 {
+		t.Errorf("an explicit 0 should survive, got %v", zero.TimeoutMinutes)
 	}
 }

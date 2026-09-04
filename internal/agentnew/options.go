@@ -40,8 +40,13 @@ type Options struct {
 // is interpolated into a shell script, so it must satisfy the same pattern
 // harness.Validate relies on for shell safety.
 func (o *Options) Validate() error {
-	if !harness.ValidAgentBasename(o.Name) {
-		return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", o.Name)
+	// Both rules apply. harness.ValidAgentBasename is the shell-safety check
+	// the harness loader relies on; config.ValidConfigAgentName is what
+	// registration will demand later. Checking only the first would let a
+	// name like "_lint" generate every file and then fail at registration,
+	// leaving the directory changed by a run that failed.
+	if !harness.ValidAgentBasename(o.Name) || !config.ValidConfigAgentName(o.Name) {
+		return fmt.Errorf("agent name %q is not valid: it must start with a letter or digit and contain only letters, digits, underscores and hyphens", o.Name)
 	}
 	if _, err := LookupRole(o.Role); err != nil {
 		return err
