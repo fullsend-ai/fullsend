@@ -2438,6 +2438,18 @@ func TestLockTreeDirName(t *testing.T) {
 			want:  "gopls-lsp",
 		},
 		{
+			name:  "raw .claude-plugin/plugin.json marker stripped",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/my-plugin/.claude-plugin/plugin.json",
+			want:  "my-plugin",
+		},
+		{
+			name:    "raw .claude-plugin/plugin.json at ref root rejected",
+			field:   "plugins[0]",
+			url:     "https://raw.githubusercontent.com/org/repo/abc123/.claude-plugin/plugin.json",
+			wantErr: "must point to a marker file inside a directory",
+		},
+		{
 			name:    "raw marker at ref root rejected",
 			field:   "skills[0]",
 			url:     "https://raw.githubusercontent.com/org/repo/abc123/SKILL.md",

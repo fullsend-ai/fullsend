@@ -1137,9 +1137,11 @@ func isTreeLockField(field string) bool {
 // use forge tree URLs whose deepest path segment is the directory name.
 // Base-composed entries (see fetchBaseSkill/fetchBasePlugin in
 // internal/harness/compose.go) record raw.githubusercontent.com URLs pointing
-// at the marker file (SKILL.md or plugin.json); only those two names are
-// treated as markers and stripped — any other raw URL keeps its last segment
-// as the directory name.
+// at the marker file (SKILL.md, plugin.json, or .claude-plugin/plugin.json);
+// those names are treated as markers and stripped — any other raw URL keeps
+// its last segment as the directory name. .claude-plugin/plugin.json is the
+// Claude Code plugin spec location; stripping it requires removing two path
+// segments so the caller gets the plugin root, not ".claude-plugin".
 func lockTreeDirName(field, lockURL string) (string, error) {
 	if forgeInfo, err := forge.ParseForgeURL(lockURL); err == nil {
 		if forgeInfo.Path == "" {
@@ -1152,6 +1154,15 @@ func lockTreeDirName(field, lockURL string) (string, error) {
 			dir := path.Dir(rawInfo.Path)
 			if dir == "." {
 				return "", fmt.Errorf("%s: URL must point to a marker file inside a directory, not the repo root", field)
+			}
+			// .claude-plugin/plugin.json is a two-level marker per the
+			// Claude Code plugin spec; strip the intermediate directory
+			// so the caller gets the plugin root, not ".claude-plugin".
+			if last == "plugin.json" && path.Base(dir) == ".claude-plugin" {
+				dir = path.Dir(dir)
+				if dir == "." {
+					return "", fmt.Errorf("%s: URL must point to a marker file inside a directory, not the repo root", field)
+				}
 			}
 			return filepath.Base(dir), nil
 		}
