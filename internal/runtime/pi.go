@@ -101,4 +101,6 @@ var (
 	_ Runtime           = PiRuntime{}
 	_ TranscriptHandler = PiRuntime{}
 	_ DebugLogNamer     = PiRuntime{}
+
+	_ OpenAICredentialSeeder = PiRuntime{}
 )

@@ -106,8 +106,14 @@ func (DummyRuntime) EnvExports() []string { return nil }
 func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("bootstrap exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("bootstrap failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -144,8 +150,14 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr)
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("clear iteration artifacts exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("clear iteration artifacts failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (DummyRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }

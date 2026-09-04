@@ -124,7 +124,7 @@ Each pool org must be provisioned before e2e can use it:
 3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
 4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
 5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-6. Mint enrolled: org in `ALLOWED_ORGS`, `${ORG}/e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+6. Mint enrolled: org in `ALLOWED_ORGS`, `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
 Use the idempotent setup script:
 
@@ -302,12 +302,25 @@ registration setting.
 |------|-------------|
 | fullsend | `actions:write`, `actions_variables:read`, `administration:write`, `checks:read`, `contents:write`, `issues:read`, `members:read`, `organization_projects:read`, `pull_requests:write`, `workflows:write` |
 | triage | `contents:read`, `issues:write` |
-| coder | `checks:read`, `contents:write`, `issues:write`, `pull_requests:write` |
+| coder | `checks:read`, `contents:write`, `issues:write`, `packages:read`, `pull_requests:write` |
+| fix | Reuses the coder app and PEM; the fix stage mints the `coder` role and therefore uses the coder permission set. |
 | review | `checks:read`, `contents:read`, `issues:write`, `pull_requests:write` |
 | retro | `actions:read`, `contents:read`, `issues:write`, `pull_requests:write` |
 | prioritize | `contents:read`, `issues:write`, `organization_projects:write` |
 
+The `fix` row is a hosted-mint dispatch alias: fix workflows mint the `coder`
+role and reuse `fullsend-test-coder` and `TEST_CODER_PEM`; it is not a separate
+App registration in that setup. Per-repo setup may still request the literal
+`fix` role and create a role-specific App for that repository.
+
 ### Operator notes
+
+**Permission rollout for the coder App:** When adding a permission such as
+`packages:read`, update the `fullsend-test-coder` App registration first. Then
+have the installation owner for each existing pool org (`halfsend-01` through
+`halfsend-12`) Accept the pending permission update. New pool-org installs
+receive the permission during installation; existing installs may otherwise
+continue using the mint's rollout warning path.
 
 **PEM rotation:** Generate a new private key on the app's settings page
 (`https://github.com/apps/<slug>/settings`), then update the corresponding

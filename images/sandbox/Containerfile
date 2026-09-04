@@ -7,6 +7,9 @@
 #   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
 #     #6464) + the pi-anthropic-vertex extension
 #     (tag + SHA256 pinned under /usr/local/share/pi-extensions)
+#   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
+#     the OpenShell base image ships, with the same shadow-proof symlink
+#     and build-time assertion as Claude Code — stub runtime, see #6920)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -53,7 +56,7 @@ RUN apt-get update \
 #
 # To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
 # a customManagers regex entry in renovate.json.
-ARG CLAUDE_CODE_VERSION=2.1.258
+ARG CLAUDE_CODE_VERSION=2.1.260
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude
@@ -196,6 +199,92 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm cache clean --force \
     && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex" \
     && chmod a+rX,a-w "${PI_EXTENSIONS_DIR}"
+
+# ---------------------------------------------------------------------------
+# Install Codex (openai/codex) — pinned version, same supply chain rationale
+# as Claude Code and pi above. The OpenShell base image already installs
+# @openai/codex under the same npm prefix (/usr, binary /usr/bin/codex) —
+# 0.117.0 on the base pinned above — so this install replaces it in place
+# rather than adding a second copy. Stub runtime for now — see #6920; the
+# runtime is not user-selectable until implemented, but the binary ships
+# now so the Bootstrap/Run work and any in-sandbox fixture capture run
+# against a pinned, reviewed version.
+#
+# --ignore-scripts as for the pi install above: neither the launcher nor its
+# per-platform variant declares install scripts today (`npm view
+# @openai/codex@<ver> scripts` and `@openai/codex@<ver>-linux-arm64` are both
+# empty), so this changes nothing now and keeps a future Renovate bump from
+# introducing one unreviewed.
+#
+# The native binary is a *version* of the same package —
+# `@openai/codex@${CODEX_VERSION}-linux-<arch>`, aliased as the
+# optionalDependency `@openai/codex-linux-<arch>` — and the launcher
+# bin/codex.js spawns that musl-static executable directly. So it is
+# `codex`, not `node`, that makes the model calls, and an egress profile
+# serving codex must name `**/codex` in its `binaries:` rules. That wiring
+# lands with the OpenAI credential work, not here.
+#
+# To update: bump CODEX_VERSION; renovate tracks this ARG via a
+# customManagers regex entry in renovate.json.
+ARG CODEX_VERSION=0.152.1
+RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
+    && npm cache clean --force
+
+# Point /usr/local/bin/codex at the pinned install and prove at build time
+# that `codex` on PATH reports CODEX_VERSION (the output format is
+# `codex-cli <version>`). /usr/local/bin precedes npm's global bin
+# (/usr/bin) on the sandbox PATH, so a base image that ever drops its own
+# codex there would outrank the pin silently — exactly the trap the base
+# image's Claude Code sprang in #6612. No such shadow exists today; the
+# symlink and the assertion make sure one cannot appear unnoticed.
+RUN NPM_CODEX="$(npm prefix -g)/bin/codex" \
+    && test -x "${NPM_CODEX}" \
+    && rm -f /usr/local/bin/codex \
+    && ln -s "${NPM_CODEX}" /usr/local/bin/codex \
+    && GOT="$(codex --version)" \
+    && if [ "${GOT}" != "codex-cli ${CODEX_VERSION}" ]; then \
+         echo "codex on PATH reports '${GOT}', expected 'codex-cli ${CODEX_VERSION}'" >&2; \
+         exit 1; \
+       fi
+
+# codex refuses to start when CODEX_HOME does not exist, so create it here
+# owned by the sandbox user (uid 998) — an ad-hoc `codex` invocation from
+# Bash then works even while the runtime is a stub. CodexRuntime.Bootstrap
+# will create it at run time as well, the way pi's does (#6920).
+# CODEX_HOME is baked as an image default for the same reason pi's config
+# paths are: an agent invoking the binary directly would otherwise get none
+# of CodexRuntime.EnvExports()'s values. It is a hygiene default (a
+# runner-owned path), not a security boundary — a process can override its
+# own environment; the sandbox egress policy and credential placeholders
+# are the boundary. Codex keeps its remaining hygiene settings (update
+# check, analytics, telemetry) in config.toml rather than the environment,
+# so there is nothing else to bake here.
+# CODEX_HOME must match sandbox.SandboxCodexConfig
+# (internal/sandbox/sandbox.go; guarded by TestSandboxImageCodexDefaults).
+RUN install -d -o sandbox -g sandbox -m 0755 /sandbox/codex-config
+ENV CODEX_HOME="/sandbox/codex-config"
+
+# codex has no environment switches for the hygiene defaults pi gets from
+# PI_OFFLINE/PI_TELEMETRY/PI_SKIP_VERSION_CHECK — they are config keys. Its
+# lowest-precedence layer is the managed System config at
+# /etc/codex/config.toml, which applies whatever CODEX_HOME points at, so an
+# ad-hoc `codex` from Bash starts no update check and reports no analytics
+# either. Root-owned and 0644: the sandbox user can read it but not rewrite
+# it. This is hygiene, not a boundary — every one of these keys can be
+# overridden by a higher layer or a flag; the sandbox egress policy is the
+# boundary. The runner-written $CODEX_HOME/config.toml (CodexRuntime.
+# Bootstrap, #6920) layers on top of this file, not under it.
+RUN mkdir -p /etc/codex \
+    && printf '%s\n' \
+      'check_for_update_on_startup = false' \
+      '' \
+      '[analytics]' \
+      'enabled = false' \
+      '' \
+      '[feedback]' \
+      'enabled = false' \
+      > /etc/codex/config.toml \
+    && chmod 0644 /etc/codex/config.toml
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).

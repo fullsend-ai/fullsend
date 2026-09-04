@@ -220,6 +220,10 @@ e2e-test:
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
 # that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
+# runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
+# for the same reason, and codex has no Vertex path — so unlike pi it has no
+# default behaviour coverage at all until that organization exists:
+# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-openai
 BEHAVIOUR_CAPABILITIES ?= runtime-pi
 
 behaviour-test:

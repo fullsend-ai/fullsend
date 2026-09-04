@@ -245,6 +245,7 @@ export default defineConfig({
           items: [
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
+            { text: "Codex", link: "/runtimes/codex" },
           ],
         },
         {
@@ -267,6 +268,7 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Issue Commands", link: "/guides/user/issues-commands" },
             {
@@ -314,9 +316,7 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [
-            { text: "Harness Field Reference", link: "/reference/harness-reference" },
-          ],
+          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
         },
         {
           text: "Infrastructure",
@@ -331,8 +331,12 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
+            { text: "Gate Binaries", link: "/guides/infrastructure/gate-binaries" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
-            { text: "OpenAI Workload Identity", link: "/guides/infrastructure/openai-workload-identity" },
+            {
+              text: "OpenAI Workload Identity",
+              link: "/guides/infrastructure/openai-workload-identity",
+            },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",

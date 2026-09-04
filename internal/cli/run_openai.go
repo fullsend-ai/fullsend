@@ -62,10 +62,12 @@ const openAIStaticKeyLifetime = time.Hour
 // never longer than the GitHub assertion it came from — minutes in
 // practice — and OpenAI issues no refresh token, so the runner re-exchanges
 // a fresh assertion before expiry and updates the run-scoped provider; a
-// static key only needs its provider expiry pushed out. The running pi
-// process follows every update because Run hands it the gateway's
-// placeholder pi re-reads from auth.json (runtime.PiOpenAIAuthSeed), not the
-// revision-scoped one. Variables, not constants, so tests can shrink them.
+// static key only needs its provider expiry pushed out. The running agent
+// process follows every update because the runner re-seeds the credential
+// file that process re-reads per request — the file and the shell fragment
+// that writes it come from the selected backend
+// (runtime.OpenAICredentialSeeder), so this path is not pi-specific.
+// Variables, not constants, so tests can shrink them.
 var (
 	// openAIRefreshMargin is how long before expiry a refresh is attempted,
 	// capped at half the remaining lifetime for short-lived tokens.
@@ -91,19 +93,23 @@ type openAIProviderHandle struct {
 	source    string
 	expiresAt time.Time
 	// sandbox is the run's sandbox name; authSeed is the shell fragment
-	// that writes the sandbox's current OPENAI_API_KEY placeholder into
-	// pi's auth.json (runtime.PiOpenAIAuthSeed), re-run after a refresh.
+	// that writes the sandbox's current OPENAI_API_KEY placeholder into the
+	// selected runtime's credential file (runtime.OpenAICredentialSeeder),
+	// re-run after a refresh. Empty when the backend has no seeder: the
+	// provider is still created and refreshed, nothing is re-seeded.
 	sandbox  string
 	authSeed string
 	// ids is the committed inference.openai block, the fallback when the
 	// FULLSEND_OPENAI_* variables are unset (also used by refresh).
 	ids config.OpenAIWIFConfig
 	// sandboxUp is set by the run once the sandbox is Ready: before that a
-	// refresh only updates the provider (pi has not started, so the launch
-	// seed will pick up the current placeholder); after it a refresh must
-	// also re-seed pi's auth.json.
+	// refresh only updates the provider (the agent has not started, so its
+	// launch seed will pick up the current placeholder); after it a refresh
+	// must also re-seed the runtime's credential file.
 	sandboxUp *atomic.Bool
-	// authFile is pi's auth.json inside the sandbox, checked after a re-seed.
+	// authFile is that credential file inside the sandbox
+	// (runtime.OpenAICredentialSeeder.OpenAIAuthFile), checked after a
+	// re-seed.
 	authFile string
 }
 
@@ -115,7 +121,8 @@ func (h openAIProviderHandle) sandboxReady() bool {
 // openAIPlaceholderSettle bounds how long a refresh waits for the sandbox
 // to observe the new credential generation (a fresh `sandbox exec`
 // environment carries the new placeholder; ~20s was measured on OpenShell
-// 0.0.115) before re-seeding pi's auth.json with whatever it holds.
+// 0.0.115) before re-seeding the runtime's credential file with whatever it
+// holds.
 var openAIPlaceholderSettle = 90 * time.Second
 
 // openAIPlaceholderPoll is the interval between those checks.
@@ -124,9 +131,9 @@ var openAIPlaceholderPoll = 5 * time.Second
 // openAIPlaceholderExecTimeout bounds each `sandbox exec` the refresh runs.
 const openAIPlaceholderExecTimeout = 30 * time.Second
 
-// openAIBaselineAttempts is how many times the placeholder pi currently
-// holds is read before a rotation; without it the settle wait below could
-// not tell a new generation from the old one.
+// openAIBaselineAttempts is how many times the placeholder the agent
+// currently holds is read before a rotation; without it the settle wait
+// below could not tell a new generation from the old one.
 const openAIBaselineAttempts = 3
 
 // openAIDeleteBackoff is the wait between cleanup delete attempts while the
@@ -154,8 +161,8 @@ func sandboxOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, 
 	return strings.TrimSpace(out), nil
 }
 
-// baselineOpenAIPlaceholder reads the placeholder pi currently holds, with
-// bounded retries; it runs before the provider is rotated.
+// baselineOpenAIPlaceholder reads the placeholder the agent currently
+// holds, with bounded retries; it runs before the provider is rotated.
 func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < openAIBaselineAttempts; attempt++ {
@@ -179,15 +186,19 @@ func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string,
 }
 
 // reseedOpenAIAuth waits until the sandbox hands new processes a placeholder
-// other than previous (the generation pi's auth.json names), then re-runs
-// the auth.json seed so pi's next request carries the refreshed credential,
-// and returns the placeholder that was seeded. previous must be known: with
-// no baseline the wait could not tell the new generation from the old one.
-// A settle timeout is an error — re-seeding the old placeholder would tell
-// the refresher the rotation reached pi when it did not.
+// other than previous (the generation the runtime's credential file names),
+// then re-runs the backend's seed fragment so the agent's next request
+// carries the refreshed credential, and returns the placeholder that was
+// seeded. previous must be known: with no baseline the wait could not tell
+// the new generation from the old one. A settle timeout is an error —
+// re-seeding the old placeholder would tell the refresher the rotation
+// reached the agent when it did not — and so is a re-seed whose result
+// cannot be verified after two attempts: the caller then keeps the old
+// placeholder and retries, rather than recording a generation the agent
+// may not hold.
 func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous string, printer *ui.Printer) (string, error) {
 	if previous == "" {
-		return "", errors.New("re-seeding pi auth.json: the placeholder pi currently holds is unknown")
+		return "", errors.New("re-seeding the OpenAI credential file: the placeholder the agent currently holds is unknown")
 	}
 	deadline := time.Now().Add(openAIPlaceholderSettle)
 	var current string
@@ -201,7 +212,7 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("the sandbox still hands out the previous OpenAI placeholder after %s; pi keeps the generation it holds", openAIPlaceholderSettle)
+			return "", fmt.Errorf("the sandbox still hands out the previous OpenAI placeholder after %s; the agent keeps the generation it holds", openAIPlaceholderSettle)
 		}
 		select {
 		case <-ctx.Done():
@@ -219,7 +230,13 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 	// costs nothing if it is killed. Each hold is one exec (30s + slack), so
 	// a sweep never waits on the whole retry loop — see sandboxMu's
 	// hold budget.
+	// lastErr carries the reason the last verification failed: a re-seed
+	// whose result cannot be confirmed must not report success, or the
+	// refresher records the new placeholder while the file may still name
+	// the old one — and the next settle wait would then compare against a
+	// generation the agent never held.
 	seed := func() error {
+		var lastErr error
 		for attempt := 0; attempt < 2; attempt++ {
 			var stderr string
 			var code int
@@ -229,10 +246,10 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 				return execErr
 			})
 			if err != nil {
-				return fmt.Errorf("re-seeding pi auth.json: %w", err)
+				return fmt.Errorf("re-seeding the OpenAI credential file: %w", err)
 			}
 			if code != 0 {
-				return fmt.Errorf("re-seeding pi auth.json: exit %d: %s", code, strings.TrimSpace(stderr))
+				return fmt.Errorf("re-seeding the OpenAI credential file: exit %d: %s", code, strings.TrimSpace(stderr))
 			}
 			if h.authFile == "" {
 				return nil
@@ -241,13 +258,18 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 			if err == nil && code == 0 {
 				return nil
 			}
+			if err != nil {
+				lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %w", err)
+				continue
+			}
+			lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %s does not name the refreshed placeholder (grep exit %d)", h.authFile, code)
 		}
-		return nil
+		return lastErr
 	}
 	if err := seed(); err != nil {
 		return "", err
 	}
-	printer.StepInfo("pi auth.json re-seeded with the refreshed OpenAI placeholder")
+	printer.StepInfo("the runtime's OpenAI credential file was re-seeded with the refreshed placeholder")
 	return current, nil
 }
 
@@ -426,6 +448,25 @@ func applyRunScopedProviderNames(names []string, scoped map[string]string) []str
 	for _, n := range names {
 		if s, ok := scoped[n]; ok {
 			out = append(out, s)
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// dropSkippedProviders removes the harness provider names the run decided
+// not to materialize (see runtime.NeedsOpenAIProvider) from the list the
+// sandbox is created with. applyRunScopedProviderNames only substitutes
+// names it created an instance for, so without this a skipped entry would
+// still be attached to the sandbox under its bare harness name.
+func dropSkippedProviders(names []string, skipped map[string]struct{}) []string {
+	if len(skipped) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if _, ok := skipped[n]; ok {
 			continue
 		}
 		out = append(out, n)
@@ -651,7 +692,15 @@ func checkOpenAIEgressInspected(ctx context.Context, sandboxName string) error {
 		strings.Join(rules, ", "), openAIAPIHost)
 }
 
-func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxName string, ids config.OpenAIWIFConfig, printer *ui.Printer) (openAIProviderHandle, error) {
+// ensureOpenAIProvider creates the run-scoped provider for one
+// fullsend-openai definition. backend is the runtime the run selected: when
+// it implements runtime.OpenAICredentialSeeder with a non-empty seed, the
+// handle carries that runtime's seed fragment and credential file so a
+// refresh can hand the new placeholder to the running agent. A backend
+// without one (Claude Code, or a seeder still stubbed out) leaves both
+// empty and sandboxReady() stays false, so a refresh only updates the
+// provider.
+func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxName string, ids config.OpenAIWIFConfig, backend runtime.Backend, printer *ui.Printer) (openAIProviderHandle, error) {
 	name := runScopedProviderName(pd.Name, sandboxName)
 	printer.StepStart("Resolving OpenAI credential for provider: " + pd.Name)
 	cred, err := resolveOpenAICredential(ctx, os.Getenv, ids)
@@ -738,13 +787,31 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 		return openAIProviderHandle{}, fmt.Errorf("storing credential on provider %q: %w", name, err)
 	}
 	printer.StepDone(fmt.Sprintf("Provider ready: %s (%s, expires in %s, %.1fs)", name, cred.source, time.Until(cred.expiresAt).Round(time.Minute), time.Since(start).Seconds()))
+	authSeed, authFile := openAICredentialFiles(backend)
 	return openAIProviderHandle{
 		sandbox:   sandboxName,
-		authSeed:  runtime.PiOpenAIAuthSeed(runtime.PiRuntime{}.ConfigDir()),
+		authSeed:  authSeed,
 		ids:       ids,
 		sandboxUp: &atomic.Bool{},
-		authFile:  runtime.PiRuntime{}.ConfigDir() + "/auth.json",
+		authFile:  authFile,
 		name:      name, keys: keys, source: cred.source, expiresAt: cred.expiresAt}, nil
+}
+
+// openAICredentialFiles returns the seed fragment and credential file for
+// the selected backend, or two empty strings when it has no OpenAI seeder
+// (or its seeder is still a stub). Both are empty together: a file with no
+// fragment to write it would only make a refresh verify a file nothing
+// seeds.
+func openAICredentialFiles(backend runtime.Backend) (seed, file string) {
+	s, ok := backend.Runtime.(runtime.OpenAICredentialSeeder)
+	if !ok {
+		return "", ""
+	}
+	seed = s.OpenAIAuthSeed()
+	if seed == "" {
+		return "", ""
+	}
+	return seed, s.OpenAIAuthFile()
 }
 
 // openAIRefreshDelay is how long to wait before the next refresh of a
@@ -766,8 +833,9 @@ func openAIRefreshDelay(expiresAt, now time.Time, jitter time.Duration) time.Dur
 // refreshOpenAIProvider renews one run-scoped provider — a WIF credential is
 // re-exchanged from a fresh GitHub assertion and hot-updated into the
 // provider, a static key has its provider expiry pushed out — and, once the
-// sandbox is up, hands the resulting placeholder to the running pi through
-// its auth.json. It returns the new expiry and the placeholder pi now holds.
+// sandbox is up, hands the resulting placeholder to the running agent
+// through the credential file its backend named. It returns the new expiry
+// and the placeholder the agent now holds.
 func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placeholder string, budget time.Duration, printer *ui.Printer) (time.Time, string, error) {
 	// The exchange and the provider update are bounded by what is left of
 	// the credential being renewed; the re-seed is not, because it waits
@@ -778,15 +846,15 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 	defer cancelUpdate()
 	reseed := h.sandboxReady()
 	if reseed && placeholder == "" {
-		// Learn what pi holds before rotating: after the update the sandbox
+		// Learn what the agent holds before rotating: after the update the sandbox
 		// may already hand out the new placeholder, and the settle wait
 		// needs the old one to recognise the change. Any update — a new
 		// value or only a new expiry — is a new generation on OpenShell
-		// 0.0.115, and the generation pi holds keeps the expiry it was
+		// 0.0.115, and the generation the agent holds keeps the expiry it was
 		// built with, so both paths must re-seed.
 		p, err := baselineOpenAIPlaceholder(updateCtx, h.sandbox)
 		if err != nil {
-			return time.Time{}, "", fmt.Errorf("reading the placeholder pi holds before rotating: %w", err)
+			return time.Time{}, "", fmt.Errorf("reading the placeholder the agent holds before rotating: %w", err)
 		}
 		placeholder = p
 	}
@@ -824,18 +892,19 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 		}
 	}
 	if !reseed {
-		// pi has not started (or this provider is not on pi): the launch
-		// seed reads whatever placeholder the sandbox carries then.
+		// The agent has not started, or the selected backend has no
+		// credential file to seed: a backend that does seeds at launch from
+		// whatever placeholder the sandbox carries then.
 		return expiresAt, placeholder, nil
 	}
-	// The running pi keeps the placeholder it launched with, and on
+	// The running agent keeps the placeholder it launched with, and on
 	// OpenShell 0.0.115 that placeholder stays pinned to the old generation,
-	// so hand the new one over through the file pi re-reads per request.
+	// so hand the new one over through the file it re-reads per request.
 	settleCtx, cancelSettle := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
 	defer cancelSettle()
 	seeded, err := reseedOpenAIAuth(settleCtx, h, placeholder, printer)
 	if err != nil {
-		return time.Time{}, placeholder, fmt.Errorf("the provider holds the new credential but the running pi was not re-seeded: %w", err)
+		return time.Time{}, placeholder, fmt.Errorf("the provider holds the new credential but the running agent was not re-seeded: %w", err)
 	}
 	return expiresAt, seeded, nil
 }
@@ -848,8 +917,9 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 // silently outliving its credential. Runs until ctx is cancelled.
 func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.Printer) {
 	expiresAt := h.expiresAt
-	// placeholder is the generation pi's auth.json currently names; learned
-	// from the sandbox before the first refresh, then tracked per re-seed.
+	// placeholder is the generation the runtime's credential file currently
+	// names; learned from the sandbox before the first refresh, then
+	// tracked per re-seed.
 	placeholder := ""
 	for {
 		jitter := time.Duration(0)

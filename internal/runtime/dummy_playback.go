@@ -102,8 +102,14 @@ func (DummyPlaybackRuntime) EnvExports() []string { return nil }
 func (r DummyPlaybackRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy-playback", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("dummy-playback bootstrap exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("dummy-playback bootstrap failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -294,8 +300,14 @@ func (r DummyPlaybackRuntime) commitToCurrentBranch(sandboxName, repoDir, entryN
 func (r DummyPlaybackRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr)
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("dummy-playback clear iteration artifacts exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("dummy-playback clear iteration artifacts failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (DummyPlaybackRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }

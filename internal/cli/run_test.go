@@ -4415,6 +4415,160 @@ func TestSetupStatusNotifier_GitLab_NoMintURLNeeded(t *testing.T) {
 	assert.NotNil(t, n)
 }
 
+func TestSetupStatusNotifier_Jira(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// Simulate a Jira-originated event: trackerSource and trackerProject
+	// are extracted from the normalized event by runAgent and threaded
+	// through statusOpts.
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	// Jira uses a static client (like GitLab), not a factory.
+	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
+}
+
+func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+}
+
+func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+}
+
+func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+}
+
+func TestParseJiraKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		proj string
+		num  int
+		ok   bool
+	}{
+		{"PROJ-123", "PROJ", 123, true},
+		{"MY-PROJECT-1", "MY-PROJECT", 1, true},
+		{"A-999", "A", 999, true},
+		{"", "", 0, false},
+		{"PROJ", "", 0, false},
+		{"PROJ-", "", 0, false},
+		{"-123", "", 0, false},
+		{"PROJ-0", "", 0, false},
+		{"PROJ-abc", "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			proj, num, ok := parseJiraKey(tt.key)
+			assert.Equal(t, tt.ok, ok)
+			if ok {
+				assert.Equal(t, tt.proj, proj)
+				assert.Equal(t, tt.num, num)
+			}
+		})
+	}
+}
+
+func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "98765")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "") // unset
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
 func TestEmitDiagnostic_Warning(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -5674,6 +5828,102 @@ func TestDedupResolvedProfiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShadowedProfiles(t *testing.T) {
+	const profilesDir = "/ws/.fullsend/profiles"
+	url := func(id string) resolve.ResolvedProfile {
+		return resolve.ResolvedProfile{ID: id, LocalPath: "/cache/sha256/" + id + "/content.yaml", FromURL: true}
+	}
+	ids := func(profiles []resolve.ResolvedProfile) []string {
+		var out []string
+		for _, p := range profiles {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	tests := []struct {
+		name      string
+		dirIDs    []string
+		resolved  []resolve.ResolvedProfile
+		generated map[string]bool
+		want      []string
+	}{
+		{
+			name:     "no overlap",
+			dirIDs:   []string{"local-only"},
+			resolved: []resolve.ResolvedProfile{url("remote-only")},
+			want:     nil,
+		},
+		{
+			name:     "empty dir",
+			dirIDs:   nil,
+			resolved: []resolve.ResolvedProfile{url("a")},
+			want:     nil,
+		},
+		{
+			name:     "empty resolved",
+			dirIDs:   []string{"a"},
+			resolved: nil,
+			want:     nil,
+		},
+		{
+			name:     "one shadow",
+			dirIDs:   []string{"fullsend-vertex-ai"},
+			resolved: []resolve.ResolvedProfile{url("fullsend-vertex-ai")},
+			want:     []string{"fullsend-vertex-ai"},
+		},
+		{
+			name:     "multiple shadows sorted",
+			dirIDs:   []string{"z-profile", "a-profile", "local-only"},
+			resolved: []resolve.ResolvedProfile{url("z-profile"), url("a-profile"), url("remote-only")},
+			want:     []string{"a-profile", "z-profile"},
+		},
+		{
+			name:   "local-path profile in the same directory is not a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: profilesDir + "/byo.yaml", FromURL: false},
+			},
+			want: nil,
+		},
+		{
+			name:   "local-path profile elsewhere in the workspace is a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: "/ws/custom/byo.yaml", FromURL: false},
+			},
+			want: []string{"byo"},
+		},
+		{
+			name:     "duplicate directory ids reported once",
+			dirIDs:   []string{"dup", "dup"},
+			resolved: []resolve.ResolvedProfile{url("dup")},
+			want:     []string{"dup"},
+		},
+		{
+			name:   "runner-generated gitlab forge profile is not a shadow",
+			dirIDs: []string{"fullsend-gitlab-forge"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "fullsend-gitlab-forge", LocalPath: "/tmp/fullsend-gitlab-profile-123/fullsend-gitlab-forge.yaml"},
+			},
+			generated: map[string]bool{"fullsend-gitlab-forge": true},
+			want:      nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shadowedProfiles(tt.dirIDs, tt.resolved, profilesDir, tt.generated)
+			assert.Equal(t, tt.want, ids(got))
+		})
+	}
+}
+
+func TestShadowedProfiles_ReturnsResolvedCopy(t *testing.T) {
+	rp := resolve.ResolvedProfile{ID: "fullsend-vertex-ai", LocalPath: "/cache/x/content.yaml", FromURL: true}
+	got := shadowedProfiles([]string{"fullsend-vertex-ai"}, []resolve.ResolvedProfile{rp}, "/ws/profiles", nil)
+	require.Len(t, got, 1)
+	assert.Equal(t, rp, got[0], "the returned entry must carry the shadowed copy's path so the warning can name it")
 }
 
 func TestDedupResolvedProviders(t *testing.T) {

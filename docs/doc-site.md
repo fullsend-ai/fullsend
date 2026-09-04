@@ -31,6 +31,7 @@ npm run docs:preview
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
 - `multiVersionBuild` at `docs/.vitepress/config.ts` controls which versions are to be built. `sidebarEnder` sets up the version switcher with a few versions and the page `/v/index.md` contains a more comprehensive list of versions.
+- Multi-word search queries use **AND** semantics — all terms must appear on a page for it to match. Wrapping words in double quotes (e.g. `"eval scenario"`) enables exact-phrase matching: only pages containing the quoted words adjacent and in order are returned.
 
 ## Submodules
 

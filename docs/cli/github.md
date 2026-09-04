@@ -57,7 +57,7 @@ that case). `--config` rewrites `config.base.yaml` and keeps the existing overla
 | `--inference-provider` | | Inference provider; resolved to `vertex` if unset |
 | `--inference-project` | | GCP project ID for Agent Platform |
 | `--inference-wif-provider` | | Full WIF provider resource name |
-| `--openai-audience` | | OpenAI Workload Identity audience for GPT on pi; with the two flags below, written to `inference.openai` in `config.yaml` (all three or none) |
+| `--openai-audience` | | OpenAI Workload Identity audience for GPT on pi or codex; with the two flags below, written to `inference.openai` in `config.yaml` (all three or none) |
 | `--openai-identity-provider-id` | | OpenAI Workload Identity provider ID |
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |
 | `--inference-region` | | GCP region for inference; resolved to `global` if unset |
@@ -65,7 +65,7 @@ that case). `--config` rewrites `config.base.yaml` and keeps the existing overla
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
-| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
+| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
 | `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only) |
 | `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`) |
 

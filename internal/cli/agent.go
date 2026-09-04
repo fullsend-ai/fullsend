@@ -166,8 +166,8 @@ name-only entry is added. Only the flags given change; pass an empty value
 		},
 	}
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude or pi); \"\" clears it")
-	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi); \"\" clears it")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
+	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd

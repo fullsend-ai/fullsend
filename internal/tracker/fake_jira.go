@@ -146,6 +146,17 @@ func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, com
 	return nil
 }
 
+func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentID string) error {
+	comments := f.Comments[issueIDOrKey]
+	for i, c := range comments {
+		if c.ID == commentID {
+			f.Comments[issueIDOrKey] = append(comments[:i], comments[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, forge.ErrNotFound)
+}
+
 var _ jiraClient = (*FakeJiraClient)(nil)
 
 // NewFakeJiraClient returns a tracker.Client backed by an in-memory fake

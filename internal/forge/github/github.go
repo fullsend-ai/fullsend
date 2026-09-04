@@ -108,6 +108,11 @@ func (c *LiveClient) WithBaseURL(url string) *LiveClient {
 	return c
 }
 
+// BaseURL returns the configured GitHub API base URL.
+func (c *LiveClient) BaseURL() string {
+	return c.baseURL
+}
+
 // WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f

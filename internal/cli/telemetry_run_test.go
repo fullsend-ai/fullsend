@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
@@ -1131,4 +1132,49 @@ func TestAgentSpanStartAttrs_AgentNameBoundedWithoutSDKCap(t *testing.T) {
 		}
 	}
 	t.Fatal("gen_ai.agent.name attribute not found")
+}
+
+func TestHarnessIdentityAttrs_URLPathAndSHA(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.yaml")
+	body := []byte("role: triage\nmodel: opus\n")
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	sourceURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml"
+	attrs := harnessIdentityAttrs(path, sourceURL)
+	require.Len(t, attrs, 3)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.url", sourceURL))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", path))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.content_sha", fetch.ComputeSHA256(body)))
+}
+
+func TestHarnessIdentityAttrs_OmitsEmptyURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "local.yaml")
+	body := []byte("role: code\n")
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	attrs := harnessIdentityAttrs(path, "")
+	require.Len(t, attrs, 2)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", path))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.content_sha", fetch.ComputeSHA256(body)))
+	for _, kv := range attrs {
+		assert.NotEqual(t, attribute.Key("fullsend.harness.url"), kv.Key)
+	}
+}
+
+func TestHarnessIdentityAttrs_OmitsSHAWhenUnreadable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	sourceURL := "https://example.com/harness.yaml"
+	attrs := harnessIdentityAttrs(missing, sourceURL)
+	require.Len(t, attrs, 2)
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.url", sourceURL))
+	assert.Contains(t, attrs, attribute.String("fullsend.harness.path", missing))
+	for _, kv := range attrs {
+		assert.NotEqual(t, attribute.Key("fullsend.harness.content_sha"), kv.Key)
+	}
+}
+
+func TestHarnessIdentityAttrs_Empty(t *testing.T) {
+	assert.Empty(t, harnessIdentityAttrs("", ""))
 }

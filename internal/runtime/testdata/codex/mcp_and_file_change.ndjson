@@ -1,0 +1,16 @@
+{"type":"thread.started","thread_id":"01a06300-0000-7000-8000-000000000004"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Planning**\n\nEdit the three files, then run the tests."}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/sandbox/workspace/repo/new.go","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/sandbox/workspace/repo/new.go","kind":"add"},{"path":"/sandbox/workspace/repo/main.go","kind":"update"},{"path":"/sandbox/workspace/repo/old.go","kind":"delete"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/sandbox/workspace/repo/locked.go","kind":"update"}],"status":"failed"}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"github","tool":"get_issue","arguments":{"number":6920},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"github","tool":"get_issue","arguments":{"number":6920},"result":{"content":[{"type":"text","text":"issue body"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"mcp_tool_call","server":"jira","tool":"search","arguments":{},"result":null,"error":{"message":"server not reachable"},"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"web_search","query":"codex exec json event schema","action":{"type":"search","query":"codex exec json event schema"}}}
+{"type":"item.completed","item":{"id":"item_6","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"01a06300-0000-7000-8000-000000000004","receiver_thread_ids":["01a06300-0000-7000-8000-0000000000aa","01a06300-0000-7000-8000-0000000000bb"],"prompt":"review the diff","agents_states":{},"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_7","type":"todo_list","items":[{"text":"edit files","completed":true},{"text":"run tests","completed":false}]}}
+{"type":"item.completed","item":{"id":"item_8","type":"command_execution","command":"rm -rf /","aggregated_output":"","exit_code":null,"status":"declined"}}
+{"type":"item.completed","item":{"id":"item_9","type":"command_execution","command":"go test ./...\n  -run TestCodex","aggregated_output":"ok\tgithub.com/fullsend-ai/fullsend/internal/runtime\t0.4s\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_10","type":"agent_message","text":"All done."}}
+{"type":"turn.completed","usage":{"input_tokens":9000,"cached_input_tokens":4000,"cache_write_input_tokens":1000,"output_tokens":500,"reasoning_output_tokens":120}}

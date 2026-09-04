@@ -370,6 +370,62 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 	}
 }
 
+// --- models.aliases tests (#6882) ---
+
+func TestBuildRunCommand_WithConfigAlias(t *testing.T) {
+	// When a models.aliases entry exists for the model, the Claude
+	// runtime translates it to the id before --model.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5'",
+		"config alias remaps the model")
+	assert.NotContains(t, cmd, "'sonnet'",
+		"alias name does not appear in the command")
+}
+
+func TestBuildRunCommand_WithConfigAliasNoMatch(t *testing.T) {
+	// When the model is not in the config aliases, it passes through.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "opus",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'opus'",
+		"unmatched model passes through")
+}
+
+func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
+	// Nil aliases behaves identically to no aliases.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  nil,
+	})
+	assert.Contains(t, cmd, "--model 'sonnet'",
+		"nil aliases passes the model through")
+}
+
+func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
+	// The fallback chain goes through the same remap as --model, so a
+	// chain cannot land on the generation the repo retargeted away from.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName:  "agent",
+		Model:          "opus",
+		FallbackModels: []string{"sonnet", "claude-haiku-4-5"},
+		RepoDir:        "/sandbox/workspace/repo",
+		ModelAliases:   map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5,claude-haiku-4-5'",
+		"aliased fallback entries are remapped, bare ids pass through")
+	assert.Contains(t, cmd, "--model 'opus'", "unmapped primary passes through")
+}
+
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
 	dir := t.TempDir()
 	pluginDir := filepath.Join(dir, "gopls-lsp")

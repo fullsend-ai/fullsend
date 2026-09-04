@@ -82,6 +82,11 @@ type PerRepoConfigReader interface {
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
 	ConfigInferenceOpenAI() OpenAIWIFConfig
+	// ConfigModelAliases returns the effective model alias map, merged
+	// per-key through the parent chain. nil (the code default) means no
+	// aliases are configured: every alias resolves through the runtime's
+	// compiled-in table.
+	ConfigModelAliases() map[string]string
 }
 
 // --- Write superset interfaces ---
@@ -122,6 +127,7 @@ type PerRepoConfigWriter interface {
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
+	SetModelAliases(map[string]string)
 }
 
 // --- Compile-time assertions ---
@@ -522,6 +528,35 @@ func (c *perRepoConfig) ConfigInferenceOpenAI() OpenAIWIFConfig {
 	return out
 }
 
+// ConfigModelAliases returns the effective model alias map, merged per
+// key through the parent chain. Each key in the local Models.Aliases
+// overrides the same key from the parent; unstated keys inherit the
+// parent's value.
+func (c *perRepoConfig) ConfigModelAliases() map[string]string {
+	var parentAliases map[string]string
+	if c.parent != nil {
+		parentAliases = c.parent.ConfigModelAliases()
+	}
+	if c.Models == nil || len(c.Models.Aliases) == 0 {
+		return parentAliases
+	}
+	if len(parentAliases) == 0 {
+		result := make(map[string]string, len(c.Models.Aliases))
+		for k, v := range c.Models.Aliases {
+			result[k] = v
+		}
+		return result
+	}
+	merged := make(map[string]string, len(parentAliases)+len(c.Models.Aliases))
+	for k, v := range parentAliases {
+		merged[k] = v
+	}
+	for k, v := range c.Models.Aliases {
+		merged[k] = v
+	}
+	return merged
+}
+
 // --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
@@ -565,6 +600,19 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
+}
+
+// SetModelAliases sets the per-repo model alias overrides; a nil or
+// empty map removes the block.
+func (c *perRepoConfig) SetModelAliases(aliases map[string]string) {
+	if len(aliases) == 0 {
+		c.Models = nil
+		return
+	}
+	if c.Models == nil {
+		c.Models = &ModelsConfig{}
+	}
+	c.Models.Aliases = aliases
 }
 
 // SetInferenceOpenAI sets the OpenAI WIF identifiers; a zero value

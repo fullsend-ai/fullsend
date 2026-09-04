@@ -15,33 +15,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 func TestTranslatePiModel(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus"))
-	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet"))
-	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", translatePiModel("haiku"))
-	assert.Equal(t, "anthropic-vertex/claude-fable-5-1", translatePiModel("fable"))
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel(""), "empty falls back to the opus alias")
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "bare ids get the provider prefix")
-	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6"), "provider/id passes through")
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus", nil))
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet", nil))
+	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", translatePiModel("haiku", nil))
+	assert.Equal(t, "anthropic-vertex/claude-fable-5-1", translatePiModel("fable", nil))
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("", nil), "empty falls back to the opus alias")
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8", nil), "bare ids get the provider prefix")
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6", nil), "provider/id passes through")
 
 	// xai/ normalization: "xai/grok-4.6" becomes "xai-vertex/xai/grok-4.6"
 	// so the provider gate in buildPiRunCommand fires correctly.
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "xai/ is normalized to xai-vertex/xai/")
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6"), "already-normalized three-segment spec passes through")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6", nil), "xai/ is normalized to xai-vertex/xai/")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6", nil), "already-normalized three-segment spec passes through")
 
 	// Case-insensitive, because the gate in buildPiRunCommand is: a spec that
 	// escapes normalization reaches pi's built-in xai provider with
 	// XAI_API_KEY still set, which is the failure #6571 exists to close.
 	for _, spec := range []string{"XAI/grok-4.6", "Xai/grok-4.6", "xAI/grok-4.6"} {
-		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied short form is still normalized: %s", spec)
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec, nil), "case-varied short form is still normalized: %s", spec)
 	}
 	for _, spec := range []string{"XAI-VERTEX/xai/grok-4.6", "Xai-Vertex/XAI/grok-4.6"} {
-		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied long form is canonicalised: %s", spec)
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec, nil), "case-varied long form is canonicalised: %s", spec)
 	}
 
 	// A bare id under FULLSEND_PI_PROVIDER=xai-vertex must still get the
@@ -50,20 +51,20 @@ func TestTranslatePiModel(t *testing.T) {
 	// the two-segment "xai-vertex/grok-4.6" is a model the extension
 	// does not register, which pi silently substitutes a fallback for.
 	t.Setenv(piProviderEnv, piXaiVertexProvider)
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("grok-4.6"), "bare id gets the publisher segment too")
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "short form is unaffected by the provider env")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("grok-4.6", nil), "bare id gets the publisher segment too")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6", nil), "short form is unaffected by the provider env")
 
 	t.Setenv(piProviderEnv, "anthropic")
-	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"))
+	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus", nil))
 
 	// The model override is resolved by the CLI (--model, FULLSEND_MODEL,
 	// FULLSEND_PI_MODEL) and arrives as the model argument; the runtime no
 	// longer reads FULLSEND_PI_MODEL itself.
 	t.Setenv("FULLSEND_PI_MODEL", "google-vertex/gemini-2.5-pro")
-	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"), "runtime ignores FULLSEND_PI_MODEL")
-	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("google-vertex/gemini-2.5-pro"))
+	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus", nil), "runtime ignores FULLSEND_PI_MODEL")
+	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("google-vertex/gemini-2.5-pro", nil))
 	t.Setenv(piProviderEnv, "")
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "a bare override still gets the provider prefix")
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8", nil), "a bare override still gets the provider prefix")
 }
 
 func TestPiThinkingFor(t *testing.T) {
@@ -258,7 +259,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 func TestTranslatePiModel_XaiVertexBareIDFromHarness(t *testing.T) {
 	t.Setenv(piProviderEnv, piXaiVertexProvider)
 	for _, bare := range []string{"grok-4.6", "grok-4.5"} {
-		spec := translatePiModel(bare)
+		spec := translatePiModel(bare, nil)
 		assert.Equal(t, "xai-vertex/xai/"+bare, spec)
 		provider, _, _ := strings.Cut(spec, "/")
 		assert.True(t, strings.EqualFold(provider, piXaiVertexProvider), "gate must fire for %s", bare)
@@ -430,14 +431,14 @@ func TestPiOpenAIConfigGuard_ShadowedTest(t *testing.T) {
 func TestTranslatePiModel_OpenAI(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	// openai/gpt-5.6-luna is a two-segment spec; it passes through.
-	assert.Equal(t, "openai/gpt-5.6-luna", translatePiModel("openai/gpt-5.6-luna"))
+	assert.Equal(t, "openai/gpt-5.6-luna", translatePiModel("openai/gpt-5.6-luna", nil))
 	// Case variants pass through too (the gate in buildPiRunCommand is
 	// case-insensitive, so they are safe).
-	assert.Equal(t, "OpenAI/gpt-5.6-luna", translatePiModel("OpenAI/gpt-5.6-luna"))
+	assert.Equal(t, "OpenAI/gpt-5.6-luna", translatePiModel("OpenAI/gpt-5.6-luna", nil))
 
 	// A bare id under FULLSEND_PI_PROVIDER=openai gets the prefix.
 	t.Setenv(piProviderEnv, piOpenAIProvider)
-	assert.Equal(t, "openai/gpt-5.6-luna", translatePiModel("gpt-5.6-luna"))
+	assert.Equal(t, "openai/gpt-5.6-luna", translatePiModel("gpt-5.6-luna", nil))
 }
 
 func TestPiOpenAIConfigGuard(t *testing.T) {
@@ -591,7 +592,7 @@ func TestPiModelAliases_CoversDocumentedAliases(t *testing.T) {
 			id, ok := piModelAliases[alias]
 			require.True(t, ok, "documented alias %q missing from piModelAliases", alias)
 			require.NotEmpty(t, id, "piModelAliases[%q] must not be empty", alias)
-			spec := translatePiModel(alias)
+			spec := translatePiModel(alias, nil)
 			require.Contains(t, spec, "/", "translated spec must be provider/id")
 			require.NotEqual(t, piDefaultProvider+"/"+alias, spec,
 				"alias %q should not pass through as bare id", alias)
@@ -603,15 +604,15 @@ func TestValidatePiModel(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	// All documented aliases pass validation (they are in piModelAliases).
 	for alias := range piDocumentedAliases {
-		assert.NoError(t, validatePiModel(alias), "documented alias %q should pass validation", alias)
+		assert.NoError(t, validatePiModel(alias, nil), "documented alias %q should pass validation", alias)
 	}
 	// Empty model (defaults to piDefaultModel) passes.
-	assert.NoError(t, validatePiModel(""))
+	assert.NoError(t, validatePiModel("", nil))
 	// Bare ids that are not documented aliases pass (they are catalog ids).
-	assert.NoError(t, validatePiModel("claude-opus-4-8"))
+	assert.NoError(t, validatePiModel("claude-opus-4-8", nil))
 	// Provider/id specs pass without alias checking.
-	assert.NoError(t, validatePiModel("anthropic/claude-sonnet-4-6"))
-	assert.NoError(t, validatePiModel("xai/grok-4.6"))
+	assert.NoError(t, validatePiModel("anthropic/claude-sonnet-4-6", nil))
+	assert.NoError(t, validatePiModel("xai/grok-4.6", nil))
 }
 
 // TestValidatePiModel_MissingMapping exercises the actual failure the guard
@@ -626,7 +627,7 @@ func TestValidatePiModel_MissingMapping(t *testing.T) {
 	delete(piModelAliases, alias)
 	t.Cleanup(func() { piModelAliases[alias] = id })
 
-	err := validatePiModel(alias)
+	err := validatePiModel(alias, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), alias)
 	assert.Contains(t, err.Error(), "documented but has no pi mapping")
@@ -647,4 +648,119 @@ func TestBuildPiRunCommand_HonoursPromptOverride(t *testing.T) {
 	assert.Contains(t, cmd, shellQuote(params.Prompt))
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
 	assert.True(t, strings.HasSuffix(cmd, "</dev/null"), "stdin stays closed")
+}
+
+// --- models.aliases tests (#6882) ---
+
+func TestTranslatePiModel_WithConfigAlias(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	configAliases := map[string]string{"sonnet": "claude-sonnet-5"}
+
+	// Config alias overrides the fleet default for sonnet.
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5",
+		translatePiModel("sonnet", configAliases),
+		"config alias overrides fleet default")
+
+	// Unstated aliases retain fleet defaults.
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6",
+		translatePiModel("opus", configAliases),
+		"unstated alias keeps fleet default")
+
+	// Bare ids and provider/id specs are unaffected.
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-8",
+		translatePiModel("claude-opus-4-8", configAliases),
+		"bare id unaffected by config aliases")
+	assert.Equal(t, "anthropic/claude-sonnet-4-6",
+		translatePiModel("anthropic/claude-sonnet-4-6", configAliases),
+		"provider/id passes through regardless of config aliases")
+
+	// An alias may map to a provider/id spec (validation accepts it). The
+	// alias is resolved first and the spec passes through untouched —
+	// not re-prefixed to "anthropic-vertex/anthropic-vertex/…".
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5",
+		translatePiModel("sonnet", map[string]string{"sonnet": "anthropic-vertex/claude-sonnet-5"}),
+		"provider/id alias value is not re-prefixed")
+	assert.Equal(t, "google-vertex/gemini-3.7-flash",
+		translatePiModel("haiku", map[string]string{"haiku": "google-vertex/gemini-3.7-flash"}),
+		"an alias can retarget to another provider")
+
+	// An alias mapped to Grok goes through the same xai normalisation as
+	// a direct spec, so buildPiRunCommand's xai-vertex gate fires.
+	for _, val := range []string{"xai/grok-4.6", "xai-vertex/xai/grok-4.6", "XAI/grok-4.6"} {
+		assert.Equal(t, "xai-vertex/xai/grok-4.6",
+			translatePiModel("sonnet", map[string]string{"sonnet": val}),
+			"xai alias value is normalised: %s", val)
+	}
+}
+
+func TestMergedPiModelAliases(t *testing.T) {
+	t.Parallel()
+	// nil config aliases returns the fleet defaults unchanged — as a copy,
+	// so a caller cannot mutate the package-level table through it.
+	merged := mergedPiModelAliases(nil)
+	assert.Equal(t, piModelAliases, merged)
+	merged["opus"] = "mutated"
+	assert.NotEqual(t, "mutated", piModelAliases["opus"], "merged map must be a copy")
+
+	// Config alias overrides per key.
+	merged = mergedPiModelAliases(map[string]string{"sonnet": "claude-sonnet-5"})
+	assert.Equal(t, "claude-sonnet-5", merged["sonnet"], "config override")
+	assert.Equal(t, piModelAliases["opus"], merged["opus"], "fleet default preserved")
+	assert.Equal(t, piModelAliases["haiku"], merged["haiku"], "fleet default preserved")
+	assert.Equal(t, piModelAliases["fable"], merged["fable"], "fleet default preserved")
+}
+
+func TestValidatePiModel_WithConfigAlias(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	// Make the guard observable: with "sonnet" removed from the compiled-in
+	// table, validation must fail without a config entry and pass with one
+	// — proving the merged table, not just piModelAliases, is consulted.
+	const alias = "sonnet"
+	id, ok := piModelAliases[alias]
+	require.True(t, ok, "test fixture assumes %q starts mapped", alias)
+	delete(piModelAliases, alias)
+	t.Cleanup(func() { piModelAliases[alias] = id })
+
+	err := validatePiModel(alias, nil)
+	require.Error(t, err, "no compiled-in entry and no config entry")
+	assert.Contains(t, err.Error(), "documented but has no pi mapping")
+
+	assert.NoError(t, validatePiModel(alias, map[string]string{alias: "claude-sonnet-5"}),
+		"a config entry satisfies the guard on its own")
+}
+
+func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	m := &piManifest{AgentName: "triage", Model: "sonnet", Tools: []string{"bash"}}
+	params := piTestParams()
+	params.ModelAliases = map[string]string{"sonnet": "claude-sonnet-5"}
+	cmd := buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-5'",
+		"config alias remaps the model in the build command")
+
+	// An alias retargeted to Grok must trip the xai-vertex gate exactly as
+	// a direct xai spec does: extension loaded, XAI_API_KEY unset. Before
+	// the alias was resolved ahead of normalisation this produced
+	// "anthropic-vertex/xai/grok-4.6" and skipped the gate.
+	params.ModelAliases = map[string]string{"sonnet": "xai/grok-4.6"}
+	cmd = buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "xai alias value is normalised")
+	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "xai-vertex gate fires for an aliased Grok spec")
+	assert.NotContains(t, cmd, "anthropic-vertex/xai", "no double prefix")
+}
+
+// TestPiDocumentedAliasesMatchConfigKeys pins the two hand-maintained
+// copies of the alias vocabulary to each other: config validation accepts
+// exactly the keys the pi runtime treats as aliases. Adding an alias to one
+// side without the other would either reject a working alias in
+// config.yaml or let a config key through that pi never resolves.
+func TestPiDocumentedAliasesMatchConfigKeys(t *testing.T) {
+	t.Parallel()
+	want := config.ValidModelAliasKeys()
+	got := make([]string, 0, len(piDocumentedAliases))
+	for alias := range piDocumentedAliases {
+		got = append(got, alias)
+	}
+	assert.ElementsMatch(t, want, got, "config.ValidModelAliasKeys and piDocumentedAliases drifted")
 }

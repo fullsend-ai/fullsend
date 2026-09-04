@@ -16,7 +16,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
-| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, pi, ripgrep + fd (pi grep/find backends), jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
+| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, pi, Codex, ripgrep + fd (pi grep/find backends), jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
@@ -144,6 +144,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
+| Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
 | pi-anthropic-vertex extension (#6464) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the GitHub tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored `package-lock.json` (29 packages; that lockfile is **not** renovate-managed, so advisories in it surface only when the tag is bumped — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump) | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |

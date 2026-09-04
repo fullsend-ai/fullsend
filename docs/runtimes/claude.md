@@ -16,9 +16,19 @@ Pass an alias or a model id; Claude Code resolves aliases natively.
 
 | Alias | Resolves to |
 |---|---|
-| `opus`, `sonnet`, `haiku`, `fable` | the current Anthropic model of that tier |
+| `opus`, `sonnet`, `haiku`, `fable` | the current Anthropic model of that tier, as the pinned Claude Code version defines it |
 
-All inference goes to Anthropic models on Vertex AI, on the fleet's WIF credentials.
+All inference goes to Anthropic models on Vertex AI, on the fleet's WIF credentials. Vertex enables
+models **per project**, so the tier's current model is not always one your project can serve; a run
+that asks for a model the project cannot serve fails at the first model call. When a specific
+generation matters, name the id.
+
+**Per-repo alias overrides.** Point an alias at a different model for this repo with
+`models.aliases` in `.fullsend/config.yaml` (`sonnet: claude-sonnet-5`); the run then passes that id
+to `--model` and `--fallback-model`. Syntax, rules and what the plan block shows are on the
+[pi page](pi.md#per-repo-alias-overrides) — it is the same block. It covers the run's own model only:
+sub-agent `model:` frontmatter is resolved by Claude Code itself, so a sub-agent that needs a
+specific generation names the id.
 
 **Fallback chains.** `FULLSEND_FALLBACK_MODELS=a,b` becomes `--fallback-model a,b`, tried in order
 when the primary model is overloaded or retired. This is Claude Code only — pi reports it as
@@ -59,8 +69,9 @@ These are the places Claude Code differs from pi — useful when comparing a run
 ## Troubleshooting
 
 **The model is not what you asked for.** Check `metrics.json`: `requested_model` is what was handed
-to the runtime after overrides and `override_source` says where it came from, so a silent override
-is visible after the fact.
+to the runtime after overrides and `override_source` says where it came from — ending in
+`remapped by <config path> models.aliases` when a per-repo alias override applied — so a silent
+override is visible after the fact.
 
 **A tool call was blocked.** The security hooks log to `/sandbox/workspace/.security/findings.jsonl`
 inside the sandbox. A blocked tool reports its reason in the transcript; an allowlist mismatch names

@@ -39,6 +39,7 @@ import { useData } from "vitepress";
 import { LRUCache } from "vitepress/dist/client/theme-default/support/lru";
 import { createSearchTranslate } from "vitepress/dist/client/theme-default/support/translation";
 import { matchesActiveScopes } from "../searchScopes";
+import { filterByPhrases, parseSearchQuery } from "../searchQuery";
 
 const emit = defineEmits<{
   (e: "close"): void;
@@ -78,7 +79,7 @@ const searchIndex = computedAsync(async () =>
   markRaw(
     MiniSearch.loadJSON<Result>((await searchIndexData.value[localeIndex.value]?.())?.default, {
       fields: ["title", "titles", "text"],
-      storeFields: ["title", "titles"],
+      storeFields: ["title", "titles", "text"],
       searchOptions: {
         fuzzy: 0.2,
         prefix: true,
@@ -174,17 +175,29 @@ debouncedWatch(
 
     if (!index) return;
 
-    // Search
+    // Search — use AND so multi-word queries require all terms on the page.
+    // Quoted substrings trigger exact-phrase post-filtering.
     const active = activeScopes.value;
     const scopeList = scopes.value;
-    const searchOpts =
-      active.size > 0
-        ? {
-            filter: (r: SearchResult) => matchesActiveScopes(r.id, scopeList, active),
-          }
-        : {};
-    results.value = index.search(filterTextValue, searchOpts).slice(0, 16) as (SearchResult &
-      Result)[];
+    const { query, phrases } = parseSearchQuery(filterTextValue);
+
+    const searchOpts: { combineWith: string; filter?: (r: SearchResult) => boolean } = {
+      combineWith: "AND",
+    };
+    if (active.size > 0) {
+      searchOpts.filter = (r: SearchResult) => matchesActiveScopes(r.id, scopeList, active);
+    }
+
+    // Post-filter for exact phrase matches when the query contained quotes.
+    // Uses the stored text from the search index — no async page rendering needed.
+    // Phrase filtering runs before the display cap so exact-phrase matches beyond
+    // rank 16 are not silently discarded.
+    const searchResults = filterByPhrases(
+      index.search(query, searchOpts) as (SearchResult & Result)[],
+      phrases,
+    ).slice(0, 16);
+
+    results.value = searchResults;
     enableNoResults.value = true;
 
     // Highlighting

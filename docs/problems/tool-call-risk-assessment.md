@@ -122,7 +122,7 @@ Combine Approach 3 (fast deterministic policies) as a first pass with Approach 1
 
 ## Relationship to existing hooks
 
-This is not a replacement for existing security hooks. The Tirith scanner, SSRF validator, canary detection, and unicode normalizer address specific, well-defined threat classes with zero ambiguity. They should remain as-is. Tool call risk assessment addresses the space between those specific checks, where the threat is context-dependent and the decision requires judgment rather than pattern matching.
+This is not a replacement for existing security hooks. The Tirith scanner, SSRF validator, canary detection, and unicode normalizer address specific, well-defined threat classes with zero ambiguity. They should remain as-is. Tool call risk assessment addresses the space between those specific checks, where the threat is context-dependent and the decision requires judgment rather than pattern matching. (How far those existing hooks actually reach also depends on the runtime carrying them: on codex they are re-verified against their digests before every invocation and their interpreter, `PATH` and configuration are pinned past the agent-writable `.env`, where on Claude Code and pi they stay writable between iterations — see [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md).)
 
 The tool allowlist hook (`tool_allowlist_pretool.py`) is the closest existing mechanism. It is currently disabled by default and operates on tool names only, not arguments or context. A risk assessment layer would subsume and extend its functionality.
 

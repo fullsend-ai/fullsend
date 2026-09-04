@@ -845,3 +845,28 @@ func TestSetDefault_Runtime(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "runtime:")
 }
+
+func TestSetDefault_Vendor(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", "true"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "vendor: true")
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", "false"))
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "vendor: false")
+
+	err = SetDefault(path, "defaults.vendor", "yes")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `must be "true" or "false"`)
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", ""), "empty clears the default")
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "vendor:")
+}

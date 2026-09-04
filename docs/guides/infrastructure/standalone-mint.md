@@ -218,7 +218,7 @@ The format is a JSON object mapping role names to permission maps:
 }
 ```
 
-Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Common permission levels are `read` and `write`.
+Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Supported levels include `read`, `write`, and `admin` where GitHub exposes that level.
 
 ### Built-in roles cannot be overridden
 
@@ -248,7 +248,7 @@ Invalid examples: `Scanner` (uppercase), `123scanner` (starts with digit), `my--
 
 ### Permissions must match the GitHub App
 
-The permissions in `CUSTOM_ROLE_PERMISSIONS` must be a subset of what the GitHub App is installed with. If you request a permission the app does not have, GitHub will return an error when the mint tries to create the installation token. The mint does not validate this at startup — the error occurs at token request time.
+The permissions in `CUSTOM_ROLE_PERMISSIONS` must be a subset of what the GitHub App is installed with. When the installation lookup includes its granted permissions, custom-role permissions are required by default: if an installation does not grant one, the mint reports the missing permission before making the token request. If GitHub omits that map, the mint preserves the requested permissions and lets the token request validate them. During a built-in permission rollout, only permissions explicitly listed in the mint's `optionalRolePermissions` map may be omitted; see the [permission rollout runbook](infrastructure-reference.md#roll-out-a-github-app-permission).
 
 ## Fallback proxy behavior
 

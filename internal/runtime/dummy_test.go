@@ -248,6 +248,17 @@ func TestDummyRuntime_Bootstrap(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestDummyRuntime_Bootstrap_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "sandbox not found", 1, nil
+	}}
+	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
+}
+
 func TestDummyRuntime_RunMissingScript(t *testing.T) {
 	t.Parallel()
 
@@ -268,6 +279,21 @@ func TestDummyRuntime_ClearIterationArtifacts(t *testing.T) {
 	rt := DummyRuntime{}
 	err := rt.ClearIterationArtifacts("nonexistent-sandbox")
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_ClearIterationArtifacts_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "rm -rf") {
+			return "", "sandbox not found", 1, nil
+		}
+		// clearStrayProcesses call succeeds
+		return "stray processes killed: 0\n", "", 0, nil
+	}}
+	err := rt.ClearIterationArtifacts("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 func TestExecuteBehaviourOp_ReadFileExecFailure(t *testing.T) {

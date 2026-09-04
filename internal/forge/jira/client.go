@@ -554,6 +554,15 @@ func (c *LiveClient) SetCommentProperty(ctx context.Context, issueIDOrKey, comme
 	return nil
 }
 
+// DeleteComment removes a comment by ID from the given issue.
+func (c *LiveClient) DeleteComment(ctx context.Context, issueIDOrKey, commentID string) error {
+	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/comment/" + url.PathEscape(commentID)
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil); err != nil {
+		return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, err)
+	}
+	return nil
+}
+
 // ListChangelog fetches all changelog entries for an issue, exhausting
 // pagination up to maxListPages pages.
 func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {

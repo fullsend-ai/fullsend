@@ -36,8 +36,9 @@ func TestSandboxImagePiDefaults(t *testing.T) {
 	}
 }
 
-// TestSandboxImagePinsAreRenovateTracked asserts every PI_*_VERSION pin in the
-// sandbox Containerfile has a matching renovate.json customManager. A pin with
+// TestSandboxImagePinsAreRenovateTracked asserts every runtime version pin in
+// the sandbox Containerfile (PI_*_VERSION, CODEX_VERSION) has a matching
+// renovate.json customManager. A pin with
 // no manager is invisible: it silently stays on whatever version it was added
 // at, and the only signal is a comment telling a human to check tags by hand.
 // This caught the pi-xai-vertex pin shipping untracked (#6571).
@@ -56,8 +57,8 @@ func TestSandboxImagePinsAreRenovateTracked(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(renovateRaw, &renovate), "renovate.json must be valid JSON")
 
-	pins := regexp.MustCompile(`(?m)^ARG (PI_[A-Z_]*VERSION)=`).FindAllStringSubmatch(containerfile, -1)
-	require.NotEmpty(t, pins, "expected at least one PI_*_VERSION pin")
+	pins := regexp.MustCompile(`(?m)^ARG (PI_[A-Z_]*VERSION|CODEX_VERSION)=`).FindAllStringSubmatch(containerfile, -1)
+	require.NotEmpty(t, pins, "expected at least one runtime version pin")
 
 	for _, pin := range pins {
 		name := pin[1]

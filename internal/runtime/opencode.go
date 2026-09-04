@@ -14,6 +14,15 @@ import (
 // interfaces for the OpenCode agent runtime. All methods are no-ops or return
 // not-implemented errors. Subsequent PRs will fill in stream parsing, bootstrap,
 // run execution, and transcript extraction.
+//
+// Egress note for whoever lands it: opencode is exec'd directly, like Claude
+// Code, not wrapped by node. The opencode-ai npm package ships bin/opencode.exe
+// as a shell stub that postinstall.mjs replaces (link or copy) with the
+// platform binary opencode-linux-x64/bin/opencode; with --ignore-scripts the
+// stub stays. Whichever file the Containerfile ends up exec'ing is the name
+// the inference profiles' binaries: globs must carry (**/opencode.exe or
+// **/opencode), and runtimeEgressBinaries in internal/cli must list it, or
+// every run dies on its first model call with policy_denied (fullsend#6971).
 type OpenCodeRuntime struct{}
 
 func (OpenCodeRuntime) Name() string { return "opencode" }

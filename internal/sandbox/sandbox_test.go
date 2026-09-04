@@ -33,6 +33,7 @@ func TestConstants(t *testing.T) {
 	assert.Equal(t, "/sandbox/workspace", SandboxWorkspace)
 	assert.Equal(t, "/sandbox/claude-config", SandboxClaudeConfig)
 	assert.Equal(t, "/sandbox/pi-config", SandboxPiConfig)
+	assert.Equal(t, "/sandbox/codex-config", SandboxCodexConfig)
 }
 
 func TestBuildProviderArgs_BareKeyCredentials(t *testing.T) {

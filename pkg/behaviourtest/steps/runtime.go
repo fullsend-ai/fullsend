@@ -34,7 +34,10 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 		return ctx, givenRepositoryRuntime(world.FromContext(ctx), name)
 	})
 	sc.Step(`^a pi agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
-		return ctx, givenPiAgent(world.FromContext(ctx), name, doc)
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^a codex agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
@@ -53,6 +56,9 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the pi session transcript records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertPiTranscriptHasToolCall(world.FromContext(ctx))
+	})
+	sc.Step(`^the codex output stream records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, assertCodexStreamHasToolCall(world.FromContext(ctx))
 	})
 }
 
@@ -109,14 +115,18 @@ func givenRepositoryRuntime(w *world.World, name string) error {
 // runtime can be told to write a schema-valid result file deterministically.
 var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 
-// givenPiAgent commits a complete agent definition (frontmatter + body) to
-// `.fullsend/agents/<name>.md` on the enrolled repo. The custom-harness
-// step commits a placeholder for any relative `agent:` path (the per-repo
-// scaffold ships no agents — fleet agents are URL-sourced), which is fine
-// under the dummy runtime but gives a real runtime no task; this step runs
-// after it and replaces the placeholder with a body whose tool use is
-// deliberate, so the transcript assertions are grounded.
-func givenPiAgent(w *world.World, name, doc string) error {
+// givenRuntimeAgent commits a complete agent definition (frontmatter +
+// body) to `.fullsend/agents/<name>.md` on the enrolled repo. The
+// custom-harness step commits a placeholder for any relative `agent:` path
+// (the per-repo scaffold ships no agents — fleet agents are URL-sourced),
+// which is fine under the dummy runtime but gives a real runtime no task;
+// this step runs after it and replaces the placeholder with a body whose
+// tool use is deliberate, so the transcript assertions are grounded.
+//
+// Nothing here is runtime-specific: the "a pi agent" and "a codex agent"
+// steps both land here, and the step wording only says which runtime the
+// scenario is exercising.
+func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
 	}
@@ -409,6 +419,137 @@ func assertPiTranscriptHasToolCall(w *world.World) error {
 		return fmt.Errorf("%d pi session transcript(s) under %s but none records a toolCall", sessions, w.ArtifactDir)
 	}
 	return nil
+}
+
+// assertCodexStreamHasToolCall requires a tee'd `codex exec --json` stream
+// (output.jsonl) that records a completed command_execution item: the agent
+// ran a shell command through codex. The rollout session transcripts codex
+// writes are extracted alongside it, but the --json stream is the artifact
+// whose shape fullsend owns, so the assertion reads that.
+//
+// With security enabled the run refuses to start unless the fullsend hook
+// wiring under CODEX_HOME is present and intact, so a tool call in such a
+// run was mediated by the adapter; this step does not inspect hook output
+// itself.
+func assertCodexStreamHasToolCall(w *world.World) error {
+	if err := ensureRunArtifacts(w, "metrics.json"); err != nil {
+		return err
+	}
+	var streams, withToolCall int
+	err := filepath.WalkDir(w.ArtifactDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Base(path) != "output.jsonl" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if !isCodexStreamFile(data) {
+			return nil
+		}
+		streams++
+		hasCall, scanErr := codexStreamHasCompletedCommand(data)
+		if scanErr != nil {
+			return fmt.Errorf("reading %s: %w", path, scanErr)
+		}
+		if hasCall {
+			withToolCall++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if streams == 0 {
+		return fmt.Errorf("no codex output.jsonl stream under %s", w.ArtifactDir)
+	}
+	if withToolCall == 0 {
+		return fmt.Errorf("%d codex stream(s) under %s but none records a command_execution item", streams, w.ArtifactDir)
+	}
+	return nil
+}
+
+// codexStreamEvent is the envelope every line of a `codex exec --json`
+// capture carries, plus the item fields these assertions read. `item.details`
+// is serde-flattened upstream, so the item type sits next to its id.
+type codexStreamEvent struct {
+	Type string `json:"type"`
+	Item struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	} `json:"item"`
+}
+
+// codexStreamLines yields each line of a capture that parses as a top-level
+// codex event. Parsing beats substring matching here for the same reason it
+// does in the production parser: a marker can appear inside another
+// envelope's payload or inside quoted tool output, where it means nothing.
+//
+// A scan error (a line past the buffer, an unreadable file) is returned
+// rather than swallowed: silently yielding the lines read so far would turn
+// a truncated read into "the agent ran no tools", which is a wrong assertion
+// failure rather than an honest one.
+func codexStreamLines(data []byte) ([]codexStreamEvent, error) {
+	var out []codexStreamEvent
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var evt codexStreamEvent
+		if json.Unmarshal(line, &evt) != nil || evt.Type == "" {
+			continue
+		}
+		out = append(out, evt)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning codex stream: %w", err)
+	}
+	return out, nil
+}
+
+// codexStreamHasCompletedCommand requires a command_execution item that
+// actually reached item.completed with status "completed". An item.started
+// carries the same item type, and a declined or failed command is a tool call
+// the agent did not get to make — neither proves the agent ran a tool.
+func codexStreamHasCompletedCommand(data []byte) (bool, error) {
+	events, err := codexStreamLines(data)
+	if err != nil {
+		return false, err
+	}
+	for _, evt := range events {
+		if evt.Type == "item.completed" &&
+			evt.Item.Type == "command_execution" &&
+			evt.Item.Status == "completed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isCodexStreamFile reports whether the JSONL is a `codex exec --json`
+// capture, by the top-level type of a line rather than a substring scan.
+// codex's rollout session files use session_meta/response_item/event_msg
+// envelopes whose inner names are underscored (item_completed), so they
+// cannot match; nor can a codex event name nested inside another payload.
+func isCodexStreamFile(data []byte) bool {
+	events, err := codexStreamLines(data)
+	if err != nil {
+		return false
+	}
+	for _, evt := range events {
+		switch evt.Type {
+		case "thread.started", "turn.started", "turn.completed", "turn.failed",
+			"item.started", "item.updated", "item.completed":
+			return true
+		}
+	}
+	return false
 }
 
 func isPiSessionFile(data []byte) bool {

@@ -12,17 +12,19 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
 
 func fixedTime() time.Time {
 	return time.Date(2026, 6, 3, 14, 34, 0, 0, time.UTC)
 }
 
-func newTestNotifier(fc *forge.FakeClient, cfg config.StatusNotificationConfig) *Notifier {
+func newTestNotifier(fc *forge.FakeClient, cfg config.StatusNotificationConfig) (*Notifier, *forge.FakeClient) {
 	fc.AuthenticatedUser = "fullsend-bot[bot]"
-	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
 	n.now = fixedTime
-	return n
+	return n, fc
 }
 
 func TestPostStart_CommentEnabled(t *testing.T) {
@@ -30,7 +32,7 @@ func TestPostStart_CommentEnabled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
@@ -48,7 +50,7 @@ func TestPostStart_CommentDisabled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working on issue")
 	require.NoError(t, err)
@@ -59,7 +61,7 @@ func TestPostStart_CommentDisabled(t *testing.T) {
 func TestPostStart_DefaultEnabled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -72,11 +74,11 @@ func TestPostCompletion_EditInPlace(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.Equal(t, "1", n.startCommentID)
 
 	completionTime := fixedTime().Add(7 * time.Minute)
 	n.now = func() time.Time { return completionTime }
@@ -97,7 +99,7 @@ func TestPostCompletion_NewComment_WhenInterveningHumanActivity(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Triaging issue")
 	require.NoError(t, err)
@@ -125,7 +127,7 @@ func TestPostCompletion_EditStart_WhenAgentPostedOutput(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Triaging issue")
 	require.NoError(t, err)
@@ -152,7 +154,7 @@ func TestPostCompletion_EditStart_WhenAgentAndHumanPosted(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
@@ -180,7 +182,7 @@ func TestPostCompletion_Cancelled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -204,7 +206,7 @@ func TestPostCompletion_Skipped(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -226,7 +228,7 @@ func TestAllDisabled_NoAPICalls(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -242,7 +244,8 @@ func TestAllDisabled_NoAPICalls(t *testing.T) {
 func TestRunURL_Omitted(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := New(fc, cfg, "org", "repo", 7, "", "abc123", "run-1")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "", "abc123", "run-1")
 	n.now = fixedTime
 
 	err := n.PostStart(context.Background(), "Working")
@@ -256,7 +259,8 @@ func TestRunURL_Omitted(t *testing.T) {
 func TestSHA_Omitted(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/1", "", "run-1")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "https://ci/run/1", "", "run-1")
 	n.now = fixedTime
 
 	err := n.PostStart(context.Background(), "Working")
@@ -272,7 +276,7 @@ func TestPostCompletion_Failure(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Coding issue #42")
 	require.NoError(t, err)
@@ -290,7 +294,7 @@ func TestPostCompletionWithDetail_FailureShowsErrorMessage(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Coding issue #99"))
 
@@ -310,7 +314,7 @@ func TestPostCompletionWithDetail_FailureWithoutDetail(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Coding issue #99"))
 
@@ -323,7 +327,6 @@ func TestPostCompletionWithDetail_FailureWithoutDetail(t *testing.T) {
 	require.Len(t, fc.UpdatedComments, 1)
 	body := fc.UpdatedComments[0].Body
 	assert.Contains(t, body, "❌ Failure")
-	// Ensure no parenthesized detail appears when detail is empty.
 	assert.NotContains(t, body, "Failure (")
 }
 
@@ -332,14 +335,13 @@ func TestPostCompletionWithDetail_FailureDetailSanitized(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 
 	completionTime := fixedTime().Add(3 * time.Minute)
 	n.now = func() time.Time { return completionTime }
 
-	// Error messages with newlines should be collapsed to a single line.
 	err := n.PostCompletionWithDetail(context.Background(), "Working", "failure",
 		"pre-script failed\nexit status 1")
 	require.NoError(t, err)
@@ -347,7 +349,7 @@ func TestPostCompletionWithDetail_FailureDetailSanitized(t *testing.T) {
 	require.Len(t, fc.UpdatedComments, 1)
 	body := fc.UpdatedComments[0].Body
 	assert.Contains(t, body, "❌ Failure (pre-script failed exit status 1)")
-	assert.NotContains(t, body, "\n❌") // No newline break in the status label.
+	assert.NotContains(t, body, "\n❌")
 }
 
 func TestPostCompletion_UnknownStatus(t *testing.T) {
@@ -355,7 +357,7 @@ func TestPostCompletion_UnknownStatus(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -373,7 +375,7 @@ func TestPostCompletion_NoStartComment(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -406,8 +408,9 @@ func TestShortSHA(t *testing.T) {
 func TestMarkerUniqueness(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n1 := New(fc, cfg, "org", "repo", 7, "", "", "run-1")
-	n2 := New(fc, cfg, "org", "repo", 7, "", "", "run-2")
+	tc := tracker.NewForgeClient(fc)
+	n1 := New(tc, cfg, "org/repo", 7, "", "", "run-1")
+	n2 := New(tc, cfg, "org/repo", 7, "", "", "run-2")
 	assert.NotEqual(t, n1.marker, n2.marker)
 	assert.Contains(t, n1.marker, "run-1")
 	assert.Contains(t, n2.marker, "run-2")
@@ -452,7 +455,8 @@ func setNow(t *testing.T, fixed time.Time) {
 
 func TestReconcileOrphaned_InvalidRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "-->bad", "", "", ReasonTerminated, "", "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid run ID")
 }
@@ -462,11 +466,11 @@ func TestPostCompletion_CompletionDisabled_CleansUpStartComment(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.Equal(t, "1", n.startCommentID)
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "success")
@@ -483,11 +487,11 @@ func TestPostCompletion_CancelledWithCompletionDisabled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.Equal(t, "1", n.startCommentID)
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "cancelled")
@@ -516,7 +520,8 @@ func TestRunURL_UnsafeDropped(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fc := forge.NewFakeClient()
 			cfg := config.StatusNotificationConfig{}
-			n := New(fc, cfg, "org", "repo", 7, tt.url, "abc123", "run-1")
+			tc := tracker.NewForgeClient(fc)
+			n := New(tc, cfg, "org/repo", 7, tt.url, "abc123", "run-1")
 			n.now = fixedTime
 
 			err := n.PostStart(context.Background(), "Working")
@@ -538,12 +543,13 @@ func TestAnalyzeTimeline_EmptyBotUser_FallsBackToPositionOnly(t *testing.T) {
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
 	fc.AuthenticatedUser = ""
-	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
 	n.now = fixedTime
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.Equal(t, "1", n.startCommentID)
 
 	// Start is the last comment → should edit in place even without bot user identity.
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
@@ -560,13 +566,13 @@ func TestAnalyzeTimeline_EmptyBotUser_NewCommentWhenNotLast(t *testing.T) {
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
 	fc.AuthenticatedUser = ""
-	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
 	n.now = fixedTime
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
 
-	// Agent posts output, but since botUser is empty it can't be identified as agent output.
 	fc.IssueComments["org/repo/7"] = append(fc.IssueComments["org/repo/7"], forge.IssueComment{
 		ID:     9999,
 		Body:   "Some output",
@@ -577,7 +583,6 @@ func TestAnalyzeTimeline_EmptyBotUser_NewCommentWhenNotLast(t *testing.T) {
 	err = n.PostCompletion(context.Background(), "Reviewing this PR", "success")
 	require.NoError(t, err)
 
-	// Without bot identity, agentPosted is false and startIsLast is false → new comment.
 	assert.Empty(t, fc.UpdatedComments, "should not edit start when bot identity unknown and not last")
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 3)
@@ -589,24 +594,21 @@ func TestAnalyzeTimeline_UsesStartCommentAuthor(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	// Set AuthenticatedUser so FakeClient stamps the start comment Author.
 	fc.AuthenticatedUser = "fullsend-bot[bot]"
-	// Inject GetAuthenticatedUser error to prove it is NOT called.
-	fc.Errors["GetAuthenticatedUser"] = fmt.Errorf("should not be called")
-	n := New(fc, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
+	fc.Errors = map[string]error{"GetAuthenticatedUser": fmt.Errorf("should not be called")}
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
 	n.now = fixedTime
 
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
 
-	// Agent posts output (same bot author, no status marker).
 	fc.CreateIssueComment(context.Background(), "org", "repo", 7, "Review findings here")
 
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Reviewing this PR", "success")
 	require.NoError(t, err)
 
-	// Bot user derived from start comment Author → agentPosted = true → edit in place.
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Reviewing this PR")
@@ -626,7 +628,6 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 	fc.IssueComments = map[string][]forge.IssueComment{}
 	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
 
-	// Simulate a "Started" comment left by a killed process.
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
 		{
 			ID:     42,
@@ -635,7 +636,8 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -655,7 +657,6 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
 
-	// Comment already reached terminal state (via PostCompletion).
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
 		{
 			ID:     42,
@@ -664,7 +665,8 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
@@ -672,20 +674,19 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 
 func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// No comments at all.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.UpdatedComments)
 }
 
 func TestReconcileOrphaned_OnFailure_SynthesizesWhenNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// No comments at all — simulates on_failure mode where PostStart was suppressed
-	// and the process was hard-killed before PostCompletion ran.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -704,8 +705,6 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
 	fc.IssueComments = map[string][]forge.IssueComment{}
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// A start comment exists (shouldn't happen under on_failure, but if it does,
-	// reconcile should finalize it normally, not double-post).
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
 		{
 			ID:     42,
@@ -714,10 +713,10 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
 	require.NoError(t, err)
 
-	// Should update the existing comment, not create a new one.
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Terminated")
@@ -725,10 +724,9 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
 
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// No comments, default completion mode, unknown job status — should
-	// NOT synthesize.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize for enabled mode")
 	assert.Empty(t, fc.UpdatedComments)
@@ -736,11 +734,9 @@ func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenNoMarker(t *testing.T) {
 
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenJobSucceeded(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// No comments, default completion mode, job succeeded — the run
-	// completed and posted its own completion comment as expected; nothing
-	// to synthesize.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "enabled", "success", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "enabled", "success", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments)
 	assert.Empty(t, fc.UpdatedComments)
@@ -748,16 +744,15 @@ func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenJobSucceeded(t *testing.T)
 
 func TestReconcileOrphaned_EnabledMode_SynthesizesOnFailureWithNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// No comments, default ("") completion mode, job failed. A status
-	// comment should always exist for a run that reached the harness under
-	// the default mode — its absence alongside a failed job means the
+	// A status comment should always exist for a run that reached the harness
+	// under the default mode — its absence alongside a failed job means the
 	// process crashed before it could post anything at all (e.g. during
-	// environment validation), leaving maintainers unable to tell "no
-	// review was triggered" from "review was attempted and failed
-	// silently." See #3635.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "Review")
+	// environment validation), leaving maintainers unable to tell "no review
+	// was triggered" from "review was attempted and failed silently." See #3635.
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "Review")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -768,11 +763,10 @@ func TestReconcileOrphaned_EnabledMode_SynthesizesOnFailureWithNoMarker(t *testi
 
 func TestReconcileOrphaned_EnabledMode_SynthesizesOnCancelledWithNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// Same as above, but the job was cancelled rather than failed, and
-	// completion is explicitly "enabled" rather than the implicit default.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "enabled", "cancelled", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "enabled", "cancelled", false, "")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -782,11 +776,9 @@ func TestReconcileOrphaned_EnabledMode_SynthesizesOnCancelledWithNoMarker(t *tes
 
 func TestReconcileOrphaned_DisabledMode_NoSynthesisEvenOnFailure(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// completion: disabled is an explicit opt-out of all status comments.
-	// Even though no marker exists and the job failed, we must not
-	// synthesize one — that would override the user's choice.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "disabled", "failure", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "disabled", "failure", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "disabled completion mode must never synthesize a comment")
 	assert.Empty(t, fc.UpdatedComments)
@@ -794,11 +786,9 @@ func TestReconcileOrphaned_DisabledMode_NoSynthesisEvenOnFailure(t *testing.T) {
 
 func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobSucceeded(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// No comments — on_failure mode but the job succeeded. The agent completed
-	// normally and PostCompletion suppressed the comment. ReconcileOrphaned
-	// must NOT synthesize a false "Interrupted" comment.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when job succeeded")
 	assert.Empty(t, fc.UpdatedComments)
@@ -806,10 +796,9 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobSucceeded(t *testing.T) {
 
 func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobStatusEmpty(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// No comments — on_failure mode but jobStatus is empty (--job-status flag
-	// was omitted). Should NOT synthesize since the job outcome is unknown.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "", false, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when job status is unknown")
 	assert.Empty(t, fc.UpdatedComments)
@@ -817,13 +806,10 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobStatusEmpty(t *testing.T)
 
 func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// No comments — the run was skipped and the skip-reason comment itself
-	// failed to post (its error is only logged, not propagated to the job's
-	// exit code, so jobStatus is still "success"). wasSkipped must force
-	// synthesis so the failure isn't silently lost. See PR #5736.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", true, "")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -840,13 +826,10 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t 
 
 func TestReconcileOrphaned_OnFailure_SkippedWithRealCancellationKeepsReason(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// wasSkipped is true, but jobStatus is "cancelled" — the job was
-	// actually cancelled (unrelated to the skip-reason comment), so the
-	// passed-in reason should be preserved rather than relabeled as a
-	// comment-post failure.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "on_failure", "cancelled", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "on_failure", "cancelled", true, "")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -857,22 +840,19 @@ func TestReconcileOrphaned_OnFailure_SkippedWithRealCancellationKeepsReason(t *t
 
 func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenSkippedButNotOnFailure(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 
-	// wasSkipped alone shouldn't trigger synthesis outside on_failure mode —
-	// completionMode must also be "on_failure".
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", true, "")
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when completionMode isn't on_failure")
 }
 
 func TestReconcileOrphaned_SynthesizedComment_UsesAgentDescription(t *testing.T) {
 	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	// No comments — synthesized comment heading should reflect the agent
-	// description so operators can tell which agent failed when multiple
-	// agents run against the same issue/PR.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "Triage")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "Triage")
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -884,7 +864,6 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
 
-	// Comment from a different run.
 	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
 		{
 			ID:     42,
@@ -893,7 +872,8 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not touch comment from different run")
@@ -901,9 +881,10 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 
 func TestReconcileOrphaned_ListError(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.Errors["ListIssueComments"] = fmt.Errorf("api error")
+	fc.Errors = map[string]error{"ListIssueComments": fmt.Errorf("api error")}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing comments")
 }
@@ -921,7 +902,8 @@ func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -946,7 +928,8 @@ func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not re-update already-interrupted comment")
@@ -964,18 +947,19 @@ func TestReconcileOrphaned_UpdateError(t *testing.T) {
 		},
 	}
 
-	fc.Errors["UpdateIssueComment"] = fmt.Errorf("api rate limited")
+	fc.Errors = map[string]error{"UpdateIssueComment": fmt.Errorf("api rate limited")}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating orphaned comment")
 }
 
 func TestPostStart_ErrorPropagated(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.Errors["CreateIssueComment"] = fmt.Errorf("api down")
+	fc.Errors = map[string]error{"CreateIssueComment": fmt.Errorf("api down")}
 	cfg := config.StatusNotificationConfig{}
-	n := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.Error(t, err)
@@ -987,11 +971,11 @@ func TestPostCompletion_CancelledWithNoStartComment(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID)
+	assert.Equal(t, "", n.startCommentID)
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "cancelled")
@@ -1008,14 +992,13 @@ func TestPostCompletion_AnalyzeTimelineError_UpdatesStartInPlace(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.Equal(t, "1", n.startCommentID)
 
-	// Inject error into ListIssueComments so analyzeTimeline fails.
-	fc.Errors["ListIssueComments"] = fmt.Errorf("api timeout")
+	fc.Errors = map[string]error{"ListIssueComments": fmt.Errorf("api timeout")}
 
 	var warnings []string
 	n.SetWarnFunc(func(format string, args ...any) {
@@ -1026,11 +1009,9 @@ func TestPostCompletion_AnalyzeTimelineError_UpdatesStartInPlace(t *testing.T) {
 	err = n.PostCompletion(context.Background(), "Working", "success")
 	require.NoError(t, err)
 
-	// Should have warned about timeline analysis failure.
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "failed to analyze timeline")
 
-	// Should fall back to updating the start comment in place to avoid orphaning it.
 	require.Len(t, fc.UpdatedComments, 1, "should update start comment on timeline error")
 	assert.Equal(t, 1, fc.UpdatedComments[0].CommentID)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Working")
@@ -1051,7 +1032,8 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "", false, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1076,7 +1058,8 @@ func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1148,7 +1131,8 @@ func TestReconcileOrphaned_UnknownReasonDefaultsToTerminated(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"), "", "", false, "")
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"), "", "", false, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1165,13 +1149,14 @@ func TestClientFactory_CalledBeforePostStart(t *testing.T) {
 	fc2.AuthenticatedUser = "mint-bot[bot]"
 	cfg := config.StatusNotificationConfig{}
 
-	n := New(fc1, cfg, "org", "repo", 7, "https://ci/run/42", "a1b2c3d", "run-42")
+	tc1 := tracker.NewForgeClient(fc1)
+	n := New(tc1, cfg, "org/repo", 7, "https://ci/run/42", "a1b2c3d", "run-42")
 	n.now = fixedTime
 
 	factoryCalled := false
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		factoryCalled = true
-		return fc2, nil
+		return tracker.NewForgeClient(fc2), nil
 	})
 
 	err := n.PostStart(context.Background(), "Working")
@@ -1188,21 +1173,20 @@ func TestClientFactory_CalledBeforePostCompletion(t *testing.T) {
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
 
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
 
 	fc2 := forge.NewFakeClient()
 	fc2.AuthenticatedUser = "bot[bot]"
-	// Pre-populate fc2 with the same comments so analyzeTimeline works.
 	fc2.IssueComments = map[string][]forge.IssueComment{
 		"org/repo/7": {fc.IssueComments["org/repo/7"][0]},
 	}
 
 	completionFactoryCalled := false
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		completionFactoryCalled = true
-		return fc2, nil
+		return tracker.NewForgeClient(fc2), nil
 	})
 
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
@@ -1214,10 +1198,11 @@ func TestClientFactory_CalledBeforePostCompletion(t *testing.T) {
 func TestClientFactory_ErrorPropagated(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := New(fc, cfg, "org", "repo", 7, "", "", "run-42")
+	tc := tracker.NewForgeClient(fc)
+	n := New(tc, cfg, "org/repo", 7, "", "", "run-42")
 	n.now = fixedTime
 
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		return nil, fmt.Errorf("mint service unavailable")
 	})
 
@@ -1229,7 +1214,7 @@ func TestClientFactory_ErrorPropagated(t *testing.T) {
 func TestClientFactory_NilUsesStaticClient(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -1241,12 +1226,12 @@ func TestClientFactory_ErrorOnPostCompletion(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
 
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		return nil, fmt.Errorf("token expired")
 	})
 
@@ -1261,11 +1246,11 @@ func TestClientFactory_CompletionDisabled_DeletePath(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.Equal(t, 1, n.startCommentID)
+	require.NotEqual(t, "", n.startCommentID)
 
 	fc2 := forge.NewFakeClient()
 	fc2.AuthenticatedUser = "fullsend-bot[bot]"
@@ -1274,9 +1259,9 @@ func TestClientFactory_CompletionDisabled_DeletePath(t *testing.T) {
 	}
 
 	factoryCalled := false
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		factoryCalled = true
-		return fc2, nil
+		return tracker.NewForgeClient(fc2), nil
 	})
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
@@ -1292,10 +1277,10 @@ func TestClientFactory_BothDisabled_NoMint(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	factoryCalled := false
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		factoryCalled = true
 		return nil, fmt.Errorf("should not be called")
 	})
@@ -1308,12 +1293,12 @@ func TestClientFactory_BothDisabled_NoMint(t *testing.T) {
 func TestHasClientFactory(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	assert.False(t, n.HasClientFactory(), "should be false when no factory set")
 
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
-		return fc, nil
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
+		return tracker.NewForgeClient(fc), nil
 	})
 	assert.True(t, n.HasClientFactory(), "should be true after SetClientFactory")
 }
@@ -1323,17 +1308,17 @@ func TestClientFactory_CompletionDisabled_MintError(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.NotZero(t, n.startCommentID)
+	require.NotEqual(t, "", n.startCommentID)
 
 	var warnings []string
 	n.SetWarnFunc(func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		return nil, fmt.Errorf("mint service down")
 	})
 
@@ -1350,17 +1335,16 @@ func TestPostCompletion_OnFailure_SuppressedOnSuccess(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID, "start comment should be auto-suppressed when completion is on_failure")
+	assert.Equal(t, "", n.startCommentID, "start comment should be auto-suppressed when completion is on_failure")
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "success")
 	require.NoError(t, err)
 
-	// No start comment was posted, so nothing to delete or update.
 	assert.Empty(t, fc.IssueComments, "no comments should exist on success")
 	assert.Empty(t, fc.UpdatedComments)
 	assert.Empty(t, fc.DeletedComments)
@@ -1371,17 +1355,16 @@ func TestPostCompletion_OnFailure_PostsOnFailure(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Coding issue #42")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID, "start comment auto-suppressed")
+	assert.Equal(t, "", n.startCommentID, "start comment auto-suppressed")
 
 	n.now = func() time.Time { return fixedTime().Add(10 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Coding issue #42", "failure")
 	require.NoError(t, err)
 
-	// No start comment to update — failure should create a new completion comment.
 	assert.Empty(t, fc.UpdatedComments)
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 1, "should post completion on failure")
@@ -1394,17 +1377,16 @@ func TestPostCompletion_OnFailure_PostsOnCancelled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID, "start comment auto-suppressed")
+	assert.Equal(t, "", n.startCommentID, "start comment auto-suppressed")
 
 	n.now = func() time.Time { return fixedTime().Add(2 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "cancelled")
 	require.NoError(t, err)
 
-	// No start comment to update — cancelled should create a new completion comment.
 	assert.Empty(t, fc.UpdatedComments)
 	comments := fc.IssueComments["org/repo/7"]
 	require.Len(t, comments, 1, "should post completion on cancellation")
@@ -1416,11 +1398,11 @@ func TestPostCompletion_OnFailure_NoStartComment_PostsOnFailure(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID)
+	assert.Equal(t, "", n.startCommentID)
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "failure")
@@ -1436,7 +1418,7 @@ func TestPostCompletion_OnFailure_NoStartComment_SuppressedOnSuccess(t *testing.
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -1455,11 +1437,11 @@ func TestPostCompletion_OnFailure_PostsOnSkipped(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID, "start comment auto-suppressed")
+	assert.Equal(t, "", n.startCommentID, "start comment auto-suppressed")
 
 	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
 	err = n.PostCompletion(context.Background(), "Working", "skipped")
@@ -1473,21 +1455,21 @@ func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
-	require.NotZero(t, n.startCommentID)
+	require.NotEqual(t, "", n.startCommentID)
 
 	fc2 := forge.NewFakeClient()
-	fc2.Errors["DeleteIssueComment"] = fmt.Errorf("forbidden")
+	fc2.Errors = map[string]error{"DeleteIssueComment": fmt.Errorf("forbidden")}
 
 	var warnings []string
 	n.SetWarnFunc(func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
-		return fc2, nil
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
+		return tracker.NewForgeClient(fc2), nil
 	})
 
 	err = n.PostCompletion(context.Background(), "Working", "success")
@@ -1501,7 +1483,7 @@ func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 
@@ -1513,8 +1495,6 @@ func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
-	// A skip with no visible reason is the one thing a reader needs and
-	// the one thing the status line used to omit.
 	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped (PR #123 already addresses this issue)")
 }
 
@@ -1558,7 +1538,7 @@ func TestPostCompletionWithDetail_DetailCannotForgeMarkers(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 
 	err := n.PostCompletionWithDetail(context.Background(), "Working", "skipped",
@@ -1566,24 +1546,21 @@ func TestPostCompletionWithDetail_DetailCannotForgeMarkers(t *testing.T) {
 	require.NoError(t, err)
 
 	body := fc.UpdatedComments[0].Body
-	// The escaped text may still read as "fullsend:agent-status", but it
-	// can no longer open an HTML comment, so only the real marker parses.
 	assert.NotContains(t, body, "<!-- fullsend:agent-status:999")
 	assert.Equal(t, 1, strings.Count(body, "<!-- fullsend:agent-status"))
 	assert.Equal(t, 1, strings.Count(body, terminalTag))
-	// And the detail stays on the status line.
 	assert.Contains(t, body, "⏭️ Skipped (evil &lt;!-- fullsend:agent-status:999 -->)")
 }
 
+// Verify that buildStartBody, buildCompletionBody, and
+// buildInterruptedBody use \n\n (paragraph break) between the status
+// line and the metadata line. A bare \n renders as inline whitespace
+// on GitLab (strict CommonMark), collapsing the two lines into one.
 func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
-	// Verify that buildStartBody, buildCompletionBody, and
-	// buildInterruptedBody use \n\n (paragraph break) between the status
-	// line and the metadata line. A bare \n renders as inline whitespace
-	// on GitLab (strict CommonMark), collapsing the two lines into one.
 	t.Run("start body", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		cfg := config.StatusNotificationConfig{}
-		n := newTestNotifier(fc, cfg)
+		n, fc := newTestNotifier(fc, cfg)
 
 		err := n.PostStart(context.Background(), "Triaging issue")
 		require.NoError(t, err)
@@ -1598,7 +1575,7 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 		cfg := config.StatusNotificationConfig{
 			Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 		}
-		n := newTestNotifier(fc, cfg)
+		n, fc := newTestNotifier(fc, cfg)
 
 		require.NoError(t, n.PostStart(context.Background(), "Triaging issue"))
 		n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
@@ -1623,7 +1600,8 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 			},
 		}
 
-		err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+		tc := tracker.NewForgeClient(fc)
+		err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
 		require.NoError(t, err)
 
 		require.Len(t, fc.UpdatedComments, 1)
@@ -1634,7 +1612,6 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 }
 
 func TestBuildRunInfoFooter_DifferentModels(t *testing.T) {
-	// When requested != reported, show arrow format.
 	info := &RunInfo{
 		Runtime:        "pi",
 		RequestedModel: "haiku",
@@ -1647,7 +1624,6 @@ func TestBuildRunInfoFooter_DifferentModels(t *testing.T) {
 }
 
 func TestBuildRunInfoFooter_SameModel(t *testing.T) {
-	// When requested == reported, show single value.
 	info := &RunInfo{
 		Runtime:        "claude",
 		RequestedModel: "sonnet",
@@ -1660,7 +1636,6 @@ func TestBuildRunInfoFooter_SameModel(t *testing.T) {
 }
 
 func TestBuildRunInfoFooter_UnknownFieldsOmitted(t *testing.T) {
-	// Unknown fields omitted.
 	info := &RunInfo{
 		Runtime:        "pi",
 		RequestedModel: "haiku",
@@ -1683,7 +1658,7 @@ func TestCompletionBody_IncludesRunInfoFooter(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Code")
 	require.NoError(t, err)
@@ -1712,7 +1687,7 @@ func TestCompletionBody_RunInfoFooterWithModelDiff(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Code")
 	require.NoError(t, err)
@@ -1741,7 +1716,7 @@ func TestPostStart_ReactionEnabled(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Reaction: config.ReactionNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -1753,7 +1728,7 @@ func TestPostStart_ReactionEnabled(t *testing.T) {
 func TestPostStart_ReactionDisabledByDefault(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)
@@ -1767,7 +1742,7 @@ func TestPostCompletion_ReactionSuccess(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.Len(t, fc.AddedReactions, 1)
@@ -1786,7 +1761,7 @@ func TestPostCompletion_ReactionFailure(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "failure"))
@@ -1801,7 +1776,7 @@ func TestPostCompletion_ReactionOnFailure_SuppressedOnSuccess(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
@@ -1816,7 +1791,7 @@ func TestPostCompletion_ReactionOnFailure_FiresOnFailure(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "on_failure"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "failure"))
@@ -1831,7 +1806,7 @@ func TestPostCompletion_ReactionDisabled_CleansUpStartReaction(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
@@ -1846,7 +1821,7 @@ func TestPostCompletion_ReactionNoStartReaction(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
 		Reaction: config.ReactionNotificationConfig{Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
@@ -1862,7 +1837,7 @@ func TestPostStart_ReactionErrorIsNonFatal(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Reaction: config.ReactionNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err, "a failed reaction should not fail the run")
@@ -1877,7 +1852,7 @@ func TestPostCompletion_ReactionNotSwappedWhenCommentFails(t *testing.T) {
 		Comment:  config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
+	n, fc := newTestNotifier(fc, cfg)
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.Len(t, fc.AddedReactions, 1)
@@ -1898,8 +1873,8 @@ func TestPostStart_ReactionTargetsTriggeringComment(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Reaction: config.ReactionNotificationConfig{Start: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
-	n.SetTriggerCommentID(555)
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetTriggerCommentID("555")
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 
@@ -1913,8 +1888,8 @@ func TestPostCompletion_ReactionTargetsTriggeringComment(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
-	n := newTestNotifier(fc, cfg)
-	n.SetTriggerCommentID(555)
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetTriggerCommentID("555")
 
 	require.NoError(t, n.PostStart(context.Background(), "Working"))
 	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
@@ -1924,4 +1899,98 @@ func TestPostCompletion_ReactionTargetsTriggeringComment(t *testing.T) {
 	assert.Empty(t, fc.AddedReactions)
 	require.Len(t, fc.AddedCommentReactions, 2)
 	assert.Equal(t, "+1", fc.AddedCommentReactions[1].Content)
+}
+
+// --- Tracker-agnostic destination test ---
+
+func TestNotifier_ReactionsSkippedForNonReactorTracker(t *testing.T) {
+	// Simulate a tracker.Client that does NOT implement tracker.Reactor
+	// (like a Jira client — Jira Cloud supports comment reactions but not
+	// issue reactions, so JiraClient doesn't implement the full Reactor
+	// interface). Reactions should be silently skipped.
+	jiraFake, err := tracker.NewFakeJiraClient("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+
+	n := New(jiraFake, cfg, "PROJ", 123, "https://ci/run/42", "a1b2c3d4e5f6789", "run-42")
+	n.now = fixedTime
+
+	require.NoError(t, n.PostStart(context.Background(), "Code"))
+	require.NotEqual(t, "", n.startCommentID, "comment should still be posted")
+	assert.Equal(t, int64(0), n.startReactionID, "no reaction on non-Reactor tracker")
+
+	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
+	require.NoError(t, n.PostCompletion(context.Background(), "Code", "success"))
+
+	comments, err := jiraFake.ListComments(context.Background(), "PROJ", 123)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.NotContains(t, string(comments[0].Body), "fullsend:agent-status")
+	assert.NotContains(t, string(comments[0].Body), "fullsend:status:terminal")
+}
+
+func TestJiraMarkerMatchesAcrossCreationAndReconciliation(t *testing.T) {
+	// Verify that a status comment created by a Jira-backed notifier
+	// can be found and finalized by ReconcileOrphaned using the same
+	// runID. Jira stores the marker and terminal state in comment properties,
+	// keeping both implementation details out of the visible body.
+	jiraFake, err := tracker.NewFakeJiraClient("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+
+	const runID = "gh-run-98765"
+	n := New(jiraFake, cfg, "PROJ", 42, "https://ci/run/98765", "", runID)
+	n.now = fixedTime
+
+	ctx := context.Background()
+	require.NoError(t, n.PostStart(ctx, "Triaging issue"))
+	require.NotEqual(t, "", n.startCommentID, "start comment should have been posted")
+
+	// Simulate the process being hard-killed before PostCompletion.
+	// ReconcileOrphaned should find and update the orphaned comment.
+	reconcileTime := fixedTime().Add(10 * time.Minute)
+	setNow(t, reconcileTime)
+
+	err = ReconcileOrphaned(ctx, jiraFake, "PROJ", 42, runID, "https://ci/run/98765", "", ReasonTerminated, "", "", false, "Triage")
+	require.NoError(t, err)
+
+	// The comment should have been updated to a terminated state.
+	comments, listErr := jiraFake.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, listErr)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "Terminated", "orphaned comment should be finalized")
+	assert.NotContains(t, string(comments[0].Body), "fullsend:agent-status")
+	assert.NotContains(t, string(comments[0].Body), "fullsend:status:terminal")
+
+	statusComment, terminal, findErr := jiraFake.FindStatusComment(ctx, "PROJ", 42, mustBuildMarker(runID))
+	require.NoError(t, findErr)
+	require.NotNil(t, statusComment)
+	assert.True(t, terminal)
+}
+
+func TestJiraCompletionDisabled_CleansUpStartComment(t *testing.T) {
+	jiraFake, err := tracker.NewFakeJiraClient("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
+	}
+	n := New(jiraFake, cfg, "PROJ", 42, "https://ci/run/42", "", "run-42")
+	n.now = fixedTime
+
+	ctx := context.Background()
+	require.NoError(t, n.PostStart(ctx, "Working"))
+	require.NotEmpty(t, n.startCommentID)
+
+	require.NoError(t, n.PostCompletion(ctx, "Working", "success"))
+	comments, err := jiraFake.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	assert.Empty(t, comments, "suppressed Jira completion should delete the start comment")
 }

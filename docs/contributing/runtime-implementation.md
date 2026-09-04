@@ -17,6 +17,7 @@ On this page:
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
 - [pi runtime internals (#6464)](#pi-runtime-internals-6464) — verification provenance for the pi backend
+- [codex runtime internals (#6920)](#codex-runtime-internals-6920) — verification provenance for the codex backend
 
 ## Adding a runtime: checklist
 
@@ -33,6 +34,65 @@ On this page:
 5. If the runtime's binary ships in the sandbox image, pin it the way the
    existing ones are pinned and prove the pin at build time
    ([Pinned runtime binaries](#pinned-runtime-binaries-in-the-sandbox-image)).
+6. Name the process that opens the model connection in `runtimeEgressBinaries`
+   (`internal/cli/runtime_binaries_test.go`) and make sure the inference
+   profiles' `binaries:` globs match it — a runtime exec'd directly (no node
+   wrapper) is not covered by `**/node`
+   ([Egress binary identity](#egress-binary-identity-per-runtime)).
+
+### Consumer-completeness touchpoints
+
+After the core implementation above, walk through every file below. Each
+one contains a hardcoded list of valid runtimes or runtime-specific
+content that must be updated whenever a runtime is added or renamed.
+
+**Registration and config:**
+
+- [ ] `internal/runtime/registry.go` — add a `case` to `Resolve()` that
+  returns the new backend (mirrors step 1 above — listed here so the
+  walkthrough is self-contained).
+- [ ] `internal/config/config.go` — add the runtime name to the slice
+  returned by `ValidRuntimes()`.
+
+**Tests:**
+
+- [ ] `internal/runtime/registry_test.go` — add a `Resolve("<name>")`
+  assertion block to `TestResolve` (and to `TestResolveFromConfig` /
+  `TestResolveFromPerRepoConfig` if the runtime is user-selectable).
+- [ ] `internal/config/config_test.go` — update any assertion on
+  `ValidRuntimes()` to include the new name.
+
+**CLI:**
+
+- [ ] `internal/cli/runtime_prompt.go` — if the runtime is test-only
+  (e.g. `dummy`, `dummy-playback`), filter it from
+  `userRuntimeChoices()` so it does not appear in the interactive
+  prompt.
+- [ ] `internal/cli/run.go` — update the `--runtime` flag description
+  to list the new runtime name.
+- [ ] `internal/cli/admin.go` — update the `--runtime` flag description
+  in `newInstallCmd()` to include the new runtime name.
+- [ ] `internal/cli/github.go` — update the `--runtime` flag description
+  in `newGitHubSetupCmd()` to include the new runtime name.
+
+**Documentation:**
+
+- [ ] `docs/runtimes.md` — add a row to the
+  [harness config-keys table](../runtimes.md#harness-config-keys-per-runtime)
+  (item 4 above) and add the runtime to any prose lists of valid values.
+- [ ] `docs/architecture.md` — update the runtime selection diagram
+  (the Mermaid `CFG` node lists valid runtime names) and any prose
+  references.
+- [ ] `docs/cli/run.md` — update any `--runtime` flag description or
+  valid-values list if the page documents runtime flags.
+- [ ] `docs/cli/github.md` — same as `run.md` if this page documents
+  runtime flags.
+- [ ] `docs/guides/infrastructure/layered-config-reference.md` — update
+  the `runtime` field's valid values in the config-key table.
+
+Use this list as a mechanical walkthrough — check every box, even if the
+answer is "no change needed", so omissions are deliberate rather than
+accidental.
 
 ## Security feature matrix
 
@@ -54,7 +114,7 @@ flowchart TB
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
     direction TB
-    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/node (pi runs via node)"]
+    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/claude.exe · **/node (pi runs via node) · **/pi (fleet-profile parity) · **/codex"]
     subgraph PROC["Runtime process — steering, defense in depth"]
       direction LR
       PRE["PreToolUse\nTirith · SSRF\ncanary · allowlist"]
@@ -83,11 +143,11 @@ flowchart TB
 
 ### Host-side controls (runner responsibility, runtime-agnostic)
 
-| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Notes for future runtimes |
-|---------|---------------|-------------|-----------------|----|---------------------------|
-| **Host-side context injection scan** (unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | ✓ | Harness `security.host_scanners`; heuristic scanners only — the DeBERTa ML model was removed from the sandbox in #6522 (its only consumer is the host-side `scan input`, not `scan context`) |
-| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | ✓ | Uses `security.InputPipeline()`; not part of the `Runtime` interface |
-| **Prompt injection (DeBERTa)** | Host `fullsend scan input` only | ✓ in the runner image (built `CGO_ENABLED=1 -tags ORT` with `libtokenizers.a` + ONNX Runtime >= 1.28); ✗ in the release tarballs, which stay `CGO_ENABLED=0` and untagged (#6522) | N/A — stub | Same as Claude Code — host-side, not a runtime distinction | Shipped enabled only in `ghcr.io/fullsend-ai/fullsend-runner`; the release tarball the composite action downloads has it compiled out, so CI runs never reach it. **Not an active control on the `fullsend run` path either way**: `RunMLScan` is called only from `fullsend scan input`, which nothing in this repo or `fullsend-ai/agents` invokes. See #6506 (decision), #6522 (build constraints) |
+| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Codex | Notes for future runtimes |
+|---------|---------------|-------------|-----------------|----|-------|---------------------------|
+| **Host-side context injection scan** (unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Harness `security.host_scanners`; heuristic scanners only — the DeBERTa ML model was removed from the sandbox in #6522 (its only consumer is the host-side `scan input`, not `scan context`) |
+| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Uses `security.InputPipeline()`; not part of the `Runtime` interface |
+| **Prompt injection (DeBERTa)** | Host `fullsend scan input` only | ✓ in the runner image (built `CGO_ENABLED=1 -tags ORT` with `libtokenizers.a` + ONNX Runtime >= 1.28); ✗ in the release tarballs, which stay `CGO_ENABLED=0` and untagged (#6522) | N/A — stub | Same as Claude Code — host-side, not a runtime distinction | Same as Claude Code — host-side, not a runtime distinction | Shipped enabled only in `ghcr.io/fullsend-ai/fullsend-runner`; the release tarball the composite action downloads has it compiled out, so CI runs never reach it. **Not an active control on the `fullsend run` path either way**: `RunMLScan` is called only from `fullsend scan input`, which nothing in this repo or `fullsend-ai/agents` invokes. See #6506 (decision), #6522 (build constraints) |
 
 ### Sandbox tool hooks (per runtime)
 
@@ -95,23 +155,24 @@ How the shared PostToolUse chain reaches each runtime — the three sanitizer ro
 
 - **Claude Code:** `posttool_chain.py` runs on successful tool calls (#6357). On failed calls the same driver runs on `PostToolUseFailure`, where it detects, logs to `findings.jsonl` and warns the agent via `additionalContext` — Claude Code does not let a hook rewrite a failed call's output.
 - **Pi:** `fullsend-hooks.js` `tool_result` → the same `posttool_chain.py` (sent `tool_response` + `tool_result`; `updatedToolOutput` applied to the result the model sees). pi's `tool_result` fires for failed calls too, so those are sanitized as well.
+- **Codex:** `fullsend-codex-hook.py` (a `PostToolUse` handler in `hooks.json`) → the same `posttool_chain.py`. codex's `PostToolUse` fires for a command that exited non-zero as well, so failed calls are covered without a second phase — but **the rewrite cannot be applied**: codex accepts only `additionalContext` and `updatedMCPToolOutput` there, so the chain's `updatedToolOutput` is dropped and the model is warned that the output would have been redacted. A canary block still withholds the output entirely, because a codex `PostToolUse` block replaces the tool result with the reason.
 
-| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Notes for future runtimes |
-|---------|---------------|-------------|-----------------|----|---------------------------|
-| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | N/A — stub | ✓ via `fullsend-hooks.js` (pi `tool_call` → `HookPlan` PreToolUse scripts) | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
-| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (`hooks-loaded.feature` runs under the dummy runtime, which installs no hooks — it guards the sandbox egress boundary; the hook itself is unit-tested) | N/A — stub | ✓ via `fullsend-hooks.js` | `ssrf_pretool.py`; default on; when DNS resolution fails for a host on the `FULLSEND_EGRESS_ALLOWLIST`, the hook defers to the L7 egress proxy instead of failing closed — all other SSRF checks (scheme, hostname blocklist, IP blocklist, DNS rebinding) still apply. On GitLab CI, the forge host is also covered by the auto-generated `fullsend-gitlab-forge` provider profile (#6615), which opens the L7 proxy for the forge API |
-| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool via `posttool_chain.py` on successful calls (`tool_response` / `updatedToolOutput`, #6357); failed calls: the same driver on `PostToolUseFailure` (detect + halt; the error text cannot be rewritten) | N/A — stub | ✓ pre via `tool_call`; post via `tool_result` (sequential chain, block withholds the result) | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set. Post-tool canary is an in-process chain stage so it cannot race sanitizer rewrites. Claude Code `decision:block` does not hide PostToolUse output, so the chain also redacts the token in `updatedToolOutput` |
-| **Secret redaction** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | `secret_redact_posttool.py` |
-| **Unicode normalization** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | `unicode_posttool.py` |
-| **Context suppression** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | `context_suppress_posttool.py` |
-| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
+| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Codex | Notes for future runtimes |
+|---------|---------------|-------------|-----------------|----|-------|---------------------------|
+| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | N/A — stub | ✓ via `fullsend-hooks.js` (pi `tool_call` → `HookPlan` PreToolUse scripts) | ✓ via `fullsend-codex-hook.py` (a `PreToolUse` handler per `HookPlan` group in `$CODEX_HOME/hooks.json`; the script's `exit 1` + `decision:block` is translated to **exit 2 + reason on stderr**, the only reliable block on codex) | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
+| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (`hooks-loaded.feature` runs under the dummy runtime, which installs no hooks — it guards the sandbox egress boundary; the hook itself is unit-tested) | N/A — stub | ✓ via `fullsend-hooks.js` | ✓ via `fullsend-codex-hook.py`; the group's `WebFetch` tool is dropped from the matcher because codex has no such tool — it fetches through the shell, which the `Bash` matcher already covers | `ssrf_pretool.py`; default on; when DNS resolution fails for a host on the `FULLSEND_EGRESS_ALLOWLIST`, the hook defers to the L7 egress proxy instead of failing closed — all other SSRF checks (scheme, hostname blocklist, IP blocklist, DNS rebinding) still apply. On GitLab CI, the forge host is also covered by the auto-generated `fullsend-gitlab-forge` provider profile (#6615), which opens the L7 proxy for the forge API |
+| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool via `posttool_chain.py` on successful calls (`tool_response` / `updatedToolOutput`, #6357); failed calls: the same driver on `PostToolUseFailure` (detect + halt; the error text cannot be rewritten) | N/A — stub | ✓ pre via `tool_call`; post via `tool_result` (sequential chain, block withholds the result) | ✓ pre and post via `fullsend-codex-hook.py`. A post-tool hit **blocks**, which on codex replaces the tool result with the reason, so the flagged output never reaches the model — stronger than Claude Code. In the **artifacts** the canary is only pattern-redacted if it happens to look like a credential, not withheld: artifact filtering is redaction, not the chain. It does **not halt the session**: `continue:false` is unsupported on PreToolUse and inert on PostToolUse, so codex has no hook-driven stop ([ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)) | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set — on codex that value is read at bootstrap and re-exported after `.env`, so an agent cannot clear it for a later iteration. Post-tool canary is an in-process chain stage so it cannot race sanitizer rewrites. Claude Code `decision:block` does not hide PostToolUse output, so the chain also redacts the token in `updatedToolOutput` |
+| **Secret redaction** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | Model context: detect + warn only — codex cannot rewrite a built-in tool's output, so the redaction is dropped and the model gets an `additionalContext` warning instead. Artifacts: `output.jsonl` and the extracted rollout are filtered through the same Go `security.SecretRedactor` the progress parsers use, because codex's artifacts keep raw tool output where Claude Code's stream carries the post-hook result | `secret_redact_posttool.py` |
+| **Unicode normalization** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | Detect + log only — same reason as secret redaction (shared chain, above) | `unicode_posttool.py` |
+| **Context suppression** | Sandbox PostToolUse hook | ✓ shared chain (above) | N/A — stub | ✓ shared chain (above) | ✗ — it exists only to rewrite output, which codex does not allow for built-in tools; the stage still runs and its findings are logged, but nothing is condensed | `context_suppress_posttool.py` |
+| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | N/A — stub | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | opt-in; ✓ when enabled, via `fullsend-codex-hook.py` (names translated to Claude vocabulary first, #608). Unlike pi there is **no native allowlist**: codex has no `--tools`, so an agent's `tools:` frontmatter is documentation unless the harness enables this hook, and the `Bash(a,b)` first-token allowlist is recorded in the manifest but **not wired**. Note `apply_patch` arrives as `Edit`, so an agent allowlisted only for `Write` is blocked | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
 
 ### Bootstrap and artifacts (per runtime)
 
-| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Notes for future runtimes |
-|---------|---------------|-------------|-----------------|----|---------------------------|
-| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | ✓ see [pi: hook adapter contract](#hook-adapter-contract) — scripts under `/sandbox/pi-config/hooks/`, `HookPlan` in `fullsend-manifest.json`, embedded `fullsend-hooks.js` loaded with `-e` under `--no-extensions`; fail-closed on a missing/altered adapter (exit 97) or a manifest without a hook plan (exit -1) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
-| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | ✓ session JSONL under `PI_CODING_AGENT_SESSION_DIR` (`ExtractTranscripts`), `pi-debug.log` (`DebugLogNamer`; pi's stderr when `--debug` is set), `ParseTranscriptFile` judges the tee'd `--mode json` stream and session files | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
+| Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Codex | Notes for future runtimes |
+|---------|---------------|-------------|-----------------|----|-------|---------------------------|
+| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358) | ✗ — `Bootstrap` is a stub; must wire `security.HookPlan` via OpenCode plugin hooks | ✓ see [pi: hook adapter contract](#hook-adapter-contract) — scripts under `/sandbox/pi-config/hooks/`, `HookPlan` in `fullsend-manifest.json`, embedded `fullsend-hooks.js` loaded with `-e` under `--no-extensions`; fail-closed on a missing/altered adapter (exit 97) or a manifest without a hook plan (exit -1) | ✓ see [codex: hook adapter contract](#codex-hook-adapter-contract) — scripts under `/sandbox/codex-config/hooks/`, wiring in `$CODEX_HOME/hooks.json` rendered from `HookPlan`, embedded `fullsend-codex-hook.py` loaded with `--dangerously-bypass-hook-trust`; fail-closed on a missing or altered adapter, auth script or wiring (exit 97), on a tampered `config.toml` (exit 98) and on a manifest without a hook plan (exit -1) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
+| **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | No-op — see #1935 | ✓ session JSONL under `PI_CODING_AGENT_SESSION_DIR` (`ExtractTranscripts`), `pi-debug.log` (`DebugLogNamer`; pi's stderr when `--debug` is set), `ParseTranscriptFile` judges the tee'd `--mode json` stream and session files | ✓ rollout session JSONL under `$CODEX_HOME/sessions/` (`ExtractTranscripts`; plain `.jsonl` only, each validated as a rollout envelope and redacted before it is kept), `codex-debug.log` (`DebugLogNamer`; codex has no debug flag, so Run exports `RUST_LOG` and captures stderr — redacted too), `ParseTranscriptFile` judges the tee'd `exec --json` stream | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
 
 ### Fail modes
 
@@ -127,6 +188,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | `runtime.TranscriptHandler` | Extract transcripts/debug logs; parse errors for CI annotations |
 | `runtime.DebugLogNamer` | Optional — names the per-iteration debug-log artifact (default `agent-debug.log`) |
 | `runtime.ContextBridger` | Optional — runtime auto-loads only `CLAUDE.md`, so the runner injects a `CLAUDE.md`→`AGENTS.md` pointer (Claude Code: yes; runtimes that read `AGENTS.md` natively: omit) |
+| `runtime.OpenAICredentialSeeder` | Optional — for a runtime that reaches OpenAI through the run-scoped provider (ADR 0092): names the in-sandbox credential file the agent re-reads per request and the `sh` fragment that writes the current placeholder into it, so a mid-run credential refresh reaches the running process. Omit when the runtime has no OpenAI path; a stub returning `""` means "no re-seed" and the provider is still created and refreshed |
 
 **Per-iteration cleanup contract.** When a validation retry reuses the sandbox, the runner calls `ClearIterationArtifacts` before the next iteration. Every runtime runs the shared `clearStrayProcesses` sweep first (it terminates the processes the previous iteration left running as the sandbox user, sparing the exec channel and the `sandbox.KeepAliveCommand` main process), then deletes the iteration's output, sessions and debug log. A failed sweep is reported as a warning and never fails the iteration. The runner holds its sandbox lock (`withSandboxLock` in `internal/cli/run.go`) across the call so the credential refreshers' uploads are never killed mid-write.
 
@@ -260,12 +322,31 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 | pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464) |
 | `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/anthropic-vertex` | its `sync/compat.json` against the pinned pi; the `@anthropic-ai/sdk` override vs pi's `packages/ai/package.json` |
 | `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals) |
+| Codex | `ARG CODEX_VERSION` (npm, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`). The OpenShell base image already installs `@openai/codex` under the same npm prefix (`/usr`, binary `/usr/bin/codex`) — 0.117.0 on the base pinned today — so the pinned install replaces it in place. `/usr/local/bin/codex` is then symlinked at the npm install and the build fails unless `codex --version` reports `codex-cli <pin>`: nothing shadows the pin there today, and the symlink plus assertion make sure nothing can start to, the way the base image's Claude Code did in #6612. `TestSandboxImageCodexPinWins` guards the step | the codex stream parser fixtures (#6920); the JSONL event and hook wire shapes the codex runtime depends on |
 
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
 
+The image also creates each runtime's config directory when the binary refuses to start without one: `CODEX_HOME` (`sandbox.SandboxCodexConfig`) is created owned by the sandbox user and baked as an `ENV` default, so an ad-hoc `codex` invocation from Bash behaves like the runtime's own `EnvExports()`. `TestSandboxImageCodexDefaults` keeps the path in the image and the Go constant in step (the pi equivalent is `TestSandboxImagePiDefaults`).
+
+## Egress binary identity per runtime
+
+The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in fullsend-ai/agents; `profiles/fullsend-openai.yaml`, which has no fleet copy — the runner imports the embedded scaffold) carry a `binaries:` list. OpenShell's OPA (`sandbox-policy.rego`, `binary_allowed`) matches each glob against the kernel-resolved `/proc/<pid>/exe` of the process that opens the connection **or of any of its ancestors**. That gives two kinds of runtime:
+
+- **Wrapped by node** (pi, codex): `**/node` admits them through the ancestor, so a pin bump cannot take them off the allowlist unless the wrapper disappears.
+- **Exec'd directly** (Claude Code): `claude` on PATH is a symlink to the npm package's `bin/claude.exe`, so the connecting process has no wrapper ancestor and only a glob on the real file name admits it. A renamed native binary breaks every run of that runtime on its first model call with `API Error: Error code policy_denied`, 0 tokens, and the only explanation is the gateway's `NET:OPEN … DENIED … binary '…' not allowed in policy '_provider_<name>'` line (#6971).
+
+`TestScaffoldProfilesAllowRuntimeBinaries` (`internal/cli/runtime_binaries_test.go`) fails for any selectable runtime without a mapping and pins the ones below.
+
+| Runtime | Process that opens the connection | Profile glob(s) | Evidence |
+|---------|-----------------------------------|-----------------|----------|
+| Claude Code | `bin/claude.exe` in the npm package — 2.1.2xx's `install.cjs` places the native binary there ("Always write to bin/claude.exe"); the Containerfile installs it *with* scripts so that runs | `**/claude`, `**/claude.exe` | gateway deny log in #6971; `npm view @anthropic-ai/claude-code@<pin> bin` |
+| pi | `node` (`bin = dist/bundle/cli.js`; no native network path in the package) | `**/node` | `images/sandbox/Containerfile`, `npm view @earendil-works/pi-coding-agent@<pin> bin` |
+| Codex | `vendor/<triple>/bin/codex`, spawned by the npm launcher `bin/codex.js` under node; codex also spawns `codex-code-mode-host` (default-enabled in 0.152.1), covered by ancestor matching, not by name | `**/node` (ancestor), `**/codex` (the process) | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
+| OpenCode (stub) | exec'd directly, like Claude Code: `opencode-ai` ships a stub `bin/opencode.exe` that `postinstall.mjs` replaces with `opencode-linux-x64/bin/opencode`; with `--ignore-scripts` the stub stays | to be decided against the Containerfile install (`**/opencode.exe` or `**/opencode`); the test fails the moment `opencode` joins `config.ValidRuntimes` until a mapping exists | `npm view opencode-ai bin optionalDependencies`, `postinstall.mjs` |
+
 ## Sandbox workspace layout
 
-The sandbox has two key directories that map to Claude Code's config levels (plus a runner-owned config directory per additional runtime, e.g. `pi-config/` for pi):
+The sandbox has two key directories that map to Claude Code's config levels (plus a runner-owned config directory per additional runtime, e.g. `pi-config/` for pi and `codex-config/` for codex):
 
 ```
 /sandbox/
@@ -277,6 +358,10 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 │   ├── fullsend-hooks.js               Hook adapter extension (loaded with -e; --no-extensions otherwise)
 │   ├── fullsend-manifest.json          Agent tools/allowlist, HookPlan, pi version — read by Run and the extension
 │   └── sessions/                       PI_CODING_AGENT_SESSION_DIR (session JSONL → transcripts)
+│
+├── codex-config/                    ← CODEX_HOME (codex runtime)
+│                                       Created by the sandbox image (codex will not start without it);
+│                                       populated by CodexRuntime.Bootstrap (#6920, follow-up PR)
 │
 ├── claude-config/                   ← CLAUDE_CONFIG_DIR (personal level)
 │   ├── agents/
@@ -534,7 +619,7 @@ pi's built-in `xai` provider targets xAI's native API (`api.x.ai`, needs `XAI_AP
 - **Auth** is ambient ADC through `google-auth-library` reading `GOOGLE_APPLICATION_CREDENTIALS`, the same WIF `external_account` path as Claude-on-Vertex and under the same `*.googleapis.com` egress allowlist, so no new credential plumbing.
 - **Endpoint** is fixed to the **global** location (`/locations/global/endpoints/openapi`) because Vertex serves this model only there — regional endpoints answer `FAILED_PRECONDITION` — so `CLOUD_ML_REGION`/`GOOGLE_CLOUD_LOCATION` are deliberately ignored for this provider.
 - **`Run`** passes it with `-e` (`runtime.piXaiVertexExtensionPath`), unsets `XAI_API_KEY` after sourcing `.env` so pi's built-in `xai` provider cannot shadow it, and defaults `XAI_VERTEX_PROJECT_ID` to `ANTHROPIC_VERTEX_PROJECT_ID` (then `GOOGLE_CLOUD_PROJECT`) **only when the runner has not set it**, so the fleet's Vertex project is the default without becoming a ceiling. Each Vertex provider resolves its own project variable, so one pi process can serve Grok, Claude and Gemini from different GCP projects; overriding an explicit value would collapse that and leave no way to point Grok at a project where it is actually enabled in Model Garden (the call then fails 403 `PERMISSION_DENIED`, and the extension does not warn because it did have a project — just the wrong one).
-- **Model spec.** pi sends `Model.id` on the wire verbatim and Vertex wants the publisher-qualified name, so the id keeps its slash and the canonical spec is the three-segment `xai-vertex/xai/grok-4.6`. `translatePiModel` normalises the short `xai/...` form and a bare id under `FULLSEND_PI_PROVIDER=xai-vertex` to that form, case-insensitively — matching the gate, which uses `EqualFold` — because a spec that escapes normalisation reaches pi's built-in `xai` provider with `XAI_API_KEY` still set. A harness (or an `agents:` entry's `model:`) can name the three-segment spec directly, or select this provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
+- **Model spec.** pi sends `Model.id` on the wire verbatim and Vertex wants the publisher-qualified name, so the id keeps its slash and the canonical spec is the three-segment `xai-vertex/xai/grok-4.6`. `translatePiModel` normalises the short `xai/...` form and a bare id under `FULLSEND_PI_PROVIDER=xai-vertex` to that form, case-insensitively — matching the gate, which compares the prefix `piModelProvider` folded to lower case — because a spec that escapes normalisation reaches pi's built-in `xai` provider with `XAI_API_KEY` still set. A harness (or an `agents:` entry's `model:`) can name the three-segment spec directly, or select this provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
 
 ### Binary present but unhooked
 
@@ -551,8 +636,362 @@ The pinned `pi` CLI and the vendored Vertex extensions ship in every sandbox ima
 
 ### OpenAI via Workload Identity Federation
 
-GPT models run on pi's built-in `openai` provider with no OpenAI credential in the sandbox ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)): `fullsend run` exchanges the job's GitHub OIDC token for a ≤1 h access token (`internal/inference/openaiwif`, or `OPENAI_API_KEY` from the runner environment for local runs), imports the `fullsend-openai` profile from the scaffold embedded in the binary (profiles are deliberately not layered into `.fullsend/profiles`, whose wholesale import would replace the fleet's canonical profiles), creates a run-scoped OpenShell provider `openai-<sandbox suffix>` of that type carrying it, and deletes that provider when the run ends; the `fullsend-openai` profile allows only `POST /v1/responses` on `api.openai.com` for `**/node`. A per-provider refresher re-exchanges a fresh assertion shortly before `expires_in` and hot-updates the provider (a static key only has its expiry pushed out), and is stopped before the deferred cleanup deletes — or, when a kept sandbox still references it, expires in place — the provider.
+GPT models run on pi's built-in `openai` provider with no OpenAI credential in the sandbox ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)): `fullsend run` exchanges the job's GitHub OIDC token for a ≤1 h access token (`internal/inference/openaiwif`, or `OPENAI_API_KEY` from the runner environment for local runs), imports the `fullsend-openai` profile from the scaffold embedded in the binary (profiles are deliberately not layered into `.fullsend/profiles`, whose wholesale import would replace the fleet's canonical profiles), creates a run-scoped OpenShell provider `openai-<sandbox suffix>` of that type carrying it, and deletes that provider when the run ends; the `fullsend-openai` profile allows only `POST /v1/responses` on `api.openai.com`, and only for `**/node` (pi) and `**/codex` (the codex runtime's native binary, #6920). The provider is created only for a run whose selected runtime will actually call OpenAI (`runtime.NeedsOpenAIProvider`); a harness may declare it for every runtime, and a run that does not need it says so and skips it. A per-provider refresher re-exchanges a fresh assertion shortly before `expires_in` and hot-updates the provider (a static key only has its expiry pushed out), and is stopped before the deferred cleanup deletes — or, when a kept sandbox still references it, expires in place — the provider.
 
 ### Other clouds
 
 pi ships native `amazon-bedrock` (SDK default credential chain, incl. `AWS_WEB_IDENTITY_TOKEN_FILE`) and `azure-openai-responses` (`api-key` only, no Entra ID) providers; neither is wired into `Run`'s alias table, credential hygiene or the runner's OIDC refresh yet, and no egress profile allows their hosts. Follow-up tracked against #6464.
+
+## codex runtime internals (#6920)
+
+User-facing codex behaviour gets its own page with the runtime (`docs/runtimes/codex.md`, PR E),
+alongside [Claude Code](../runtimes/claude.md) and [Pi](../runtimes/pi.md). This section keeps the
+verification provenance: what was checked against codex's source, on which version, and what must be
+re-checked on a `CODEX_VERSION` bump. The decisions are
+[ADR 0099](../ADRs/0099-codex-agent-runtime.md) (credential delivery) and [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)
+(sandbox hooks).
+
+Everything below was read at tag `rust-v0.152.1`. Two of the findings are the reason the hook
+adapter exists at all, because forwarding the scripts' own convention would fail **open**.
+
+One iteration, end to end:
+
+```mermaid
+flowchart TB
+  B["Bootstrap (once per run)\nagent .md → config.toml developer_instructions\nhooks.json + adapter + auth script\ncodex --version preflight"]
+  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nno openai_base_url / env_key / [projects]?"}
+  X["exit 97 / 98\ncodex never starts unhooked\nor pointed at another endpoint"]
+  T["seed $CODEX_HOME/openai-token\nplaceholder shape or exit 1"]
+  E["source .env\nre-pin CODEX_HOME\nunset OPENAI_* CODEX_API_KEY NODE_*\nre-run both guards"]
+  P["codex exec --json --skip-git-repo-check\n--dangerously-bypass-approvals-and-sandbox\n[--dangerously-bypass-hook-trust]\n-c model_provider/approval_policy/sandbox_mode\nprompt on stdin"]
+  S["parseCodexStream\nexactly one ResultEvent\nno terminal event ⇒ incomplete ⇒ run fails"]
+  A["artifacts\noutput.jsonl · transcripts/ (rollouts)\nmetrics.json (runtime: codex)"]
+  B --> G
+  G -- no --> X
+  G -- yes --> T --> E --> P --> S --> A
+  classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
+  classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  class G guard;
+  class X bad;
+  class B,T,P,S opt;
+```
+
+### Posture
+
+- **No permission system in use** — `codex exec` runs with `approval_policy = "never"` and
+  `sandbox_mode = "danger-full-access"`, both also passed as `-c` overrides. The OpenShell sandbox,
+  its L7 egress policy and the credential placeholders are the boundary ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
+  [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)); the hook adapter is defense in depth
+  ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)).
+- **The project is never trusted.** No `[projects]` entry is written, so the target repo's own
+  `.codex/` layer — settings, instructions and repo-authored hooks — is never loaded. This is
+  codex's equivalent of pi's `defaultProjectTrust: "never"`.
+- **Config layering.** The sandbox image bakes a root-owned managed `/etc/codex/config.toml`; the
+  runner's `$CODEX_HOME/config.toml` layers above it, and the `-c` SessionFlags above that. Only
+  the `-c` layer is beyond an agent's reach between iterations, which is why the security-relevant
+  keys are passed there as well as written to the file.
+- **Reads AGENTS.md natively** (cwd chain plus `$CODEX_HOME/AGENTS.md`) — so `CodexRuntime` does not
+  implement `ContextBridger` and the runner injects no `CLAUDE.md` pointer.
+- **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
+  and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
+  `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the
+  `Bash` groups already cover it.
+- **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
+  repo's `.agents/skills`; whether the untrusted-project setting suppresses that is an open item for
+  the first fleet run.
+
+### Process and exit codes
+
+- `Run` executes `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
+  [--dangerously-bypass-hook-trust] -C <repo> --model <id> -c model_provider=fullsend-openai
+  -c approval_policy=never -c sandbox_mode=danger-full-access [-c model_reasoning_effort=<effort>]
+  -o <workspace>/output/last-message.txt -` with the prompt piped to stdin.
+- **The prompt is never on argv.** On a retry iteration it carries the previous failure's text
+  (#1050/#6494), and argv is world-readable in the sandbox. `-` is codex's explicit
+  read-from-stdin sentinel; the pipe closes when `printf` finishes, so there is none of the
+  open-stdin hang pi needs `</dev/null` for.
+- **`codex exec` has no `--debug` flag.** Its tracing goes to stderr at **error level by default** —
+  unlike pi, a codex run is not silent there: the denied `GET /v1/models` and every hook block are
+  logged — and `RUST_LOG` raises the level. Debug mode exports `RUST_LOG` and appends stderr to
+  `codex-debug.log`; without it those error lines reach the runner console, since `Run` hands
+  `os.Stderr` to the exec stream.
+- **Model**: `openai/<id>` or a bare `<id>`, resolved through `EffectiveModel` — the same chain
+  `NeedsOpenAIProvider` decides from, so the launch and the run-scoped provider decision cannot
+  disagree about which model a run calls. The fallback is the **runner-held** copy of the agent
+  definition's `model:`, not the manifest's: the manifest is agent-writable and carries no digest,
+  so reading it there would let an agent move a validation retry onto a different model, and a
+  different cost tier, than the run was authorised for. The **Claude model aliases (`opus`, `sonnet`, `haiku`,
+  `fable`) deliberately do not apply to codex**, and codex does not consult the per-repo
+  `models.aliases` overrides either, so a Claude alias can never resolve to a GPT model behind the
+  operator's back. A Claude alias, any non-`openai/` prefix, or no model at all is an error naming
+  both fixes (`FULLSEND_CODEX_MODEL=openai/<id>` for the repo, or `model: openai/<id>` on the
+  agent's `agents:` entry or the harness) rather than a 404 mid-run.
+- **Effort** maps 1:1 — every value `config.ValidEffortLevels()` accepts (`low`, `medium`, `high`,
+  `xhigh`, `max`) is also a codex `ReasoningEffort`. An unset effort omits the override so the
+  model's own default applies. `FallbackModels` is warned about and ignored; codex has no chain.
+- **Exit code**: `codex exec` exits 0 on a failed turn *and* on an interrupted one, so the stream's
+  verdict overrides it, exactly as for pi. Distinct guard exits: **97** (a runner-owned file is
+  missing or no longer matches its embedded copy) and **98** (`config.toml` no longer pins the
+  provider endpoint or its auth command, or trusts the project).
+- **Cost is never reported** — the stream carries no cost field, so `total_cost_usd` stays 0. The
+  model id in `metrics.json` comes from the run parameters, not the wire.
+
+### Credential path
+
+Codex's built-in `openai` provider reads `OPENAI_API_KEY` once at startup, and built-in provider ids
+cannot be overridden, so it cannot follow the mid-run refresh a short-lived WIF token requires
+([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). Instead:
+
+- `config.toml` declares a custom provider `fullsend-openai` (`wire_api = "responses"`) whose
+  `auth.command` is an absolute path to the runner-written `openai-token.sh`.
+- Codex runs that command, uses its trimmed stdout verbatim as the bearer token, caches it for
+  `refresh_interval_ms` (30 s here; codex's default is 300 s) and re-runs it on expiry and on the
+  401 retry path. A non-zero exit or empty stdout **fails the request with no fallback to the
+  environment**, which is what makes the path fail closed.
+- The script prints the placeholder from `$CODEX_HOME/openai-token`, which `CodexRuntime`'s
+  `OpenAICredentialSeeder` implementation seeds at iteration start and the runner re-seeds through
+  `sandbox exec` after every refresh. Anything that is not a gateway placeholder fails the run
+  rather than being forwarded, and the script never echoes the value it rejects.
+- `supports_websockets` is left unset: custom providers default to false, which keeps codex on
+  HTTP/SSE `POST /v1/responses` — the only thing the `fullsend-openai` egress profile allows.
+
+### codex hook adapter contract
+
+`Bootstrap` installs `security.HookFiles` under `/sandbox/codex-config/hooks/`, renders
+`$CODEX_HOME/hooks.json` from `security.HookPlan`, and uploads the embedded
+`fullsend-codex-hook.py` beside the scripts. Each plan group becomes one handler,
+`python3 <adapter> <phase> <script...>`, so the scripts still run in plan order inside one process —
+the ordering the PostToolUse chain depends on.
+
+Matcher translation, per group:
+
+| `HookGroup.Tools` | codex matcher | Note |
+|---|---|---|
+| `Bash` | `Bash` | codex's shell tool has the same name |
+| `Write`, `Edit`, `MultiEdit` | `apply_patch` | the canonical name; `Write`/`Edit` would also match as aliases |
+| `Agent`, `Task` | `spawn_agent` | not reachable in v1 — no sub-agent roster is wired |
+| `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
+| `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
+| `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
+
+Tokens are joined with `|` and stay within `[A-Za-z0-9_|]`, which is the character set codex treats
+as an **exact alternation** rather than a regex, so there is no anchoring question and no substring
+match. A group whose tools all drop renders no handler rather than a matcher-less one, which would
+silently widen it from a few tools to all of them.
+
+Three codex behaviours are load-bearing, and the adapter exists because of the first two:
+
+1. **A hook that exits anything but 0 or 2 is recorded as `Failed`, and a failed hook does not
+   block.** The shared scripts block with `exit 1` plus `{"decision":"block","reason"}`, so
+   forwarding them verbatim would make every PreToolUse hook advisory. The adapter translates a
+   block to **exit 2 with the reason on stderr**. An exit 2 whose stderr is empty is *also* `Failed`,
+   so the reason is never allowed to be empty.
+2. **Only a synchronous handler can apply control effects.** A handler with `"async": true` still
+   runs and still reports, but its block decision is discarded — so the rendered `hooks.json` never
+   carries an `async` key at all, and `TestCodexHooksJSON_NeverAsync` asserts its absence.
+3. **`PostToolUse` output is `deny_unknown_fields` and accepts only `additionalContext` and
+   `updatedMCPToolOutput`.** The sanitizers' `updatedToolOutput` would make the hook `Failed`, so
+   the adapter drops the rewrite and emits an `additionalContext` telling the model the output it is
+   about to read contains content that would have been redacted and is untrusted.
+
+Consequences of those, recorded in the matrix and [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md):
+
+- **No hook-driven session halt.** `continue: false` is rejected as unsupported on PreToolUse (so
+  emitting it would fail the hook open) and, on PostToolUse, sets no stop the outcome carries. A
+  canary hit therefore blocks — which on codex **replaces the tool result with the reason**, so the
+  flagged output never reaches the model, stronger than Claude Code — but the run continues.
+- **Failed commands are covered without a second phase.** A shell command that exits non-zero still
+  produces a successful tool result as far as the registry is concerned, so `PostToolUse` fires for
+  it. `HookPlan`'s `PostToolUseFailure` group therefore maps onto nothing, as it does for pi. The
+  exception is a command that leaves a live PTY session behind: codex emits no `PostToolUse` payload
+  for those, so a backgrounded command's output is not scanned.
+- **A PreToolUse block reaches the model as a decline**, quoting the reason and the command, rather
+  than as a tool failure.
+
+### Where the guards' expected values come from
+
+Everything under `CODEX_HOME` is agent-writable between iterations, so a guard is worth only as much
+as the place its expected value comes from. There are two trustworthy places — this binary, and
+**runner-held digests**, meaning digests the runner records outside the sandbox at Bootstrap and injects into the launch command at Run — and the manifest is not one of them:
+
+| File | Anchor | Guard |
+|---|---|---|
+| hook adapter, auth script | **compile-time** — `go:embed`ed, so the digest is a literal in the run command | SHA-256, exit 97 |
+| the shared hook scripts | **compile-time** for the bytes, **runner-held** for which names — Bootstrap records the name → digest map for the set the harness enabled | SHA-256 per filename, plus an exhaustive directory check, exit 97 |
+| `config.toml`, `hooks.json` | **runner-held** — rendered per run, so Bootstrap records what it uploaded outside the sandbox and Run injects it into the launch command (`codex_integrity.go`) | whole-file SHA-256, exit 98 |
+| `fullsend-manifest.json` | none — it is a file in the same agent-writable directory | information only; never authority |
+
+The hook-script check makes codex **stricter than Claude Code and pi**, where the scripts stay
+agent-writable between iterations with no integrity check at all. Each digest is bound to its
+*filename*, and the directory must hold exactly those entries and nothing else:
+
+- rewriting `tirith_check.py` to exit 0 fails — the obvious case;
+- **overwriting `tirith_check.py` with `hook_io.py`'s bytes** also fails. It would otherwise pass a
+  set-of-digests check while silently neutering Tirith, because `hook_io.py` is a library module
+  with no `__main__`: it exits 0 with empty stdout, which the adapter reads as "allow";
+- **a planted package directory** — `hooks/json/__init__.py` — fails. A `*.py` glob never saw it,
+  and normal Python prepends a script's own directory to `sys.path`, so it would be imported when a
+  hook script did `import json`;
+- **a symlink to an allowed file** fails: `test -f` and `sha256sum` both follow one, `find` does not;
+- deleting a script fails too, since the expected name is checked by name.
+
+All five were reproduced under `/bin/sh` before the guard was rewritten, and each has a case in
+`TestCodexHookScriptsGuard_Executes`.
+
+That guard runs once, before codex starts. The agent then has the whole iteration — with full
+sandbox access — to rewrite a script before the next tool call reaches it, a window Claude Code and
+pi leave open too. On codex it is cheap to close: the run command exports the name → digest map into
+the codex process's environment after `.env` and before launch, and a running process's environment
+is not something the agent can reach, so **the adapter re-reads and re-verifies each script
+immediately before spawning it** and blocks on a mismatch. A missing or malformed map is itself a
+block, since the adapter only ever runs when the runner enabled hooks.
+
+**PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
+their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory
+holding a fake `tirith` that exits 0 neuters the entire PreToolUse chain while every digest stays
+green. Reproduced before the pin existed. `Run` captures `PATH` into a readonly variable before
+sourcing `.env` and restores it afterwards, and unsets `LD_PRELOAD`, `LD_LIBRARY_PATH` and
+`LD_AUDIT`, which would otherwise load code into any dynamically linked program the run starts —
+codex's own binary, `tirith`, `git` — before its `main`. The adapter strips `LD_*` and `PYTHON*`
+from the children's environment too, while passing the scripts' own configuration through.
+
+**Why not record the config digest in the manifest.** It would be a digest in the same
+agent-writable directory as the file it describes, so an agent could rewrite both and the guard would pass. That is
+not theoretical: `projects."<repo>".trust_level = "trusted"` in `config.toml` makes codex load the
+target repo's own `.codex/config.toml`, which then supplies `developer_instructions`, `model`, and —
+under `--dangerously-bypass-hook-trust` — repo-authored hooks. Verified against 0.152.1: with the
+line the repo layer applied, without it it did not. An earlier grep-based guard here looked for a
+`[projects` header and missed the dotted-key spelling entirely, which is why the check is a
+whole-file digest and not a pattern.
+
+**What `-c` can and cannot pin.** A `-c` override beats the file for
+`model_providers.<id>.base_url` and `.auth.command` (verified: a config naming an unreachable host
+still reached `api.openai.com`), so both are passed as SessionFlags as well as covered by the digest.
+There is **no such pin for project trust** — `-c projects={}` and a scalar
+`-c projects."<repo>".trust_level="untrusted"` were both tried and neither overrides the file.
+
+`Run` also refuses to start (exit -1) when security is enabled but the manifest carries no hook
+plan, and decides whether hooks are expected from the runner's own signal rather than from the
+manifest.
+
+**The hook interpreter is pinned twice.** codex spawns a hook through the shell it inherits,
+*after* the agent-writable `.env` has been sourced, so a bare `python3` in `hooks.json` would be
+resolved through a PATH the agent controls — a poisoned interpreter running under the hash-pinned
+adapter. Bootstrap resolves the absolute path in its preflight and renders it with `-I`, which also
+ignores `PYTHONPATH` and the user site directory; `Run` unsets `PYTHONPATH`, `PYTHONHOME` and
+`PYTHONSTARTUP` after `.env` for good measure.
+
+**The hook scripts' own configuration is re-asserted the same way.** `appendHookEnv` writes
+`TIRITH_FAIL_ON`, `TIRITH_REQUIRED` and `FULLSEND_EGRESS_ALLOWLIST` into the agent-writable
+workspace `.env` at bootstrap, and the harness supplies `FULLSEND_CANARY_TOKEN` and
+`FULLSEND_TOOL_ALLOWLIST` through the same file — so without re-assertion, iteration 1 could widen
+the SSRF allowlist, clear `TIRITH_REQUIRED` or delete the canary token for iteration 2. `Run`
+re-exports all five after `.env`. The first three come from `SandboxHookConfig`; the harness pair has
+no typed runner-side copy, so Bootstrap reads it back from `.env` — which at that point is still
+exactly what the runner wrote, since no agent iteration has run — and records it beside the
+digests. Reading it in `Run` instead would read whatever the previous iteration left behind, which
+is the exposure being closed.
+
+The adapter then spawns each hook script the same way, which needs care in two directions. `-I`
+alone breaks the scripts, because they import their siblings (`hook_io`, the sanitizer stages), so
+the verified hooks directory is put back on `sys.path` explicitly — and **appended, not prepended**. Prepending would
+place it ahead of the standard library and re-open the hole `-I` closes, since `import json` in a
+hook script would find a planted `hooks/json/` first; verified both ways, and the sibling imports
+resolve either way because no hook module shadows a stdlib name. Bootstrap's preflight asserts the
+interpreter is at least Python 3.11 rather than assuming the `-I` behaviour that ordering rests on.
+
+The children also run with **`-B`**, which `-I` does not imply and `PYTHONDONTWRITEBYTECODE` cannot
+supply because `-E` makes it inert. Without it the first hook that imports a sibling writes
+`hooks/__pycache__/*.pyc`, nothing clears the hooks directory between iterations, and the exhaustive
+directory guard then refuses to start iteration 2 of a validation-loop retry — a self-inflicted
+fail-closed lockout, reproduced as four `.pyc` files after a single chain run.
+
+### What the local smoke proved
+
+A real `codex exec --json` run against `api.openai.com` inside the pinned sandbox image
+(`localhost/fullsend-sandbox:codex`, codex-cli 0.152.1, arm64), with the runner's own `config.toml`,
+`hooks.json` and adapter in place:
+
+| Question | Answer |
+|---|---|
+| Is `hooks.json` loaded with no `[hooks]` table in `config.toml`? | **Yes** — discovery reads the file independently, so no empty table is needed. Both phases fired. |
+| Is a hook block reported to the model as *declined* rather than *failed*? | **Yes.** codex surfaces `Command blocked by PreToolUse hook: <reason>. Command: <cmd>`, and the agent's own summary was "blocked by a safety hook that prevents dotfile overwrites". |
+| Does a PostToolUse block withhold the output? | **Yes** — a canary in a `cat` result never reached the model, which reported only that it had been blocked. |
+| Are a repo's `.agents/skills` discovered with the project untrusted? | **Yes** — Claude Code parity (repo `.claude/skills` load there too); those SKILL.md files are covered by the host-side runtime content scan and the in-sandbox `scan context` pass. |
+| Do codex's own bundled skills appear? | They did — `skill-installer`, `plugin-creator`, `imagegen`, `skill-creator`, `openai-docs` — until `[skills.bundled] enabled = false` was added, after which only the harness's skills and the image's own `github` skill remain. |
+| Is `POST /v1/responses` the only request? | **No.** With a custom provider codex also issues `GET /v1/models` at startup (`codex_models_manager`), which fails to decode OpenAI's public catalog shape and is logged as a non-fatal ERROR. The `fullsend-openai` egress profile denies it, so expect that denial in a run's logs; the model call itself is `POST /v1/responses`. |
+| Does `codex doctor` accept the rendered config? | Yes: `config.toml parse ok`, `default model provider fullsend-openai`, `OpenAI auth is not required for the active model provider`, and `Responses WebSocket is not enabled for the active provider` — the last confirming the HTTP/SSE path the egress profile requires. |
+
+A full `fullsend run` through OpenShell then confirmed the credential path end to end
+(`--runtime codex --model openai/gpt-5-mini --forge github`, arm64, 2026-09-02):
+
+- **Egress, from the sandbox OCSF log.** `POST /v1/responses` **ALLOWED** ×3 under the run-scoped
+  provider's policy; `GET /v1/models` **DENIED** ×2 by the L7 engine, 3 ms apart — one attempt and
+  its immediate retry, not a loop, and the first allowed `POST` followed 100 ms later, so it delays
+  nothing. codex also probes `chatgpt.com:443` and `api.github.com:443`, both **DENIED** at L4.
+- **Hooks.** The agent's `ls -la` ran; its `~/.bashrc` overwrite was blocked by the PreToolUse chain
+  (`Command blocked by PreToolUse hook: Tirith [HIGH] dotfile_overwrite …`) and the agent reported it
+  as blocked rather than failed.
+- **Artifacts.** `metrics.json` carried `"runtime": "codex"`, `"model": "gpt-5-mini"`,
+  `"tool_calls": 1`, token usage, and `"total_cost_usd": 0`; the rollout transcript was extracted.
+- **Credential rotation on a kept sandbox.** `openshell provider update` produced a new placeholder
+  generation in the sandbox environment while the token file still held the old one; running
+  `OpenAIAuthSeed()` through `sandbox exec` — what the runner's refresher does — rewrote the file to
+  the new generation, and a further `codex exec` completed a turn on it. That is the whole reason
+  the credential goes through a file rather than the environment.
+- **Cleanup.** A run that fails at model resolution still tears down the sandbox and deletes the
+  run-scoped provider: the cleanup is deferred from provider creation, well before `Run`. With
+  `--keep-sandbox` the provider is expired in place instead and the run prints the
+  `openshell provider delete` command — that is by design, not a leak.
+
+Two artefacts of the run are worth knowing about:
+
+- The `command_execution` item in the stream keeps the command's raw `aggregated_output` even when a
+  PostToolUse hook blocked the result, and the rollout session file keeps the same output. Both are
+  uploaded as run artifacts, so `Run` and `ExtractTranscripts` filter them through the shared
+  `security.SecretRedactor` (`codex_redact.go`): the stream is redacted on the tee branch, so the
+  parser still sees exactly what codex emitted and only the file on disk is masked.
+- The sessions directory is agent-writable, so a file being there and ending in `.jsonl` is a claim
+  rather than a fact. `ExtractTranscripts` collects regular `.jsonl` files only — never
+  `.jsonl.zst`, since codex writes the running session uncompressed and a plaintext file merely
+  *named* that shipped as an artifact the redactor then declined to rewrite — and **every line** of
+  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`, …),
+  since checking only the first would let a file open with one genuine envelope and carry anything
+  after it. Each is downloaded to a staging name, validated, redacted and only then renamed into
+  place, so a crash cannot leave raw tool output at the path the artifact collector reads; reads are
+  bounded, so a planted multi-gigabyte file is refused rather than read into the runner in full.
+- `--dangerously-bypass-hook-trust` emits its warning as an `error`-type *item*, which the stream
+  parser correctly treats as a warning rather than a run failure.
+- A model the account cannot serve on the Responses API fails as five `error` reconnect events and a
+  `turn.failed` carrying the 404, not as a startup error — which is why `Run` returns 1 from the
+  stream verdict rather than trusting the exit code.
+
+### Not yet exercised
+
+`runtime: codex` is selectable per repo or per agent. Outstanding:
+
+- **No default behaviour-CI coverage.** Codex has no Vertex path, so `features/runtime/codex-openai.feature`
+  is gated on an OpenAI organization being mapped to the pool repositories, the same block
+  `pi-openai.feature` sits behind. Until then the evidence is unit tests, recorded stream fixtures
+  and local smoke runs.
+- The rollout session files are archived as transcripts but not error-classified: only the tee'd
+  `exec --json` capture yields a verdict, which is what the runner's exit-code override reads.
+- Sub-agent rosters are not wired, so `review`/`retro` are unsupported; `Bootstrap` appends a runtime
+  note telling the agent to execute sub-agent definitions itself, in order, as it does for pi.
+
+### Re-check on a `CODEX_VERSION` bump
+
+| What | Why it matters | Where |
+|---|---|---|
+| Hook exit-code semantics (0/2 blocking, everything else `Failed`) | the adapter's block translation is built on it; a change makes hooks fail open | `codex-rs/hooks/src/events/{pre,post}_tool_use.rs` |
+| `async` and `can_apply_control_effects` | a synchronous-only rule that changed would alter what the wiring must omit | `codex-rs/hooks/src/engine/mod.rs` |
+| `PostToolUse` output fields | if `updatedToolOutput` ever lands, the sanitizers can start redacting again | `codex-rs/hooks/src/schema.rs` |
+| Hook payload shape (`tool_name`, `tool_input.command` as a string, `tool_response`) | the scripts read these keys directly | `codex-rs/core/src/{hook_runtime.rs,tools/context.rs}` |
+| `auth.command` semantics (trimmed stdout, non-zero exit fails, no env fallback) | the whole credential path | `codex-rs/login/src/auth/external_bearer.rs` |
+| `supports_websockets` default for custom providers | a true default would take traffic off `POST /v1/responses` and break the egress profile | `codex-rs/model-provider-info/src/lib.rs` |
+| `[skills.bundled]` and skill discovery | the bundled skills are disabled by the runner-owned config; a renamed key would silently bring `skill-installer` and friends back into the agent's roster | `codex-rs/config/src/skills_config.rs` |
+| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.152.1) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
+| Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
+| `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
+| JSONL event structs and rollout file naming | the stream parser and transcript extraction | `codex-rs/exec/src/exec_events.rs`, `codex-rs/thread-store/src/local/helpers.rs` |

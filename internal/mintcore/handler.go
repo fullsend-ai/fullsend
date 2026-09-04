@@ -449,11 +449,11 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
 	}
 
-	var installationID int64
+	var installation installationResponse
 	if len(repos) == 0 {
-		installationID, err = FindOrgInstallation(ctx, h.githubBaseURL, jwt, org)
+		installation, err = findOrgInstallationDetails(ctx, h.githubBaseURL, jwt, org)
 	} else {
-		installationID, err = FindInstallation(ctx, h.githubBaseURL, jwt, org, repos[0])
+		installation, err = findInstallationDetails(ctx, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
 		// A 404 from FindInstallation means the repo is not covered by
@@ -470,6 +470,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
+	installationID := installation.ID
 
 	// Verify all requested repos are covered by the same installation.
 	// If the GitHub App uses selected-repository installation mode,
@@ -505,8 +506,15 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		}
 	}
 
-	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.githubBaseURL, jwt, installationID, role, repos)
+	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(ctx, h.githubBaseURL, jwt, installationID, org, role, repos, installation.Permissions)
 	if err != nil {
+		if errors.Is(err, ErrRequiredPermissionsMissing) {
+			return "", "", nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     err.Error(),
+				userMsg: err.Error(),
+			}
+		}
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 

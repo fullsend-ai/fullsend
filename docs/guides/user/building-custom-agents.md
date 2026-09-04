@@ -303,7 +303,7 @@ set -euo pipefail
 WORKSPACE="/tmp/workspace"
 mkdir -p "$WORKSPACE"
 
-elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
+if [[ "${ISSUE_SOURCE}" == "github" ]]; then
   gh issue view "$ISSUE_KEY" --repo "$REPO_FULL_NAME" \
     --json number,title,body,labels,comments \
     > "$WORKSPACE/my-input.json"
@@ -441,6 +441,7 @@ name: fullsend-my-agent
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 on:
   workflow_dispatch:
@@ -454,10 +455,6 @@ on:
         required: true
         type: string
         default: 'github'
-
-permissions:
-  contents: read
-  issues: write
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}

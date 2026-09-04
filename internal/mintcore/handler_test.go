@@ -3106,6 +3106,146 @@ func TestHandler_LogsRequestedPermissionNotGranted(t *testing.T) {
 	}
 }
 
+func TestHandler_RequiredPermissionFailureReturns422BeforeTokenPost(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var tokenCalls int
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 99,
+				Permissions: map[string]string{
+					"contents": "write",
+					"metadata": "read",
+				},
+				Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case r.URL.Path == "/app/installations/99/access_tokens" && r.Method == http.MethodPost:
+			tokenCalls++
+			t.Errorf("token POST should not happen when required permissions are missing")
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(`{"role":"coder","repos":["test-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if tokenCalls != 0 {
+		t.Fatalf("expected no token POSTs, got %d", tokenCalls)
+	}
+	if !strings.Contains(rec.Body.String(), "issues:write") {
+		t.Fatalf("response should contain missing issues:write: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "installation_id=99") {
+		t.Fatalf("response should contain installation guidance: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_OptionalPermissionDroppedBeforeTokenPost(t *testing.T) {
+	// The installation has every coder permission except the optional
+	// packages:read. The token POST must still happen, with packages omitted
+	// from the requested permissions rather than the request failing.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var tokenCalls int
+	var capturedTokenReq map[string]interface{}
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 99,
+				Permissions: map[string]string{
+					"contents":      "write",
+					"issues":        "write",
+					"pull_requests": "write",
+					"checks":        "read",
+					"metadata":      "read",
+					// packages:read is pending installation approval.
+				},
+				Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case r.URL.Path == "/app/installations/99/access_tokens" && r.Method == http.MethodPost:
+			tokenCalls++
+			reqBody, readErr := io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Errorf("reading token request body: %v", readErr)
+			}
+			if unmarshalErr := json.Unmarshal(reqBody, &capturedTokenReq); unmarshalErr != nil {
+				t.Errorf("decoding token request body: %v", unmarshalErr)
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_test_token",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(`{"role":"coder","repos":["test-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("expected exactly 1 token POST, got %d", tokenCalls)
+	}
+
+	perms, ok := capturedTokenReq["permissions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected permissions in token request: %v", capturedTokenReq)
+	}
+	if _, hasPackages := perms["packages"]; hasPackages {
+		t.Fatalf("packages should have been dropped from the token POST: %v", perms)
+	}
+	if perms["contents"] != "write" {
+		t.Fatalf("expected contents:write in the token POST, got %v", perms["contents"])
+	}
+	if len(perms) != 5 {
+		t.Fatalf("expected exactly 5 permissions after dropping packages, got %d: %v", len(perms), perms)
+	}
+}
+
 func TestHandler_SameOrgExplicitTargetOrg(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
