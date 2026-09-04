@@ -44,15 +44,21 @@ type ensurer interface {
 // wait until GitHub Actions recognises the workflow file.
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
+// EventDeliveryFunc is called after a repo's workflow is indexed to
+// verify that GitHub's event delivery pipeline is live end-to-end.
+// issueNumber is a pre-created warmup issue on the repo.
+type EventDeliveryFunc func(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error
+
 type repoEnsurer struct {
-	e2eCfg      e2etest.EnvConfig
-	client      forge.Client
-	token       string
-	binary      string
-	fullsendRef string
-	logf        func(string, ...any)
-	runCLI      CLIRunnerFunc
-	settle      SettleFunc
+	e2eCfg        e2etest.EnvConfig
+	client        forge.Client
+	token         string
+	binary        string
+	fullsendRef   string
+	logf          func(string, ...any)
+	runCLI        CLIRunnerFunc
+	settle        SettleFunc
+	eventDelivery EventDeliveryFunc
 }
 
 func newRepoEnsurer(
@@ -62,14 +68,15 @@ func newRepoEnsurer(
 	logf func(string, ...any),
 ) ensurer {
 	return &repoEnsurer{
-		e2eCfg:      e2eCfg,
-		client:      client,
-		token:       token,
-		binary:      binary,
-		fullsendRef: fullsendRef,
-		logf:        logf,
-		runCLI:      e2etest.TryRunCLI,
-		settle:      awaitWorkflowReady,
+		e2eCfg:        e2eCfg,
+		client:        client,
+		token:         token,
+		binary:        binary,
+		fullsendRef:   fullsendRef,
+		logf:          logf,
+		runCLI:        e2etest.TryRunCLI,
+		settle:        awaitWorkflowReady,
+		eventDelivery: awaitEventDelivery,
 	}
 }
 
@@ -97,6 +104,20 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 		return "", err
 	}
 
+	// Create a warmup issue BEFORE installing fullsend. No workflow
+	// exists yet, so the issues.opened event is silently ignored —
+	// no wasted triage run. The issue is used after install to verify
+	// event delivery via a comment that triggers the shim but skips
+	// the dispatch job (body does not start with /fs-).
+	var warmupIssueNumber int
+	if e.eventDelivery != nil {
+		issue, err := e.client.CreateIssue(ctx, org, repoName, "warmup", "event delivery probe")
+		if err != nil {
+			return "", fmt.Errorf("creating warmup issue on %s: %w", target, err)
+		}
+		warmupIssueNumber = issue.Number
+	}
+
 	if err := e.installFullsend(org, repoName, target); err != nil {
 		return "", err
 	}
@@ -108,6 +129,12 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 	if e.settle != nil {
 		if err := e.settle(ctx, e.client, org, repoName, TriageWorkflow, e.logf); err != nil {
 			return "", fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
+		}
+	}
+
+	if e.eventDelivery != nil {
+		if err := e.eventDelivery(ctx, e.client, org, repoName, warmupIssueNumber, TriageWorkflow, e.logf); err != nil {
+			return "", fmt.Errorf("verifying event delivery on %s: %w", target, err)
 		}
 	}
 
@@ -175,4 +202,54 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	}
 
 	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
+}
+
+// awaitEventDelivery posts a comment on a pre-created warmup issue and
+// polls ListWorkflowRuns until a completed run appears, proving that
+// GitHub's event delivery pipeline is live for this repo. The comment
+// body does not start with /fs-, so the shim's dispatch job is skipped
+// by its if: condition — no triage or agent work runs.
+//
+// On pre-existing repos (the old pool flow) the pipeline is already
+// warm and the run appears in seconds. On freshly created ephemeral
+// repos there can be a gap between workflow indexing and event delivery
+// readiness; this function absorbs that gap.
+func awaitEventDelivery(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error {
+	target := org + "/" + repo
+	logf("[ensure] verifying event delivery on %s", target)
+
+	probeTime := time.Now()
+
+	if _, err := client.CreateIssueComment(ctx, org, repo, issueNumber, "fullsend event delivery probe"); err != nil {
+		return fmt.Errorf("posting warmup comment on %s: %w", target, err)
+	}
+
+	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
+		runs, err := client.ListWorkflowRuns(ctx, org, repo, workflowFile)
+		if err == nil {
+			for _, run := range runs {
+				t, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+				if parseErr != nil {
+					continue
+				}
+				if !t.Before(probeTime.Add(-30*time.Second)) && run.Status == "completed" {
+					logf("[ensure] event delivery confirmed on %s after %d attempt(s) (run %d)", target, attempt, run.ID)
+					return nil
+				}
+			}
+		}
+
+		if attempt < settleMaxAttempts {
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			case <-time.After(settlePoll):
+			}
+		}
+	}
+
+	return fmt.Errorf("event delivery not confirmed on %s after %d attempts", target, settleMaxAttempts)
 }

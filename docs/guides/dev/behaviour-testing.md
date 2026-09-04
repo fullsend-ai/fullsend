@@ -224,8 +224,10 @@ The `Given the installed test repository` step creates a repo via `Driver.Create
 1. Generates a random-hex-suffixed name from the scenario hint.
 2. Creates the repo (the forge's `auto_init` provides the initial commit).
 3. Polls `GetRef("heads/main")` for git readiness.
-4. Runs `repos install --fullsend-ref` to install fullsend.
-5. Validates post-install files and waits for Actions workflow readiness.
+4. Creates a warmup issue (used later for event delivery verification).
+5. Runs `repos install --fullsend-ref` to install fullsend.
+6. Validates post-install files and waits for Actions workflow readiness.
+7. Verifies event delivery by posting a comment on the warmup issue and polling for a completed workflow run.
 
 The After hook calls `Driver.DeleteRepo` to clean up the ephemeral repo. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and cleans up any outstanding repos with an error.
 
@@ -369,9 +371,15 @@ Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — map
 
 After creating a repo and installing fullsend via `repos install`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
-The install driver's internal ensurer handles this by polling `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). The function returns success as soon as the API returns a non-nil workflow object — it logs the workflow state but does not gate on it. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+The install driver's internal ensurer handles this in two phases:
 
-Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
+1. **Workflow indexing** — polls `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). Returns success as soon as the API returns a non-nil workflow object.
+
+2. **Event delivery probe** — even after the workflow is indexed, freshly created repos can have a lag before GitHub reliably delivers events to the workflow. The ensurer creates a warmup issue *before* installing fullsend (so the `issues.opened` event fires harmlessly with no workflow present), then *after* install and workflow indexing, posts a comment on that issue. The comment triggers the shim workflow (`issue_comment` event) but the dispatch job is skipped because the comment body does not start with `/fs-`. The ensurer polls `ListWorkflowRuns` until a completed run appears that was created after the probe comment, proving end-to-end event delivery is live. This absorbs the gap that caused timeouts on scenarios with no built-in delay between repo setup and the trigger event.
+
+When writing new provisioning code or modifying the install flow, always poll for both workflow readiness and event delivery before dispatching events that depend on the workflow.
+
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API. [`awaitEventDelivery`](../../../pkg/behaviourtest/drivers/install/ensure.go) — posts a warmup comment and polls for a completed workflow run.
 
 ### CI timeout budgeting for lazy provisioning
 
