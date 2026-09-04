@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,6 +220,46 @@ func piThinkingFor(effort string) (string, bool) {
 		return effort, true
 	}
 	return piDefaultThinking, false
+}
+
+// isVertexModelUnavailable reports whether errMsg is a Vertex API error
+// indicating that the requested model is not served in the caller's GCP
+// project. Two shapes are matched (captured 2026-09-04):
+//
+//   - 404: "Publisher model `projects/.../publishers/anthropic/models/claude-opus-5` not found"
+//   - 403: "Access to this model requires data sharing to be enabled for publisher 'anthropic'"
+//
+// pi surfaces these as a stream `error` event with errorMessage; the
+// runner sees ResultEvent.IsError with the message. Only these two
+// shapes trigger the fallback — any other error (auth, quota, network)
+// is treated as a hard failure.
+func isVertexModelUnavailable(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	if strings.Contains(lower, "publisher model") && strings.Contains(lower, "not found") {
+		return true
+	}
+	if strings.Contains(lower, "data sharing") && strings.Contains(lower, "enabled for publisher") {
+		return true
+	}
+	return false
+}
+
+// isPiAliasedModel reports whether model is an alias name (opus, sonnet,
+// haiku, fable) as opposed to a pinned explicit id (claude-opus-4-6) or a
+// provider/id spec (anthropic-vertex/claude-opus-4-6). Only alias requests
+// get the fallback chain; a pinned id that is not served is a configuration
+// error and must fail loudly (#7026).
+func isPiAliasedModel(model string, configAliases map[string]string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = piDefaultModel
+	}
+	if strings.Contains(model, "/") {
+		return false
+	}
+	aliases := mergedPiModelAliases(configAliases)
+	_, ok := aliases[model]
+	return ok
 }
 
 // piHooksMissingExit is the exit code the run command uses when the hook
@@ -689,43 +730,54 @@ func piManifestGuard(manifestPath, sum string) string {
 		shellQuote(manifestPath), shellQuote(manifestPath), shellQuote(sum), piManifestTamperedExit)
 }
 
-// Run executes one agent iteration and normalizes pi's --mode json stream
-// into AgentEvents. pi exits 0 on model error in json mode, so the stream's
-// verdict overrides the exit code (#2786/#5361).
-func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
-	m, err := readPiManifest(params.SandboxName, r.piManifestPath())
-	if err != nil {
-		return -1, err
+// piFallbackChain builds the ordered model chain for a pi run. When the
+// model is an alias (opus, sonnet, ...) and FallbackModels are available,
+// the chain is the primary model followed by each fallback, all translated
+// to pi model specs. A pinned id or a provider/id spec returns a
+// single-element chain — no fallback is attempted (#7026 scope rule).
+func piFallbackChain(model string, fallbacks []string, configAliases map[string]string) []string {
+	primary := translatePiModel(model, configAliases)
+	if !isPiAliasedModel(model, configAliases) || len(fallbacks) == 0 {
+		return []string{primary}
 	}
-	if params.HooksSettingsPath != "" && (m.Hooks == nil || m.Hooks.Groups == nil) {
-		// Same predicate as the adapter's `wired` check (a groups array,
-		// possibly empty): without it the adapter would load and block every
-		// tool call, so fail before spending an iteration on it.
-		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
+	chain := []string{primary}
+	for _, fb := range fallbacks {
+		spec := translatePiModel(fb, configAliases)
+		// Deduplicate: if a fallback resolves to the same spec as an
+		// earlier entry in the chain, skip it.
+		if !slices.Contains(chain, spec) {
+			chain = append(chain, spec)
+		}
 	}
-	if _, ok := piThinkingFor(params.Effort); !ok {
-		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running at --thinking %s", sanitizeOutput(params.Effort), piDefaultThinking))
-	}
-	if len(params.FallbackModels) > 0 {
-		// pi has no built-in fallback chain; a fullsend extension for it is
-		// tracked on #6527. Say so rather than silently dropping the list.
-		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on pi yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
-	}
-	if err := validatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases); err != nil {
-		return -1, err
-	}
-	// The extension preflight hashes come from the host directories, not
-	// from the manifest just read: that file sits in the agent-writable
-	// config dir and could be rewritten together with an extension.
-	exts, err := piResolveRunPlugins(params.Plugins)
-	if err != nil {
-		return -1, err
-	}
-	cmd := buildPiRunCommand(params, m, exts, piManifestHash(params.SandboxName))
+	return chain
+}
+
+// piRunResult captures the outcome of a single pi model attempt, used by
+// the fallback loop in Run.
+type piRunResult struct {
+	exitCode   int
+	lastResult *ResultEvent
+	execErr    error // non-nil only for infrastructure failures (not model errors)
+	modelSpec  string
+	guardErr   error // non-nil when a security guard tripped
+}
+
+// piExecModel runs a single pi invocation with the given model spec and
+// returns the result. It handles stream parsing, output tee, and exit code
+// handling but does NOT fold sub-agent usage or apply the stream-error
+// override — those are the caller's responsibility after the fallback loop
+// selects the successful attempt.
+func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, handler func(AgentEvent), printer *ui.Printer) piRunResult {
+	// Override the model in params for this attempt.
+	attemptParams := params
+	// buildPiRunCommand reads params.Model and translates it; we set it to
+	// the full spec so translatePiModel passes it through unchanged.
+	attemptParams.Model = modelSpec
+	cmd := buildPiRunCommand(attemptParams, m, exts, manifestSum)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
-		return -1, err
+		return piRunResult{exitCode: -1, execErr: err, modelSpec: modelSpec}
 	}
 	defer cancel()
 
@@ -740,44 +792,17 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		}
 	}
 
-	handler := params.OnEvent
-	if handler == nil {
-		renderer := NewEventRenderer(printer)
-		handler = renderer.Handle
-	}
-
-	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases)
-	// Telemetry and the renderer get the bare model id, as they do for
-	// Claude Code, so runs group by model across runtimes; the provider is
-	// gen_ai.system's job and stays visible on the command line.
-	metrics.Model = piBareModelID(modelSpec)
-	// The wire carries no CLI version and the model only on the first
-	// assistant message; Bootstrap's preflight and the resolved model are
-	// known up front, so emit the InitEvent here and drop the parser's.
-	handler(InitEvent{Model: metrics.Model, Version: m.PiVersion})
-
 	var lastResult *ResultEvent
-	innerHandler := handler
-	handler = func(evt AgentEvent) {
+	wrappedHandler := func(evt AgentEvent) {
 		switch e := evt.(type) {
-		case InitEvent:
-			return
 		case ResultEvent:
 			lastResult = &e
-			metrics.NumTurns = e.NumTurns
-			metrics.TotalCostUSD = e.TotalCostUSD
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.ReasoningTokens = e.ReasoningTokens
-			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
-			metrics.CacheReadInputTokens = e.CacheReadInputTokens
-		case ToolUseEvent:
-			metrics.ToolCalls.Add(1)
+		default:
 		}
-		innerHandler(evt)
+		handler(evt)
 	}
 
-	if _, parseErr := parsePiStream(reader, handler); parseErr != nil {
+	if _, parseErr := parsePiStream(reader, wrappedHandler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -789,35 +814,140 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		exitCode = execCmd.ProcessState.ExitCode()
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
-		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
+		return piRunResult{exitCode: exitCode, execErr: fmt.Errorf("openshell exec failed: %w", waitErr), modelSpec: modelSpec}
 	}
+	// Security guard exit codes are hard failures — never retried.
 	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
-		return exitCode, fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())}
 	}
 	if exitCode == piAgentTamperedExit && m.Agent != nil && m.Agent.Enabled {
-		return exitCode, fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())}
 	}
 	if exitCode == piManifestTamperedExit {
-		return exitCode, fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())}
 	}
 	if exitCode == piConfigTamperedExit {
-		return exitCode, fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())}
 	}
 	if exitCode == piExtensionTamperedExit && len(exts) > 0 {
-		return exitCode, fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())}
 	}
 
+	return piRunResult{exitCode: exitCode, lastResult: lastResult, modelSpec: modelSpec}
+}
+
+// Run executes one agent iteration and normalizes pi's --mode json stream
+// into AgentEvents. pi exits 0 on model error in json mode, so the stream's
+// verdict overrides the exit code (#2786/#5361).
+//
+// When the requested model is an alias and FallbackModels are set, Run
+// attempts each model in the chain until one succeeds or returns a
+// non-model error. A Vertex 404 ("Publisher model not found") or 403
+// ("data sharing not enabled") on an aliased model triggers the next
+// fallback; all other errors are terminal. Pinned explicit ids
+// (provider/id or bare catalog ids) never fall back (#7026).
+func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
+	m, err := readPiManifest(params.SandboxName, r.piManifestPath())
+	if err != nil {
+		return -1, err
+	}
+	if params.HooksSettingsPath != "" && (m.Hooks == nil || m.Hooks.Groups == nil) {
+		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
+	}
+	if _, ok := piThinkingFor(params.Effort); !ok {
+		printer.StepWarn(fmt.Sprintf("effort %q is not a pi thinking level; running at --thinking %s", sanitizeOutput(params.Effort), piDefaultThinking))
+	}
+
+	effectiveModel := EffectiveModel(params.Model, m.Model)
+
+	// Build the fallback chain. For alias requests with FallbackModels, the
+	// chain is primary + fallbacks; for pinned ids or no fallbacks, it is a
+	// single entry.
+	chain := piFallbackChain(effectiveModel, params.FallbackModels, params.ModelAliases)
+
+	if err := validatePiModel(effectiveModel, params.ModelAliases); err != nil {
+		return -1, err
+	}
+	exts, err := piResolveRunPlugins(params.Plugins)
+	if err != nil {
+		return -1, err
+	}
+	manifestSum := piManifestHash(params.SandboxName)
+
+	handler := params.OnEvent
+	if handler == nil {
+		renderer := NewEventRenderer(printer)
+		handler = renderer.Handle
+	}
+
+	// The first model spec in the chain is the primary; emit the InitEvent
+	// with its bare id. If a fallback succeeds, metrics.Model is updated.
+	primarySpec := chain[0]
+	metrics.Model = piBareModelID(primarySpec)
+	handler(InitEvent{Model: metrics.Model, Version: m.PiVersion})
+
+	// Wrap the handler to capture metrics from the successful attempt.
+	metricsHandler := func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case InitEvent:
+			// Drop parser-emitted InitEvents; we already sent ours.
+			return
+		case ResultEvent:
+			metrics.NumTurns = e.NumTurns
+			metrics.TotalCostUSD = e.TotalCostUSD
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.ReasoningTokens = e.ReasoningTokens
+			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+			metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		case ToolUseEvent:
+			metrics.ToolCalls.Add(1)
+		}
+		handler(evt)
+	}
+
+	// Fallback loop: try each model in the chain until one succeeds or
+	// returns a non-model error.
+	var result piRunResult
+	for i, modelSpec := range chain {
+		if i > 0 {
+			printer.StepWarn(fmt.Sprintf("model %s is not available in this project; falling back to %s", sanitizeOutput(piBareModelID(chain[i-1])), sanitizeOutput(piBareModelID(modelSpec))))
+		}
+		result = r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, metricsHandler, printer)
+
+		// Infrastructure or security failures are never retried.
+		if result.execErr != nil || result.guardErr != nil {
+			break
+		}
+
+		// Check whether the error is a Vertex model-unavailable error
+		// eligible for fallback. Only try the next model if there is one.
+		if result.exitCode == 0 && result.lastResult != nil && result.lastResult.IsError {
+			errMsg := result.lastResult.ErrorMessage
+			if isVertexModelUnavailable(errMsg) && i < len(chain)-1 {
+				continue
+			}
+		}
+		// Success or a non-model error — stop.
+		break
+	}
+
+	// Return infrastructure/security errors.
+	if result.execErr != nil {
+		return result.exitCode, result.execErr
+	}
+	if result.guardErr != nil {
+		return result.exitCode, result.guardErr
+	}
+
+	// Update metrics with the model that actually answered.
+	modelSpec := result.modelSpec
+	metrics.Model = piBareModelID(modelSpec)
+
 	if m.Agent != nil && m.Agent.Enabled {
-		// Children are separate pi processes, so none of their tokens
-		// reached the stream just parsed; the extension's usage file is the
-		// only record of what they spent. A read failure is not fatal —
-		// losing the breakdown must not fail an iteration that succeeded.
 		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
 			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
 		} else {
-			// Unconditional: the parent's own entry belongs in the
-			// breakdown even when this iteration dispatched nothing, or
-			// per_model_usage stops summing to the totals across a retry.
 			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
 			if n > 0 {
 				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
@@ -828,15 +958,15 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		}
 	}
 
-	if exitCode == 0 && lastResult != nil && lastResult.IsError {
-		msg := lastResult.ErrorMessage
+	if result.exitCode == 0 && result.lastResult != nil && result.lastResult.IsError {
+		msg := result.lastResult.ErrorMessage
 		if msg == "" {
-			msg = "stopReason " + lastResult.Subtype
+			msg = "stopReason " + result.lastResult.Subtype
 		}
 		printer.StepWarn("pi exited 0 but the stream reports an error: " + sanitizeOutput(msg))
 		return 1, nil
 	}
-	return exitCode, nil
+	return result.exitCode, nil
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left
