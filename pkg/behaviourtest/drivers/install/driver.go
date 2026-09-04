@@ -84,7 +84,7 @@ const (
 
 	// DefaultConcurrencyValue is the default number of concurrent
 	// scenarios when GODOG_CONCURRENCY is not set.
-	DefaultConcurrencyValue = 12
+	DefaultConcurrencyValue = 20
 )
 
 // KeepRepos reports whether test repos should be preserved after runs.
