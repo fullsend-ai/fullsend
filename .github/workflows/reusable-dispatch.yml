@@ -750,6 +750,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: triage
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -889,6 +895,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: code
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1017,6 +1029,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1306,6 +1324,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: fix
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1416,6 +1440,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: retro
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1512,6 +1542,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: prioritize
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1876,6 +1912,12 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

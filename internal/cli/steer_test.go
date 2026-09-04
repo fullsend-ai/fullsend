@@ -48,6 +48,10 @@ func baseOpts(t *testing.T) steerOpts {
 	t.Helper()
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_RUN_ID", "33740015232")
+	// The repository has opted out of cancelling runs in progress; without
+	// it steering is declined, which every other subtest here would then
+	// hit before reaching the condition it is testing.
+	t.Setenv("FULLSEND_PRESERVE_RUNS", "true")
 	return steerOpts{
 		harness:       steerHarness(true),
 		runtime:       fakeRuntime{name: "claude"},
@@ -541,4 +545,25 @@ func TestSteerAlreadyHandled_IgnoresAgentAuthoredMarker(t *testing.T) {
 	got, err := steerAlreadyHandled(context.Background(), c, "org/repo", 7, 999)
 	require.NoError(t, err)
 	assert.False(t, got, "a marker in agent output must not suppress the queued run")
+}
+
+// TestSteerEligible_RequiresPreserveRuns pins the gate the harness
+// reference documents: steering a run that is about to be cancelled is the
+// mixed state ADR 0101 calls worse than today, so the runner must decline
+// with a printed reason rather than steer.
+func TestSteerEligible_RequiresPreserveRuns(t *testing.T) {
+	o := baseOpts(t)
+	o.runtime = steerableRuntime{}
+
+	t.Setenv("FULLSEND_PRESERVE_RUNS", "")
+	assert.Contains(t, steerEligible(o), "FULLSEND_PRESERVE_RUNS",
+		"unset must decline with a reason naming the variable")
+
+	t.Setenv("FULLSEND_PRESERVE_RUNS", "false")
+	assert.NotEmpty(t, steerEligible(o), `"false" must decline`)
+
+	for _, v := range []string{"true", "TRUE", " true "} {
+		t.Setenv("FULLSEND_PRESERVE_RUNS", v)
+		assert.Empty(t, steerEligible(o), "%q should be eligible", v)
+	}
 }
