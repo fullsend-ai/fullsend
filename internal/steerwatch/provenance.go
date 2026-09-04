@@ -13,6 +13,48 @@ import (
 // base branch. `push`, `pull_request` and `workflow_dispatch` are absent on
 // purpose: a follow-up must be an update to the work item, routed by a Route
 // job that ran the base-branch workflow file.
+// amendmentEvents are the events whose run record's actor is guaranteed to
+// be the same principal the route job authorized. Only those confer
+// amendment authority; every other accepted event contributes context.
+//
+// The run record exposes `event` but not the action, so an event qualifies
+// only if EVERY arm handling it checks the login the run reports. Audited
+// against reusable-dispatch.yml:
+//
+//	issue_comment              every slash-command arm checks
+//	                           github.event.comment.user.login, which is the
+//	                           author of the comment and the run's sender.
+//	                           ELIGIBLE.
+//	issues                     opened checks issue.user.login and edited
+//	                           checks sender.login (both the reported actor),
+//	                           but `labeled` with ready-for-triage or
+//	                           ready-for-review checks NOTHING and still
+//	                           selects a stage. The action is invisible in the
+//	                           run record, so the authorized arms cannot be
+//	                           told from the unauthorized ones. EXCLUDED.
+//	pull_request_target        opened/synchronize/ready_for_review check
+//	                           pull_request.user.login — the PR AUTHOR — while
+//	                           the run's actor is whoever pushed. On a fork PR
+//	                           those are different people, and the pusher needs
+//	                           no upstream permission at all. labeled and
+//	                           closed check nothing. EXCLUDED.
+//	pull_request_review        checks pull_request.user.login while the run's
+//	                           actor is the review submitter, which the arm
+//	                           requires to be the review App. EXCLUDED (and
+//	                           bot actors are filtered out regardless).
+//	pull_request_review_comment
+//	                           has no arm at all, so every stage job is
+//	                           skipped and check 5 already rejects it.
+//	                           EXCLUDED.
+//
+// A push, a label, and a closure are state changes rather than instructions,
+// which is the same reason issue title, body and label edits are context —
+// so excluding them costs nothing the agent needs. A head move still reaches
+// the agent as context, carrying the new SHA.
+var amendmentEvents = map[string]bool{
+	"issue_comment": true,
+}
+
 var allowedEvents = map[string]bool{
 	"issue_comment":               true,
 	"issues":                      true,
