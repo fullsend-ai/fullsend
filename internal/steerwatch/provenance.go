@@ -9,10 +9,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// allowedEvents are the forge events whose runs execute the shim from the
-// base branch. `push`, `pull_request` and `workflow_dispatch` are absent on
-// purpose: a follow-up must be an update to the work item, routed by a Route
-// job that ran the base-branch workflow file.
 // amendmentEvents are the events whose run record's actor is guaranteed to
 // be the same principal the route job authorized. Only those confer
 // amendment authority; every other accepted event contributes context.
@@ -55,6 +51,10 @@ var amendmentEvents = map[string]bool{
 	"issue_comment": true,
 }
 
+// allowedEvents are the forge events whose runs execute the shim from the
+// base branch. `push`, `pull_request` and `workflow_dispatch` are absent on
+// purpose: a follow-up must be an update to the work item, routed by a Route
+// job that ran the base-branch workflow file.
 var allowedEvents = map[string]bool{
 	"issue_comment":               true,
 	"issues":                      true,
