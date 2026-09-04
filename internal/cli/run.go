@@ -2953,6 +2953,35 @@ type runFacts struct {
 
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, facts runFacts, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
+
+	content := strings.Join(buildEnvScriptLines(sandboxName, remoteRepositoryDir, h, runtimeEnvExports, facts, fetchEnv...), "\n") + "\n"
+
+	tmpFile, err := os.CreateTemp("", "fullsend-env-*.sh")
+	if err != nil {
+		return fmt.Errorf("creating temp env file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("writing temp env file: %w", err)
+	}
+	tmpFile.Close()
+
+	if err := sandbox.UploadFile(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
+		return fmt.Errorf("copying .env file to sandbox: %w", err)
+	}
+
+	return uploadHostFiles(sandboxName, h)
+}
+
+// buildEnvScriptLines assembles the sandbox .env script.
+//
+// The ORDER of these lines is behaviour, not formatting: later exports win,
+// and .env.d is sourced in the middle, so anything that must outrank a
+// harness-supplied env file has to come after it. There is a test pinning
+// that for the run facts.
+func buildEnvScriptLines(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, facts runFacts, fetchEnv ...fetchServiceEnv) []string {
 	outputDir := sandbox.SandboxWorkspace + "/output"
 
 	var lines []string
@@ -2971,10 +3000,6 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// Expose harness identity so skills can reference their own role/slug
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
-
-	// Expose this run's baseline so the agent can re-check, once, whether the
-	// work item moved under it before it writes its result.
-	lines = append(lines, buildRunFactsEnvLines(facts)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -3022,29 +3047,29 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
 
+	// Expose this run's baseline so the agent can re-check, once, whether the
+	// work item moved under it before it writes its result.
+	//
+	// After .env.d, for the same reason env.sandbox is: a file sourced from
+	// .env.d would otherwise overwrite these. reservedSandboxKeys stops an
+	// env.sandbox entry shadowing them, but it says nothing about .env.d, so
+	// position is what actually protects them. It does not close every route —
+	// a host_files entry whose dest is the runner's own .env replaces the file
+	// wholesale — and that gap is repo-wide rather than specific to these two
+	// keys; see the tracking issue.
+	lines = append(lines, buildRunFactsEnvLines(facts)...)
+
 	// Runner-owned budget and deadline come after every harness-controlled
-	// entry so none of them can shadow the values (#7042).
+	// entry so none of them can shadow the values (#7042). This stays the last
+	// line: unlike the static exports above it sources a file rewritten before
+	// every iteration, so it must be re-read after everything else.
 	lines = append(lines, iterationEnvSourceLine())
 
-	content := strings.Join(lines, "\n") + "\n"
+	return lines
+}
 
-	tmpFile, err := os.CreateTemp("", "fullsend-env-*.sh")
-	if err != nil {
-		return fmt.Errorf("creating temp env file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(content); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("writing temp env file: %w", err)
-	}
-	tmpFile.Close()
-
-	if err := sandbox.UploadFile(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
-		return fmt.Errorf("copying .env file to sandbox: %w", err)
-	}
-
-	// Copy host files into the sandbox.
+// uploadHostFiles copies the harness's host_files into the sandbox.
+func uploadHostFiles(sandboxName string, h *harness.Harness) error {
 	for _, hf := range h.HostFiles {
 		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
 		// credential vars in host_files src path expansion (#5832).
