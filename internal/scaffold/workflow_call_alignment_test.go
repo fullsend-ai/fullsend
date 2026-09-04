@@ -1398,3 +1398,33 @@ func TestPerRepoShimRunName(t *testing.T) {
 	assert.Contains(t, shim.RunName, "github.event.issue.number")
 	assert.Contains(t, shim.RunName, "github.event.pull_request.number")
 }
+
+// TestOwnShimMatchesTemplateRunName keeps this repository's own shim from
+// drifting away from the template on the one key steering depends on.
+//
+// The two are separate files with no sync between them: consumers get
+// templates/shim-per-repo.yaml through scaffold sync, while
+// .github/workflows/fullsend.yaml is this repository's live shim and is
+// reached by no sync at all — its "managed by fullsend" header names an
+// upstream path that does not exist. So a run-name added to the template
+// silently left this repository unable to bind issue_comment follow-ups to
+// their work item, which made steering here a no-op rather than a failure.
+func TestOwnShimMatchesTemplateRunName(t *testing.T) {
+	runNameOf := func(t *testing.T, content []byte, what string) string {
+		t.Helper()
+		var shim struct {
+			RunName string `yaml:"run-name"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &shim))
+		require.NotEmpty(t, shim.RunName, "%s must declare a run-name", what)
+		return shim.RunName
+	}
+
+	template := runNameOf(t, loadScaffoldFile("templates/shim-per-repo.yaml")(t), "the per-repo shim template")
+
+	own, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "fullsend.yaml"))
+	require.NoError(t, err, "this repository's own shim must be readable")
+
+	assert.Equal(t, template, runNameOf(t, own, "this repository's own shim"),
+		"the two shims must bind work items the same way; scaffold sync will never reconcile them")
+}
