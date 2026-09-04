@@ -365,7 +365,14 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
-            { text: "Archived roadmaps", link: "/archived-roadmap" },
+            {
+              text: "Archived roadmaps",
+              collapsed: true,
+              items: [
+                { text: "Index", link: "/archived-roadmaps/" },
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
+              ],
+            },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
