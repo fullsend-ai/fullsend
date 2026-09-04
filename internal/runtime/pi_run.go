@@ -453,7 +453,7 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		"--session-dir "+shellQuote(r.piSessionsDir()),
 	)
 	if vertex {
-		// The interim Claude-on-Vertex provider is only needed for the
+		// The vendored Claude-on-Vertex extension is only needed for the
 		// anthropic-vertex model spec; other providers get pi's built-ins.
 		parts = append(parts, "-e "+shellQuote(piVertexExtensionPath))
 	}
