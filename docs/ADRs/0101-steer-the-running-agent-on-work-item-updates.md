@@ -61,8 +61,11 @@ concurrency semantics to be written down, which the rest of this ADR does.
 Preserve the active run and coalesce later events into one pending run, and add an
 **opt-in** extension on top of that: while the active run holds the subject, it absorbs
 the retained event itself, so the pending run finds the work already done and exits.
-With the extension off — the default — the behaviour is preserve-and-coalesce and
-nothing more, which is also what ADR 0098 proposes.
+With the steering extension off — the default, and the state of any repository that has
+not set the harness `steer:` block — the behaviour is preserve-and-coalesce and nothing
+more, which is also what ADR 0098 proposes. (That is the extension's default. The
+separate `FULLSEND_PRESERVE_RUNS` repository variable governs whether runs are preserved
+at all, and unset it keeps today's cancel-in-progress; the two are laid out below.)
 
 ### Relationship to ADR 0098's rejected polling option
 
