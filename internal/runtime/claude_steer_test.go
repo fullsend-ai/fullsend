@@ -21,10 +21,35 @@ func recordingCtxExec(calls *[]string, stderr string, exitCode int, err error) s
 	}
 }
 
+const (
+	testPromptKey = "opening-prompt-key"
+	testSteerKey  = "steer-key-1"
+)
+
 func newTestFeed(calls *[]string) *steerFeed {
 	f := newSteerFeed("sbx", "/sandbox/claude-config", recordingCtxExec(calls, "", 0, nil))
-	f.noteInitialPrompt()
+	f.noteInitialPrompt(testPromptKey)
 	return f
+}
+
+// ackPrompt and ackSteer echo a known key back, as the runtime does.
+func ackPrompt(f *steerFeed, t time.Time) bool { return f.noteEcho(t, testPromptKey, "") }
+func ackSteer(f *steerFeed, t time.Time) bool  { return f.noteEcho(t, testSteerKey, "") }
+
+// ackNextOutstanding echoes the next un-acked runner message using its real
+// key, for tests that drive Steer() and so cannot know the generated id. It
+// goes through the production matching path.
+func ackNextOutstanding(f *steerFeed, t time.Time) bool {
+	f.mu.Lock()
+	key := ""
+	for i := range f.outstanding {
+		if !f.outstanding[i].acked {
+			key = f.outstanding[i].key
+			break
+		}
+	}
+	f.mu.Unlock()
+	return f.noteEcho(t, key, "")
 }
 
 func TestBuildRunCommand_Steerable(t *testing.T) {
@@ -203,7 +228,7 @@ func TestSteerFeed_SettleWhenIdleClosesOnce(t *testing.T) {
 	f := newTestFeed(&calls)
 
 	// The opening prompt is echoed, its turn ends: the agent is idle.
-	if f.noteEcho(time.Now()) {
+	if ackPrompt(f, time.Now()) {
 		t.Fatal("closed before Settle")
 	}
 	if f.noteTurnEnd() {
@@ -221,7 +246,7 @@ func TestSteerFeed_SettleWhenIdleClosesOnce(t *testing.T) {
 func TestSteerFeed_SettleWaitsForTurnToEnd(t *testing.T) {
 	var calls []string
 	f := newTestFeed(&calls)
-	f.noteEcho(time.Now()) // turn in flight
+	ackPrompt(f, time.Now()) // turn in flight
 
 	if f.settle() {
 		t.Fatal("closed while a turn was still running")
@@ -237,10 +262,10 @@ func TestSteerFeed_SettleWaitsForTurnToEnd(t *testing.T) {
 func TestSteerFeed_SettleWaitsForUnechoedSteer(t *testing.T) {
 	var calls []string
 	f := newTestFeed(&calls)
-	f.noteEcho(time.Now())
+	ackPrompt(f, time.Now())
 	f.noteTurnEnd()
 
-	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 7}, `{"type":"user"}`); err != nil {
+	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 7}, `{"type":"user"}`, testSteerKey); err != nil {
 		t.Fatalf("appendLine: %v", err)
 	}
 	if f.settle() {
@@ -248,7 +273,7 @@ func TestSteerFeed_SettleWaitsForUnechoedSteer(t *testing.T) {
 	}
 	// The ack alone is not enough: the agent has now picked the steer up
 	// and is about to work on it, so the run ends only after that turn.
-	if f.noteEcho(time.Now()) {
+	if ackSteer(f, time.Now()) {
 		t.Fatal("closed on the ack, before the steered turn had run")
 	}
 	if !f.noteTurnEnd() {
@@ -259,11 +284,11 @@ func TestSteerFeed_SettleWaitsForUnechoedSteer(t *testing.T) {
 func TestSteerFeed_AppendRefusedAfterClosing(t *testing.T) {
 	var calls []string
 	f := newTestFeed(&calls)
-	f.noteEcho(time.Now())
+	ackPrompt(f, time.Now())
 	f.noteTurnEnd()
 	f.settle()
 
-	err := f.appendLine(context.Background(), SteerMessage{}, `{"type":"user"}`)
+	err := f.appendLine(context.Background(), SteerMessage{}, `{"type":"user"}`, testSteerKey)
 	if err == nil {
 		t.Fatal("a steer racing the feeder kill must be refused, not silently dropped into a dead mailbox")
 	}
@@ -275,11 +300,11 @@ func TestSteerFeed_AppendRefusedAfterClosing(t *testing.T) {
 func TestSteerFeed_FailedAppendIsNotCountedAsSent(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/cfg", recordingCtxExec(&calls, "no space left on device", 1, nil))
-	f.noteInitialPrompt()
-	f.noteEcho(time.Now())
+	f.noteInitialPrompt(testPromptKey)
+	ackPrompt(f, time.Now())
 	f.noteTurnEnd()
 
-	if err := f.appendLine(context.Background(), SteerMessage{}, "x"); err == nil {
+	if err := f.appendLine(context.Background(), SteerMessage{}, "x", testSteerKey); err == nil {
 		t.Fatal("expected an error on a non-zero exit")
 	}
 	if !f.settle() {
@@ -296,8 +321,8 @@ func TestSteerFeed_FailedAppendIsNotCountedAsSent(t *testing.T) {
 func TestSteerFeed_AppendPropagatesExecError(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/cfg", recordingCtxExec(&calls, "", 0, errors.New("gateway down")))
-	f.noteInitialPrompt()
-	if err := f.appendLine(context.Background(), SteerMessage{}, "x"); err == nil ||
+	f.noteInitialPrompt(testPromptKey)
+	if err := f.appendLine(context.Background(), SteerMessage{}, "x", testSteerKey); err == nil ||
 		!strings.Contains(err.Error(), "gateway down") {
 		t.Fatalf("expected the gateway error to surface, got %v", err)
 	}
@@ -314,11 +339,11 @@ func TestSteerFeed_EchoAttributionSurvivesAnEarlySteer(t *testing.T) {
 	steerAck := time.Date(2026, 9, 3, 12, 5, 0, 0, time.UTC)
 
 	// Steer lands before the agent has consumed anything.
-	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 42}, "x"); err != nil {
+	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 42}, "x", testSteerKey); err != nil {
 		t.Fatalf("appendLine: %v", err)
 	}
-	f.noteEcho(promptAck) // the opening prompt
-	f.noteEcho(steerAck)  // the steer
+	ackPrompt(f, promptAck) // the opening prompt
+	ackSteer(f, steerAck)   // the steer
 
 	got := f.steerResults()
 	if len(got) != 1 {
@@ -483,7 +508,7 @@ func TestSteerEchoTime(t *testing.T) {
 func TestSteerFeed_SeedTruncatesAndCountsThePrompt(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/cfg", recordingCtxExec(&calls, "", 0, nil))
-	if err := f.seed(context.Background(), `{"type":"user"}`); err != nil {
+	if err := f.seed(context.Background(), `{"type":"user"}`, testPromptKey); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if len(calls) != 1 || !strings.Contains(calls[0], "> '/cfg/"+steerMailboxName+"'") {
@@ -499,7 +524,7 @@ func TestSteerFeed_SeedTruncatesAndCountsThePrompt(t *testing.T) {
 func TestSteerFeed_SeedFailureIsReported(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/cfg", recordingCtxExec(&calls, "permission denied", 1, nil))
-	err := f.seed(context.Background(), "x")
+	err := f.seed(context.Background(), "x", testPromptKey)
 	if err == nil || !strings.Contains(err.Error(), "seeding the steer mailbox") {
 		t.Fatalf("expected a seed failure, got %v", err)
 	}
@@ -511,7 +536,7 @@ func TestSteerFeed_SeedFailureIsReported(t *testing.T) {
 func TestClaudeSettle_StopsTheFeederWhenIdle(t *testing.T) {
 	var calls []string
 	f := newTestFeed(&calls)
-	f.noteEcho(time.Now())
+	ackPrompt(f, time.Now())
 	f.noteTurnEnd()
 	registerSteerFeed("sbx-settle", f)
 	defer unregisterSteerFeed("sbx-settle")
@@ -531,7 +556,7 @@ func TestClaudeSettle_StopsTheFeederWhenIdle(t *testing.T) {
 func TestClaudeSettle_LeavesTheFeederRunningMidTurn(t *testing.T) {
 	var calls []string
 	f := newTestFeed(&calls)
-	f.noteEcho(time.Now()) // mid-turn
+	ackPrompt(f, time.Now()) // mid-turn
 	registerSteerFeed("sbx-midturn", f)
 	defer unregisterSteerFeed("sbx-midturn")
 
@@ -577,4 +602,87 @@ func TestSteerCloseFeedIf(t *testing.T) {
 			t.Error("a failed kill should be reported to the operator")
 		}
 	})
+}
+
+// TestSteerFeed_InjectedEchoDoesNotReceiptARealSteer is the first half of
+// the mailbox-injection defect. The mailbox is agent-writable, so the agent
+// can append a line of its own; that line is echoed back exactly as the
+// runner's are. When echoes were merely counted, an injected line arriving
+// before a real steer's echo shifted the positional attribution and stamped
+// the real steer's SteerResult on the wrong echo — receipting a steer the
+// agent had not consumed, which lets the queued run skip work nobody did.
+func TestSteerFeed_InjectedEchoDoesNotReceiptARealSteer(t *testing.T) {
+	var calls []string
+	f := newTestFeed(&calls)
+	ackPrompt(f, time.Now())
+	f.noteTurnEnd()
+
+	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 99}, "x", testSteerKey); err != nil {
+		t.Fatalf("appendLine: %v", err)
+	}
+
+	// The agent appends its own line and it is echoed first.
+	if f.noteEcho(time.Now(), "", "a line the agent wrote itself") {
+		t.Fatal("an injected echo must not close the session")
+	}
+	if got := f.steerResults(); len(got) != 0 {
+		t.Fatalf("an injected echo receipted a steer the agent never consumed: %+v", got)
+	}
+
+	// The real steer's own echo is what receipts it.
+	ackSteer(f, time.Now())
+	got := f.steerResults()
+	if len(got) != 1 || got[0].FollowUpRunID != 99 {
+		t.Fatalf("the real steer was not receipted by its own echo: %+v", got)
+	}
+}
+
+// TestSteerFeed_InjectedEchoesStillSettle is the second half. The settle
+// condition used to be an equality between lines sent and echoes seen, so a
+// single injected line made it unsatisfiable for the rest of the run: the
+// feeder was never stopped and the run burned its whole timeout. A stray
+// echo must leave the condition exactly where it was.
+func TestSteerFeed_InjectedEchoesStillSettle(t *testing.T) {
+	var calls []string
+	f := newTestFeed(&calls)
+
+	for _, injected := range []string{"first stray", "second stray", "third stray"} {
+		if f.noteEcho(time.Now(), "", injected) {
+			t.Fatalf("an injected echo closed the session: %q", injected)
+		}
+	}
+	if got := f.steerResults(); len(got) != 0 {
+		t.Fatalf("injected echoes produced steer results: %+v", got)
+	}
+
+	// The run proceeds normally: the prompt is consumed, its turn ends,
+	// and Settle closes despite the strays.
+	ackPrompt(f, time.Now())
+	f.noteTurnEnd()
+	if !f.settle() {
+		t.Fatal("injected echoes wedged the settle condition; the run would burn its timeout")
+	}
+}
+
+// TestSteerFeed_CopiedKeyCannotOutrunTheOriginal covers the agent copying a
+// key it can read out of the mailbox. It cannot get ahead of the message it
+// copies — the copy must be appended after it, the feeder delivers in
+// order, and each outstanding message is acked at most once — so the
+// original claims its own echo and the copy matches nothing.
+func TestSteerFeed_CopiedKeyCannotOutrunTheOriginal(t *testing.T) {
+	var calls []string
+	f := newTestFeed(&calls)
+	ackPrompt(f, time.Now())
+	f.noteTurnEnd()
+
+	if err := f.appendLine(context.Background(), SteerMessage{FollowUpRunID: 7}, "x", testSteerKey); err != nil {
+		t.Fatalf("appendLine: %v", err)
+	}
+	ackSteer(f, time.Now())      // the real line, delivered first
+	if ackSteer(f, time.Now()) { // the agent's copy of the same key
+		t.Fatal("a replayed key closed the session a second time")
+	}
+	if got := f.steerResults(); len(got) != 1 {
+		t.Fatalf("a copied key produced a duplicate receipt: %+v", got)
+	}
 }

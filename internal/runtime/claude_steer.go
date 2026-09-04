@@ -64,11 +64,15 @@ func (ClaudeRuntime) Steer(ctx context.Context, sandboxName string, msg SteerMes
 	if !ok {
 		return errNoSteerSession
 	}
-	line, err := claudeInputLine(renderSteerEnvelope(msg))
+	// The key is the envelope text itself: Claude Code's replay echoes the
+	// message content verbatim, so the runner can recognise its own line
+	// without adding anything to what the agent reads.
+	text := renderSteerEnvelope(msg)
+	line, err := claudeInputLine(text)
 	if err != nil {
 		return err
 	}
-	return f.appendLine(ctx, msg, line)
+	return f.appendLine(ctx, msg, line, text)
 }
 
 // Settle implements Steerer for Claude Code. It does not close stdin

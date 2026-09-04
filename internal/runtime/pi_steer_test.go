@@ -112,7 +112,7 @@ func TestPiSteer_NoRegisteredSession(t *testing.T) {
 func TestPiSteer_AppendsSteerCommand(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "", 0, nil))
-	f.noteInitialPrompt()
+	f.noteInitialPrompt(testPromptKey)
 	registerSteerFeed("sbx-pi", f)
 	defer unregisterSteerFeed("sbx-pi")
 
@@ -265,8 +265,8 @@ func TestParsePiStreamMode_DefaultModeStillEmitsOnce(t *testing.T) {
 func TestPiSettle_StopsTheFeederWhenSettled(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "", 0, nil))
-	f.noteInitialPrompt()
-	f.noteEcho(steerEchoTime(""))
+	f.noteInitialPrompt(testPromptKey)
+	ackPrompt(f, steerEchoTime(""))
 	f.noteTurnEnd()
 	registerSteerFeed("sbx-pi-settle", f)
 	defer unregisterSteerFeed("sbx-pi-settle")
@@ -290,7 +290,7 @@ func TestPiSettle_StopsTheFeederWhenSettled(t *testing.T) {
 func TestPiSteer_DeliveryIsRecordedOnlyOnTheAck(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "", 0, nil))
-	f.noteInitialPrompt()
+	f.noteInitialPrompt(testPromptKey)
 	registerSteerFeed("sbx-pi-ack", f)
 	defer unregisterSteerFeed("sbx-pi-ack")
 
@@ -303,11 +303,11 @@ func TestPiSteer_DeliveryIsRecordedOnlyOnTheAck(t *testing.T) {
 	}
 
 	// pi consumes the opening prompt, then the steer.
-	f.noteEcho(steerEchoTime(""))
+	ackNextOutstanding(f, steerEchoTime(""))
 	if got := f.steerResults(); len(got) != 0 {
 		t.Fatalf("the opening prompt's ack was credited to the steer: %+v", got)
 	}
-	f.noteEcho(steerEchoTime(""))
+	ackNextOutstanding(f, steerEchoTime(""))
 
 	got := f.steerResults()
 	if len(got) != 1 {
@@ -330,7 +330,7 @@ func TestPiSteer_DeliveryIsRecordedOnlyOnTheAck(t *testing.T) {
 func TestPiSteer_FailedAppendRecordsNoDelivery(t *testing.T) {
 	var calls []string
 	f := newSteerFeed("sbx", "/sandbox/pi-config", recordingCtxExec(&calls, "disk full", 1, nil))
-	f.noteInitialPrompt()
+	f.noteInitialPrompt(testPromptKey)
 	registerSteerFeed("sbx-pi-fail", f)
 	defer unregisterSteerFeed("sbx-pi-fail")
 
