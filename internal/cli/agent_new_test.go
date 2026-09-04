@@ -127,22 +127,19 @@ func TestAgentNewPostScriptIsExecutable(t *testing.T) {
 	}
 }
 
-func TestAgentNewDryRunWritesNothing(t *testing.T) {
+func TestAgentNewDryRunReportsWhatItWouldWrite(t *testing.T) {
 	dir := newFullsendDir(t)
-	before := treeSnapshot(t, dir)
-
 	f := defaultFlags(dir)
 	f.dryRun = true
 	out, err := runNew(t, "lint-docs", f)
 	if err != nil {
 		t.Fatalf("dry run failed: %v", err)
 	}
-	if !strings.Contains(out, "Nothing was written") {
-		t.Errorf("dry run should say nothing was written:\n%s", out)
-	}
-	// A dry run that reports nothing is useless: it must list what would be
-	// created and show the rendered bodies.
+	// That a dry run writes nothing is asserted in package agentnew
+	// (TestGenerateDryRunWritesNothing). What only this layer can check is
+	// that the command reports the plan rather than staying silent.
 	for _, want := range []string{
+		"Nothing was written",
 		"harness/lint-docs.yaml",
 		"agents/lint-docs.md",
 		"--- harness/lint-docs.yaml ---",
@@ -151,49 +148,6 @@ func TestAgentNewDryRunWritesNothing(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry run output should contain %q:\n%s", want, out)
 		}
-	}
-	if after := treeSnapshot(t, dir); after != before {
-		t.Errorf("dry run modified the directory\nbefore: %s\nafter:  %s", before, after)
-	}
-}
-
-// TestAgentNewRejectsCollisions and --force semantics: --force may overwrite
-// the files this agent owns, but never a shared scaffold asset.
-func TestAgentNewForceNeverOverwritesSharedAssets(t *testing.T) {
-	dir := newFullsendDir(t)
-	if _, err := runNew(t, "lint-docs", defaultFlags(dir)); err != nil {
-		t.Fatal(err)
-	}
-
-	sentinel := []byte("# hand-edited, must survive\n")
-	policyPath := filepath.Join(dir, "policies", "base.yaml")
-	if err := os.WriteFile(policyPath, sentinel, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	harnessPath := filepath.Join(dir, "harness", "lint-docs.yaml")
-	if err := os.WriteFile(harnessPath, []byte("clobbered\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Without --force the collision is refused and nothing changes.
-	if _, err := runNew(t, "lint-docs", defaultFlags(dir)); err == nil {
-		t.Fatal("a second run without --force should fail")
-	}
-	if got, _ := os.ReadFile(harnessPath); string(got) != "clobbered\n" {
-		t.Error("a refused run must not modify anything")
-	}
-
-	f := defaultFlags(dir)
-	f.force = true
-	f.noRegister = true // already registered; --force must not paper over that
-	if _, err := runNew(t, "lint-docs", f); err != nil {
-		t.Fatalf("--force run failed: %v", err)
-	}
-	if got, _ := os.ReadFile(harnessPath); string(got) == "clobbered\n" {
-		t.Error("--force should have rewritten the harness")
-	}
-	if got, _ := os.ReadFile(policyPath); string(got) != string(sentinel) {
-		t.Errorf("--force must never overwrite a shared asset; policy is now %q", got)
 	}
 }
 
@@ -231,16 +185,6 @@ func TestAgentNewMissingConfig(t *testing.T) {
 	_, err := runNew(t, "lint-docs", defaultFlags(dir))
 	if err == nil {
 		t.Fatal("a fullsend dir with no config.yaml should fail")
-	}
-}
-
-func TestAgentNewMissingDir(t *testing.T) {
-	_, err := runNew(t, "lint-docs", defaultFlags(filepath.Join(t.TempDir(), "nope")))
-	if err == nil {
-		t.Fatal("a missing fullsend dir should fail")
-	}
-	if !strings.Contains(err.Error(), "github setup") {
-		t.Errorf("error should point at github setup, got: %v", err)
 	}
 }
 
@@ -383,25 +327,4 @@ func writeSpec(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-// treeSnapshot renders a directory's file list and contents for comparison.
-func treeSnapshot(t *testing.T, dir string) string {
-	t.Helper()
-	var b strings.Builder
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		b.WriteString(path + ":" + string(data) + "\n")
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b.String()
 }

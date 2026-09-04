@@ -20,27 +20,20 @@ var update = flag.Bool("update", false, "rewrite the golden files in testdata/go
 //
 // Regenerate with: go test ./internal/agentnew/ -run TestGolden -update
 func TestGolden(t *testing.T) {
+	// Two trees, not one per role. The roles differ only in table data —
+	// image, providers, profiles — which TestRoleTableMatchesMint and its
+	// siblings assert directly and more precisely than a byte diff does.
+	// validation-loop is kept because it is the only variant that exercises
+	// an actual conditional in the generator: `if opts.ValidationLoop` in
+	// both buildHarness and sharedAssets.
 	cases := []struct {
 		name string
 		opts func() Options
 	}{
 		{"triage", func() Options { return testOptions("lint-docs", "triage") }},
-		{"coder", func() Options { return testOptions("lint-docs", "coder") }},
-		{"retro", func() Options { return testOptions("lint-docs", "retro") }},
-		{"review", func() Options { return testOptions("lint-docs", "review") }},
-		{"prioritize", func() Options { return testOptions("lint-docs", "prioritize") }},
 		{"validation-loop", func() Options {
 			o := testOptions("lint-docs", "triage")
 			o.ValidationLoop = true
-			return o
-		}},
-		{"label-trigger", func() Options {
-			o := testOptions("lint-docs", "triage")
-			trigger, err := ExpandTrigger("label:needs-docs", "lint-docs")
-			if err != nil {
-				panic(err)
-			}
-			o.Trigger = trigger
 			return o
 		}},
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -286,6 +287,74 @@ func TestPostScriptTruncatesWithinTheCap(t *testing.T) {
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("truncation should reserve room for the marker; missing %q", want)
+		}
+	}
+}
+
+// TestRoleImageReachesTheHarness covers what the per-role golden trees used
+// to: that each role's image constant actually lands in the generated
+// harness. The role table test asserts the table is right; this asserts the
+// value survives into the output, which is the half a table test cannot see.
+func TestRoleImageReachesTheHarness(t *testing.T) {
+	seen := map[string]bool{}
+	for _, name := range RoleNames() {
+		role, err := LookupRole(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		files, err := Render(testOptions("lint-docs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTree(t, dir, files)
+
+		h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+		if err != nil {
+			t.Fatalf("role %q: %v", name, err)
+		}
+		if h.Image != role.Image {
+			t.Errorf("role %q: harness image = %q, want %q", name, h.Image, role.Image)
+		}
+		if !reflect.DeepEqual(h.Providers, role.Providers) {
+			t.Errorf("role %q: providers = %v, want %v", name, h.Providers, role.Providers)
+		}
+		if h.OpenShell == nil || !reflect.DeepEqual(h.OpenShell.Profiles, role.Profiles) {
+			t.Errorf("role %q: profiles = %v, want %v", name, h.OpenShell, role.Profiles)
+		}
+		seen[role.Image] = true
+	}
+	// Both image constants must be reachable, or one is dead configuration.
+	if len(seen) != 2 {
+		t.Errorf("expected the role table to use both image constants, saw %d: %v", len(seen), seen)
+	}
+}
+
+// TestTriggerReachesTheHarness covers what the label-trigger golden used to.
+// The preset text itself is pinned by TestTriggerPresetsArePinned; this
+// asserts the chosen preset survives marshalling into the harness.
+func TestTriggerReachesTheHarness(t *testing.T) {
+	for _, on := range []string{"command", "label:needs-docs", "issue-opened", "pr-opened"} {
+		trigger, err := ExpandTrigger(on, "lint-docs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts := testOptions("lint-docs", "triage")
+		opts.Trigger = trigger
+
+		dir := t.TempDir()
+		files, err := Render(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTree(t, dir, files)
+
+		h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+		if err != nil {
+			t.Fatalf("--on %s: %v", on, err)
+		}
+		if strings.TrimSpace(h.Trigger) != strings.TrimSpace(trigger) {
+			t.Errorf("--on %s: trigger did not survive marshalling\n got: %q\nwant: %q", on, h.Trigger, trigger)
 		}
 	}
 }
