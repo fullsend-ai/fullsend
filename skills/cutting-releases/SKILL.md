@@ -103,11 +103,15 @@ GoReleaser's `name_template` (see `.goreleaser.yml`).
 git push origin <tag>
 ```
 
-GoReleaser takes over from here. Verify the workflow starts:
+The Release workflow takes over from here. Verify it starts:
 
 ```
 gh run list --workflow=release.yml --limit=1
 ```
+
+Expect the run to take a while before any artifact appears: agents'
+functional tests gate the publish step, so GoReleaser does not start
+until they pass (see the notes at the end of this file).
 
 ### 8. Run post-flight verification
 
@@ -179,14 +183,21 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).
-- **The `fullsend-ai/agents` repo** is tagged with the same version
-  after the release workflow validates agents against the new binary.
-  After GoReleaser completes, the `validate-agents` job runs agents'
-  functional tests (via a cross-repo reusable workflow call) against
-  the release tag. Only if those tests pass does the `tag-agents` job
-  push the tag to agents using an org-owned GitHub App token
-  (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). If validation or
-  tagging fails, a Slack notification is sent and the fullsend release
-  still ships — only the agents tag is blocked. That tag push triggers
-  agents' own `release.yml`, which creates a GitHub Release and moves
-  its `v0` floating tag.
+- **Agents validation runs before anything is published.** On a `v*` tag
+  push the workflow first runs `resolve-agents` (verifies the tag still
+  points at the commit that triggered the run, checks the gate secrets
+  are configured, and records agents' `main` SHA), then `validate-agents`,
+  which runs agents' functional tests (via a cross-repo reusable workflow
+  call) against the release tag. Only if those pass does the `release` job
+  re-verify the tag and run GoReleaser. A failure at either step means
+  **nothing is published** — no binaries, no GitHub Release, no moved
+  `v0` tag — and a Slack notification reports the release as blocked. The
+  fix is to resolve the cause and re-run the failed jobs; the tag stays
+  as it is.
+- **The `fullsend-ai/agents` repo** is tagged with the same version last,
+  by the `tag-agents` job, using an org-owned GitHub App token
+  (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). This is the only step
+  that can fail after the binary has shipped; when it does, a Slack
+  notification is sent and only the agents tag is missing. That tag push
+  triggers agents' own `release.yml`, which creates a GitHub Release and
+  moves its `v0` floating tag.

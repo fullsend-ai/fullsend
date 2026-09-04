@@ -11,8 +11,11 @@ permissions:
 
 jobs:
   release:
-    needs: [validate-agents, resolve-agents]
+    needs: [validate-agents, resolve-agents, recheck-tag]
     runs-on: ubuntu-24.04
+    # Historically ~2 minutes. Bounded so a hung publish cannot hold the
+    # tag-agents sync (and the default 6h limit) open.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,26 +98,35 @@ jobs:
     outputs:
       agents_sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      # Pinned to the commit, not the tag: the guard below must not run a
+      # copy of itself fetched through the mutable ref it is checking.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
 
+      # First half of the tag-move guard — see the recheck-tag job.
       - name: Verify release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_SHA: ${{ github.sha }}
-          TAG: ${{ github.ref_name }}
+        run: bash scripts/verify-release-tag.sh
+
+      # validate-agents is only a real gate while the functional tests
+      # actually run. In the called workflow an empty E2E_GCP_WIF_PROVIDER
+      # makes the "Check for secrets" step log a warning, skip GCP auth and
+      # every test step, and still report success — which, now that the
+      # binary is published only after that gate, would ship a release that
+      # validated nothing. Fail the release loudly instead of silently
+      # degrading to no coverage.
+      - name: Verify agents gate secrets
+        env:
+          WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
         run: |
           set -euo pipefail
-          TAG_INFO=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
-          TAG_TYPE=$(jq -r '.object.type' <<<"${TAG_INFO}")
-          TAG_SHA=$(jq -r '.object.sha' <<<"${TAG_INFO}")
-          if [[ "${TAG_TYPE}" == "tag" ]]; then
-            TAG_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.object.sha')
-          fi
-          if [[ "${TAG_SHA}" != "${EXPECTED_SHA}" ]]; then
-            echo "::error::Release tag ${TAG} resolves to ${TAG_SHA}, expected ${EXPECTED_SHA}"
+          if [[ -z "${WIF_PROVIDER}" ]]; then
+            echo "::error::E2E_GCP_WIF_PROVIDER is not configured — agents functional tests would skip and the release gate would pass without running a single test"
             exit 1
           fi
-          echo "Release tag ${TAG} resolves to ${EXPECTED_SHA}"
+          echo "::notice::E2E_GCP_WIF_PROVIDER is configured; the agents gate will run its tests"
 
       - name: Resolve agents main
         id: resolve
@@ -138,6 +150,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/check-agents-gate-pin.sh
+
+  recheck-tag:
+    # Second half of the tag-move guard. validate-agents clones fullsend by
+    # tag name — the called workflow only accepts `main` or a `v*` ref and
+    # uses `git clone --branch`, so it cannot be pinned to a SHA from this
+    # side. A tag moved during the ~45 minutes of functional tests would
+    # otherwise leave the gate validating one commit while GoReleaser
+    # publishes another. resolve-agents checks the tag before validation
+    # starts; this checks it again after, so publication requires the tag
+    # to have been stable across the whole gate.
+    #
+    # Its own job rather than a step inside `release` so that a tag moved
+    # mid-gate stays a *pre-publication* failure: nothing has shipped, and
+    # notify-release-blocked can say so.
+    needs: validate-agents
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Pinned to the commit, not the tag — see resolve-agents.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/verify-release-tag.sh
 
   tag-agents:
     # Sync the version tag to fullsend-ai/agents. Runs for all tags
@@ -194,14 +235,18 @@ jobs:
             -f sha="${AGENTS_SHA}"
           echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"
 
-  notify-agents-sync-failure:
-    needs: [release, validate-agents, resolve-agents, tag-agents]
+  notify-release-blocked:
+    # Pre-publication failure: nothing shipped. Before the gate moved ahead
+    # of GoReleaser this path did not exist — a validation failure still
+    # published the binary and Slack reported only the missing agents tag.
+    # Now the whole release stops here, so it needs its own signal;
+    # otherwise a blocked release is silent on Slack.
+    needs: [validate-agents, resolve-agents, recheck-tag]
     if: >-
       always()
-      && needs.release.result == 'success'
       && (needs.validate-agents.result == 'failure'
           || needs.resolve-agents.result == 'failure'
-          || needs.tag-agents.result == 'failure')
+          || needs.recheck-tag.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -211,6 +256,37 @@ jobs:
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::SLACK_WEBHOOK_URL secret is not configured"
+            exit 1
+          fi
+          PAYLOAD=$(jq -n --arg tag "${GITHUB_REF_NAME}" --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text: ":no_entry: Release `\($tag)` was blocked before publishing — tag verification or agents functional tests failed. No binary was published and no tags were moved. <\($url)|View run>"}')
+          curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK"
+
+  notify-agents-sync-failure:
+    # Post-publication failure: the binary shipped but the agents tag did
+    # not follow. validate-agents and resolve-agents are no longer checked
+    # here — `release` depends on both, so its success already implies they
+    # passed, and their failure is reported by notify-release-blocked.
+    needs: [release, tag-agents]
+    if: >-
+      always()
+      && needs.release.result == 'success'
+      && needs.tag-agents.result == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::SLACK_WEBHOOK_URL secret is not configured"
+            exit 1
+          fi
           PAYLOAD=$(jq -n --arg tag "${GITHUB_REF_NAME}" --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             '{text: ":warning: Agents tag sync failed for `\($tag)`. The fullsend release shipped but the agents tag was not created. <\($url)|View run>"}')
           curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK"

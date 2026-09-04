@@ -51,8 +51,10 @@ Classify each change as:
 
 ## A2. Check agents repo state
 
-The release workflow tags `fullsend-ai/agents` with the same version
-after GoReleaser succeeds. Verify agents is in a healthy state:
+Agents is not just tagged by the release workflow — it gates it. Agents'
+functional tests run against the release tag *before* GoReleaser
+publishes anything, so an unhealthy agents `main` blocks the whole
+release, not only the agents tag. Verify agents is in a healthy state:
 
 ```
 gh run list --repo fullsend-ai/agents --limit=5
