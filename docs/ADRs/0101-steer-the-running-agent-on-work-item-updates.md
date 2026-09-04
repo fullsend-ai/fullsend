@@ -324,16 +324,33 @@ the run budget remains, and the update falls to the queued run.
 
 ### Rollout order
 
-The two switches must be flipped in order, because the mixed state `FULLSEND_STEER=true` without
-`steer.enabled` is worse than today: the run in flight finishes on stale input and posts stale
-output, and the run queued behind it does the full work again with no marker to skip on. So:
-merge this change, enable `steer:` in the fleet harnesses, and only then set the repository
-variable, one repository at a time, after one real steer of each runtime has been observed.
+**Precondition: steering may not be enabled anywhere until receipts are authenticated by a channel
+that agents and post-scripts cannot mint.** Scoping the receipt to a body carrying the status
+markers is not that channel: it authenticates two public strings rather than the writer, and the
+runner's status comments and the agent's own output are posted under the same App identity, so an
+agent induced to emit those strings — through a post-script shelling out to `gh`, which reaches
+none of the runner's sanitizing paths — produces a receipt that passes. A forged receipt makes the
+queued run exit without doing its work, so the failure is a silently dropped update rather than a
+wasted one. Closing it needs authenticity the agent cannot produce: a status-only credential
+withheld from the sandbox, or a receipt the runner signs.
+
+The receipt is load-bearing rather than an optimization. Without one, steering costs *more* than
+cancelling does today: the active run absorbs the push and reviews head B, then the queued run
+reviews head B again — two reviews where cancel-and-restart produces one. So the skip check and
+the authenticity it depends on ship together, or neither ships.
+
+Once that holds, the two switches must still be flipped in order, because the mixed state
+`FULLSEND_STEER=true` without `steer.enabled` is worse than today: the run in flight finishes on
+stale input and posts stale output, and the run queued behind it does the full work again with no
+marker to skip on. So: merge this change, enable `steer:` in the fleet harnesses, and only then
+set the repository variable, one repository at a time, after one real steer of each runtime has
+been observed.
 
 ## Consequences
 
 - A burst of events on one work item produces one agent run that absorbs them plus at most one
-  short follow-up, instead of a cancelled run and a full re-run per event.
+  short follow-up, instead of a cancelled run and a full re-run per event — but only once the
+  receipt is authenticated, since the follow-up is only short if it can trust a receipt to skip on.
 - Agents stop posting output computed from state the subject has already moved past, which is the
   complaint in [#1207](https://github.com/fullsend-ai/fullsend/issues/1207).
 - The runner gains a dependency on the execution platform's run records and its per-stage
