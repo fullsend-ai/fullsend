@@ -122,9 +122,16 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // post-script shelling out to `gh`, which reaches neither NeutralizeMarkers
 // nor this package — and that comment passes. Closing it needs authenticity
 // the agent cannot mint: a status-only credential withheld from the sandbox,
-// or a receipt signed by the runner. Until then a forged receipt can still
-// suppress a queued run, and the skip check that reads this must be treated
-// as advisory rather than trusted.
+// or a receipt signed by the runner.
+//
+// Until then a forged receipt can still suppress a queued run, and nothing
+// downstream softens that: checkSteerAlreadyHandled trusts this outright,
+// and internal/cli/run.go returns before the start comment or the
+// pre-script on the strength of it. Calling the check "advisory" would
+// describe an implementation that does not exist. It is trusted — which is
+// exactly why ADR 0101 makes authenticated receipts a precondition for
+// enabling steering anywhere (fullsend#7006), rather than something to
+// tighten later.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {
 	if author == "" {
 		return SteerMarker{}, false
