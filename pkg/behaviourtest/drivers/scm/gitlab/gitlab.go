@@ -34,7 +34,7 @@ func (d *Driver) CloseIssue(ctx context.Context, owner, repo string, number int)
 }
 
 func (d *Driver) CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
-	_, err := d.Client.CommitFiles(ctx, owner, repo, message, []forge.TreeFile{{
+	_, err := d.Client.CommitFiles(ctx, owner, repo, message+" [skip ci]", []forge.TreeFile{{
 		Path:    path,
 		Content: content,
 		Mode:    "100644",
