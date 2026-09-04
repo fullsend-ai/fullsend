@@ -117,36 +117,25 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # ---------------------------------------------------------------------------
 # pi-anthropic-vertex — Claude-on-Vertex provider for pi
 # (github.com/fullsend-ai/pi-anthropic-vertex, MIT). pi's own google-vertex
-# provider is Gemini-only and the upstream anthropic-vertex provider
-# (earendil-works/pi#5262) is still open; swap to it once it ships in a
-# pinned pi release. The extension wraps pi's own Anthropic transport with
-# a request-rewriting fetch and carries no @anthropic-ai/* dependency; its
-# CI matrix on main runs the suite against the pinned PI_VERSION and the
-# latest pi release, and a tag is cut from a main commit that passed it,
-# so that matrix is the compatibility check and there is no
-# sync/compat.json or SDK-override check. Registers provider
-# "anthropic-vertex". Reviewed at v0.1.0 (#7019).
+# provider is Gemini-only and upstream's anthropic-vertex provider
+# (earendil-works/pi#5262) is still an open PR; swap to it once it ships in
+# a pinned pi release. Registers provider "anthropic-vertex": pi's own
+# Claude catalog and Anthropic transport behind a request-rewriting fetch,
+# no @anthropic-ai/* dependency, no mirrored pi internals. Reviewed at
+# v0.1.0 (#7019).
 #
 # Pinned by git tag + SHA256 of the GitHub tag tarball. Installed under
-# PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir), root-owned and outside
-# PI_CODING_AGENT_DIR, so pi never auto-loads it — PiRuntime.Run passes it
-# explicitly with -e. Dependencies come from the vendored
-# package-lock.json: --omit=peer mirrors pi's own package installer,
-# because the extension's peer deps are pi itself, which the extension
-# loader resolves to the running pi through module aliases (a local copy
-# would be the wrong version); --ignore-scripts as for the pi install above
-# (no install scripts in the pruned tree).
+# PI_EXTENSIONS_DIR, root-owned and outside PI_CODING_AGENT_DIR, so pi never
+# auto-loads it — PiRuntime.Run passes it with -e. --omit=peer because the
+# extension's peers are pi itself, which the loader resolves to the running
+# pi; --ignore-scripts as for the pi install above.
 #
 # To update: pick a tag from
-# https://github.com/fullsend-ai/pi-anthropic-vertex/releases (the release
-# notes carry the tarball SHA256). Also re-run on every PI_VERSION bump:
-# move the extension's CI matrix to the new pin first, then diff pi's
-# AnthropicMessagesCompat against the extension's VERTEX_COMPAT_KEYS
-# allowlist -- the extension forwards only the keys on that list, so a
-# compat key a new pi release adds is dropped silently on Vertex rather
-# than erroring, and that is the one drift surface the wrap-based design
-# keeps. Then set
-# PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
+# https://github.com/fullsend-ai/pi-anthropic-vertex/releases (the notes
+# carry the tarball SHA256) and set the two ARGs below. The extension's CI
+# matrix (pinned PI_VERSION + latest pi) is the compatibility check; on a
+# PI_VERSION bump move that matrix to the new pin first. Compat flags
+# reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
 ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.0
 ARG PI_ANTHROPIC_VERTEX_SHA256=83e21c22f68717612a693baa25fe632f2b49eb449a7665d06bcd04ede6343d57
