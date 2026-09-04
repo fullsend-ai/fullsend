@@ -64,8 +64,12 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 
 		// The old body is collapsed into this comment's history, so it is
 		// re-posted. Anything smuggled into it before this defence existed
-		// would otherwise survive every later edit.
-		newBody := BuildUpdatedBody(statuscomment.NeutralizeMarkers(existing.Body), markedBody, cfg)
+		// would otherwise survive every later edit — but the runner's own
+		// marker must come off FIRST: BuildUpdatedBody strips it by exact
+		// prefix, and neutralizing beforehand rewrites its "<" so the strip
+		// no longer matches and the marker lands in the visible history,
+		// one more each time the comment is updated.
+		newBody := BuildUpdatedBody(NeutralizeHistory(existing.Body, cfg), markedBody, cfg)
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
@@ -128,6 +132,33 @@ var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]
 // BuildUpdatedBody collapses the old comment body into a flat list of
 // <details> blocks and prepends the new body. Footer content (delimited
 // by FooterMarker) is stripped before collapsing and re-appended after.
+// NeutralizeHistory defangs marker syntax in an old body that is about to
+// be folded into this comment's history, leaving the runner's own marker
+// and footer intact so BuildUpdatedBody can still strip them by exact
+// match. Only the agent-authored remainder is rewritten.
+func NeutralizeHistory(oldBody string, cfg Config) string {
+	prefix := ""
+	rest := oldBody
+	for _, marker := range []string{cfg.Marker + "\n", cfg.Marker} {
+		if marker == "\n" || marker == "" {
+			continue
+		}
+		if trimmed, ok := strings.CutPrefix(rest, marker); ok {
+			prefix, rest = marker, trimmed
+			break
+		}
+	}
+
+	footer := ""
+	if cfg.FooterMarker != "" {
+		if idx := strings.Index(rest, cfg.FooterMarker); idx >= 0 {
+			footer, rest = rest[idx:], rest[:idx]
+		}
+	}
+
+	return prefix + statuscomment.NeutralizeMarkers(rest) + footer
+}
+
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	// Strip marker from the old body (prefix-only to avoid matching
 	// the marker if it appears embedded in review content).
