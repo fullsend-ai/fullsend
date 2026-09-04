@@ -45,20 +45,27 @@ const (
 	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
-// piModelAliases maps fleet aliases to pi catalog ids. A default must
-// name an id that the pinned pi's bundled catalog has AND the fleet's
-// Vertex projects serve. The intended upgrade order once the fleet
-// projects enable the newer ids:
+// piModelAliases maps fleet aliases to pi catalog ids. A default must name
+// an id the running pi's bundled catalog carries and the fleet's Vertex
+// projects serve: the anthropic-vertex extension registers the catalog of
+// the pi that is actually installed, so this table tracks PI_VERSION.
+// "fable" names claude-fable-5-1, which the catalog carries only from pi
+// 0.85.0 — it does not resolve on the 0.84.4 pin, which is why this change
+// lands after the bump in #7025.
+//
+// Preference order, most-preferred first (the rest wait on the fleet's
+// Vertex projects enabling the newer ids — neither project serves the
+// opus 5 generation, and sonnet 5 is dev-only, so those two stay put):
 //
 //	sonnet: claude-sonnet-5 → claude-sonnet-4-6
 //	opus:   claude-opus-5   → claude-opus-4-8 → claude-opus-4-6
-//	fable:  claude-fable-5-1 → claude-fable-5       (5-1 on the pi bump)
+//	fable:  claude-fable-5-1 → claude-fable-5
 //	haiku:  claude-haiku-4-5
 var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",
 	"haiku":  "claude-haiku-4-5",
-	"fable":  "claude-fable-5",
+	"fable":  "claude-fable-5-1",
 }
 
 // piDocumentedAliases lists the aliases pi resolves through docs/runtimes/pi.md

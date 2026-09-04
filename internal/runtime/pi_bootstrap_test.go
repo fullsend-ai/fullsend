@@ -699,7 +699,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"opus":    "anthropic-vertex/claude-opus-4-6",
 			"sonnet":  "anthropic-vertex/claude-sonnet-4-6",
 			"haiku":   "anthropic-vertex/claude-haiku-4-5",
-			"fable":   "anthropic-vertex/claude-fable-5",
+			"fable":   "anthropic-vertex/claude-fable-5-1",
 		}, m.Agent.Models)
 		assert.Equal(t, map[string][]string{
 			"google-vertex":     piGoogleVertexModels,
@@ -795,7 +795,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"unstated aliases keep the fleet default")
 		assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", m.Agent.Models["haiku"],
 			"unstated aliases keep the fleet default")
-		assert.Equal(t, "anthropic-vertex/claude-fable-5", m.Agent.Models["fable"],
+		assert.Equal(t, "anthropic-vertex/claude-fable-5-1", m.Agent.Models["fable"],
 			"unstated aliases keep the fleet default")
 	})
 

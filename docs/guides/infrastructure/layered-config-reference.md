@@ -218,9 +218,9 @@ models:
 # config.yaml (overlay)
 models:
   aliases:
-    fable: claude-fable-5
+    fable: claude-fable-5-1
 
-# Effective: sonnet → claude-sonnet-5 (from base), fable → claude-fable-5 (from overlay),
+# Effective: sonnet → claude-sonnet-5 (from base), fable → claude-fable-5-1 (from overlay),
 # opus and haiku → fleet defaults (compiled-in).
 ```
 
