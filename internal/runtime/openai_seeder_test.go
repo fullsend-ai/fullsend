@@ -44,12 +44,13 @@ func TestCodexRuntimeOpenAISeeder(t *testing.T) {
 // (FULLSEND_PI_PROVIDER), which t.Setenv refuses to set in a parallel test.
 func TestNeedsOpenAIProvider(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		backend    string
-		model      string
-		agentModel string // the agent definition's frontmatter model:
-		provider   string // FULLSEND_PI_PROVIDER, when set
-		want       bool
+		name          string
+		backend       string
+		model         string
+		agentModel    string // the agent definition's frontmatter model:
+		provider      string // FULLSEND_PI_PROVIDER, when set
+		configAliases map[string]string
+		want          bool
 	}{
 		{name: "claude with an alias", backend: "claude", model: "opus"},
 		{name: "claude with an openai spec", backend: "claude", model: "openai/gpt-5.6-luna",
@@ -78,12 +79,14 @@ func TestNeedsOpenAIProvider(t *testing.T) {
 		{name: "an override still wins over the frontmatter", backend: "pi",
 			model: "anthropic-vertex/claude-opus-4-6", agentModel: "openai/gpt-5.6-luna"},
 		{name: "codex ignores both", backend: "codex", model: "", agentModel: "anthropic-vertex/claude-opus-4-6", want: true},
+		{name: "pi on an alias the repo remapped to openai", backend: "pi", model: "sonnet",
+			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
 		{name: "dummy", backend: "dummy", model: "openai/gpt-5.6-luna"},
 		{name: "unknown backend", backend: "opencode", model: "openai/gpt-5.6-luna"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(piProviderEnv, tc.provider)
-			assert.Equal(t, tc.want, NeedsOpenAIProvider(tc.backend, tc.model, tc.agentModel))
+			assert.Equal(t, tc.want, NeedsOpenAIProvider(tc.backend, tc.model, tc.agentModel, tc.configAliases))
 		})
 	}
 }
@@ -95,10 +98,10 @@ func TestPiModelProviderIsLowercase(t *testing.T) {
 	t.Parallel()
 
 	for _, model := range []string{"OpenAI/gpt-5.6-luna", "Anthropic-Vertex/claude-opus-4-6", "XAI/grok-4.6"} {
-		got := piModelProvider(model)
+		got := piModelProvider(model, nil)
 		assert.Equal(t, strings.ToLower(got), got, model)
 	}
-	assert.Equal(t, piOpenAIProvider, piModelProvider("OpenAI/gpt-5.6-luna"))
-	assert.Equal(t, piDefaultProvider, piModelProvider("opus"))
-	assert.Equal(t, piXaiVertexProvider, piModelProvider("xai/grok-4.6"))
+	assert.Equal(t, piOpenAIProvider, piModelProvider("OpenAI/gpt-5.6-luna", nil))
+	assert.Equal(t, piDefaultProvider, piModelProvider("opus", nil))
+	assert.Equal(t, piXaiVertexProvider, piModelProvider("xai/grok-4.6", nil))
 }

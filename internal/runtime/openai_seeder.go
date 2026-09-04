@@ -40,13 +40,15 @@ type OpenAICredentialSeeder interface {
 // harness `model:`) and agentModel the agent definition's frontmatter
 // `model:`; both are passed rather than one pre-resolved value so a caller
 // cannot resolve them differently from the runtime's own launch path — see
-// EffectiveModel.
-func NeedsOpenAIProvider(backend, runModel, agentModel string) bool {
+// EffectiveModel. configAliases is the repo's models.aliases (nil if unset),
+// threaded through so an alias remapped to an openai id resolves to the
+// same provider here as it does in buildPiRunCommand.
+func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map[string]string) bool {
 	switch backend {
 	case "codex":
 		return true
 	case "pi":
-		return piModelProvider(EffectiveModel(runModel, agentModel)) == piOpenAIProvider
+		return piModelProvider(EffectiveModel(runModel, agentModel), configAliases) == piOpenAIProvider
 	default:
 		return false
 	}

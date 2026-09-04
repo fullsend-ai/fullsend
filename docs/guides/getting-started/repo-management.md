@@ -265,8 +265,8 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-and `--allowed-remote-resources`. The `--inference-region` flag is
-install-time only and is not stored in the manifest.
+`--allowed-remote-resources`, and `--vendor`. The `--inference-region`
+flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 

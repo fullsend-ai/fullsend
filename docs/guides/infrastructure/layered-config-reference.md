@@ -87,6 +87,7 @@ the overlay → base → code defaults chain.
 | `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
@@ -189,6 +190,38 @@ inference:
 #   inference.project: my-project (from overlay)
 #   inference.region: us-central1 (from base)
 #   inference.wif_provider: ...base... (from base)
+```
+
+### `models.aliases` — per-key merge
+
+`models.aliases` overrides fullsend's pinned model alias table per key
+(#6882). Keys are the existing alias vocabulary (`opus`, `sonnet`,
+`haiku`, `fable`); values are model ids or `provider/id` specs validated
+with `ValidModelRef`, and never another alias name — bare or as the id
+segment of a `provider/id` spec (aliases resolve once, so `sonnet: opus`
+or `sonnet: anthropic-vertex/opus` would reach the provider as the
+literal id `opus`). An unknown key is a config validation error.
+
+Merge is per key across layers: an overlay that sets `fable` inherits
+the base's `sonnet` entry without restating it. A `nil` Models block
+(key omitted from YAML) falls through to the parent layer. Validation
+runs on the merged map, so a bad key in `config.base.yaml` fails an
+overlay write (and `fullsend run`) even when the overlay omits
+`models:`.
+
+```yaml
+# config.base.yaml
+models:
+  aliases:
+    sonnet: claude-sonnet-5
+
+# config.yaml (overlay)
+models:
+  aliases:
+    fable: claude-fable-5-1
+
+# Effective: sonnet → claude-sonnet-5 (from base), fable → claude-fable-5-1 (from overlay),
+# opus and haiku → fleet defaults (compiled-in).
 ```
 
 ### `tracker` — scalar override
@@ -353,6 +386,7 @@ compiled-in defaults apply:
 | `inference.project` | `""` (empty — must be provided) |
 | `inference.region` | `"global"` |
 | `inference.wif_provider` | `""` (empty — must be provided) |
+| `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |
 

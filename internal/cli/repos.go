@@ -423,7 +423,8 @@ type reposInstallConfig struct {
 
 	// GCP credentials (install-time only)
 	inferenceProject       string
-	inferenceProjectNumber string
+	inferenceWIFProvider   string
+	inferenceProjectNumber string // auto-derived from --inference-project; not a CLI flag
 	inferenceRegion        string
 
 	// GitLab-specific
@@ -434,6 +435,10 @@ type reposInstallConfig struct {
 	mintURL                string
 	allowedRemoteResources []string
 	runtime                string
+
+	// Vendor flags
+	vendor        bool
+	vendorChanged bool
 
 	// Test overrides
 	testClient          forge.Client
@@ -466,6 +471,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 			if opts.gitlabBotToken == "" {
 				opts.gitlabBotToken = os.Getenv(forge.VarGitLabBotToken)
 			}
+			opts.vendorChanged = cmd.Flags().Changed("vendor")
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
@@ -478,13 +484,14 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
-	cmd.Flags().StringVar(&opts.inferenceProjectNumber, "inference-project-number", "", "numeric GCP project number (auto-derived from --inference-project when omitted)")
+	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
 	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
+	cmd.Flags().BoolVar(&opts.vendor, "vendor", false, "vendor binary, reusable workflows, actions, and agent content into each repo for offline CI")
 
 	return cmd
 }
@@ -496,8 +503,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.inferenceProject != "" && !repos.IsValidGCPProjectID(opts.inferenceProject) {
 		return fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter, no trailing hyphen)", opts.inferenceProject)
 	}
-	if opts.inferenceProjectNumber != "" && !repos.IsNumeric(opts.inferenceProjectNumber) {
-		return fmt.Errorf("--inference-project-number must be numeric, got %q", opts.inferenceProjectNumber)
+	if opts.inferenceWIFProvider != "" {
+		if err := validateWIFProvider(opts.inferenceWIFProvider); err != nil {
+			return err
+		}
 	}
 	if opts.forge != "" && !repos.IsValidForge(opts.forge) {
 		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
@@ -520,9 +529,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		opts.inferenceRegion = "global"
 	}
 
-	// Derive --inference-project-number from --inference-project via
-	// the GCP Resource Manager API when not explicitly provided.
-	if opts.inferenceProject != "" && opts.inferenceProjectNumber == "" {
+	// When --inference-wif-provider is not set, derive the project number
+	// from --inference-project via the GCP Resource Manager API so that
+	// per-repo WIF provider paths can be constructed in converge.go.
+	// Skip when the project number is already populated (internal use).
+	if opts.inferenceProject != "" && opts.inferenceWIFProvider == "" && opts.inferenceProjectNumber == "" {
 		var projectNumber string
 		var lookupErr error
 		if opts.testProjectNumberFn != nil {
@@ -532,7 +543,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			projectNumber, lookupErr = gcpClient.GetProjectNumber(ctx, opts.inferenceProject)
 		}
 		if lookupErr != nil {
-			return fmt.Errorf("deriving project number from %q: %w (use --inference-project-number to specify it manually)", opts.inferenceProject, lookupErr)
+			return fmt.Errorf("deriving project number from %q: %w (use --inference-wif-provider to specify the full WIF provider path)", opts.inferenceProject, lookupErr)
 		}
 		opts.inferenceProjectNumber = projectNumber
 		printer.StepDone(fmt.Sprintf("Derived project number %s from project %s", projectNumber, opts.inferenceProject))
@@ -610,6 +621,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
 				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
 			}
+			if forgeName != repos.ForgeGitHub && opts.vendorChanged && opts.vendor {
+				printer.StepWarn("--vendor only fully supported for GitHub repos; GitLab CI templates do not yet reference the vendored binary")
+			}
 			if opts.runtime != "" {
 				if err := validateRuntimeName(opts.runtime); err != nil {
 					return fmt.Errorf("--runtime: %w", err)
@@ -633,6 +647,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				if opts.runtime != "" && opts.runtime != manifest.Defaults.Runtime {
 					entry.Runtime = opts.runtime
+				}
+				if opts.vendorChanged {
+					defaultVendor := manifest.Defaults.Vendor != nil && *manifest.Defaults.Vendor
+					if opts.vendor && !defaultVendor {
+						v := true
+						entry.Vendor = &v
+					} else if !opts.vendor && defaultVendor {
+						v := false
+						entry.Vendor = &v
+					}
 				}
 				entries[i] = entry
 			}
@@ -681,6 +705,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return err
 	}
 
+	// When --vendor is explicitly set on the CLI, override the manifest
+	// vendor setting for all repos in this run. Both --vendor and
+	// --vendor=false are honored so the CLI can enable or disable
+	// vendoring for a one-off run.
+	var vendorOverride *bool
+	if opts.vendorChanged {
+		vendorOverride = &opts.vendor
+	}
+
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
@@ -692,6 +725,22 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if fcErr != nil {
 			return fcErr
 		}
+
+		// When vendor is enabled (CLI flag or manifest), append vendored
+		// binary and content files to the scaffold commit so they are
+		// delivered atomically.
+		repoVendor := rc.Vendor
+		if vendorOverride != nil {
+			repoVendor = *vendorOverride
+		}
+		if repoVendor {
+			var vendorErr error
+			files, _, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, "", "")
+			if vendorErr != nil {
+				return fmt.Errorf("collecting vendored assets: %w", vendorErr)
+			}
+		}
+
 		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
@@ -727,7 +776,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		InferenceProject:       opts.inferenceProject,
 		InferenceProjectNumber: opts.inferenceProjectNumber,
 		InferenceRegion:        opts.inferenceRegion,
+		WIFProvider:            opts.inferenceWIFProvider,
 		ReviewAppClientID:      reviewAppClientID,
+		VendorOverride:         vendorOverride,
 	}
 
 	progressFn := func(repo, phase, msg string) {

@@ -465,3 +465,20 @@ func TestResolveBackend_ConfigReadErrorSurfaces(t *testing.T) {
 	assert.Equal(t, sourceFlagRuntime, source)
 	assert.Empty(t, backend.Runtime)
 }
+
+// TestAliasOverrideSource pins the metrics.json override_source shape when
+// models.aliases remaps the effective model (#6882): the alias's own source
+// stays first and the remap is a suffix, for every base modelOverrideSource
+// can return.
+func TestAliasOverrideSource(t *testing.T) {
+	t.Parallel()
+	const cfg = ".fullsend/config.yaml"
+	for _, base := range []string{"--model flag", "FULLSEND_MODEL", cfg + " agents.code", sourceHarness, sourceDefault} {
+		assert.Equal(t, base, aliasOverrideSource(base, false, cfg), "no remap leaves %q alone", base)
+		assert.Equal(t, base+", remapped by "+cfg+" models.aliases", aliasOverrideSource(base, true, cfg), "remap suffixes %q", base)
+	}
+	// modelOverrideSource never yields "", so the suffix form is the only
+	// remapped shape; the composition in runAgent has no other branch.
+	assert.NotEmpty(t, modelOverrideSource(runOverrides{}, ""))
+	assert.NotEmpty(t, modelOverrideSource(runOverrides{}, "sonnet"))
+}

@@ -35,6 +35,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, "", d.ConfigInferenceProject(), "project has no code default")
 	assert.Equal(t, DefaultPerRepoInferenceRegion, d.ConfigInferenceRegion())
 	assert.Equal(t, "", d.ConfigInferenceWIFProvider(), "WIF provider has no code default")
+	assert.Nil(t, d.ConfigModelAliases(), "model aliases have no code default (fleet table is compiled into the runtimes)")
 }
 
 // --- Unset fields resolve through parent to code defaults ---

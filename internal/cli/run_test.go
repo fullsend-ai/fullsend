@@ -5830,6 +5830,102 @@ func TestDedupResolvedProfiles(t *testing.T) {
 	}
 }
 
+func TestShadowedProfiles(t *testing.T) {
+	const profilesDir = "/ws/.fullsend/profiles"
+	url := func(id string) resolve.ResolvedProfile {
+		return resolve.ResolvedProfile{ID: id, LocalPath: "/cache/sha256/" + id + "/content.yaml", FromURL: true}
+	}
+	ids := func(profiles []resolve.ResolvedProfile) []string {
+		var out []string
+		for _, p := range profiles {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	tests := []struct {
+		name      string
+		dirIDs    []string
+		resolved  []resolve.ResolvedProfile
+		generated map[string]bool
+		want      []string
+	}{
+		{
+			name:     "no overlap",
+			dirIDs:   []string{"local-only"},
+			resolved: []resolve.ResolvedProfile{url("remote-only")},
+			want:     nil,
+		},
+		{
+			name:     "empty dir",
+			dirIDs:   nil,
+			resolved: []resolve.ResolvedProfile{url("a")},
+			want:     nil,
+		},
+		{
+			name:     "empty resolved",
+			dirIDs:   []string{"a"},
+			resolved: nil,
+			want:     nil,
+		},
+		{
+			name:     "one shadow",
+			dirIDs:   []string{"fullsend-vertex-ai"},
+			resolved: []resolve.ResolvedProfile{url("fullsend-vertex-ai")},
+			want:     []string{"fullsend-vertex-ai"},
+		},
+		{
+			name:     "multiple shadows sorted",
+			dirIDs:   []string{"z-profile", "a-profile", "local-only"},
+			resolved: []resolve.ResolvedProfile{url("z-profile"), url("a-profile"), url("remote-only")},
+			want:     []string{"a-profile", "z-profile"},
+		},
+		{
+			name:   "local-path profile in the same directory is not a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: profilesDir + "/byo.yaml", FromURL: false},
+			},
+			want: nil,
+		},
+		{
+			name:   "local-path profile elsewhere in the workspace is a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: "/ws/custom/byo.yaml", FromURL: false},
+			},
+			want: []string{"byo"},
+		},
+		{
+			name:     "duplicate directory ids reported once",
+			dirIDs:   []string{"dup", "dup"},
+			resolved: []resolve.ResolvedProfile{url("dup")},
+			want:     []string{"dup"},
+		},
+		{
+			name:   "runner-generated gitlab forge profile is not a shadow",
+			dirIDs: []string{"fullsend-gitlab-forge"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "fullsend-gitlab-forge", LocalPath: "/tmp/fullsend-gitlab-profile-123/fullsend-gitlab-forge.yaml"},
+			},
+			generated: map[string]bool{"fullsend-gitlab-forge": true},
+			want:      nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shadowedProfiles(tt.dirIDs, tt.resolved, profilesDir, tt.generated)
+			assert.Equal(t, tt.want, ids(got))
+		})
+	}
+}
+
+func TestShadowedProfiles_ReturnsResolvedCopy(t *testing.T) {
+	rp := resolve.ResolvedProfile{ID: "fullsend-vertex-ai", LocalPath: "/cache/x/content.yaml", FromURL: true}
+	got := shadowedProfiles([]string{"fullsend-vertex-ai"}, []resolve.ResolvedProfile{rp}, "/ws/profiles", nil)
+	require.Len(t, got, 1)
+	assert.Equal(t, rp, got[0], "the returned entry must carry the shadowed copy's path so the warning can name it")
+}
+
 func TestDedupResolvedProviders(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -391,3 +391,63 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 **When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or a PR comment is the only exception.
 
 See [`docs/guides/dev/e2e-testing.md`](../guides/dev/e2e-testing.md) and `make help` for pool org setup and troubleshooting.
+
+## Per-repo config field checklist
+
+When adding a new field to `perRepoConfig` (`internal/config/config.go`)
+that needs validation, you must wire validation into **both** the write
+path and the run path. The two paths use different validation entry
+points, and missing either one creates a gap.
+
+### Why two validation paths exist
+
+`perRepoConfig.Validate()` runs on **write paths** — for example, when
+`fullsend config set` persists a config file. However, `fullsend run`
+loads config via `loadPerRepoLayers()` (in `internal/config/interfaces.go`),
+which **does not call `Validate()`**. This means validation logic that
+only lives in `Validate()` never fires when the config is consumed at
+runtime. Invalid entries (unknown keys, bad references) are silently
+accepted.
+
+The codebase solves this with a dual-validation pattern: `Validate()`
+covers write paths, and inline validation in `runAgent()`
+(`internal/cli/run.go`) covers the run path.
+
+### Canonical examples
+
+- **`agentSettings()`** (`internal/cli/run.go`) — validates agent
+  entries loaded from config before applying them. The function's doc
+  comment explicitly states: "`fullsend run` never calls `Validate()` on
+  the config it loads, so this is where those values get checked."
+- **`ValidateModelAliases()`** (`internal/config/config.go`) — exported
+  validation function called both in `Validate()` (write path) and
+  directly in `runAgent()` (run path) to reject unknown alias keys and
+  invalid model references before the sandbox is created.
+- **`run_models_aliases_test.go`** (`internal/cli/`) — run-path
+  integration test verifying that invalid `models.aliases` values are
+  rejected by `runAgent()` before sandbox creation.
+
+### Checklist
+
+When adding a new validated field to `perRepoConfig`:
+
+1. **Add validation in `Validate()`** — this covers write paths (e.g.,
+   `fullsend config set`).
+2. **Add inline validation in `runAgent()`** — follow the
+   `agentSettings()` / `ValidateModelAliases()` pattern: validate the
+   effective (merged) value before the sandbox is created, not after.
+   If the validation logic is non-trivial, export it as a standalone
+   function (like `ValidateModelAliases`) so both call sites use the
+   same logic.
+3. **Add a run-path integration test** — follow the pattern in
+   `run_models_aliases_test.go`: write an invalid config, call
+   `runAgent()`, and assert that it fails with the expected error
+   before any sandbox is created.
+
+### When reviewing PRs
+
+When reviewing a PR that adds a new validated field to `perRepoConfig`,
+check that validation fires on the run path — not only in `Validate()`.
+Flag a missing run-path validation call as a **medium-severity** finding.
+The fix is to add inline validation in `runAgent()` and a corresponding
+integration test.

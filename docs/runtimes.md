@@ -90,7 +90,7 @@ flowchart LR
 | Setting | Flag | Env | Config (per-agent) | Config (repo-wide) |
 |---|---|---|---|---|
 | Runtime | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry | `runtime:` in `.fullsend/config.yaml` (repo default) |
-| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:` |
+| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:`; `models.aliases` in `.fullsend/config.yaml` remaps the alias any of these resolve to |
 | Effort | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry | harness `effort:` |
 
 In CI these are repository variables of the same name, plain or role-prefixed
@@ -186,6 +186,14 @@ Harness `model:` and `agents:` entry `model:` values accept provider-qualified `
 (e.g. `google-vertex/gemini-3.7-flash`). On pi, a harness can also select a provider with a bare
 `model:` plus `FULLSEND_PI_PROVIDER`.
 
+### Per-repo alias overrides
+
+Point an alias at a different model for one repo with `models.aliases` in `.fullsend/config.yaml`
+— `sonnet: claude-sonnet-5` changes `sonnet` and leaves the other aliases alone. Works on both
+runtimes; see [Pi › Per-repo alias overrides](runtimes/pi.md#per-repo-alias-overrides) for the
+syntax and what the plan block shows, and [Claude Code › Models](runtimes/claude.md#models) for
+the one limit there (sub-agent `model:` frontmatter is not remapped).
+
 ## Where the selection appears
 
 | Surface | What it shows |
@@ -196,8 +204,10 @@ Harness `model:` and `agents:` entry `model:` values accept provider-qualified `
 | OTel span | `fullsend.runtime`, next to `gen_ai.request.model` |
 | `metrics.json` | `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, `override_source` |
 
-`requested_model` is what was handed to the runtime after overrides, and `override_source` says where
-it came from — so a silent override is visible after the fact. The reported model is the
+`requested_model` is the model after the per-run overrides (an alias stays the alias name) and
+`override_source` says where it came from, with `, remapped by <config path> models.aliases`
+appended when a per-repo alias override applied — so a silent override is visible after the fact.
+The reported model is the
 provider-stripped id (`claude-opus-4-6`); for a provider whose ids are publisher-qualified it keeps
 that segment (`xai/grok-4.6`), since that is the wire id.
 
@@ -209,7 +219,7 @@ and are omitted from this table.
 
 | Harness key | Claude Code | pi | codex |
 |---|---|---|---|
-| `model` | `--model` | alias table, then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids only |
+| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids only |
 | `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) |
 | `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) |
 | `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively |

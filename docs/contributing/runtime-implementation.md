@@ -34,6 +34,11 @@ On this page:
 5. If the runtime's binary ships in the sandbox image, pin it the way the
    existing ones are pinned and prove the pin at build time
    ([Pinned runtime binaries](#pinned-runtime-binaries-in-the-sandbox-image)).
+6. Name the process that opens the model connection in `runtimeEgressBinaries`
+   (`internal/cli/runtime_binaries_test.go`) and make sure the inference
+   profiles' `binaries:` globs match it — a runtime exec'd directly (no node
+   wrapper) is not covered by `**/node`
+   ([Egress binary identity](#egress-binary-identity-per-runtime)).
 
 ## Security feature matrix
 
@@ -55,7 +60,7 @@ flowchart TB
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
     direction TB
-    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/node (pi runs via node) · **/codex"]
+    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/claude.exe · **/node (pi runs via node) · **/pi (fleet-profile parity) · **/codex"]
     subgraph PROC["Runtime process — steering, defense in depth"]
       direction LR
       PRE["PreToolUse\nTirith · SSRF\ncanary · allowlist"]
@@ -268,6 +273,22 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
 
 The image also creates each runtime's config directory when the binary refuses to start without one: `CODEX_HOME` (`sandbox.SandboxCodexConfig`) is created owned by the sandbox user and baked as an `ENV` default, so an ad-hoc `codex` invocation from Bash behaves like the runtime's own `EnvExports()`. `TestSandboxImageCodexDefaults` keeps the path in the image and the Go constant in step (the pi equivalent is `TestSandboxImagePiDefaults`).
+
+## Egress binary identity per runtime
+
+The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in fullsend-ai/agents; `profiles/fullsend-openai.yaml`, which has no fleet copy — the runner imports the embedded scaffold) carry a `binaries:` list. OpenShell's OPA (`sandbox-policy.rego`, `binary_allowed`) matches each glob against the kernel-resolved `/proc/<pid>/exe` of the process that opens the connection **or of any of its ancestors**. That gives two kinds of runtime:
+
+- **Wrapped by node** (pi, codex): `**/node` admits them through the ancestor, so a pin bump cannot take them off the allowlist unless the wrapper disappears.
+- **Exec'd directly** (Claude Code): `claude` on PATH is a symlink to the npm package's `bin/claude.exe`, so the connecting process has no wrapper ancestor and only a glob on the real file name admits it. A renamed native binary breaks every run of that runtime on its first model call with `API Error: Error code policy_denied`, 0 tokens, and the only explanation is the gateway's `NET:OPEN … DENIED … binary '…' not allowed in policy '_provider_<name>'` line (#6971).
+
+`TestScaffoldProfilesAllowRuntimeBinaries` (`internal/cli/runtime_binaries_test.go`) fails for any selectable runtime without a mapping and pins the ones below.
+
+| Runtime | Process that opens the connection | Profile glob(s) | Evidence |
+|---------|-----------------------------------|-----------------|----------|
+| Claude Code | `bin/claude.exe` in the npm package — 2.1.2xx's `install.cjs` places the native binary there ("Always write to bin/claude.exe"); the Containerfile installs it *with* scripts so that runs | `**/claude`, `**/claude.exe` | gateway deny log in #6971; `npm view @anthropic-ai/claude-code@<pin> bin` |
+| pi | `node` (`bin = dist/bundle/cli.js`; no native network path in the package) | `**/node` | `images/sandbox/Containerfile`, `npm view @earendil-works/pi-coding-agent@<pin> bin` |
+| Codex | `vendor/<triple>/bin/codex`, spawned by the npm launcher `bin/codex.js` under node; codex also spawns `codex-code-mode-host` (default-enabled in 0.152.1), covered by ancestor matching, not by name | `**/node` (ancestor), `**/codex` (the process) | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
+| OpenCode (stub) | exec'd directly, like Claude Code: `opencode-ai` ships a stub `bin/opencode.exe` that `postinstall.mjs` replaces with `opencode-linux-x64/bin/opencode`; with `--ignore-scripts` the stub stays | to be decided against the Containerfile install (`**/opencode.exe` or `**/opencode`); the test fails the moment `opencode` joins `config.ValidRuntimes` until a mapping exists | `npm view opencode-ai bin optionalDependencies`, `postinstall.mjs` |
 
 ## Sandbox workspace layout
 
@@ -916,6 +937,7 @@ Two artefacts of the run are worth knowing about:
 | `auth.command` semantics (trimmed stdout, non-zero exit fails, no env fallback) | the whole credential path | `codex-rs/login/src/auth/external_bearer.rs` |
 | `supports_websockets` default for custom providers | a true default would take traffic off `POST /v1/responses` and break the egress profile | `codex-rs/model-provider-info/src/lib.rs` |
 | `[skills.bundled]` and skill discovery | the bundled skills are disabled by the runner-owned config; a renamed key would silently bring `skill-installer` and friends back into the agent's roster | `codex-rs/config/src/skills_config.rs` |
+| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.152.1) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
 | JSONL event structs and rollout file naming | the stream parser and transcript extraction | `codex-rs/exec/src/exec_events.rs`, `codex-rs/thread-store/src/local/helpers.rs` |

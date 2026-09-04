@@ -444,6 +444,10 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **`Syntax error: "(" unexpected` inside sandbox**
 - The macOS Mach-O binary was injected instead of a Linux ELF. Update to fullsend 0.4.0+ which auto-resolves the correct binary, or provide one explicitly with `--fullsend-binary`
 
+**`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
+- The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
+- If `--fullsend-dir` contains a `profiles/` directory, its copy of the profile is imported after the harness's and is the one to fix; `fullsend run` prints a `Profile "…" is defined both in … and by the harness` warning when that happens
+
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)
 

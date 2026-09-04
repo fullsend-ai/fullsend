@@ -63,6 +63,13 @@ type RunParams struct {
 	// Empty defaults to "github". Used by runtimes that need
 	// forge-specific environment variable resolution.
 	Forge string
+	// ModelAliases holds per-repo model alias overrides from
+	// .fullsend/config.yaml models.aliases (#6882). When a harness or
+	// agent model value is an alias key present in this map, the
+	// runtime translates it to the mapped id before passing it to the
+	// underlying CLI. An empty or nil map means no overrides; the
+	// runtime's compiled-in alias table is used as-is.
+	ModelAliases map[string]string
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

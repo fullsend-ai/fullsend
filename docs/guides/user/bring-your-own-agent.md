@@ -132,7 +132,9 @@ endpoints:
     enforcement: enforce
 binaries:
   - "**/claude"
+  - "**/claude.exe"   # Claude Code 2.1.2xx runs as claude.exe, even on Linux
   - "**/node"
+  - "**/pi"
 ```
 
 > **Note (CI only):** the provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
@@ -355,6 +357,7 @@ allowed_remote_resources:
 
 | Symptom | Fix |
 |---------|-----|
+| `API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens) | The sandbox gateway denied the agent's *binary*, not the model. Check your profile's `binaries:` list has both `**/claude` and `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`). To see exactly which binary was denied: `grep DENIED <run-dir>/logs/openshell-sandbox.log` — see [Debugging network policies locally](running-agents-locally.md#debugging-network-policies-locally) |
 | Agent crashes at 0s | Sandbox can't reach Vertex AI — verify that `providers/vertex-ai.yaml` is listed in your harness `providers:` and that `ANTHROPIC_VERTEX_PROJECT_ID`/`CLOUD_ML_REGION` are set (in your `--env-file` for local runs, or in the workflow `env` block for CI) |
 | "role field is required" | Add `role:` to harness |
 | `403` / "role not allowed" from the mint | Your `role:` is not one the mint serves. On the hosted mint use a built-in role (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); for a custom role, point `FULLSEND_MINT_URL` at your own mint — see [Custom Agent Identity](custom-agent-identity.md) |

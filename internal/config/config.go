@@ -331,6 +331,25 @@ func ValidModelRef(ref string) bool {
 	return validModelRef.MatchString(ref)
 }
 
+// validModelAliasKeys is the alias vocabulary that models.aliases may
+// remap. These are the names harnesses and agents: entries use to select
+// a model family without pinning a generation. An unknown key is a
+// config validation error, not a new alias (#6882).
+var validModelAliasKeys = []string{"opus", "sonnet", "haiku", "fable"}
+
+// ValidModelAliasKeys returns the accepted alias keys for models.aliases.
+func ValidModelAliasKeys() []string { return slices.Clone(validModelAliasKeys) }
+
+// ModelsConfig groups model-related repo config under a single YAML key.
+// Currently only Aliases; future keys (e.g. defaults, catalog metadata)
+// can be added without flat-key proliferation.
+type ModelsConfig struct {
+	// Aliases overrides fullsend's pinned alias table per key.
+	// Keys are alias names (opus, sonnet, haiku, fable); values are
+	// model ids or provider/id specs validated with ValidModelRef.
+	Aliases map[string]string `yaml:"aliases,omitempty"`
+}
+
 // ValidAgentNames returns the built-in agents fullsend dispatches by name —
 // the names an agents: entry may tune without a source.
 // These are the names passed to `fullsend run <agent>` and used by
@@ -778,6 +797,11 @@ type perRepoConfig struct {
 	// beyond "vertex" without flat-key proliferation.
 	Inference *PerRepoInferenceConfig `yaml:"inference,omitempty"`
 
+	// Models groups model configuration. Currently only aliases — per-key
+	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
+	// Per-repo only (ADR 0044); not added to org-mode config.
+	Models *ModelsConfig `yaml:"models,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -961,6 +985,7 @@ type perRepoConfigMarshal struct {
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
+	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -983,6 +1008,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
 		h.Inference = c.Inference
+	}
+	if c.Models != nil && len(c.Models.Aliases) > 0 {
+		h.Models = c.Models
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1041,6 +1069,42 @@ func (c *perRepoConfig) Validate() error {
 		validProviders := ValidProviders()
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
+		}
+	}
+	// Validate the merged view, as ValidateAgentEntries does above: a bad
+	// key in config.base.yaml must not slip through because the overlay
+	// omits models:.
+	if err := ValidateModelAliases(c.ConfigModelAliases()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateModelAliases checks a models.aliases map: every key is one of
+// ValidModelAliasKeys, every value is a ValidModelRef, and no value is
+// itself an alias key — the runtimes consult the alias table once, so
+// `sonnet: opus` would reach the provider as the literal id "opus".
+// Exported because the run path validates the effective (merged) map
+// (nothing writes the block through the CLI, so Validate on the write
+// paths alone would never see a hand-edited file).
+func ValidateModelAliases(aliases map[string]string) error {
+	validKeys := ValidModelAliasKeys()
+	for key, val := range aliases {
+		if !slices.Contains(validKeys, key) {
+			return fmt.Errorf("models.aliases: unknown alias key %q: must be one of %s", key, strings.Join(validKeys, ", "))
+		}
+		if !ValidModelRef(val) {
+			return fmt.Errorf("models.aliases.%s: invalid model reference %q: must be a model id or provider/id (segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", key, val)
+		}
+		// Case-insensitive, and on the id segment of a provider/id spec too:
+		// "Opus" and "anthropic-vertex/opus" both pass ValidModelRef and
+		// would otherwise reach the provider as the literal id "opus".
+		idSegment := val
+		if i := strings.LastIndex(val, "/"); i >= 0 {
+			idSegment = val[i+1:]
+		}
+		if slices.ContainsFunc(validKeys, func(k string) bool { return strings.EqualFold(k, idSegment) }) {
+			return fmt.Errorf("models.aliases.%s: value %q is the alias name %q, not a model id; aliases resolve once, so name the model id (or provider/id) directly", key, val, idSegment)
 		}
 	}
 	return nil

@@ -68,12 +68,13 @@ fullsend
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (auto-derived; install-time only)
+│   │   ├── --inference-wif-provider <path>  #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
 │   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
-│   │   └── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   └── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes

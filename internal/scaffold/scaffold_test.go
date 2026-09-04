@@ -820,11 +820,7 @@ func TestReconcileReposContent(t *testing.T) {
 // on but that are deliberately omitted from the user-facing onboarding catalog,
 // so the omission is a recorded decision rather than a regex accident. Anything
 // routed by dispatch.yml and not listed here must appear in the catalog.
-//   - /fullsend: backward-compat alias for the /fs-retro form; /fs-retro is the
-//     primary command documented in the catalog.
-var commandsNotInOnboardingCatalog = map[string]bool{
-	"/fullsend": true,
-}
+var commandsNotInOnboardingCatalog = map[string]bool{}
 
 // extractGettingStartedSection returns the body of the GETTING_STARTED_SECTION
 // shell assignment in reconcile-repos.sh — the exact block rendered into the
@@ -846,21 +842,20 @@ func extractGettingStartedSection(t *testing.T, scriptStr string) string {
 }
 
 // dispatchCaseArmRE matches a case-arm label line in dispatch.yml's
-// `case "${COMMAND}"` switch, e.g. "                /fs-triage)" or
-// "                /fs-retro|/fullsend)". Scoping route extraction to these lines
-// keeps a command mentioned in a comment, URL, or unrelated shell statement from
-// being counted as routed.
-var dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/(?:fs-[a-z0-9-]+|fullsend)(?:\|/(?:fs-[a-z0-9-]+|fullsend))*)\)`)
+// `case "${COMMAND}"` switch, e.g. "                /fs-triage)".
+// Scoping route extraction to these lines keeps a command mentioned in a
+// comment, URL, or unrelated shell statement from being counted as routed.
+var dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/fs-[a-z0-9-]+(?:\|/fs-[a-z0-9-]+)*)\)`)
 
-// slashCommandRE matches a single /fs-* or /fullsend command token.
-var slashCommandRE = regexp.MustCompile(`/(?:fs-[a-z0-9-]+|fullsend)`)
+// slashCommandRE matches a single /fs-* command token.
+var slashCommandRE = regexp.MustCompile(`/fs-[a-z0-9-]+`)
 
 // catalogBulletRE matches a rendered onboarding-catalog bullet, e.g.
 // "- `/fs-triage`". The optional leading backslash accommodates the shell
 // assignment (backticks are escaped as \` there); the per-repo Go catalog uses
 // bare backticks. Anchoring to the "- " bullet keeps a command mentioned in a
 // docs URL or prose from counting as documented.
-var catalogBulletRE = regexp.MustCompile("(?m)^- \\\\?`(/(?:fs-[a-z0-9-]+|fullsend))\\\\?`")
+var catalogBulletRE = regexp.MustCompile("(?m)^- \\\\?`(/fs-[a-z0-9-]+)\\\\?`")
 
 // routedDispatchCommands returns the set of slash commands dispatch.yml routes
 // on, scoped to case-arm labels (see dispatchCaseArmRE).
@@ -1021,4 +1016,22 @@ func TestPrependManagedHeaderNoHeader(t *testing.T) {
 	content := []byte("# AGENTS.md\nSome content\n")
 	result := PrependManagedHeader("AGENTS.md", content)
 	assert.Equal(t, content, result, "files without headers should be returned unchanged")
+}
+
+func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-vertex-ai.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// Pin the whole list, not just the two entries #6971 added: this copy
+	// must stay in sync with profiles/fullsend-vertex-ai.yaml in
+	// fullsend-ai/agents (the fleet copy), which is what the sandbox
+	// actually enforces. Claude Code 2.1.2xx installs its native binary at
+	// bin/claude.exe even on Linux, so **/claude alone denies it STS access.
+	assert.ElementsMatch(t, []string{"**/claude", "**/claude.exe", "**/node", "**/pi"}, profile.Binaries,
+		"scaffold Vertex profile binaries drifted from the pinned allowlist; keep it in sync with the fullsend-ai/agents copy")
 }

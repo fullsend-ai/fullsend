@@ -176,3 +176,16 @@ func modelOverrideSource(o runOverrides, effectiveModel string) string {
 	}
 	return sourceDefault
 }
+
+// aliasOverrideSource appends the models.aliases remap to an
+// override_source value when the effective model was an alias with a
+// per-repo entry (#6882): "<base>, remapped by <config path>
+// models.aliases". base is never empty — modelOverrideSource returns
+// "harness" or "default" when no override applied — so the remap is
+// always a suffix, never the whole value.
+func aliasOverrideSource(base string, remapped bool, configSource string) string {
+	if !remapped {
+		return base
+	}
+	return base + ", remapped by " + configSource + " models.aliases"
+}

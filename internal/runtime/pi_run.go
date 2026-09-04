@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -59,10 +60,11 @@ var piModelAliases = map[string]string{
 var piDocumentedAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
 
 // validatePiModel returns an error if model is a documented alias that has
-// no entry in piModelAliases. Bare ids and provider/id specs pass through
-// without validation — only known aliases are checked, because those are the
-// names that cannot resolve as bare ids on pi.
-func validatePiModel(model string) error {
+// no entry in the merged alias table (piModelAliases + configAliases).
+// Bare ids and provider/id specs pass through without validation — only
+// known aliases are checked, because those are the names that cannot
+// resolve as bare ids on pi.
+func validatePiModel(model string, configAliases map[string]string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = piDefaultModel
@@ -71,17 +73,31 @@ func validatePiModel(model string) error {
 		return nil
 	}
 	if piDocumentedAliases[model] {
-		if _, ok := piModelAliases[model]; !ok {
-			return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project", model)
+		aliases := mergedPiModelAliases(configAliases)
+		if _, ok := aliases[model]; !ok {
+			return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project, or map it for this repo under models.aliases in .fullsend/config.yaml", model)
 		}
 	}
 	return nil
+}
+
+// mergedPiModelAliases returns a copy of piModelAliases with per-key
+// overrides from configAliases applied. Always a fresh map, so a caller
+// can never mutate the package-level table through it.
+func mergedPiModelAliases(configAliases map[string]string) map[string]string {
+	merged := maps.Clone(piModelAliases)
+	maps.Copy(merged, configAliases)
+	return merged
 }
 
 // translatePiModel resolves the harness/agent model (already overridden by
 // the CLI when --model/FULLSEND_MODEL/FULLSEND_PI_MODEL apply) into pi's
 // --model value: aliases map to catalog ids, bare ids get the provider
 // prefix, provider/id passes through.
+//
+// configAliases, when non-nil, overrides piModelAliases per key — a repo
+// can remap "sonnet" to a different generation without restating "opus"
+// (#6882, models.aliases in .fullsend/config.yaml).
 //
 // Special case: the xai-vertex extension's model ids carry a publisher
 // segment ("xai/grok-4.6") because pi sends Model.id on the wire verbatim
@@ -96,7 +112,7 @@ func validatePiModel(model string) error {
 // strings.EqualFold for the same reason: pi resolves provider prefixes
 // case-insensitively, so "XAI/grok-4.6" must not slip past normalization
 // and reach the built-in provider with XAI_API_KEY still set.
-func translatePiModel(model string) string {
+func translatePiModel(model string, configAliases map[string]string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
 	if provider == "" {
 		provider = piDefaultProvider
@@ -105,14 +121,21 @@ func translatePiModel(model string) string {
 	if model == "" {
 		model = piDefaultModel
 	}
+	// Resolve the alias first, then normalise the *resolved* value: an
+	// alias may map to a provider/id spec (config.ValidateModelAliases
+	// accepts it), and running the xai normalisation and the "/" passthrough on
+	// the alias name instead would re-prefix the spec
+	// ("anthropic-vertex/anthropic-vertex/…") and skip the xai-vertex
+	// gate in buildPiRunCommand. The alias table is consulted once: a
+	// value that is itself an alias key is rejected at config validation.
+	if id, ok := mergedPiModelAliases(configAliases)[model]; ok {
+		model = id
+	}
 	if spec, ok := normalizeXaiVertexModel(provider, model); ok {
 		return spec
 	}
 	if strings.Contains(model, "/") {
 		return model
-	}
-	if id, ok := piModelAliases[model]; ok {
-		model = id
 	}
 	return provider + "/" + model
 }
@@ -124,8 +147,8 @@ func translatePiModel(model string) string {
 // "Anthropic-Vertex/..." would run on Vertex with the ANTHROPIC_* unset
 // skipped, and "OpenAI/..." would not be recognised as needing the OpenAI
 // run-scoped provider.
-func piModelProvider(model string) string {
-	provider, _, _ := strings.Cut(translatePiModel(model), "/")
+func piModelProvider(model string, configAliases map[string]string) string {
+	provider, _, _ := strings.Cut(translatePiModel(model, configAliases), "/")
 	return strings.ToLower(provider)
 }
 
@@ -230,8 +253,11 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	// none; EffectiveModel is shared with NeedsOpenAIProvider so the launch
 	// and the provider decision cannot disagree (#6920).
 	model := EffectiveModel(params.Model, m.Model)
-	modelSpec := translatePiModel(model)
-	provider := piModelProvider(model)
+	modelSpec := translatePiModel(model, params.ModelAliases)
+	// piModelProvider folds the provider prefix case-insensitively (pi
+	// matches it the same way), so it is the single source of truth for
+	// this gate and for NeedsOpenAIProvider.
+	provider := piModelProvider(model, params.ModelAliases)
 	vertex := provider == piDefaultProvider
 	xaiVertex := provider == piXaiVertexProvider
 	openai := provider == piOpenAIProvider
@@ -525,7 +551,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// tracked on #6527. Say so rather than silently dropping the list.
 		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on pi yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
-	if err := validatePiModel(EffectiveModel(params.Model, m.Model)); err != nil {
+	if err := validatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases); err != nil {
 		return -1, err
 	}
 	cmd := buildPiRunCommand(params, m)
@@ -553,7 +579,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		handler = renderer.Handle
 	}
 
-	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model))
+	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases)
 	// Telemetry and the renderer get the bare model id, as they do for
 	// Claude Code, so runs group by model across runtimes; the provider is
 	// gen_ai.system's job and stays visible on the command line.

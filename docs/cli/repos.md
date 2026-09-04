@@ -110,7 +110,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 | `--inference-project` | | GCP project ID for inference (written as `FULLSEND_GCP_PROJECT_ID` secret) |
-| `--inference-project-number` | | Numeric GCP project number for WIF provider computation (auto-derived from `--inference-project` when omitted) |
+| `--inference-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`); uses this provider for all repos instead of deriving per-repo providers. Project number is embedded in the path, so no auto-derivation is needed. |
 | `--forge` | | Forge type for new repos (`github` or `gitlab`). Required when adding repos not already in the manifest; inferred from existing platform sections when unambiguous. |
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--inference-region` | | Per-repo GCP inference region override (default: global when `--inference-project` is set; install-time only, not stored in the manifest) |
@@ -118,6 +118,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
 | `--runtime` | | Agent runtime (`claude`, `pi`, `codex`) recorded for repos this command adds; existing entries keep their `runtime` / `defaults.runtime` |
+| `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. The binary and content are auto-resolved from `--fullsend-ref`. |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
 
 ### GitLab bot token
@@ -256,6 +257,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
+| `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
 | `github.url` | URL | GitHub instance URL (default: `https://github.com`) |
 | `github.mint_url` | URL | Token mint service URL (defaults to `https://mint.fullsend.sh` in public mode) |
 | `github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |

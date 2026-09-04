@@ -2710,6 +2710,254 @@ func TestAgentSettings_DisabledEntryStillValid(t *testing.T) {
 	assert.True(t, IsAgentExplicitlyDisabled(cfg.AgentEntries(), "retro"))
 }
 
+// --- models.aliases tests (#6882) ---
+
+func TestModelsAliases_PerKeyMerge(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// base sets sonnet, overlay sets fable — both effective in the merged config.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`version: "1"
+models:
+  aliases:
+    sonnet: claude-sonnet-5
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+models:
+  aliases:
+    fable: claude-fable-5-1
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	pr := cfg.(PerRepoConfigReader)
+	aliases := pr.ConfigModelAliases()
+	assert.Equal(t, "claude-sonnet-5", aliases["sonnet"], "base layer's alias")
+	assert.Equal(t, "claude-fable-5-1", aliases["fable"], "overlay layer's alias")
+}
+
+func TestModelsAliases_OverlayOverridesBase(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`version: "1"
+models:
+  aliases:
+    sonnet: claude-sonnet-4-6
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+models:
+  aliases:
+    sonnet: claude-sonnet-5
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	pr := cfg.(PerRepoConfigReader)
+	aliases := pr.ConfigModelAliases()
+	assert.Equal(t, "claude-sonnet-5", aliases["sonnet"], "overlay wins over base")
+}
+
+func TestModelsAliases_UnknownKeyRejected(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"grok": "grok-4.6"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown alias key")
+	assert.Contains(t, err.Error(), "grok")
+}
+
+func TestModelsAliases_InvalidModelRefRejected(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"sonnet": "bad//id"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid model reference")
+	assert.Contains(t, err.Error(), "bad//id")
+}
+
+func TestModelsAliases_ValidConfigPasses(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{
+				"sonnet": "claude-sonnet-5",
+				"fable":  "claude-fable-5-1",
+			},
+		},
+		parent: &perRepoDefaults{},
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestModelsAliases_ProviderIDAccepted(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{
+				"sonnet": "anthropic-vertex/claude-sonnet-5",
+			},
+		},
+		parent: &perRepoDefaults{},
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestModelsAliases_AliasNameAsValueRejected(t *testing.T) {
+	t.Parallel()
+	// Aliases resolve once: `sonnet: opus` would reach the provider as the
+	// literal id "opus", so the value must be a model id, not another alias.
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"sonnet": "opus"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is the alias name")
+	assert.Contains(t, err.Error(), "models.aliases.sonnet")
+
+	// The check is case-insensitive: "Opus" passes ValidModelRef and would
+	// otherwise be sent to the provider as a literal id.
+	cfg.Models.Aliases["sonnet"] = "Opus"
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is the alias name")
+
+	// …and it looks at the id segment of a provider/id spec: pi passes a
+	// "/" value straight through, so "anthropic-vertex/opus" would send the
+	// wire id "opus".
+	cfg.Models.Aliases["sonnet"] = "anthropic-vertex/opus"
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is the alias name")
+
+	// A real id whose segment merely contains an alias name is fine.
+	cfg.Models.Aliases["sonnet"] = "anthropic-vertex/claude-opus-4-6"
+	require.NoError(t, cfg.Validate())
+}
+
+func TestModelsAliases_ValidateSeesBaseLayer(t *testing.T) {
+	t.Parallel()
+	// Validate checks the merged map, so a bad key in config.base.yaml is
+	// caught even when the overlay omits models: entirely.
+	base := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"grok": "grok-4.6"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	overlay := &perRepoConfig{Version: "1", parent: base}
+	err := overlay.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown alias key")
+	assert.Contains(t, err.Error(), "grok")
+}
+
+func TestValidateModelAliases_NilIsValid(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, ValidateModelAliases(nil))
+	require.NoError(t, ValidateModelAliases(map[string]string{}))
+}
+
+func TestModelsAliases_NilReturnsParent(t *testing.T) {
+	t.Parallel()
+	parent := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	child := &perRepoConfig{
+		Version: "1",
+		parent:  parent,
+	}
+	aliases := child.ConfigModelAliases()
+	assert.Equal(t, "claude-sonnet-5", aliases["sonnet"], "parent's alias inherited")
+}
+
+func TestModelsAliases_EmptyMapReturnsParent(t *testing.T) {
+	t.Parallel()
+	parent := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	child := &perRepoConfig{
+		Version: "1",
+		Models:  &ModelsConfig{},
+		parent:  parent,
+	}
+	aliases := child.ConfigModelAliases()
+	assert.Equal(t, "claude-sonnet-5", aliases["sonnet"], "parent's alias inherited with empty overlay")
+}
+
+func TestModelsAliases_DefaultsReturnNil(t *testing.T) {
+	t.Parallel()
+	d := &perRepoDefaults{}
+	assert.Nil(t, d.ConfigModelAliases())
+}
+
+func TestModelsAliases_MarshalRoundtrip(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		Models: &ModelsConfig{
+			Aliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		},
+		parent: &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "models:")
+	assert.Contains(t, string(data), "aliases:")
+	assert.Contains(t, string(data), "sonnet: claude-sonnet-5")
+
+	parsed, parseErr := ParsePerRepoConfig(data)
+	require.NoError(t, parseErr)
+	assert.Equal(t, "claude-sonnet-5", parsed.ConfigModelAliases()["sonnet"])
+}
+
+func TestModelsAliases_OmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := &perRepoConfig{
+		Version: "1",
+		parent:  &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "models:")
+}
+
+func TestModelsAliases_SetterAndGetter(t *testing.T) {
+	t.Parallel()
+	cfg := NewPerRepoConfig(nil, "")
+	pw := cfg.(PerRepoConfigWriter)
+	pw.SetModelAliases(map[string]string{"opus": "claude-opus-5"})
+	pr := cfg.(PerRepoConfigReader)
+	assert.Equal(t, "claude-opus-5", pr.ConfigModelAliases()["opus"])
+
+	// Clear with nil.
+	pw.SetModelAliases(nil)
+	assert.Nil(t, pr.ConfigModelAliases())
+}
+
 func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
