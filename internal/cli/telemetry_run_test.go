@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -331,16 +332,23 @@ func TestRootSpanEndAttrs(t *testing.T) {
 		ToolCalls:    7,
 	}
 	a := rootSpanEndAttrs(agg, 3)
-	require.Len(t, a, 4)
+	require.Len(t, a, 5)
 	assert.Contains(t, a, attribute.Int("fullsend.num_turns", 12))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 7))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.iterations", 3))
+	assert.Contains(t, a, attribute.Bool("fullsend.over_budget", false))
 
 	for _, kv := range a {
 		assert.False(t, strings.HasPrefix(string(kv.Key), "gen_ai."),
 			"root span must not carry gen_ai.* attributes, found %s", kv.Key)
 	}
+}
+
+func TestRootSpanEndAttrs_OverBudget(t *testing.T) {
+	agg := aggregateMetrics{OverBudget: true}
+	a := rootSpanEndAttrs(agg, 1)
+	assert.Contains(t, a, attribute.Bool("fullsend.over_budget", true))
 }
 
 func TestAgentSpanEndAttrs(t *testing.T) {
@@ -393,7 +401,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m1.CacheCreationInputTokens, m1.CacheReadInputTokens = 1000, 5000
 	m1.ToolCalls.Store(3)
 	m1.Model = "claude-opus-4-6"
-	aggregateRunMetrics(&agg, &m1, 1)
+	aggregateRunMetrics(&agg, &m1, 1, 30*time.Second)
 
 	var m2 agentruntime.RunMetrics
 	m2.NumTurns, m2.TotalCostUSD = 2, 0.05
@@ -401,10 +409,11 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m2.ReasoningTokens = 15
 	m2.CacheCreationInputTokens, m2.CacheReadInputTokens = 200, 900
 	m2.ToolCalls.Store(2)
-	aggregateRunMetrics(&agg, &m2, 2)
+	aggregateRunMetrics(&agg, &m2, 2, 45*time.Second)
 
 	assert.Equal(t, 7, agg.NumTurns)
 	assert.InDelta(t, 0.15, agg.TotalCostUSD, 1e-9)
+	assert.InDelta(t, 75.0, agg.DurationSeconds, 1e-9, "duration sums across iterations")
 	assert.Equal(t, 14, agg.TokenUsage.Input)
 	assert.Equal(t, 140, agg.TokenUsage.Output)
 	assert.Equal(t, 40, agg.TokenUsage.Reasoning)

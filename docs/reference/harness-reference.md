@@ -69,6 +69,10 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
 # ── Timeouts ──────────────────────────────────────────────────
 timeout_minutes: 20
 sandbox_timeout_seconds: 300         # 30-600
+max_cost_usd: 5.00                   # Hard cost cap in USD, checked against aggregated
+                                     # total_cost_usd across validation_loop retries;
+                                     # no further iteration starts once the cap is
+                                     # reached (default: 0 = unlimited)
 
 # ── Remote resources ──────────────────────────────────────────
 allowed_remote_resources:
@@ -139,6 +143,8 @@ Most fields are self-explanatory from the inline comments above. This section ex
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`max_cost_usd`** — Hard cost cap in USD, checked against the run's aggregated `total_cost_usd` (summed across `validation_loop` retries). `0` (default) means unlimited; the value must be finite and non-negative. The cap is enforced between iterations — the runtime-agnostic boundary, since cost arrives as a runtime-reported aggregate (Claude Code reports it once, in the final result event of a completed iteration) and not every runtime has an in-flight budget control — so an iteration already in progress is not interrupted; Claude Code's native per-invocation `--max-budget-usd` flag is not used today. Enforcement relies on runtime-reported cost: an iteration that reports no cost is warned about but cannot be counted. In `base:` composition the field is presence-aware: an absent field inherits the base's cap, while an explicit `0` in a child overrides an inherited cap with unlimited. `metrics.json` records `over_budget: true` only when the cap actually suppressed a retry, distinguishing "halted at budget" from a run that stopped for its own reasons or crashed. Decision record: [ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md); field contract: [harness budget v1](../normative/harness-budget/v1/README.md).
 
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
 
