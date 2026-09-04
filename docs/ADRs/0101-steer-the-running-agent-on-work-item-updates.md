@@ -11,7 +11,8 @@ topics:
   - runtime
 ---
 
-<!-- Builds on ADR 0098 (serialize agent runs and coalesce subsequent events),
+<!-- Related work, developed in parallel and not claimed as an implementation of it:
+     ADR 0098 (serialize agent runs and coalesce subsequent events),
      open as fullsend#6909; link it as 0098-serialize-agent-runs-and-coalesce-subsequent-events.md
      once that PR merges. -->
 
@@ -25,12 +26,17 @@ Accepted
 
 ## Context
 
-[ADR 0098](https://github.com/fullsend-ai/fullsend/pull/6909) adopts
+[ADR 0098](https://github.com/fullsend-ai/fullsend/pull/6909) proposes
 preserve-and-coalesce scheduling: the active run finishes, the execution platform
 retains one pending run for the newest matching event, and the next run reconciles
 the subject's current state. On GitHub Actions that is a subject-scoped concurrency
-group, `cancel-in-progress: false`, and the default single-pending queue. The
-dispatch half of this ADR is that policy, implemented.
+group, `cancel-in-progress: false`, and the default single-pending queue.
+
+That ADR is open and under review, and it was written in parallel with this work,
+against the same user feedback rather than against each other. This ADR does not claim
+to implement it: the two reach for the same first move — a run in flight should not be
+thrown away — from different starting points, and where they overlap they should be
+reconciled before either merges.
 
 Preserve-and-coalesce stops discarding work, but on its own it leaves two costs
 standing. The run in flight finishes on the state it started with and posts output
@@ -52,10 +58,11 @@ concurrency semantics to be written down, which the rest of this ADR does.
 
 ## Decision
 
-Adopt ADR 0098's scheduling, and add an **opt-in** extension on top of it: while the
-active run holds the subject, it absorbs the retained event itself, so the pending
-run finds the work already done and exits. With the extension off — the default —
-behaviour is exactly ADR 0098's.
+Preserve the active run and coalesce later events into one pending run, and add an
+**opt-in** extension on top of that: while the active run holds the subject, it absorbs
+the retained event itself, so the pending run finds the work already done and exits.
+With the extension off — the default — the behaviour is preserve-and-coalesce and
+nothing more, which is also what ADR 0098 proposes.
 
 ### Relationship to ADR 0098's rejected polling option
 
@@ -69,13 +76,13 @@ that option, and the difference is the thing to check when reviewing it:
   is involved — a follow-up run is only accepted because its own `Route` job already
   ran the normal authorization path.
 - It **invokes nothing**. Scheduling stays with the platform: every follow-up event
-  still creates its pending run, exactly as ADR 0098 requires. The active run only
+  still creates its pending run, which preserve-and-coalesce requires. The active run only
   reads what the platform already decided.
 - It is **bounded** — `max_steers` per run, and a remaining-time floor below which the
   watcher settles rather than starting a turn it cannot finish.
-- It **never extends the active run's timeout**, which ADR 0098 states explicitly. The
+- It **never extends the active run's timeout**, a point ADR 0098 also makes explicitly. The
   budget is `min(stage timeout, forge token life − margin)` and the run settles inside it.
-- Each run still **reconciles the subject's current state**, as ADR 0098 requires; a
+- Each run still **reconciles the subject's current state**, as ADR 0098 also calls for; a
   steer is a prompt to reconcile sooner, not a substitute for reconciling.
 
 ### Concurrency
@@ -91,7 +98,7 @@ concurrency:
 **Gated for now.** Unset — the default everywhere — keeps today's cancelling behaviour, and a
 consumer opts into `cancel-in-progress: false` together with steering by setting the variable to
 `"true"`. The gate exists only because ADR 0098 (fullsend#6909) is not merged at the time of
-writing: once 0098 makes preserve-and-coalesce the policy for every agent trigger, the expression
+writing: if it is accepted and preserve-and-coalesce becomes the policy for every agent trigger, the expression
 becomes a plain `cancel-in-progress: false`, the variable goes away, and steering stays separately
 gated by the harness `steer.enabled` flag. That follow-up removes the mixed state described under
 "Rollout order".
@@ -334,7 +341,7 @@ variable, one repository at a time, after one real steer of each runtime has bee
 - A run now holds its sandbox until it settles rather than ending at its first result, so a
   steered run occupies a VM longer and can cost as much again per absorbed update.
 - Nothing changes for a repository that does not opt in, and the fallback in every failure path —
-  no ack, no time left, cap reached, runtime cannot steer — is exactly ADR 0098's behaviour.
+  no ack, no time left, cap reached, runtime cannot steer — is plain preserve-and-coalesce.
 
 Related: [#5445](https://github.com/fullsend-ai/fullsend/issues/5445) and
 [#2388](https://github.com/fullsend-ai/fullsend/issues/2388) — `/fs-cancel` gains a second
