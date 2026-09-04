@@ -30,7 +30,9 @@ import (
 var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "anthropic-vertex", "xai-vertex"}
 
 // piReservedOptions are pi's own command-line options (cli/args.ts, read
-// at 0.84.4). An extension's args are appended verbatim after its
+// at 0.84.4; at 0.85.0 args.js adds only help text for PI_SERVER_DIR and
+// PI_SERVER_ID, and the option-literal set is unchanged, so this list still
+// covers it). An extension's args are appended verbatim after its
 // `-e <path>` and pi matches its own options first, so an unfiltered list
 // could re-open approvals, load a second extension from the agent-writable
 // workspace, or swap the model. `--debug` is deliberately absent: pi has no
@@ -55,7 +57,8 @@ var validPiFlag = regexp.MustCompile(`^--[A-Za-z0-9][A-Za-z0-9._-]*(=.*)?$`)
 
 // PiArgsProblem reports why an entry's `pi: {args}` list is not
 // admissible, or "" when it is. It checks the args against the shape pi's
-// own parser gives them (cli/args.ts parseArgs at 0.84.4):
+// own parser gives them (cli/args.ts parseArgs at 0.84.4; 0.85.0 changes
+// only the help text, adding PI_SERVER_DIR/PI_SERVER_ID):
 //
 //   - `--flag=value` sets the flag and consumes nothing after it;
 //   - a bare `--flag` consumes the next element as its value, but only when
@@ -112,7 +115,8 @@ func PiArgsProblem(args []string) string {
 
 // piPackageResourceDirs are the subdirectory names that make pi treat a
 // `-e <dir>` target as a *package* rather than a single extension
-// (core/package-manager.ts collectPackageResources, 0.84.4): the loader
+// (core/package-manager.ts collectPackageResources, 0.84.4; the compiled
+// module is byte-identical at 0.85.0): the loader
 // collects extensions, skills, prompts and themes from them and never
 // looks for an index entry point. One of these directories — even an empty
 // one — therefore silently disables an index.js-based extension, which is

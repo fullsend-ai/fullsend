@@ -24,7 +24,8 @@ const killStrayProcessesTimeout = 15 * time.Second
 // kill_stray_processes_test.sh runs under a real shell.
 //
 // Why: pi's built-in bash tool spawns commands detached and kills that
-// process tree only on abort/timeout (pi 0.84.4, core/tools/bash.ts), so a
+// process tree only on abort/timeout (pi 0.84.4, core/tools/bash.ts;
+// killProcessTree call sites unchanged at 0.85.0), so a
 // backgrounded command such as `nohup python3 -c 'import time;
 // time.sleep(300)' &` survives the agent process's normal exit. Claude
 // Code's Bash tool is closed source, but the same symptom was observed:

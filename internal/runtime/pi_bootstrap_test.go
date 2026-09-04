@@ -706,7 +706,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			piXaiVertexProvider: piXaiVertexModels,
 		}, m.Agent.ProviderModels,
 			"the extension needs a closed id list for every provider a run can serve with no model-table entry")
-		assert.Contains(t, m.Agent.ProviderModels["google-vertex"], "gemini-3.7-flash", "the spec documented in docs/runtimes/pi.md")
+		assert.Contains(t, m.Agent.ProviderModels["google-vertex"], "gemini-3.8-flash", "the spec documented in docs/runtimes/pi.md")
 		assert.Equal(t, []string{"xai/grok-4.6"}, m.Agent.ProviderModels[piXaiVertexProvider],
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"

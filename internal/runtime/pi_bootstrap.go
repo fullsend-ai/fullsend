@@ -481,8 +481,13 @@ func piAgentModels(defModel string) map[string]string {
 
 // piGoogleVertexModels are the model ids pi's built-in google-vertex
 // provider registers, verbatim from the catalog the pinned pi bundles
-// (@earendil-works/pi-ai 0.84.4, dist/providers/data/google-vertex.json).
-// Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are.
+// (@earendil-works/pi-ai 0.85.0, dist/providers/data/google-vertex.json).
+// Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
+// diff that data file, not the generated wrapper -- 0.85.0 added
+// gemini-3.8-flash and nothing else, and a missed entry means this table
+// rejects an id the running pi actually serves.
+// internal/runtime/testdata/pi/check-vertex-catalog.sh does the diff
+// against whatever PI_VERSION the Containerfile pins.
 //
 // Gemini needs no extension and has no entry in the agent's model table, so
 // without a closed list the extension would have to pass any
@@ -501,6 +506,7 @@ var piGoogleVertexModels = []string{
 	"gemini-3.5-flash-lite",
 	"gemini-3.6-flash",
 	"gemini-3.7-flash",
+	"gemini-3.8-flash",
 	"gemini-flash-latest",
 	"gemini-flash-lite-latest",
 }
