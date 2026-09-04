@@ -26,9 +26,9 @@ was left to [#294](https://github.com/fullsend-ai/fullsend/issues/294).
 Level 3 content ([#6429](https://github.com/fullsend-ai/fullsend/pull/6429),
 [#6603](https://github.com/fullsend-ai/fullsend/pull/6603)) put tool calls
 and results on the `agent` span as `gen_ai.output.messages` parts — at
-semconv v1.37.0 the `execute_tool` span is metadata-only (its content
-attributes exist only in the newer GenAI repository, opt-in). Review of
-#6603 asked why tool calls are not spans.
+semconv v1.37.0 the `execute_tool` span is metadata-only; its content
+attributes (`gen_ai.tool.call.arguments`, `.result`) arrive in v1.38.0 as
+Opt-In and Development. Review of #6603 asked why tool calls are not spans.
 
 fullsend observes the runtime's stream rather than executing tools. The
 normalized `ToolUseEvent`/`ToolResultEvent` pairs carry a call id, a tool
@@ -48,8 +48,8 @@ decode; the pi and codex parsers pass no call ids through.
    `claude_code.tool` spans (beta) and honours inbound `TRACEPARENT` — true
    timing, but redaction would leave fullsend's pipeline, the threat model
    keeps runtime telemetry out of scope, and the sandbox would need egress.
-4. **Per-tool content on the spans**: needs the newer conventions' opt-in
-   attributes, and the scorers read the message record today.
+4. **Per-tool content on the spans**: needs v1.38.0's Opt-In attributes,
+   and the scorers read the message record today.
 
 ## Decision
 
@@ -64,8 +64,9 @@ v1.37.0: `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
 close as `error.type=unanswered`, results for calls never reported are
 marked `fullsend.tool.unmatched`, and events without a call id (pi, codex,
 server-side tools) get no span — the edge cases are specified in the
-[dev guide](../guides/dev/tracing.md#execute_tool-spans). Names pass
-through the same sanitizer as span content and are bounded; at most 1,024
+[dev guide](../guides/dev/tracing.md#execute_tool-spans). Names and call ids
+pass through the same sanitizer as span content — names bounded, ids dropped
+on any finding; at most 1,024
 spans are recorded per iteration, so an agent-controlled burst cannot fill
 the OTLP batch queue and evict the `agent` span, with the overflow counted
 in `fullsend.tool_spans.dropped`. The spans are Level 1 metadata, emitted
