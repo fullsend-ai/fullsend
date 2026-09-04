@@ -409,7 +409,9 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
 
-		newBody := sticky.BuildUpdatedBody(string(existing.Body), markedBody, cfg)
+		// Same as sticky.Post: the old body is re-posted as history, so a
+		// marker smuggled into it earlier must not survive the edit.
+		newBody := sticky.BuildUpdatedBody(statuscomment.NeutralizeMarkers(string(existing.Body)), markedBody, cfg)
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + existing.ID)
