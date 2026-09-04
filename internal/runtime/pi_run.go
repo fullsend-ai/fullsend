@@ -796,7 +796,14 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	wrappedHandler := func(evt AgentEvent) {
 		switch e := evt.(type) {
 		case ResultEvent:
+			// Capture the result but do NOT forward it here; the
+			// fallback loop decides whether to emit the ResultEvent
+			// based on whether this attempt is final or will be
+			// retried. Forwarding eagerly renders a fully-formed
+			// error block for the failed attempt before the fallback
+			// warning, confusing the user.
 			lastResult = &e
+			return
 		default:
 		}
 		handler(evt)
@@ -852,6 +859,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return -1, err
 	}
 	if params.HooksSettingsPath != "" && (m.Hooks == nil || m.Hooks.Groups == nil) {
+		// Same predicate as the adapter's `wired` check (a groups array,
+		// possibly empty): without it the adapter would load and block every
+		// tool call, so fail before spending an iteration on it.
 		return -1, fmt.Errorf("security is enabled but the pi manifest at %s carries no hook plan (Bootstrap ran without the sandbox hook config, or the manifest was modified)", r.piManifestPath())
 	}
 	if _, ok := piThinkingFor(params.Effort); !ok {
@@ -868,6 +878,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if err := validatePiModel(effectiveModel, params.ModelAliases); err != nil {
 		return -1, err
 	}
+	// The extension preflight hashes come from the host directories, not
+	// from the manifest just read: that file sits in the agent-writable
+	// config dir and could be rewritten together with an extension.
 	exts, err := piResolveRunPlugins(params.Plugins)
 	if err != nil {
 		return -1, err
@@ -882,6 +895,12 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	// The first model spec in the chain is the primary; emit the InitEvent
 	// with its bare id. If a fallback succeeds, metrics.Model is updated.
+	// Telemetry and the renderer get the bare model id, as they do for
+	// Claude Code, so runs group by model across runtimes; the provider is
+	// gen_ai.system's job and stays visible on the command line.
+	// The wire carries no CLI version and the model only on the first
+	// assistant message; Bootstrap's preflight and the resolved model are
+	// known up front, so emit the InitEvent here and drop the parser's.
 	primarySpec := chain[0]
 	metrics.Model = piBareModelID(primarySpec)
 	handler(InitEvent{Model: metrics.Model, Version: m.PiVersion})
@@ -932,6 +951,14 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		break
 	}
 
+	// Forward the final attempt's ResultEvent through metricsHandler so
+	// metrics are captured and the renderer sees exactly one result block.
+	// piExecModel suppresses ResultEvent forwarding to avoid rendering
+	// error results from failed fallback attempts.
+	if result.lastResult != nil {
+		metricsHandler(*result.lastResult)
+	}
+
 	// Return infrastructure/security errors.
 	if result.execErr != nil {
 		return result.exitCode, result.execErr
@@ -945,9 +972,16 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	metrics.Model = piBareModelID(modelSpec)
 
 	if m.Agent != nil && m.Agent.Enabled {
+		// Children are separate pi processes, so none of their tokens
+		// reached the stream just parsed; the extension's usage file is the
+		// only record of what they spent. A read failure is not fatal —
+		// losing the breakdown must not fail an iteration that succeeded.
 		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
 			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
 		} else {
+			// Unconditional: the parent's own entry belongs in the
+			// breakdown even when this iteration dispatched nothing, or
+			// per_model_usage stops summing to the totals across a retry.
 			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
 			if n > 0 {
 				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
