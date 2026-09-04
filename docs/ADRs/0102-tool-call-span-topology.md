@@ -86,6 +86,11 @@ convention bump.
   `fullsend.tool_calls`, which counts every reported call, id or not.
 - Tool-heavy iterations add hundreds of spans, each one synchronous write to
   `run-telemetry.jsonl` and one OTLP batch entry.
+- Full per-call volume is intended: the spans are the unit of tool-level
+  observability, the cap is a pathological-case backstop rather than a knob,
+  and no switch or sampler is added — sampling is per trace and would drop
+  whole runs, not thin these spans; the levers stay the standard ones
+  (endpoint unset keeps the file only; `OTEL_SDK_DISABLED`).
 - Sub-agent calls are flat children of the `agent` span; nesting them under
   the dispatching `Agent` call is a small follow-up now that the parent span
   exists while its children run (ADR 0050's deferred item 1 stays deferred).
