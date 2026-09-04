@@ -972,28 +972,25 @@ func TestPrioritizeThinCallerThreadsProjectNumber(t *testing.T) {
 }
 
 // TestShimLabeledEventFiltering validates that shim workflows use the ready-
-// prefix filter at the if: guard level and label-aware concurrency keys so
-// routing labels don't cancel each other (#2452).
-//
-// The per-repo shim is exempt from the prefix filter because it has no
-// concurrency group and BYOA harness agents may trigger on arbitrary labels.
+// prefix filter at the if: guard level to prevent non-routing label events
+// from triggering dispatch, and that workflow-call shims use label-aware
+// concurrency keys so routing labels don't cancel each other (#1362, #2452).
 func TestShimLabeledEventFiltering(t *testing.T) {
 	type shimCase struct {
 		name           string
 		content        func(t *testing.T) []byte
+		hasLabelGuard  bool
 		hasConcurrency bool
 	}
 
 	cases := []shimCase{
-		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), false},
-		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
-		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
+		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true, true},
+		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), true, false},
 	}
 
-	// Workflow-call shims must have the ready- prefix filter in the if: guard.
-	// The per-repo shim is exempt (no concurrency group, BYOA compat).
+	// Shims with hasLabelGuard must have the ready- prefix filter in the if: guard.
 	for _, tc := range cases {
-		if !tc.hasConcurrency {
+		if !tc.hasLabelGuard {
 			continue
 		}
 		t.Run(tc.name+"/guard", func(t *testing.T) {
@@ -1016,9 +1013,9 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 		})
 	}
 
-	// Per-repo shim must NOT have the ready- prefix filter (BYOA compat).
+	// Shims without hasLabelGuard must NOT have the ready- prefix filter.
 	for _, tc := range cases {
-		if tc.hasConcurrency {
+		if tc.hasLabelGuard {
 			continue
 		}
 		t.Run(tc.name+"/no-label-guard", func(t *testing.T) {
@@ -1028,7 +1025,7 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 			require.True(t, ok, "%s must have a dispatch job", tc.name)
 
 			assert.NotContains(t, job.If, "startsWith(github.event.label.name",
-				"%s per-repo shim must not filter on label prefix — BYOA harness agents may use arbitrary labels", tc.name)
+				"%s must not filter on label prefix", tc.name)
 		})
 	}
 
