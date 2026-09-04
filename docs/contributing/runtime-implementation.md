@@ -319,7 +319,7 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 | Binary | Pin | Re-check on bump |
 |--------|-----|------------------|
 | Claude Code | `ARG CLAUDE_CODE_VERSION` (npm, Renovate-tracked). The OpenShell base image ships its **own** unpinned Claude Code at `/usr/local/bin/claude` (whatever `curl claude.ai/install.sh` fetched when the base was built), and `/usr/local/bin` precedes npm's `/usr/bin` on the sandbox `PATH` — so the Containerfile replaces that file with a symlink to the npm install and fails the build unless `claude --version` equals the pin (#6612; before that fix the base image's 2.1.156 shadowed every pin). `TestSandboxImageClaudeCodePinWins` guards the step | the [tool-name vocabulary](#tool-name-vocabulary-608); the hook contract caveats above; the alias table — `opus`/`sonnet`/`haiku` resolve from the running version's built-in defaults on Vertex, and `ANTHROPIC_DEFAULT_*_MODEL` does not steer the request there, so a harness or `agents:` entry that needs a specific generation must name the id |
-| pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464); `piGoogleVertexModels` in `pi_bootstrap.go`, which is the bundled `google-vertex` catalog verbatim and is what the `Agent` tool accepts as a Gemini id — diff `dist/providers/data/google-vertex.json` between the old and new pin, not the generated wrapper, and add any new id (0.85.0 added `gemini-3.8-flash`); a missed entry makes the `Agent` tool reject a model the running pi serves |
+| pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464); `piGoogleVertexModels` in `pi_bootstrap.go`, which is the bundled `google-vertex` catalog verbatim and is what the `Agent` tool accepts as a Gemini id — diff `dist/providers/data/google-vertex.json` between the old and new pin, not the generated wrapper, and add any new id; a missed entry makes the `Agent` tool reject a model the running pi serves. `internal/runtime/testdata/pi/check-vertex-catalog.sh` runs exactly that diff against the pinned `PI_VERSION` |
 | `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/anthropic-vertex` | the extension's own CI matrix (pinned `PI_VERSION` + latest pi); no compat file or SDK override to check |
 | `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals; declared only — `--omit=peer` never installs it); `piXaiVertexModels` in `pi_bootstrap.go`, the ids it registers and what the `Agent` tool accepts as a Grok id |
 | Codex | `ARG CODEX_VERSION` (npm, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`). The OpenShell base image already installs `@openai/codex` under the same npm prefix (`/usr`, binary `/usr/bin/codex`) — 0.117.0 on the base pinned today — so the pinned install replaces it in place. `/usr/local/bin/codex` is then symlinked at the npm install and the build fails unless `codex --version` reports `codex-cli <pin>`: nothing shadows the pin there today, and the symlink plus assertion make sure nothing can start to, the way the base image's Claude Code did in #6612. `TestSandboxImageCodexPinWins` guards the step | the codex stream parser fixtures (#6920); the JSONL event and hook wire shapes the codex runtime depends on |
@@ -546,7 +546,7 @@ flowchart TB
 
 ### Runs unattended
 
-Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.84.2 source and empirically on the pinned build:
+Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.84.2 source and empirically on the then-pinned 0.84.2 build (not re-run against the current pin):
 
 - pi has no tool-approval layer at all (nothing in `core/tools/*` or `core/bash-executor.ts` prompts).
 - In `--print` mode extensions get a no-op UI context, so `ctx.ui.confirm/select/input/editor` resolve immediately (`modes/print-mode.ts`, `core/extensions/runner.ts`).
@@ -604,8 +604,11 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 The pi-format entries of the harness's `plugins:` list
 ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). The walkthrough a harness author
 follows is [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions); this section
-keeps the rules' *reasons* and the provenance behind them (verified against pi 0.84.4 unless noted;
-the modules cited here are byte-identical at the pinned 0.85.0).
+keeps the rules' *reasons* and the provenance behind them (verified against pi 0.84.4 unless noted).
+At the pinned 0.85.0 the loader modules cited below — `core/pi-manifest.js` and
+`core/package-manager.js` — are byte-identical; `core/extensions/loader.js` and the bundled
+`cli.js` did change, but the `createJiti` call and the `isBundledNode` expression this section
+relies on are unchanged (`isBundledNode` merely moved to `config.js`).
 
 **Which entries are pi's is decided per directory.** `internal/pluginformat` is the leaf package
 both `internal/harness` and `internal/runtime` read: `Detect` (local directory) and `DetectTree`

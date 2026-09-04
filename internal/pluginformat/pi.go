@@ -30,7 +30,9 @@ import (
 var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "anthropic-vertex", "xai-vertex"}
 
 // piReservedOptions are pi's own command-line options (cli/args.ts, read
-// at 0.84.4). An extension's args are appended verbatim after its
+// at 0.84.4; at 0.85.0 args.js adds only help text for PI_SERVER_DIR and
+// PI_SERVER_ID, and the option-literal set is unchanged, so this list still
+// covers it). An extension's args are appended verbatim after its
 // `-e <path>` and pi matches its own options first, so an unfiltered list
 // could re-open approvals, load a second extension from the agent-writable
 // workspace, or swap the model. `--debug` is deliberately absent: pi has no

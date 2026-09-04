@@ -257,8 +257,15 @@ func piIsErrorStop(reason string) bool {
 // already settled — so callers must not treat a non-nil error as "no
 // result was delivered".
 //
-// Pi's wire format (v0.84.2; dist/modes/json-event.js is byte-identical
-// from 0.84.4 to the pinned 0.85.0, so these shapes still hold):
+// Pi's wire format (v0.84.2), re-checked at the pinned 0.85.0. Note where
+// these shapes actually come from: json-event.js only projects
+// message_update and passes everything else through, so its being
+// byte-identical proves little on its own. The header comes from
+// core/session-manager.js, which still emits the same literal with
+// CURRENT_SESSION_VERSION = 3; the event types come from
+// core/agent-session.js, which differs only in compaction/idle lifecycle
+// and emits an unchanged set of type literals; modes/print-mode.js and
+// modes/json-event.js, which serialize them, are byte-identical:
 //   - Session header {type:session, version:3, id, timestamp, cwd} — no model.
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.

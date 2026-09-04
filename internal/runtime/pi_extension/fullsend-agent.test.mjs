@@ -856,7 +856,8 @@ test("execute throws on a failed child so pi marks the result isError", async ()
 // --- Real pi ---------------------------------------------------------------
 // The prompt-delivery contract is a claim about pi's own argv parser, so one
 // test checks it against the real binary. CI has no pi, so it is gated:
-//   npm install --prefix /tmp/pi @earendil-works/pi-coding-agent@0.84.4 \
+//   npm install --prefix /tmp/pi \
+//     @earendil-works/pi-coding-agent@"$(sed -n 's/^ARG PI_VERSION=//p' images/sandbox/Containerfile)" \
 //     --ignore-scripts
 //   FULLSEND_TEST_PI_BIN=/tmp/pi/node_modules/.bin/pi \
 //     node --test internal/runtime/pi_extension/
@@ -909,7 +910,7 @@ function userText(stdout) {
 }
 
 test("real pi: the prompt goes over stdin because argv cannot carry it", { timeout: 180_000 }, async (t) => {
-  if (!REAL_PI) return t.skip("set FULLSEND_TEST_PI_BIN to a pi 0.84.4 binary");
+  if (!REAL_PI) return t.skip("set FULLSEND_TEST_PI_BIN to a pi binary at the pinned PI_VERSION (images/sandbox/Containerfile)");
   const { manifest } = fixture();
   const home = join(manifest.agent.sessionsDir, "..", "pi-home");
   mkdirSync(home, { recursive: true });

@@ -80,7 +80,10 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # ---------------------------------------------------------------------------
 # Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
 # as Claude Code above. --ignore-scripts is the upstream-recommended install
-# (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
+# (the package ships an npm-shrinkwrap.json; nothing on the bin path needs a
+# postinstall -- 0.85.0 adds @earendil-works/chord -> esbuild, which declares
+# one, but both are reachable only from dist/experimental/, not from
+# dist/bundle/cli.js). Stub
 # runtime for now — see #6464; the runtime is not user-selectable until
 # implemented, but the binary ships now so the Bootstrap/Run work and any
 # in-sandbox fixture capture run against a pinned, reviewed version

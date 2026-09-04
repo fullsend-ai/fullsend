@@ -108,8 +108,9 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // (piExtensionsGuard) and the hook adapter's SHA-256 check (piHooksGuard),
 // neither of which can see it. Setting the variable to false makes jiti
 // ignore any planted entry and create no cache directory at all (verified
-// on pi 0.84.4 — internal/runtime/testdata/pi/jiti-cache-check.sh
-// reproduces both halves). Run re-exports these after the agent-writable
+// on pi 0.84.4, and jiti is still 2.7.0 at the pinned 0.85.0 —
+// internal/runtime/testdata/pi/jiti-cache-check.sh reproduces both
+// halves). Run re-exports these after the agent-writable
 // .env is sourced, so the agent cannot switch the cache back on, and
 // harness validation reserves the JITI_* family from extension env.
 //
