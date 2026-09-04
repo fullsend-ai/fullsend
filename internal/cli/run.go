@@ -1173,6 +1173,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
 
+	// The instant this run started, exported into the sandbox so the agent
+	// can tell which activity on the work item postdates it.
+	runStartedAt := time.Now().UTC()
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
@@ -1884,7 +1888,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
-	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(),
+		runFacts{headSHA: runHeadSHA(forgePlatform), startedAt: runStartedAt}, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2777,6 +2782,8 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_SLUG":               true,
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
+	"FULLSEND_RUN_HEAD_SHA":       true,
+	"FULLSEND_RUN_STARTED_AT":     true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 }
 
@@ -2932,7 +2939,19 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, el
 	return nil
 }
 
-func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
+// runFacts is what the work item looked like when this run started. It is
+// exported into the sandbox so an agent can tell, before it writes its
+// result, whether the item moved under it — which it must do once a
+// repository sets FULLSEND_PRESERVE_RUNS, because the run in flight is then
+// no longer cancelled when a newer event arrives.
+type runFacts struct {
+	// headSHA is the work item's head at run start; empty for issues.
+	headSHA string
+	// startedAt is when the run started, in UTC.
+	startedAt time.Time
+}
+
+func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, facts runFacts, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
 
@@ -2952,6 +2971,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// Expose harness identity so skills can reference their own role/slug
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
+
+	// Expose this run's baseline so the agent can re-check, once, whether the
+	// work item moved under it before it writes its result.
+	lines = append(lines, buildRunFactsEnvLines(facts)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -4885,6 +4908,37 @@ func extractMapString(m map[string]any, keys ...string) string {
 		current = v
 	}
 	return ""
+}
+
+// runHeadSHA returns the work item's head at run start, or "" when the run
+// is not against a pull or merge request.
+//
+// GITHUB_SHA is deliberately not a fallback: on pull_request_target it is the
+// base branch, and a base SHA presented as the head would make an agent
+// report a head move on every run.
+func runHeadSHA(forgePlatform string) string {
+	if forgePlatform == "gitlab" {
+		return os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
+	}
+	if sha := os.Getenv("PR_HEAD_SHA"); sha != "" {
+		return sha
+	}
+	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// buildRunFactsEnvLines exports this run's baseline into the sandbox.
+//
+// They are written here rather than through env.sandbox or an env/*.env file:
+// .env.d files are sourced after this one and would expand ${VAR} host-side to
+// an empty string, and a ${VAR} in harness env.sandbox hard-fails
+// ValidateRunnerEnvWith for consumers that do not define it.
+func buildRunFactsEnvLines(facts runFacts) []string {
+	return []string{
+		fmt.Sprintf("export FULLSEND_RUN_STARTED_AT='%s'", facts.startedAt.UTC().Format(time.RFC3339)),
+		// The SHA is forge-supplied; single-quote it the way every other
+		// exported value here is, rather than trusting its shape.
+		fmt.Sprintf("export FULLSEND_RUN_HEAD_SHA='%s'", strings.ReplaceAll(facts.headSHA, "'", "'\\''")),
+	}
 }
 
 // prHeadSHAFromEventPath extracts pull_request.head.sha from the event
