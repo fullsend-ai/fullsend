@@ -47,6 +47,25 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 	assert.Equal(t, "sandbox-1", boot.SandboxName())
 	assert.Equal(t, "agents/test.md", boot.AgentPath())
 	assert.Equal(t, "test", boot.AgentName())
+	assert.Nil(t, boot.ModelAliases(), "no per-repo overrides means no alias map")
+}
+
+// The per-repo models.aliases map reaches the runtime through
+// BootstrapInput, which is how it lands in pi's sub-agent model table
+// (#7020); a run with overrides must carry them here, not just on
+// RunParams.
+func TestNewHarnessBootstrap_CarriesModelAliases(t *testing.T) {
+	disabled := false
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Security: &harness.SecurityConfig{
+			Enabled: &disabled,
+		},
+	}
+	aliases := map[string]string{"sonnet": "claude-sonnet-5"}
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases)
+	require.NoError(t, err)
+	assert.Equal(t, aliases, boot.ModelAliases())
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {

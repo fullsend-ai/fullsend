@@ -474,6 +474,32 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 	base, _, _ := strings.Cut(strings.TrimSpace(defModel), "@")
 	models := map[string]string{"default": translatePiModel(base, configAliases)}
 	for alias, id := range mergedPiModelAliases(configAliases) {
+		// An override may name its provider explicitly — models.aliases
+		// accepts `provider/id` (docs/runtimes/pi.md: `haiku:
+		// google-vertex/gemini-3.7-flash`) — and prefixing that again
+		// would hand the child "anthropic-vertex/google-vertex/...",
+		// which resolves nowhere. Resolve each value the way Run resolves
+		// the parent's, so the two never disagree about one alias:
+		// xai-vertex specs are normalised to their canonical
+		// three-segment form (a bare "xai/grok-4.6" left alone would name
+		// pi's built-in xai provider, which wants XAI_API_KEY, and the
+		// child's xai-vertex env branch would never fire), any other
+		// provider-qualified value passes through, and only a bare id
+		// takes the prefix — which keeps the fleet's Claude aliases on
+		// Anthropic Vertex whatever provider the parent runs on.
+		// translatePiModel is deliberately not reused: it consults
+		// FULLSEND_PI_PROVIDER, so it would re-provider those Claude
+		// aliases under an xai-vertex parent. piDefaultProvider is passed
+		// as the provider precisely because it is never xai-vertex, so a
+		// bare id can never take normalizeXaiVertexModel's third branch.
+		if spec, ok := normalizeXaiVertexModel(piDefaultProvider, id); ok {
+			models[alias] = spec
+			continue
+		}
+		if strings.Contains(id, "/") {
+			models[alias] = id
+			continue
+		}
 		models[alias] = piDefaultProvider + "/" + id
 	}
 	return models
