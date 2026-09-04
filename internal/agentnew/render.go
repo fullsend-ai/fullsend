@@ -232,8 +232,15 @@ func renderSchema(name string) ([]byte, error) {
 		"additionalProperties": false,
 		"required":             []string{"status", "summary", "comment"},
 		"properties": map[string]any{
-			"status":  map[string]any{"type": "string", "enum": []string{"ok", "findings", "error"}},
-			"summary": map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
+			"status": map[string]any{"type": "string", "enum": []string{"ok", "findings", "error"}},
+			// pattern, not just maxLength: the generated post-script refuses
+			// a multi-line summary (it is interpolated into a bold heading),
+			// and without this the validation loop would pass it and the
+			// failure would surface only after the agent had finished.
+			"summary": map[string]any{
+				"type": "string", "minLength": 1, "maxLength": 200,
+				"pattern": `^[^\r\n]*$`,
+			},
 			"comment": map[string]any{"type": "string", "minLength": 1, "maxLength": 16384},
 		},
 	}
