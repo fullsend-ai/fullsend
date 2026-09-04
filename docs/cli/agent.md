@@ -313,6 +313,28 @@ post-lint-docs: dry run, not posting
   ✓ Post-script completed (0.1s)
 ```
 
+With `--runtime claude`, the same agent against a real pull request — the
+model does the work, the schema gate runs, and the post-script still only
+prints:
+
+```
+  ✓ Extracted 1 output file(s)
+  • Running validation: .fullsend/scripts/validate-output-schema.sh
+  ✓ Validation passed: PASS: output validated against schema
+    Agent exit code: 0
+    Agent runs: 1
+    Validation: passed
+  • Running post-script: .fullsend/scripts/post-link-check.sh
+post-link-check: status=ok, nothing to post
+  ✓ Post-script completed (0.3s)
+```
+
+That run is the reference agent from
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents) `examples/link-check/`,
+not the generated stub — the stub has sections still to fill in, so it has no
+work to do. Both runtimes exercise the same harness, sandbox, validation loop
+and post-script; only the agent's own reasoning differs.
+
 The `dummy` runtime reads a scripted result from
 `.fullsend/behaviour/current-scenario.yaml`; write one that produces
 `output/agent-result.json` to try this. That last block is the whole contract
