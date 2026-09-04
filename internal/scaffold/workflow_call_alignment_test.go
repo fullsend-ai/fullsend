@@ -971,21 +971,47 @@ func TestPrioritizeThinCallerThreadsProjectNumber(t *testing.T) {
 		"prioritize thin caller must fall back to vars.FULLSEND_PROJECT_NUMBER when input is empty")
 }
 
-// TestShimLabeledEventFiltering validates that shim workflows use the ready-
-// prefix filter at the if: guard level to prevent non-routing label events
-// from triggering dispatch, and that workflow-call shims use label-aware
-// concurrency keys so routing labels don't cancel each other (#1362, #2452).
+// TestShimLabeledEventFiltering validates that shim workflows guard against
+// unwanted labeled-event dispatch. Workflow-call (per-org) shims use the
+// ready- prefix filter; per-repo shims use a sender-type filter to preserve
+// BYOA arbitrary-label compatibility (#1362). Both approaches prevent
+// non-routing label events from triggering dispatch. Workflow-call shims
+// additionally use label-aware concurrency keys so routing labels don't
+// cancel each other (#2452).
 func TestShimLabeledEventFiltering(t *testing.T) {
 	type shimCase struct {
 		name           string
 		content        func(t *testing.T) []byte
-		hasLabelGuard  bool
+		hasLabelGuard  bool // ready- prefix filter (per-org shims)
+		hasSenderGuard bool // sender-type filter (per-repo shims, #1362)
 		hasConcurrency bool
 	}
 
 	cases := []shimCase{
-		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true, true},
-		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), true, false},
+		{
+			name:           "scaffold/shim-workflow-call.yaml",
+			content:        loadScaffoldFile("templates/shim-workflow-call.yaml"),
+			hasLabelGuard:  true,
+			hasSenderGuard: false,
+			hasConcurrency: true,
+		},
+		{
+			name:           "scaffold/shim-per-repo.yaml",
+			content:        loadScaffoldFile("templates/shim-per-repo.yaml"),
+			hasLabelGuard:  false,
+			hasSenderGuard: true,
+			hasConcurrency: false,
+		},
+		{
+			// Rendered per-repo shim — not yet regenerated from the updated
+			// template. Tracked for regeneration via the scaffold reconciliation
+			// process. TODO(#1362): regenerate and set hasSenderGuard: true.
+			name:           "fullsend.yaml",
+			content:        loadRepoFile(".github/workflows/fullsend.yaml"),
+			hasLabelGuard:  false,
+			hasSenderGuard: false,
+			hasConcurrency: false,
+		},
 	}
 
 	// Shims with hasLabelGuard must have the ready- prefix filter in the if: guard.
@@ -1013,6 +1039,24 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 		})
 	}
 
+	// Shims with hasSenderGuard must have the sender-type filter in the if: guard (#1362).
+	for _, tc := range cases {
+		if !tc.hasSenderGuard {
+			continue
+		}
+		t.Run(tc.name+"/sender-guard", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+
+			assert.Regexp(t,
+				`\)\s*&&\s*\(\s*github\.event\.action\s*!=\s*'labeled'\s*\|\|\s*github\.event\.sender\.type\s*!=\s*'Bot'\s*\)`,
+				job.If,
+				"%s if: guard must AND-conjoin the sender-type filter with enclosing parens", tc.name)
+		})
+	}
+
 	// Shims without hasLabelGuard must NOT have the ready- prefix filter.
 	for _, tc := range cases {
 		if tc.hasLabelGuard {
@@ -1025,7 +1069,7 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 			require.True(t, ok, "%s must have a dispatch job", tc.name)
 
 			assert.NotContains(t, job.If, "startsWith(github.event.label.name",
-				"%s must not filter on label prefix", tc.name)
+				"%s must not filter on label prefix — per-repo shims use sender-type filter for BYOA compat", tc.name)
 		})
 	}
 

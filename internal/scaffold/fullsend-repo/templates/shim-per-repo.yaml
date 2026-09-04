@@ -39,7 +39,7 @@ jobs:
            && github.event.comment.user.type != 'Bot'))
       && (
         github.event.action != 'labeled'
-        || startsWith(github.event.label.name, 'ready-')
+        || github.event.sender.type != 'Bot'
       )
     permissions:
       actions: write
