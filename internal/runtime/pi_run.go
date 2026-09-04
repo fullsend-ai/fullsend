@@ -18,10 +18,15 @@ import (
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
 // harness or agents: entry may also give `provider/id` directly. The
-// ids are pi 0.84.2's Anthropic catalog
+// ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
-// anthropic-vertex extension registers verbatim; whether Vertex accepts each
-// id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
+// anthropic-vertex extension re-points at Vertex: ids and pricing are
+// preserved, while the routing fields and the compat allowlist differ (the
+// provider swap also flips pi's supportsToolReferences default off). The
+// extension registers the catalog of the *running* pi, so this table can
+// name an id the pinned PI_VERSION does not carry -- "fable" maps to
+// claude-fable-5-1, which lands only from pi 0.85.0 (#6882) -- and whether
+// Vertex accepts each id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
 // final model string can be overridden from the runner environment.
 const (
 	piDefaultProvider = "anthropic-vertex"
@@ -347,10 +352,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 	)
 	if vertex {
-		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
-		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
-		// ANTHROPIC_VERTEX_BASE_URL as the endpoint; AUTH_TOKEN and BASE_URL
-		// are cleared for hygiene. The project is pinned to the variable
+		// Claude-on-Vertex: the vendored extension reads none of these -- it
+		// builds its endpoint from the region and takes its credential from
+		// ADC -- but pi's built-in anthropic provider is loaded in the same
+		// process and discovers ANTHROPIC_AUTH_TOKEN and the API-key
+		// variables from the environment, so a stray value in the
+		// agent-writable .env would authenticate a direct-to-Anthropic path
+		// that never reaches Vertex. The project is pinned to the variable
 		// Claude Code on Vertex is driven by, so both runtimes hit the same
 		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
 		// extension reads that one first).

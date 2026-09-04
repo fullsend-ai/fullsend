@@ -121,7 +121,9 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # (earendil-works/pi#5262) is still open; swap to it once it ships in a
 # pinned pi release. The extension wraps pi's own Anthropic transport with
 # a request-rewriting fetch and carries no @anthropic-ai/* dependency; its
-# CI runs the suite against pi 0.84.4 and 0.85.0, so there is no
+# CI matrix on main runs the suite against the pinned PI_VERSION and the
+# latest pi release, and a tag is cut from a main commit that passed it,
+# so that matrix is the compatibility check and there is no
 # sync/compat.json or SDK-override check. Registers provider
 # "anthropic-vertex". Reviewed at v0.1.0 (#7019).
 #
@@ -136,7 +138,14 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # (no install scripts in the pruned tree).
 #
 # To update: pick a tag from
-# https://github.com/fullsend-ai/pi-anthropic-vertex/tags, then set
+# https://github.com/fullsend-ai/pi-anthropic-vertex/releases (the release
+# notes carry the tarball SHA256). Also re-run on every PI_VERSION bump:
+# move the extension's CI matrix to the new pin first, then diff pi's
+# AnthropicMessagesCompat against the extension's VERTEX_COMPAT_KEYS
+# allowlist -- the extension forwards only the keys on that list, so a
+# compat key a new pi release adds is dropped silently on Vertex rather
+# than erroring, and that is the one drift surface the wrap-based design
+# keeps. Then set
 # PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
 ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.0
@@ -161,7 +170,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # (github.com/fullsend-ai/pi-xai-vertex, MIT). Grok on Vertex speaks the
 # OpenAI-completions protocol; neither pi's built-in xai provider (requires
 # XAI_API_KEY for xAI's native API) nor google-vertex (Gemini-only) covers
-# it. Registers provider "xai-vertex". Unlike the Anthropic extension it
+# it. Registers provider "xai-vertex". Like the Anthropic extension it
 # mirrors no pi internals, so it cannot drift against a pi release and needs
 # no sync tracking. Auth is ADC via google-auth-library — the same path
 # the anthropic-vertex extension uses (#6571).

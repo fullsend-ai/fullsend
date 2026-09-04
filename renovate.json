@@ -72,7 +72,7 @@
       "automerge": false
     },
     {
-      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256; a bump needs the checksum refreshed (#7019)",
+      "description": "pi-anthropic-vertex is pinned by tag + tarball SHA256; a bump needs the checksum refreshed. The extension's own CI matrix against the pinned PI_VERSION is the compatibility check — it mirrors no pi internals, so there is no compat.json to consult — but on a PI_VERSION bump also diff pi's AnthropicMessagesCompat against the extension's VERTEX_COMPAT_KEYS allowlist, since a new key that is not on it is dropped silently (#7019)",
       "matchPackageNames": ["fullsend-ai/pi-anthropic-vertex"],
       "automerge": false
     },
@@ -136,7 +136,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#7019). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is.",
+      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (#7019). PI_ANTHROPIC_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball; the release notes carry it) — the sandbox-image PR build fails on checksum mismatch until it is. The extension's CI matrix on main runs against the pinned PI_VERSION and the latest pi, and tags are cut from main commits that passed it, so that matrix is the compatibility check.",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_ANTHROPIC_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -147,7 +147,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Unlike pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead.",
+      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Like pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead (declared only — it installs with --omit=peer, so nothing enforces the floor at build time).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_XAI_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"

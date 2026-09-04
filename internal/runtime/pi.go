@@ -29,9 +29,14 @@ type PiRuntime struct{}
 // google-auth-library reading GOOGLE_APPLICATION_CREDENTIALS — the WIF
 // external_account config plus the runner-refreshed OIDC token file the
 // harness delivers via host_files, the same path Claude Code on Vertex uses.
-// The extension reads no ANTHROPIC_* variable except
-// ANTHROPIC_VERTEX_PROJECT_ID, so Run's unset of the ANTHROPIC_* family is
-// belt-and-braces for this provider. Swap for the upstream provider once
+// The extension bundles no Anthropic SDK, reads no ANTHROPIC_* variable
+// except ANTHROPIC_VERTEX_PROJECT_ID, and derives its endpoint host from the
+// region, so none of the ANTHROPIC_* family can steer it. Run's unset stays
+// load-bearing for a different reason: pi's built-in anthropic provider is
+// registered in the same process and discovers ANTHROPIC_AUTH_TOKEN and the
+// API-key variables from the environment, so a stray value in the
+// agent-writable .env would authenticate a direct-to-Anthropic path that
+// never reaches Vertex. Keep the unset. Swap for the upstream provider once
 // #5262 ships in a pinned pi release.
 const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
