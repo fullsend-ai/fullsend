@@ -107,6 +107,34 @@ gated by the harness `steer.enabled` flag. That follow-up removes the mixed stat
 `cancel-in-progress: true`, and N pending full runs is the failure mode
 preserve-and-coalesce removes.
 
+### Amendments and context
+
+Provenance authorizes runs, not the text they carry. An accepted run establishes that an authorized
+principal caused *something* on this work item; it does not establish that every comment since the
+baseline came from that principal. So the delta is split. An item is an **amendment** — an
+instruction the agent acts on, taking precedence over its original task — only when its author is
+the principal the `Route` job checked. Everything else is **context**: data the agent may read and
+must not obey.
+
+That is decidable only for events where the run's actor is by construction the login the arm
+checked. The run record carries the event but not the action, so an event qualifies only if *every*
+arm handling it checks the login the run reports. Auditing `reusable-dispatch.yml` leaves exactly
+one:
+
+| Event | Verdict |
+|---|---|
+| `issue_comment` | every slash-command arm checks the comment author, who is the run's sender. **Eligible.** |
+| `issues` | `opened` and `edited` check the reported actor, but `labeled` with `ready-for-triage` or `ready-for-review` checks nobody and still selects a stage, and the action is invisible in the run record, so the authorized arms cannot be told from the unauthorized ones. Excluded. |
+| `pull_request_target` | `opened`, `synchronize` and `ready_for_review` check the PR author while the run's actor is whoever pushed — on a fork PR a different person, who needs no upstream permission at all. `labeled` and `closed` check nobody. Excluded. |
+| `pull_request_review` | checks the PR author while the actor is the review submitter, which the arm requires to be the review App. Excluded, and bot actors are filtered regardless. |
+| `pull_request_review_comment` | has no arm at all, so every stage job is skipped and check 5 already rejects it. Excluded. |
+
+A push, a label and a closure are state changes rather than instructions, which is the same reason
+an issue's title, body and label edits are context. Excluding them costs the agent nothing it
+needs: a head move still arrives as context, carrying the new SHA. An authorization also covers
+only items that predate the run it came from, so a login that was authorized once does not promote
+whatever it writes later.
+
 ### The steer contract
 
 `runtime.Steerer` is an optional capability on a runtime:
@@ -135,7 +163,9 @@ network policy. Runtimes render it as a user message.
 
 Every legitimate update to the work item already fires the repository's shim, and that run's
 `Route` job already applied [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)'s authorization. That
-run record is a server-side, unforgeable statement of *who asked for what*. So the runner needs
+run record is a server-side, unforgeable statement of *what ran and when*. It is not a statement of
+who was authorized: the actor it reports is the principal the `Route` job checked only for
+`issue_comment` (see "Amendments and context" below). So the runner needs
 no mailbox, no relay, and no re-implementation of the routing predicate: it polls
 `GET /repos/{repo}/actions/workflows/{shim}/runs?created>=<my start>` with the **job token** —
 the `GH_TOKEN` the action passed in, which every stage job already grants `actions: write` — and
@@ -161,7 +191,7 @@ cannot write:
 | 1 | Same repository | implicit in the API path |
 | 2 | `path` is the shim and `event` is a work-item update (`issue_comment`, `issues`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`) | `push`, `pull_request`, `workflow_dispatch`, and any other workflow |
 | 3 | `referenced_workflows` (path and ref) equals my own run's | a foreign or renamed reusable workflow, or one at another ref, by inequality — no version knowledge needed. The sha is not compared: a branch-pinned shim (`@main`, as on this repository) resolves to a new sha whenever the branch advances, which would drop every steer there |
-| 4 | The candidate's **`Route` job** concluded `success`, and the run was created after mine started | an unauthorized actor; a replayed old run |
+| 4 | The candidate's **`Route` job** concluded `success`, and the run was created after mine started | a run whose `Route` job authorized nobody; a replayed old run. It does **not** establish that the run's reported actor is the authorized one |
 | 5 | My stage's job has `conclusion != "skipped"` | a fork author's `/fs-steer`, whose run has every stage job skipped |
 | 6 | Bound to my work item: `pull_requests[]`, else the shim's `run-name` as `display_title` | another item's run |
 | 7 | Not judged before, by run id | a replay; a re-poll |
