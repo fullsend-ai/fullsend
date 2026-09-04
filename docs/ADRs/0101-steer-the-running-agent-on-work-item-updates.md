@@ -87,25 +87,27 @@ that option, and the difference is the thing to check when reviewing it:
 
 ### Concurrency
 
-Every `reusable-dispatch.yml` stage job carries:
+Two independent switches, and steering needs both. Whether the run in flight survives a newer
+event is decided by the base change, not by this one: every `reusable-dispatch.yml` stage job
+carries
 
 ```yaml
 concurrency:
   group: fullsend-<stage>-${{ github.repository }}-<item>
-  cancel-in-progress: ${{ vars.FULLSEND_STEER != 'true' }}
+  cancel-in-progress: ${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}
 ```
 
-**Gated for now.** Unset — the default everywhere — keeps today's cancelling behaviour, and a
-consumer opts into `cancel-in-progress: false` together with steering by setting the variable to
-`"true"`. The gate exists only because ADR 0098 (fullsend#6909) is not merged at the time of
-writing: if it is accepted and preserve-and-coalesce becomes the policy for every agent trigger, the expression
-becomes a plain `cancel-in-progress: false`, the variable goes away, and steering stays separately
-gated by the harness `steer.enabled` flag. That follow-up removes the mixed state described under
-"Rollout order".
+so a repository that leaves `FULLSEND_PRESERVE_RUNS` unset keeps today's behaviour, and one that
+sets it to `"true"` lets the active run finish while the newer event waits as the single pending
+run. Whether that surviving run is *steered* is decided here, by the harness `steer:` block.
+
+The dependency runs one way: steering a run that is about to be cancelled is pointless, so a
+repository that wants steering must set `FULLSEND_PRESERVE_RUNS` as well. The reverse is not
+true — preserving runs is useful on its own, and is the base change's whole subject.
 
 `queue: max` is deliberately unused: it is incompatible with
-`cancel-in-progress: true`, and N pending full runs is the failure mode
-preserve-and-coalesce removes.
+`cancel-in-progress: true`, and N pending full runs is the failure mode preserving the active run
+removes.
 
 ### Amendments and context
 
@@ -369,12 +371,16 @@ cancelling does today: the active run absorbs the push and reviews head B, then 
 reviews head B again — two reviews where cancel-and-restart produces one. So the skip check and
 the authenticity it depends on ship together, or neither ships.
 
-Once that holds, the two switches must still be flipped in order, because the mixed state
-`FULLSEND_STEER=true` without `steer.enabled` is worse than today: the run in flight finishes on
-stale input and posts stale output, and the run queued behind it does the full work again with no
-marker to skip on. So: merge this change, enable `steer:` in the fleet harnesses, and only then
-set the repository variable, one repository at a time, after one real steer of each runtime has
-been observed.
+Once that holds, the two switches go in order: `FULLSEND_PRESERVE_RUNS` first, then the harness
+`steer:` block. That order is the safe one because the intermediate state is not a mixed state at
+all — it is exactly the base change, where the run in flight finishes and the queued run does the
+work from the item's current state. Nothing is half-enabled, so a repository can sit there
+indefinitely, which is where every repository starts.
+
+Steering is the second step and needs its own preconditions met: the fleet agent definitions
+([fullsend-ai/agents#1163](https://github.com/fullsend-ai/agents/issues/1163)) merged, since the
+envelope's shape changed; one real steer of each runtime observed on OpenShell; and the
+authenticated receipt above. Then `steer:` goes on one harness at a time.
 
 ## Consequences
 
