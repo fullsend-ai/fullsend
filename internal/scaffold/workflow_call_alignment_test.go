@@ -151,6 +151,14 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 		groupPrefix: "fullsend-prioritize-",
 		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
+	// The matrix fan-out is a stage job too, and carries the same
+	// cancel-in-progress expression, so it is pinned here alongside the six
+	// built-in stages. Its group is keyed by matrix identity rather than by
+	// the event payload, because a poller supplies the work item.
+	"harness-run": {
+		groupPrefix: "fullsend-harness-",
+		groupMust:   []string{"matrix.agent", "github.repository", "matrix.status_repo", "matrix.status_number"},
+	},
 }
 
 // stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
@@ -508,7 +516,11 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 			}
 			assert.Equal(t, preserveGatedCancel, job.Concurrency.CancelInProgress.Value,
 				"job %q must cancel in-progress runs by default and stop cancelling "+
-					"only when the consumer sets FULLSEND_PRESERVE_RUNS=true", stage)
+					"only when the consumer sets FULLSEND_PRESERVE_RUNS=true. A new stage "+
+					"job must be added to dispatchStageConcurrencyExpectations, or its "+
+					"concurrency is unpinned", stage)
+			assert.Equal(t, "!!str", job.Concurrency.CancelInProgress.Tag,
+				"job %q must carry the gate as an expression, not a literal", stage)
 		})
 	}
 }
@@ -533,6 +545,9 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 			}
 			assert.Equal(t, "true", wf.Concurrency.CancelInProgress.Value,
 				"reusable-%s.yml should cancel in-progress runs", stage)
+			assert.Equal(t, "!!bool", wf.Concurrency.CancelInProgress.Tag,
+				"reusable-%s.yml cancel-in-progress must stay a literal boolean, "+
+					"not the string \"true\" — Node.Value cannot tell them apart", stage)
 
 			callerExpect := thinCallerConcurrencyExpectations[stage]
 			assert.NotEqual(t, callerExpect.groupPrefix, expect.groupPrefix,
@@ -1060,6 +1075,9 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 				"%s concurrency group must match full label-aware structure", tc.name)
 			assert.Equal(t, "false", job.Concurrency.CancelInProgress.Value,
 				"%s concurrency group must have cancel-in-progress: false", tc.name)
+			assert.Equal(t, "!!bool", job.Concurrency.CancelInProgress.Tag,
+				"%s cancel-in-progress must stay a literal boolean, not the string "+
+					"\"false\" — Node.Value cannot tell them apart", tc.name)
 		})
 	}
 
