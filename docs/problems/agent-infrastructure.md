@@ -113,7 +113,7 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 
 - **Agent architecture** — Instance topology (per-repo vs shared) and “local vs remote” for pre-PR review depend on what infrastructure we have. Infrastructure enables or constrains those choices.
 - **Security threat model** — Isolation and “separate execution environments” are implemented by this layer. Supply chain (what base images and dependencies the runtime uses) also lives here.
-- **Governance** — Policy may be applied at runtime by agents reading from a policy repo; infrastructure determines where that runtime runs and how it accesses policy. Shared configuration reaches per-repo installs as a recorded preset converged by `fullsend update` ([ADR 0103](../ADRs/0103-shared-config-presets-converged-by-fullsend-update.md)); the same pinned-remote-reference model maps onto Tekton remote resolution if stages later run there.
+- **Governance** — Policy may be applied at runtime by agents reading from a policy repo; infrastructure determines where that runtime runs and how it accesses policy. Shared configuration reaches per-repo installs as a recorded preset bumped by Renovate ([ADR 0103](../ADRs/0103-shared-config-presets-converged-by-fullsend-update.md)); the same pinned-remote-reference model maps onto Tekton remote resolution if stages later run there.
 - **Repo readiness** — Repos need reliable CI and signals; agent infrastructure may consume or depend on the same CI (e.g. for “run tests” or “run linters”) and should not conflict with it. Headless runtimes amplify **feedback latency** and **workspace handoff** costs when CI is the only execution path.
 
 ## Open questions
