@@ -33,6 +33,10 @@ var startBodyRe = regexp.MustCompile(`🤖 (.+?) · Started (\d{1,2}:\d{2} [AP]M
 
 const terminalTag = "<!-- fullsend:status:terminal -->"
 
+// statusMarkerPrefix is the invariant part of the per-run status marker
+// buildMarker writes. Used to recognise the runner's own status comments.
+const statusMarkerPrefix = "<!-- fullsend:agent-status:"
+
 // TerminationReason describes why the agent process was terminated.
 type TerminationReason string
 
@@ -490,7 +494,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 		if c.Author != botUser {
 			continue
 		}
-		isStatus := strings.Contains(string(c.Body), "fullsend:agent-status:")
+		isStatus := strings.Contains(string(c.Body), statusMarkerPrefix)
 		if statusClient, ok := n.client.(tracker.StatusCommentClient); ok {
 			isStatus, err = statusClient.IsStatusComment(ctx, n.project, n.number, c.ID)
 			if err != nil {
@@ -701,7 +705,7 @@ func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
 	}
-	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+	return statusMarkerPrefix + runID + " -->", nil
 }
 
 func mustBuildMarker(runID string) string {
