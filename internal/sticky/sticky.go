@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -51,7 +52,12 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	}
 
 	existing := FindMarkedComment(comments, cfg.Marker, botUser)
-	markedBody := cfg.Marker + "\n" + body
+	// The body is agent output, and an agent can be induced to write
+	// fullsend marker syntax into it — a steer receipt naming a run id is
+	// enough to make a queued run skip its work. Defanged before the
+	// runner's own marker is prepended, so this comment's marker is
+	// unaffected.
+	markedBody := cfg.Marker + "\n" + statuscomment.NeutralizeMarkers(body)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")

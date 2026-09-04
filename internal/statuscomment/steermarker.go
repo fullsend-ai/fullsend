@@ -101,14 +101,22 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 	return m, true
 }
 
-// LatestSteerMarker returns the steer marker on the last comment that
-// carries one and was written by author. comments must be in timeline
-// order, oldest first.
+// LatestSteerMarker returns the steer marker on the last terminal status
+// comment that carries one and was written by author. comments must be in
+// timeline order, oldest first.
 //
-// author is the login the runner's own status comments are posted under
-// (the App), resolved by the caller from a status comment it can already
-// identify — the marker means nothing unless the App wrote it, since any
-// user can paste the HTML into a comment of their own.
+// author is the login the runner's own status comments are posted under (the
+// App), resolved by the caller from a status comment it can already identify.
+//
+// Authorship alone is not enough, which is why the body must also be a
+// terminal status comment. An agent can be induced to write anything into
+// its own output — an injection in a PR body asking it to include a steer
+// marker naming a specific run id is enough — and that output is posted by
+// the App, so it is genuinely App-authored. A stronger identity check
+// (performed_via_github_app, the App's client id) does not help for the same
+// reason: the problem is scope, not identity. Only the run's own status
+// comment is written by the runner rather than by the agent, so only a body
+// carrying the status markers can carry a receipt.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {
 	if author == "" {
 		return SteerMarker{}, false
@@ -117,9 +125,47 @@ func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, 
 		if comments[i].Author != author {
 			continue
 		}
-		if m, ok := ParseSteerMarker(string(comments[i].Body)); ok {
+		body := string(comments[i].Body)
+		if !isTerminalStatusBody(body) {
+			continue
+		}
+		if m, ok := ParseSteerMarker(body); ok {
 			return m, true
 		}
 	}
 	return SteerMarker{}, false
+}
+
+// isTerminalStatusBody reports whether a body is one of the runner's own
+// terminal status comments: it carries both the per-run status marker and
+// the terminal tag, which only buildCompletionBody writes together.
+func isTerminalStatusBody(body string) bool {
+	return strings.Contains(body, statusMarkerPrefix) && strings.Contains(body, terminalTag)
+}
+
+// fullsendMarkerOpen matches any HTML comment opening the fullsend marker
+// namespace, however the whitespace and case fall. The steer marker's own
+// parser is stricter than this on purpose: neutralization must cover
+// everything that could ever match a marker parser, not just what one
+// matches today.
+var fullsendMarkerOpen = regexp.MustCompile(`(?is)<!--\s*fullsend\s*:`)
+
+// NeutralizeMarkers defangs fullsend marker syntax in text an agent wrote.
+//
+// The steer marker is a receipt the queued run trusts, and an agent can be
+// induced to write one into its own output — an injection in a PR body
+// asking it to include a marker naming a specific run id is enough. That
+// output is then posted by the App, so it is genuinely App-authored and no
+// identity check can tell it apart. LatestSteerMarker's scoping is the
+// control that makes such a marker inert; this is the second layer, so the
+// forged text never reaches the timeline at all.
+//
+// Only the "<" of the comment opener is escaped, which leaves the marker
+// visible as text rather than silently deleting content: a reader can see
+// that something tried. Text that already reads "&lt;!--" carries no "<" and
+// is left exactly as it is.
+func NeutralizeMarkers(body string) string {
+	return fullsendMarkerOpen.ReplaceAllStringFunc(body, func(match string) string {
+		return "&lt;" + match[1:]
+	})
 }
