@@ -3532,6 +3532,82 @@ func TestLockCommand_HasForgeFlag(t *testing.T) {
 	assert.Equal(t, "", flag.DefValue)
 }
 
+// TestBuildBootstrapLines_EnvDSourcedBeforeInfraExports verifies that the
+// .env.d sourcing line appears as the first line, before any infrastructure
+// exports. This prevents .env.d files from shadowing reserved keys like
+// FULLSEND_ROLE. See #7010.
+func TestBuildBootstrapLines_EnvDSourcedBeforeInfraExports(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "review",
+		Slug:  "my-app",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{"CUSTOM": "val"},
+		},
+	}
+	runtimeExports := []string{"export CLAUDE_CONFIG_DIR=/sandbox/workspace/.config"}
+
+	lines := buildBootstrapLines("/workspace/repo", h, runtimeExports, "")
+
+	require.NotEmpty(t, lines)
+	// First line must be the .env.d sourcing — any infrastructure export
+	// before it could be shadowed by a harness-controlled .env.d file.
+	assert.Contains(t, lines[0], ".env.d/*.env", "first line must source .env.d files")
+	assert.Contains(t, lines[0], "for f in", "first line must be the .env.d for-loop")
+
+	// Verify infrastructure exports come after .env.d sourcing.
+	envdIdx := 0
+	var pathIdx, roleIdx, outputDirIdx, sandboxIdx int
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "export PATH="):
+			pathIdx = i
+		case strings.HasPrefix(line, "export FULLSEND_ROLE="):
+			roleIdx = i
+		case strings.HasPrefix(line, "export FULLSEND_OUTPUT_DIR="):
+			outputDirIdx = i
+		case strings.HasPrefix(line, "export CUSTOM="):
+			sandboxIdx = i
+		}
+	}
+	assert.Greater(t, pathIdx, envdIdx, "PATH export must come after .env.d sourcing")
+	assert.Greater(t, roleIdx, envdIdx, "FULLSEND_ROLE export must come after .env.d sourcing")
+	assert.Greater(t, outputDirIdx, envdIdx, "FULLSEND_OUTPUT_DIR export must come after .env.d sourcing")
+	assert.Greater(t, sandboxIdx, envdIdx, "env.sandbox exports must come after .env.d sourcing")
+}
+
+// TestBuildBootstrapLines_FetchVarsIncluded verifies that fetch service env
+// vars are present in the generated bootstrap lines.
+func TestBuildBootstrapLines_FetchVarsIncluded(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md"}
+	fEnv := fetchServiceEnv{addr: "127.0.0.1:54321", token: "deadbeef"}
+
+	lines := buildBootstrapLines("/workspace/repo", h, nil, "", fEnv)
+
+	var hasFetchURL, hasFetchToken bool
+	for _, line := range lines {
+		if strings.Contains(line, "FULLSEND_FETCH_URL") {
+			hasFetchURL = true
+		}
+		if strings.Contains(line, "FULLSEND_FETCH_TOKEN") {
+			hasFetchToken = true
+		}
+	}
+	assert.True(t, hasFetchURL, "FULLSEND_FETCH_URL must be present")
+	assert.True(t, hasFetchToken, "FULLSEND_FETCH_TOKEN must be present")
+}
+
+// TestBuildBootstrapLines_SchemaExportLine verifies that a non-empty
+// schemaExportLine is included in the generated bootstrap lines.
+func TestBuildBootstrapLines_SchemaExportLine(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md"}
+	schemaLine := "export FULLSEND_OUTPUT_SCHEMA=/sandbox/workspace/.fullsend/output-schema.json"
+
+	lines := buildBootstrapLines("/workspace/repo", h, nil, schemaLine)
+
+	assert.Contains(t, lines, schemaLine)
+}
+
 func TestBootstrapEnv_IncludesFetchServiceVars(t *testing.T) {
 	h := &harness.Harness{Agent: "agents/test.md"}
 	fEnv := fetchServiceEnv{addr: "127.0.0.1:54321", token: "deadbeef"}

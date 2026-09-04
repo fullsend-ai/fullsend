@@ -3,6 +3,7 @@ package harness
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -121,6 +122,9 @@ func (h *Harness) validateForge() error {
 			if IsURL(hf.Src) {
 				return fmt.Errorf("forge.%s.host_files[%d].src must be a local path, not a URL", key, i)
 			}
+			if filepath.Clean(hf.Dest) == sandboxBootstrapEnvFile {
+				return fmt.Errorf("forge.%s.host_files[%d]: dest %q targets the runner's bootstrap .env file; use .env.d/ instead", key, i, hf.Dest)
+			}
 		}
 		if fc.ValidationLoop != nil {
 			if fc.ValidationLoop.Script == "" {
@@ -195,6 +199,9 @@ func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
 		}
 		if IsURL(hf.Src) {
 			return fmt.Errorf("%s.host_files[%d].src must be a local path, not a URL", prefix, i)
+		}
+		if filepath.Clean(hf.Dest) == sandboxBootstrapEnvFile {
+			return fmt.Errorf("%s.host_files[%d]: dest %q targets the runner's bootstrap .env file; use .env.d/ instead", prefix, i, hf.Dest)
 		}
 	}
 	if fc.ValidationLoop != nil {

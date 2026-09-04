@@ -14,6 +14,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
+// sandboxBootstrapEnvFile is the path to the runner's bootstrap .env
+// script inside the sandbox. Duplicated from sandbox.SandboxWorkspace
+// to avoid coupling harness→sandbox.
+const sandboxBootstrapEnvFile = "/sandbox/workspace/.env"
+
 var (
 	validAgentName    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	validPluginName   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -508,6 +513,12 @@ func (h *Harness) Validate() error {
 		}
 		if hf.Dest == "" {
 			return fmt.Errorf("host_files[%d]: dest is required", i)
+		}
+		// Reject dest that targets the runner's bootstrap .env file.
+		// Uploading there would replace the entire bootstrap env script,
+		// bypassing reservedSandboxKeys. Use .env.d/ instead. See #7010.
+		if filepath.Clean(hf.Dest) == sandboxBootstrapEnvFile {
+			return fmt.Errorf("host_files[%d]: dest %q targets the runner's bootstrap .env file; use .env.d/ instead", i, hf.Dest)
 		}
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {

@@ -2787,13 +2787,26 @@ func buildRoleSlugEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
-func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
-	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
+// buildBootstrapLines constructs the ordered list of shell lines for the
+// sandbox .env bootstrap script. The ordering is security-sensitive:
+// .env.d sourcing MUST come first so runner-owned infrastructure exports
+// cannot be shadowed by harness-controlled .env.d files (#7010).
+//
+// schemaExportLine is an optional additional export line for the output
+// schema, computed by the caller (requires sandbox side effects).
+func buildBootstrapLines(remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, schemaExportLine string, fetchEnv ...fetchServiceEnv) []string {
 	outputDir := sandbox.SandboxWorkspace + "/output"
-
 	var lines []string
 
-	// Infrastructure vars.
+	// Source .env.d files first so every runner-owned infrastructure
+	// export below takes precedence. Previously .env.d was sourced
+	// midway through the script, allowing a host_files .env.d entry
+	// with expand: true to shadow infrastructure vars like
+	// FULLSEND_ROLE. See #7010.
+	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
+
+	// Infrastructure vars — placed after .env.d sourcing so they
+	// cannot be shadowed by harness-controlled .env.d files (#7010).
 	pathExport := fmt.Sprintf("export PATH=%s/bin", sandbox.SandboxWorkspace)
 	pathExport += ":/usr/local/go/bin"
 	pathExport += ":$HOME/go/bin"
@@ -2808,11 +2821,39 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
 
+	if schemaExportLine != "" {
+		lines = append(lines, schemaExportLine)
+	}
+	if outputFile, ok := h.RunnerEnv["FULLSEND_OUTPUT_FILE"]; ok && outputFile != "" {
+		lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_FILE='%s'", strings.ReplaceAll(outputFile, "'", "'\\''")))
+	}
+
+	// Runtime fetch service env vars (Phase 4, ADR-0038).
+	if len(fetchEnv) > 0 && fetchEnv[0].addr != "" {
+		escAddr := strings.ReplaceAll(fetchEnv[0].addr, "'", "'\\''")
+		escToken := strings.ReplaceAll(fetchEnv[0].token, "'", "'\\''")
+		lines = append(lines, fmt.Sprintf("export FULLSEND_FETCH_URL='http://%s/fetch'", escAddr))
+		lines = append(lines, fmt.Sprintf("export FULLSEND_FETCH_TOKEN='%s'", escToken))
+	}
+
+	// ADR 0055: export env.sandbox vars. Placed after both .env.d
+	// sourcing and infrastructure exports so env.sandbox takes
+	// precedence on collision — the common use case is overriding a
+	// single var from a shared host_files .env file.
+	lines = append(lines, buildSandboxEnvLines(h)...)
+
+	return lines
+}
+
+func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
+	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
+
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
 	// Prefer validation_loop.schema (already resolved by compose); fall
 	// back to the legacy RunnerEnv path for backward compatibility.
 	remoteSchemaPath := sandbox.SandboxWorkspace + "/.fullsend/output-schema.json"
+	var schemaExportLine string
 	var schemaHost string
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		schemaHost = h.ValidationLoop.Schema
@@ -2830,30 +2871,12 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 				fmt.Fprintf(os.Stderr, "WARNING: could not upload output schema: %v\n", uploadErr)
 			} else {
 				// Safe: remoteSchemaPath is built from the SandboxWorkspace constant.
-				lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath))
+				schemaExportLine = fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath)
 			}
 		}
 	}
-	if outputFile, ok := h.RunnerEnv["FULLSEND_OUTPUT_FILE"]; ok && outputFile != "" {
-		lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_FILE='%s'", strings.ReplaceAll(outputFile, "'", "'\\''")))
-	}
 
-	// Runtime fetch service env vars (Phase 4, ADR-0038).
-	if len(fetchEnv) > 0 && fetchEnv[0].addr != "" {
-		escAddr := strings.ReplaceAll(fetchEnv[0].addr, "'", "'\\''")
-		escToken := strings.ReplaceAll(fetchEnv[0].token, "'", "'\\''")
-		lines = append(lines, fmt.Sprintf("export FULLSEND_FETCH_URL='http://%s/fetch'", escAddr))
-		lines = append(lines, fmt.Sprintf("export FULLSEND_FETCH_TOKEN='%s'", escToken))
-	}
-
-	// Source all env files from .env.d/ (populated by host_files with expand: true).
-	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
-
-	// ADR 0055: export env.sandbox vars. Placed after .env.d sourcing so
-	// env.sandbox takes precedence on collision — the common use case is
-	// overriding a single var from a shared host_files .env file.
-	lines = append(lines, buildSandboxEnvLines(h)...)
-
+	lines := buildBootstrapLines(remoteRepositoryDir, h, runtimeEnvExports, schemaExportLine, fetchEnv...)
 	content := strings.Join(lines, "\n") + "\n"
 
 	tmpFile, err := os.CreateTemp("", "fullsend-env-*.sh")
@@ -2874,6 +2897,14 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
+		// Reject host_files entries whose dest targets the runner's own
+		// .env file — uploading a file there would replace the entire
+		// bootstrap env script, bypassing reservedSandboxKeys. See #7010.
+		if filepath.Clean(hf.Dest) == remoteEnvFile {
+			fmt.Fprintf(os.Stderr, "WARNING: host_files dest %q targets the runner's .env file; skipping (#7010)\n", hf.Dest)
+			continue
+		}
+
 		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
 		// credential vars in host_files src path expansion (#5832).
 		hostPath := safeExpandEnv(hf.Src)

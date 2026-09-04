@@ -186,6 +186,41 @@ host_files:
 	assert.Contains(t, err.Error(), "host_files[0]: dest is required")
 }
 
+// TestValidate_HostFileDestTargetsRunnerEnv verifies that host_files entries
+// with dest targeting the runner's bootstrap .env file are rejected during
+// validation. Uploading there would replace the entire bootstrap env script,
+// bypassing reservedSandboxKeys. See #7010.
+func TestValidate_HostFileDestTargetsRunnerEnv(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+host_files:
+  - src: env/override.env
+    dest: /sandbox/workspace/.env
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "targets the runner's bootstrap .env file")
+}
+
+// TestValidate_HostFileDestEnvDAllowed verifies that host_files entries
+// targeting .env.d/ are still allowed (the intended delivery mechanism).
+func TestValidate_HostFileDestEnvDAllowed(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		HostFiles: []HostFile{
+			{Src: "env/custom.env", Dest: "/sandbox/workspace/.env.d/custom.env"},
+		},
+	}
+	err := h.Validate()
+	assert.NoError(t, err)
+}
+
 func TestResolveRelativeTo(t *testing.T) {
 	h := &Harness{
 		Agent:      "agents/hello-world.md",
