@@ -43,6 +43,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -1118,7 +1119,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.KeyValue("Skills", strings.Join(harness.SkillSources(h.Skills), ", "))
 	}
 	if len(h.Plugins) > 0 {
-		printer.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
+		printer.KeyValue("Plugins", strings.Join(describePlugins(h.Plugins), ", "))
 	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)
@@ -1847,7 +1848,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	boot := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry)
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry)
+	if err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return err
+	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
@@ -2042,9 +2047,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 9c. Run agent with validation loop.
 	agentBaseName := agentName
+	// Sandbox paths for Claude Code's --plugin-dir. Only Claude-format
+	// entries land under <config>/plugins/; a pi extension is uploaded
+	// elsewhere and named on pi's command line instead.
 	var pluginDirs []string
-	for _, p := range h.Plugins {
-		pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", rt.ConfigDir(), filepath.Base(p)))
+	for _, p := range boot.Plugins() {
+		if p.Kind == pluginformat.KindClaude {
+			pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", rt.ConfigDir(), p.SandboxName()))
+		}
 	}
 
 	timeout := time.Duration(h.TimeoutMinutes) * time.Minute
@@ -2183,6 +2193,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			RepoDir:           remoteRepositoryDir,
 			FullsendDir:       absFullsendDir,
 			PluginDirs:        pluginDirs,
+			Plugins:           boot.Plugins(),
 			Debug:             debug,
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,

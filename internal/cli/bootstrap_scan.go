@@ -1,17 +1,22 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
 var skillMarkerNames = [...]string{"SKILL.md", "skill.md", "Skill.md"}
 
-// scanRuntimeContent runs InputPipeline on agent definition, SKILL.md files, and plugin JSON.
+// scanRuntimeContent runs InputPipeline on the agent definition, SKILL.md
+// files, and every text file of each declared plugin, whichever runtime
+// loads it.
 func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 	agentPath := input.AgentPath()
 	if agentPath == "" {
@@ -33,16 +38,164 @@ func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 		}
 	}
 
-	for _, pluginPath := range input.PluginDirs() {
-		if pluginPath == "" {
+	// Both kinds are scanned as a whole tree: a pi extension is code the
+	// runtime executes, and a Claude plugin carries prompt content all over
+	// it (commands/, agents/, skills/, hooks/, .mcp.json, the manifest).
+	for _, plugin := range input.Plugins() {
+		if plugin.Path == "" {
 			continue
 		}
-		if err := scanPluginDir(pipeline, pluginPath, failClosed); err != nil {
+		var err error
+		switch plugin.Kind {
+		case pluginformat.KindPi, pluginformat.KindClaude:
+			err = scanPluginTree(pipeline, plugin.Path, failClosed)
+		default:
+			err = fmt.Errorf("plugin %q: unknown format kind %q", plugin.Path, plugin.Kind)
+		}
+		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// Bounds on the extension scan. An extension ships its dependencies, so
+// the tree can be large; these keep bootstrap from turning into a
+// multi-minute regex run over vendored bundles without letting an
+// extension hide code behind sheer volume.
+// They are variables, not constants, only so tests can lower them without
+// writing 20 000 files.
+var (
+	// maxExtensionScanFileBytes is the largest file the injection pipeline
+	// is asked to look at. Bigger files are noted and skipped: they are
+	// minified bundles or data blobs, where the heuristics produce noise
+	// rather than signal.
+	maxExtensionScanFileBytes int64 = 1 << 20 // 1 MiB
+	// maxExtensionScanFiles bounds the number of files in one extension.
+	// Above it the scan gives up and the bootstrap fails, in either
+	// fail_mode: an extension with more files than this is not something
+	// the scan can vouch for. Files skipped for size count towards it, so a
+	// tree made entirely of oversized blobs still hits a bound.
+	maxExtensionScanFiles = 20000
+)
+
+// errExtensionScanBlocked marks the fail-closed verdict so the caller can
+// tell it apart from a walk error (a permission problem, a vanished file)
+// without matching on message text.
+var errExtensionScanBlocked = errors.New("blocked: critical injection findings")
+
+// errExtensionScanUnbounded marks the too-many-files refusal, which is not
+// a scan failure fail_mode may downgrade either.
+var errExtensionScanUnbounded = errors.New("too many files to scan")
+
+// errExtensionScanRefused marks an entry the extension tree may not hold at
+// all (a symlink, a special file, an unreproducible name). Like the two
+// above it is a refusal in its own right, not a scan failure fail_mode may
+// downgrade: the Run-time preflight would fail the same tree closed.
+var errExtensionScanRefused = errors.New("refused: inadmissible entry")
+
+// scanPluginTree scans every regular text file under a plugin directory
+// (node_modules included — vendored dependencies are code the model's
+// tools will run). Binary files are skipped by a cheap NUL-byte probe,
+// oversized ones by maxExtensionScanFileBytes; the scan is heuristic, so
+// breadth matters more than precision, and a finding in third-party
+// JavaScript or prose is as likely to be a false positive as a real one
+// (see docs/runtimes/pi.md). A symlink or special file is a refusal for
+// every kind: the scan can only vouch for what it read, and the upload
+// would carry the symlink's target into the sandbox unscanned.
+func scanPluginTree(pipeline *security.Pipeline, extPath string, failClosed bool) error {
+	var scanned, skippedLarge int
+	root, err := filepath.EvalSymlinks(extPath)
+	if err == nil {
+		err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			rel, relErr := filepath.Rel(root, p)
+			if relErr != nil {
+				rel = p
+			}
+			rel = filepath.ToSlash(rel)
+			if p == root {
+				return nil
+			}
+			// Same rule as harness validation and pi's tree hash: a symlink
+			// or a special file is a refusal, not something to walk past.
+			// Skipping it silently would upload content the scan never read.
+			if problem := pluginformat.ExtensionEntryProblem(rel, d.Type()); problem != "" {
+				return fmt.Errorf("plugin %q: %w: %s", extPath, errExtensionScanRefused, problem)
+			}
+			if d.IsDir() {
+				return nil
+			}
+			// Counted before the size check so a tree of oversized blobs
+			// still hits the cap.
+			scanned++
+			if scanned > maxExtensionScanFiles {
+				return fmt.Errorf("plugin %q: %w (more than %d); refusing to bootstrap a plugin the injection scan cannot cover", extPath, errExtensionScanUnbounded, maxExtensionScanFiles)
+			}
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			if info.Size() > maxExtensionScanFileBytes {
+				skippedLarge++
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q: %s is %d bytes, over the %d-byte scan limit — not scanned\n", extPath, rel, info.Size(), maxExtensionScanFileBytes)
+				return nil
+			}
+			content, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return readErr
+			}
+			if looksBinary(content) {
+				return nil
+			}
+			result := pipeline.Scan(string(content))
+			if security.HasCriticalFindings(result.Findings) {
+				if failClosed {
+					return fmt.Errorf("plugin %q: %w in %s", extPath, errExtensionScanBlocked, rel)
+				}
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", extPath, rel)
+				for _, f := range result.Findings {
+					fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
+				}
+			} else if len(result.Findings) > 0 {
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", extPath, len(result.Findings), rel)
+				for _, f := range result.Findings {
+					fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
+				}
+			}
+			return nil
+		})
+	}
+	if skippedLarge > 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: plugin %q: %d file(s) skipped by the %d-byte scan limit\n", extPath, skippedLarge, maxExtensionScanFileBytes)
+	}
+	if err == nil {
+		return nil
+	}
+	// A blocked verdict and an unscannable tree are refusals in their own
+	// right, not scan failures the fail_mode can downgrade.
+	if errors.Is(err, errExtensionScanBlocked) || errors.Is(err, errExtensionScanUnbounded) ||
+		errors.Is(err, errExtensionScanRefused) {
+		return err
+	}
+	if failClosed {
+		return fmt.Errorf("cannot scan plugin %q: %w", extPath, err)
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: could not scan plugin %q: %v\n", extPath, err)
+	return nil
+}
+
+// looksBinary reports whether content is not text: a NUL byte in the first
+// 8 KiB, the same heuristic git uses.
+func looksBinary(content []byte) bool {
+	probe := content
+	if len(probe) > 8192 {
+		probe = probe[:8192]
+	}
+	return bytes.IndexByte(probe, 0) >= 0
 }
 
 func scanAgentFile(pipeline *security.Pipeline, agentPath string, failClosed bool) error {
@@ -99,31 +252,6 @@ func scanSkillDir(pipeline *security.Pipeline, skillPath string, failClosed bool
 		fmt.Fprintf(os.Stderr, "WARNING: skill %q has %d non-critical injection finding(s) — not blocked (only critical findings block); uploading\n", skillPath, len(result.Findings))
 		for _, f := range result.Findings {
 			fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-		}
-	}
-	return nil
-}
-
-func scanPluginDir(pipeline *security.Pipeline, pluginPath string, failClosed bool) error {
-	for _, name := range []string{"plugin.json", ".lsp.json"} {
-		content, err := os.ReadFile(filepath.Join(pluginPath, name))
-		if err != nil {
-			continue
-		}
-		result := pipeline.Scan(string(content))
-		if security.HasCriticalFindings(result.Findings) {
-			if failClosed {
-				return fmt.Errorf("plugin %q blocked: critical injection findings in %s", pluginPath, name)
-			}
-			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", pluginPath, name)
-			for _, f := range result.Findings {
-				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-			}
-		} else if len(result.Findings) > 0 {
-			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", pluginPath, len(result.Findings), name)
-			for _, f := range result.Findings {
-				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
-			}
 		}
 	}
 	return nil

@@ -101,6 +101,13 @@ func (DummyPlaybackRuntime) EnvExports() []string { return nil }
 
 func (r DummyPlaybackRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
+	// Same contract as DummyRuntime: every declared plugin (ADR 0094) is
+	// named, with its format, and skipped rather than silently dropped.
+	for _, e := range input.Plugins() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — the dummy-playback runtime loads no plugins (see docs/runtimes.md)\n", e.SandboxName(), e.Kind)
+		}
+	}
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy-playback", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
 	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	if err != nil {

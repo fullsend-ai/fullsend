@@ -242,8 +242,10 @@ const piConfigTamperedExit = 98
 // runner's own signal (params.HooksSettingsPath, set when the harness
 // enables security — the same signal ClaudeRuntime uses for --settings),
 // never from the agent-writable manifest, and the command fails closed if
-// the adapter or manifest file is missing.
-func buildPiRunCommand(params RunParams, m *piManifest) string {
+// the adapter or manifest file is missing. exts are the declared harness
+// extensions resolved from the host by Run (piResolveRunPlugins): their
+// preflight hash, -e entries and env exports come from there, not from m.
+func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension) string {
 	r := PiRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
@@ -274,6 +276,12 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// shadow the guard's tools with functions or a PATH entry.
 		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
+	if guard := piExtensionsGuard(exts); guard != "" {
+		// Same block, same reason: the extension trees are checked against
+		// the host hashes before .env can shadow find/sort/sha256sum, and
+		// regardless of whether hooks are enabled.
+		parts = append(parts, "&& "+guard)
+	}
 	if openai {
 		// Same reason: check the config dir before .env can shadow `test`,
 		// then seed pi's auth.json with the placeholder the environment
@@ -283,9 +291,16 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
+		// First thing after the agent-writable .env, on every provider
+		// path: clear the variables that steer the module loaders pi runs
+		// under. JITI_ALIAS alone swaps the file behind an `-e` path
+		// without touching the source the extension preflight and the hook
+		// adapter's checksum hash (see piLoaderEnvNames).
+		"&& "+piLoaderEnvUnset(),
 		// .env is agent-writable; re-pin the runner-owned locations and the
 		// offline switches after it so a rewritten .env cannot move pi's
-		// config dir out from under the guards below.
+		// config dir out from under the guards below. JITI_FS_CACHE=false
+		// lands here, after the unset above.
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& export "+piManifestEnv+"="+shellQuote(r.piManifestPath()),
 		"&& export "+piRuntimeEnv+"=pi",
@@ -338,10 +353,9 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// so a stray .env cannot redirect traffic or inject a different
 		// credential, and clear OPENAI_API_KEY itself so pi's resolution
 		// cannot fall through to a value .env planted in the environment.
-		// NODE_OPTIONS/NODE_PATH would let .env load code into pi before
-		// it starts; with the credential endpoint-bound at the gateway that
-		// code could only sabotage this run, but there is no reason to
-		// allow it.
+		// NODE_OPTIONS/NODE_PATH are repeated from piLoaderEnvUnset, which
+		// already cleared them for every provider: redundant, kept so this
+		// path's credential hygiene reads as one complete list.
 		parts = append(parts, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY NODE_OPTIONS NODE_PATH")
 		// Config-dir integrity guard, second pass: .env itself could have
 		// written auth.json or models.json just now. `unset -f` is a special
@@ -351,6 +365,15 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// openai provider even when hooks are disabled, because the threat is
 		// credential leak, not tool misuse.
 		parts = append(parts, "&& unset -f test command grep tr sed printf pi", "&& "+piOpenAIConfigGuard(r.ConfigDir()))
+	}
+	// Declared extensions' env goes last, which protects nothing on its
+	// own: it is exported after the runtime's pins and the provider
+	// hygiene, and pi hands its whole environment to every hook script it
+	// spawns. The deny-list in internal/harness/plugin_spec.go
+	// (reservedPluginEnvKey) is what keeps those names out of an
+	// extension's reach; the order just keeps the rendering simple.
+	for _, export := range piExtensionEnvExports(exts) {
+		parts = append(parts, "&& "+export)
 	}
 	parts = append(parts,
 		`&& "$`+piBinaryVar+`"`,
@@ -376,6 +399,10 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
 	}
+	// Declared extensions come after the hook adapter: pi runs tool_call
+	// handlers in -e order and the first block wins, so the adapter's
+	// PreToolUse hooks see every call before any declared extension does.
+	parts = append(parts, piExtensionArgs(exts)...)
 	if m.Tools != nil {
 		tools := m.Tools
 		if len(tools) == 0 {
@@ -419,6 +446,44 @@ const piManifestEnv = "FULLSEND_PI_MANIFEST"
 // piBinaryVar holds the absolute path of the pi binary, resolved before
 // .env is sourced and marked read-only.
 const piBinaryVar = "FULLSEND_PI_BIN"
+
+// piLoaderEnvNames are the environment variables that steer the module
+// loaders pi starts under, cleared right after the agent-writable .env is
+// sourced on every provider path.
+//
+// NODE_OPTIONS and NODE_PATH run code inside the node process before pi's
+// own entry point does. The JITI_* family is jiti's, the loader pi imports
+// every `-e` module through: pi's bundled cli.js reaches createJiti on the
+// isBundledNode branch, which passes `virtualModules` and `tryNative` but
+// no `alias`, so jiti resolves alias from JITI_ALIAS — a map from module
+// specifier to replacement file. A .env exporting
+// JITI_ALIAS='{"<ext path>":"<evil>"}' therefore makes pi import a
+// different file while the extension source, its tree hash
+// (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
+// stay clean, because none of them can see the substitution. Verified on
+// pi 0.84.4 and jiti 2.7.0; the shell half is
+// internal/runtime/testdata/pi/jiti-cache-check.sh.
+//
+// The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except
+// JITI_FS_CACHE, which PiRuntime.EnvExports pins to false immediately
+// after this unset. Re-verify it on a PI_VERSION bump.
+var piLoaderEnvNames = []string{
+	"NODE_OPTIONS", "NODE_PATH",
+	"JITI_ALIAS", "JITI_CACHE", "JITI_REBUILD_FS_CACHE", "JITI_TSCONFIG_PATHS",
+	"JITI_EXTENSIONS", "JITI_NATIVE_MODULES", "JITI_TRANSFORM_MODULES",
+	"JITI_TRY_NATIVE", "JITI_ESM_EVAL_TEMP_FILE", "JITI_MODULE_CACHE",
+	"JITI_REQUIRE_CACHE", "JITI_INTEROP_DEFAULT", "JITI_JSX",
+	"JITI_SOURCE_MAPS", "JITI_DEBUG", "JITI_RESPECT_TMPDIR_ENV",
+}
+
+// piLoaderEnvUnset is the POSIX sh fragment that clears piLoaderEnvNames.
+// It is emitted immediately after `. .env`, next to the other post-.env
+// hygiene: `unset` is a special builtin, so a function a sourced file
+// defined cannot stand in for it, and clearing the names before the
+// runtime's own exports means JITI_FS_CACHE=false is the last word.
+func piLoaderEnvUnset() string {
+	return "unset " + strings.Join(piLoaderEnvNames, " ")
+}
 
 // piBinaryPin is the POSIX sh fragment that records where pi is. `command
 // -v` is a builtin; `readonly` is a special builtin, so a later assignment
@@ -554,7 +619,14 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if err := validatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases); err != nil {
 		return -1, err
 	}
-	cmd := buildPiRunCommand(params, m)
+	// The extension preflight hashes come from the host directories, not
+	// from the manifest just read: that file sits in the agent-writable
+	// config dir and could be rewritten together with an extension.
+	exts, err := piResolveRunPlugins(params.Plugins)
+	if err != nil {
+		return -1, err
+	}
+	cmd := buildPiRunCommand(params, m, exts)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -629,6 +701,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if exitCode == piConfigTamperedExit {
 		return exitCode, fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())
+	}
+	if exitCode == piExtensionTamperedExit && len(exts) > 0 {
+		return exitCode, fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {

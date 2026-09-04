@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -54,6 +55,10 @@ type piManifest struct {
 	PiVersion         string   `json:"piVersion,omitempty"`
 	// Hooks is nil when the harness has security disabled.
 	Hooks *piHooksManifest `json:"hooks"`
+	// Extensions are the harness's declared pi extensions as uploaded
+	// (ADR 0094). Informational for the hook adapter; Run's preflight uses
+	// hashes recomputed from the host, not these.
+	Extensions []piManifestExtension `json:"extensions,omitempty"`
 }
 
 type piHooksManifest struct {
@@ -110,8 +115,15 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	cfg := r.ConfigDir()
 
-	mkdirCmd := fmt.Sprintf("mkdir -p %s %s %s",
-		shellQuote(cfg+"/skills"), shellQuote(r.piSessionsDir()), shellQuote(r.piHooksDir()))
+	// Resolve (and hash) the declared pi extensions before touching the
+	// sandbox so a name collision or an unreadable directory fails early.
+	extensions, err := piResolveRunPlugins(input.Plugins())
+	if err != nil {
+		return err
+	}
+
+	mkdirCmd := fmt.Sprintf("mkdir -p %s %s %s %s",
+		shellQuote(cfg+"/skills"), shellQuote(r.piExtensionsDir()), shellQuote(r.piSessionsDir()), shellQuote(r.piHooksDir()))
 	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
 		return fmt.Errorf("creating pi config dirs: %w", err)
 	}
@@ -140,10 +152,19 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — pi does not support Claude plugins (see docs/runtimes.md)\n", p)
+	// Extensions land under ConfigDir/extensions/<name>/ — a runner-owned
+	// path pi does not auto-discover (Run passes --no-extensions and names
+	// each one with -e). The host tree hash in the manifest is what Run's
+	// preflight recomputes against the sandbox copy.
+	for _, in := range pluginsOfKind(input.Plugins(), pluginformat.KindPi) {
+		if err := sandbox.Upload(sandboxName, in.Path, r.piExtensionsDir()+"/"+in.SandboxName()); err != nil {
+			return fmt.Errorf("copying extension %q: %w", in.SandboxName(), err)
 		}
+		fmt.Fprintf(os.Stderr, "Extension %q: uploaded to sandbox\n", in.SandboxName())
+	}
+
+	for _, in := range pluginsOfKind(input.Plugins(), pluginformat.KindClaude) {
+		fmt.Fprintf(os.Stderr, "Plugin %q: skipped — pi does not support Claude plugins (see docs/runtimes.md)\n", in.SandboxName())
 	}
 
 	tools, unsupported := piToolsFor(def.Tools)
@@ -164,6 +185,7 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		Tools:             tools,
 		BashAllowlist:     def.BashAllowlist,
 		BashAllowlistMode: piBashAllowlistMode(),
+		Extensions:        extensions,
 	}
 
 	if hooksInput, ok := input.(SandboxHooksBootstrap); ok {

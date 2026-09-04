@@ -27,12 +27,12 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/xai-vertex", piXaiVertexExtensionPath)
 }
 
-// TestPiExtensionPathsWithinSandboxPolicy asserts that all pi extension
+// TestPiExtensionDirsWithinSandboxPolicy asserts that all pi extension
 // paths sit under a prefix the sandbox filesystem policy allows (read_only
 // list in /etc/openshell/policy.yaml). This guards against the class of
 // bug in #6504 where an extension was installed under /opt, which landlock
 // denied.
-func TestPiExtensionPathsWithinSandboxPolicy(t *testing.T) {
+func TestPiExtensionDirsWithinSandboxPolicy(t *testing.T) {
 	t.Parallel()
 	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log"}
 	for _, extPath := range []string{piVertexExtensionPath, piXaiVertexExtensionPath} {

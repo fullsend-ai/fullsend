@@ -37,6 +37,33 @@ export function claudeToolName(manifest, piName) {
   return manifest?.hooks?.toolNames?.[piName] ?? piName;
 }
 
+// PI_BUILTIN_TOOLS_OUTSIDE_MAP are pi built-ins the manifest's toolNames
+// map has no Claude counterpart for, so they would otherwise look like
+// extension tools in the log line below.
+const PI_BUILTIN_TOOLS_OUTSIDE_MAP = new Set(["powershell"]);
+
+// isExtensionTool reports whether piName looks like a tool registered by
+// one of the pi extensions the harness declared under plugins: (ADR 0094):
+// the manifest lists
+// extensions and the name is neither a pi built-in (a toolNames key or one
+// of PI_BUILTIN_TOOLS_OUTSIDE_MAP) nor a Claude vocabulary name (a
+// toolNames value).
+//
+// This is informational only — it decides what gets logged, never whether a
+// call is allowed. The manifest it reads sits in the agent-writable config
+// dir and the run guard only checks that the file exists, so a verdict
+// keyed on manifest.extensions/manifest.tools would be a verdict the agent
+// can flip. Extension tools that need the optional tool_allowlist_pretool.py
+// hook are listed in FULLSEND_TOOL_ALLOWLIST by name, exactly like the
+// mcp__* names already are.
+export function isExtensionTool(manifest, piName) {
+  if (!Array.isArray(manifest?.extensions) || manifest.extensions.length === 0) return false;
+  if (PI_BUILTIN_TOOLS_OUTSIDE_MAP.has(piName)) return false;
+  const names = manifest?.hooks?.toolNames ?? {};
+  if (Object.prototype.hasOwnProperty.call(names, piName)) return false;
+  return !Object.values(names).includes(piName);
+}
+
 // claudeToolInput mirrors pi's argument names onto Claude's where they
 // differ (ssrf/tirith read `command`, which matches; read/write/edit use
 // `file_path`). The pi keys are kept too so nothing is lost.
@@ -177,6 +204,9 @@ function replaceText(content, text) {
 // silently absent is the failure mode ADR 0090 forbids.
 export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.error(m) } = {}) {
   const wired = Boolean(manifest && manifest.hooks && Array.isArray(manifest.hooks.groups));
+  // Extension tool names logged at first use, so the transcript shows what
+  // the model gained from the declared plugins.
+  const seenExtensionTools = new Set();
   const onToolCall = (event) => {
     if (!wired) {
       return { block: true, reason: `${LOG_PREFIX} hook manifest unavailable or has no hook plan; refusing all tool calls (fail closed)` };
@@ -195,6 +225,15 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
         }
         log(`${LOG_PREFIX} Bash allowlist (advisory): ${violation}`);
       }
+    }
+
+    // First use of an extension tool is logged so the transcript shows what
+    // the model gained from the declared plugins. No hook is skipped for
+    // it: every PreToolUse group, the optional tool allowlist included,
+    // decides on an extension tool exactly as on any other.
+    if (!seenExtensionTools.has(piName) && isExtensionTool(manifest, piName)) {
+      seenExtensionTools.add(piName);
+      log(`${LOG_PREFIX} extension tool: ${piName}`);
     }
 
     const toolName = claudeToolName(manifest, piName);
@@ -272,8 +311,10 @@ export default function (pi) {
     }
     const groups = manifest.hooks?.groups ?? [];
     const roster = groups.map((g) => `${g.phase}[${(g.tools ?? []).join("|")}]: ${(g.scripts ?? []).join(" -> ")}`);
+    const extensions = Array.isArray(manifest.extensions) ? manifest.extensions.map((e) => e?.name ?? "?") : [];
     console.error(`${LOG_PREFIX} agent=${manifest.agentName ?? "?"} hooks=${roster.length ? roster.join("; ") : "none"}` +
-      (manifest.bashAllowlist?.length ? ` bash-allowlist=${manifest.bashAllowlist.join(",")}` : ""));
+      (manifest.bashAllowlist?.length ? ` bash-allowlist=${manifest.bashAllowlist.join(",")}` : "") +
+      (extensions.length ? ` extensions=${extensions.join(",")}` : ""));
     if (manifest.agentName && typeof pi.setSessionName === "function") {
       try {
         pi.setSessionName(manifest.agentName);

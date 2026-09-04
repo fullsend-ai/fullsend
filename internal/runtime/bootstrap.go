@@ -1,6 +1,11 @@
 package runtime
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
+)
 
 // BootstrapInput is the portable contract every runtime needs to provision
 // agent content into the sandbox. Implementations live outside this package
@@ -16,7 +21,43 @@ type BootstrapInput interface {
 	// cobra arg validation in cmd/fullsend).
 	AgentName() string
 	SkillDirs() []string
-	PluginDirs() []string
+	// Plugins returns the harness's declared plugin directories (ADR 0094),
+	// each tagged with the runtime format it is in. A runtime loads the
+	// entries of its own kind and names and skips the rest.
+	Plugins() []PluginInput
+}
+
+// PluginInput is one declared plugin: a host directory to upload, the
+// sandbox name it is uploaded as, the format the directory is in, and the
+// environment and pi options the harness gave it. Name is optional — the
+// path basename is used when empty.
+type PluginInput struct {
+	Name   string
+	Path   string
+	Kind   pluginformat.Kind
+	Env    map[string]string
+	PiArgs []string
+}
+
+// SandboxName is the directory name the plugin takes in the sandbox:
+// Name when set, else the path basename.
+func (p PluginInput) SandboxName() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return filepath.Base(p.Path)
+}
+
+// pluginsOfKind returns the entries with a non-empty path that a runtime
+// reading the given format loads.
+func pluginsOfKind(inputs []PluginInput, kind pluginformat.Kind) []PluginInput {
+	var out []PluginInput
+	for _, in := range inputs {
+		if in.Path != "" && in.Kind == kind {
+			out = append(out, in)
+		}
+	}
+	return out
 }
 
 // validateAgentNameMatch returns an error when requestedName and

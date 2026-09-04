@@ -457,13 +457,22 @@ func TestPiToolContext(t *testing.T) {
 		{"grep", `{"pattern":"TODO","path":"."}`, "TODO"},
 		{"find", `{"pattern":"**/*.go"}`, "**/*.go"},
 		{"bash", `{"timeout":5}`, ""},
-		{"unknown_tool", `{"command":"x"}`, ""},
+		// Extension tools: the first string argument among the conventional
+		// names is shown so live progress is not blank for them.
+		{"unknown_tool", `{"command":"x"}`, "x"},
+		{"go_diag", `{"path":"pkg/a.go","verbose":true}`, "pkg/a.go"},
+		{"fff_search", `{"limit":5,"query":"TODO"}`, "TODO"},
+		{"fff_open", `{"file":"main.go","query":"ignored"}`, "main.go"},
+		{"ext_tool", `{"pattern":"**/*.go"}`, "**/*.go"},
+		{"ext_tool", `{"other":"x","count":1}`, ""},
+		{"ext_tool", `{"path":123,"query":"q"}`, "q"},
+		{"ext_tool", `{"query":"ghp_` + strings.Repeat("q", 40) + `"}`, "ghp_"},
 		{"bash", `not json`, ""},
 		{"bash", `{"command":"curl -H 'Authorization: Bearer ghp_` + strings.Repeat("q", 40) + `'"}`, "$ curl -H 'Authorization: Bearer "},
 	}
 	for _, tc := range cases {
 		got := piToolContext(tc.tool, json.RawMessage(tc.args))
-		if strings.HasSuffix(tc.want, "Bearer ") {
+		if strings.HasSuffix(tc.want, "Bearer ") || tc.want == "ghp_" {
 			assert.True(t, strings.HasPrefix(got, tc.want), "%s %s → %q", tc.tool, tc.args, got)
 			assert.NotContains(t, got, "ghp_q", "token in tool args must be redacted")
 			continue
@@ -473,6 +482,9 @@ func TestPiToolContext(t *testing.T) {
 
 	long := strings.Repeat("p", maxPathDisplay+5)
 	assert.Equal(t, strings.Repeat("p", maxPathDisplay)+"…", piToolContext("read", json.RawMessage(`{"path":"`+long+`"}`)))
+	assert.Equal(t, strings.Repeat("p", maxPathDisplay)+"…", piToolContext("ext_tool", json.RawMessage(`{"path":"`+long+`"}`)), "extension path args get the path cap")
+	longQ := strings.Repeat("q", maxPatternDisplay+5)
+	assert.Equal(t, strings.Repeat("q", maxPatternDisplay)+"…", piToolContext("ext_tool", json.RawMessage(`{"query":"`+longQ+`"}`)), "other extension args get the pattern cap")
 }
 
 func TestPiToolContext_RedactsBeforeCapping(t *testing.T) {
@@ -497,7 +509,8 @@ func TestPiToolContext_RedactsBeforeCapping(t *testing.T) {
 func TestParsePiStream_UnknownToolNeverSurfacesOutput(t *testing.T) {
 	t.Parallel()
 
-	// An extension-registered tool has no argument context. Its successful
+	// An extension-registered tool's summary comes from its arguments (the
+	// conventional path/file/pattern/query/command names). Its successful
 	// output must not become the summary; its error text still may.
 	input := `{"type":"tool_execution_start","toolCallId":"x1","toolName":"my_ext_tool","args":{"query":"q"}}
 {"type":"tool_execution_end","toolCallId":"x1","toolName":"my_ext_tool","result":"BIG OUTPUT","isError":false}
@@ -514,8 +527,8 @@ func TestParsePiStream_UnknownToolNeverSurfacesOutput(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, tools, 3)
-	assert.Equal(t, "", tools[0].Summary, "successful unknown tool: no output leaks into the summary")
-	assert.Equal(t, "upstream 503", tools[1].Summary)
+	assert.Equal(t, "q", tools[0].Summary, "successful extension tool: the query argument, never the output")
+	assert.Equal(t, "q: upstream 503", tools[1].Summary)
 	assert.Equal(t, "no start seen", tools[2].Summary, "end without a start falls back to result text")
 }
 

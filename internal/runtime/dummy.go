@@ -105,6 +105,17 @@ func (DummyRuntime) EnvExports() []string { return nil }
 
 func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
+
+	// Mirror of ClaudeRuntime.Bootstrap: the dummy runtime runs scripted
+	// operations rather than an agent, so every declared plugin (ADR 0094)
+	// is named — with the format it is in — and skipped rather than
+	// silently dropped.
+	for _, e := range input.Plugins() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — the dummy runtime loads no plugins (see docs/runtimes.md)\n", e.SandboxName(), e.Kind)
+		}
+	}
+
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
 	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	if err != nil {

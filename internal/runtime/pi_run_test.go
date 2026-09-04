@@ -97,11 +97,11 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}, BashAllowlist: []string{"gh"}, Hooks: &piHooksManifest{}}
 	params := piTestParams()
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -132,7 +132,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// pi resolves the provider prefix case-insensitively; so must the gate.
 	params.Model = "Anthropic-Vertex/claude-opus-4-6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, "&& unset ANTHROPIC_API_KEY")
 	assert.Contains(t, cmd, "--model 'Anthropic-Vertex/claude-opus-4-6'")
 }
@@ -217,7 +217,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 
 	// Short form: xai/grok-4.6 is normalized to xai-vertex/xai/grok-4.6.
 	params.Model = "xai/grok-4.6"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalized model spec")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
@@ -229,7 +229,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 
 	// Long form: xai-vertex/xai/grok-4.6 passes through.
 	params.Model = "xai-vertex/xai/grok-4.6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
@@ -239,7 +239,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	// silently sending traffic to xAI's native API instead of Vertex.
 	for _, spec := range []string{"Xai-Vertex/xai/grok-4.6", "XAI/grok-4.6", "Xai/grok-4.6"} {
 		params.Model = spec
-		cmd = buildPiRunCommand(params, m)
+		cmd = buildPiRunCommand(params, m, nil)
 		assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "canonical spec for %s", spec)
 		assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY unset for %s", spec)
 		assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "extension loaded for %s", spec)
@@ -248,7 +248,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	// unset must run after the agent-writable .env is sourced, or the .env
 	// could re-export XAI_API_KEY after we cleared it.
 	params.Model = "xai/grok-4.6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	assert.Less(t, strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'"), strings.Index(cmd, "&& unset XAI_API_KEY"),
 		"XAI_API_KEY is unset after .env is sourced")
 }
@@ -275,7 +275,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 
 	// openai/gpt-5.6-luna passes through as a two-segment spec.
 	params.Model = "openai/gpt-5.6-luna"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 
 	assert.Contains(t, cmd, "--model 'openai/gpt-5.6-luna'", "model spec")
 	assert.NotContains(t, cmd, "--api-key", "no --api-key: it would outrank the auth.json pi re-reads per request and pin the iteration to one placeholder")
@@ -296,7 +296,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	// Case-insensitive gate: pi resolves providers case-insensitively.
 	for _, spec := range []string{"OpenAI/gpt-5.6-luna", "OPENAI/gpt-5.6-luna", "Openai/gpt-5.6-sol"} {
 		params.Model = spec
-		cmd = buildPiRunCommand(params, m)
+		cmd = buildPiRunCommand(params, m, nil)
 		assert.Contains(t, cmd, "&& "+PiOpenAIAuthSeed(PiRuntime{}.ConfigDir()), "seed for %s", spec)
 		assert.Contains(t, cmd, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY", "unset for %s", spec)
 	}
@@ -305,7 +305,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	// config-dir guard runs before it (nothing can shadow `test` yet) and
 	// again after it, behind `unset -f test`, in case .env wrote a file.
 	params.Model = "openai/gpt-5.6-luna"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	envIdx := strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'")
 	unsetIdx := strings.Index(cmd, "&& unset OPENAI_BASE_URL")
 	assert.Less(t, envIdx, unsetIdx, "unset after .env sourced")
@@ -513,7 +513,7 @@ func TestPiOpenAIConfigGuard(t *testing.T) {
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "anthropic")
-	cmd := buildPiRunCommand(piTestParams(), &piManifest{})
+	cmd := buildPiRunCommand(piTestParams(), &piManifest{}, nil)
 	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
 	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
@@ -529,7 +529,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	params.Debug = "*"
 	// A manifest claiming hooks must not matter: the runner's signal decides.
 	m := &piManifest{AgentName: "code", Model: "opus", Tools: nil, Hooks: &piHooksManifest{}}
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-4-6'", "harness model wins over the agent definition")
 	assert.Contains(t, cmd, "--thinking 'high'")
@@ -544,7 +544,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	m := &piManifest{Tools: []string{}}
-	cmd := buildPiRunCommand(piTestParams(), m)
+	cmd := buildPiRunCommand(piTestParams(), m, nil)
 	assert.Contains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "--tools ")
 }
@@ -554,7 +554,7 @@ func TestBuildPiRunCommand_QuotesRepoDirAndModel(t *testing.T) {
 	params := piTestParams()
 	params.RepoDir = "/sandbox/workspace/it's"
 	params.Model = "anthropic/claude'x"
-	cmd := buildPiRunCommand(params, &piManifest{})
+	cmd := buildPiRunCommand(params, &piManifest{}, nil)
 	assert.Contains(t, cmd, `cd '/sandbox/workspace/it'\''s'`)
 	assert.Contains(t, cmd, `--model 'anthropic/claude'\''x'`)
 }
@@ -577,7 +577,7 @@ func TestPiThinkingFor_DefaultAndUnknown(t *testing.T) {
 
 	params := piTestParams()
 	params.Effort = "bogus"
-	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"})
+	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"}, nil)
 	assert.Contains(t, cmd, "--thinking 'high'", "unknown effort falls back to the default, not to pi's medium")
 }
 
@@ -638,13 +638,13 @@ func TestBuildPiRunCommand_HonoursPromptOverride(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "opus"}
 
 	params := piTestParams()
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, shellQuote(DefaultAgentPrompt), "empty prompt falls back to the default")
 
 	// The validation loop injects the previous iteration's failure here; a
 	// runtime that ignores it turns feedback_mode into a blind retry (#1050).
 	params.Prompt = "Previous iteration failed: tests did not pass.\nFix it; don't repeat it."
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, shellQuote(params.Prompt))
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
 	assert.True(t, strings.HasSuffix(cmd, "</dev/null"), "stdin stays closed")
@@ -735,7 +735,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "sonnet", Tools: []string{"bash"}}
 	params := piTestParams()
 	params.ModelAliases = map[string]string{"sonnet": "claude-sonnet-5"}
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-5'",
 		"config alias remaps the model in the build command")
 
@@ -744,7 +744,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	// the alias was resolved ahead of normalisation this produced
 	// "anthropic-vertex/xai/grok-4.6" and skipped the gate.
 	params.ModelAliases = map[string]string{"sonnet": "xai/grok-4.6"}
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil)
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "xai alias value is normalised")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "xai-vertex gate fires for an aliased Grok spec")
 	assert.NotContains(t, cmd, "anthropic-vertex/xai", "no double prefix")
@@ -763,4 +763,59 @@ func TestPiDocumentedAliasesMatchConfigKeys(t *testing.T) {
 		got = append(got, alias)
 	}
 	assert.ElementsMatch(t, want, got, "config.ValidModelAliasKeys and piDocumentedAliases drifted")
+}
+
+// TestBuildPiRunCommand_LoaderEnvHygiene pins the module-loader environment
+// hygiene that runs on *every* provider path. The agent-writable .env can
+// otherwise hand jiti a JITI_ALIAS map that swaps the file behind an `-e`
+// path for another one (reproduced on pi 0.84.4: the bundled cli.js takes
+// the isBundledNode branch of createJiti, which passes no `alias`, so jiti
+// fills it from the environment) — the extension tree hash and the hook
+// adapter's SHA-256 both stay clean because the source file is untouched.
+// NODE_OPTIONS/NODE_PATH are the same class of hole and were only cleared
+// on the openai path.
+func TestBuildPiRunCommand_LoaderEnvHygiene(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	m := &piManifest{AgentName: "triage", Model: "opus"}
+	envSource := ". '" + sandbox.SandboxWorkspace + "/.env'"
+
+	for _, model := range []string{
+		"opus",                  // anthropic-vertex
+		"xai/grok-4",            // xai-vertex
+		"openai/gpt-5.6-luna",   // built-in openai
+		"anthropic/claude-opus", // a provider with no gate at all
+	} {
+		params := piTestParams()
+		params.Model = model
+		cmd := buildPiRunCommand(params, m, nil)
+
+		assert.Contains(t, cmd, "&& "+piLoaderEnvUnset(), "loader env hygiene runs for %s", model)
+		envIdx := strings.Index(cmd, envSource)
+		require.GreaterOrEqual(t, envIdx, 0, ".env is sourced for %s", model)
+		unsetIdx := strings.Index(cmd, "&& "+piLoaderEnvUnset())
+		assert.Less(t, envIdx, unsetIdx, "the unset must come after .env for %s", model)
+		// JITI_FS_CACHE is re-exported after the unset, not before it.
+		assert.Less(t, unsetIdx, strings.Index(cmd, "export JITI_FS_CACHE=false"),
+			"JITI_FS_CACHE is re-exported after the family is cleared, for %s", model)
+	}
+
+	// Every JITI_* name jiti 2.7.0 reads from the environment (jiti/dist/
+	// jiti.cjs) is cleared, except JITI_FS_CACHE, which EnvExports pins.
+	unset := piLoaderEnvUnset()
+	for _, name := range []string{
+		"JITI_ALIAS", "JITI_CACHE", "JITI_DEBUG", "JITI_ESM_EVAL_TEMP_FILE",
+		"JITI_EXTENSIONS", "JITI_INTEROP_DEFAULT", "JITI_JSX", "JITI_MODULE_CACHE",
+		"JITI_NATIVE_MODULES", "JITI_REBUILD_FS_CACHE", "JITI_REQUIRE_CACHE",
+		"JITI_RESPECT_TMPDIR_ENV", "JITI_SOURCE_MAPS", "JITI_TRANSFORM_MODULES",
+		"JITI_TRY_NATIVE", "JITI_TSCONFIG_PATHS",
+		"NODE_OPTIONS", "NODE_PATH",
+	} {
+		assert.Contains(t, strings.Fields(unset), name, "%s is cleared", name)
+	}
+	assert.NotContains(t, strings.Fields(unset), "JITI_FS_CACHE", "JITI_FS_CACHE is pinned by EnvExports, not unset")
+
+	// `unset` is a special builtin, so a function defined by .env cannot
+	// stand in for it — but it still has to be spelled as one word.
+	assert.True(t, strings.HasPrefix(unset, "unset "), "the fragment is a bare `unset` invocation: %q", unset)
 }

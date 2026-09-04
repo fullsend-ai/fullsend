@@ -112,7 +112,8 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Unattended | No approval prompts, stdin closed, bounded retries; a missing credential exits 1 |
 | Artifacts | `output.jsonl`, `transcripts/<agent>-<ts>_<id>.jsonl`, `metrics.json` with `runtime: pi`, plus `pi-debug.log` with `--debug` |
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
-| Not supported | Sub-agents, fallback chains, `plugins:`, Bedrock/Azure providers |
+| Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
+| Not supported | Sub-agents, fallback chains, Claude-format plugins (named and skipped), Bedrock/Azure providers |
 
 ## Running it locally
 
@@ -189,6 +190,105 @@ What a local pi run needs, beyond the guide:
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 
+## Plugins (pi extensions)
+
+pi's tool surface grows through extensions — JavaScript/TypeScript modules pi loads with `-e`. A
+harness ships its own under the same `plugins:` key Claude Code plugins use
+([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)).
+
+```yaml
+# harness/code.yaml
+plugins:
+  - extensions/go-diagnostics                 # directory in the harness repo
+  - path: extensions/pi-fff                   # object form only when env or a flag is needed
+    env:
+      FFF_MULTIGREP: "1"
+    pi:
+      args: ["--fff-mode", "override"]
+```
+
+That is the whole configuration: no manifest file, no tool-mapping table, no allowlist bookkeeping.
+An extension is harness-repo content with the same trust as `scripts:` and `skills:` —
+org-allowlisted URL base, content-addressed fetch, injection scan of every text file. Nothing is
+ever picked up from the target repository.
+
+### What makes a valid extension directory
+
+`fullsend run` validates every entry before the sandbox starts, and names the rule that failed
+(`fullsend lock` applies the same check to a URL-sourced harness). Check yours against this list:
+
+- **It has an entry point pi resolves.** Either `index.js`, `index.ts`, `index.mjs` or `index.cjs`
+  at the top level, or a `package.json` `main` pointing at an existing file, or a `package.json`
+  `"pi": {"extensions": [...]}` list. A top-level `tools.js`, or an `index.js` one directory down,
+  is **not** an entry point.
+- **Once a `pi` object exists, only `pi.extensions` counts.** `main` and `index.*` are never
+  consulted again, so `{"pi": {}}` — or a `pi.extensions` whose entries resolve to nothing — loads
+  nothing at all, silently. Every entry must stay inside the directory: no absolute path, no `..`.
+- **No `extensions/`, `prompts/`, `skills/` or `themes/` entry** unless you list your entry points
+  in `pi.extensions`. Any of those names — even as a plain file — makes pi read the directory as a
+  *package* and ignore `index.js`.
+- **Commit `node_modules`, then delete `node_modules/.bin/`.** The sandbox never runs
+  `npm install`, and no symlink may appear anywhere in the tree — npm fills `.bin/` with them.
+  Nothing in the sandbox needs it: no package script and no vendored CLI is ever run.
+- **Do not vendor pi's own packages** (`@earendil-works/pi-coding-agent`, `pi-agent-core`,
+  `pi-tui`). pi resolves those imports to the running pi, so an extension written against the
+  pinned `PI_VERSION` just works.
+- **Pick a free name.** Not `fullsend-hooks`, `anthropic-vertex` or `xai-vertex` — those are the
+  runner's own sandbox names — and not the directory name another entry already uses. Allowed
+  characters are `a-z`, `A-Z`, `0-9`, `_` and `-`.
+- **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
+  repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
+  sources and `..` segments are refused: pi would fetch them from the network at startup.
+
+### `pi.args` and `env`
+
+`pi.args` are flags the extension registered with `pi.registerFlag`, written `--flag` or
+`--flag=value`. pi's own option names (`--model`, `--tools`, `--extension`, …) belong to the runner
+and are refused, and single-dash forms do not exist in pi. One bare value may follow a `--flag`
+written without `=`; every other bare word is prompt text pi would prepend to the agent's prompt, so
+it is rejected rather than passed on.
+
+`env` is for the extension's own settings — `FFF_MULTIGREP`, `GO_DIAG_LEVEL`. Names belonging to the
+runtime, an interpreter, a proxy or a credential are refused; the deny-list is in
+[Harness Field Reference § `plugins`](../reference/harness-reference.md#field-details).
+
+### Extension tools and `tools:`
+
+An agent that declares `tools:` keeps its strict `--tools` allowlist and pi hides extension tools
+under it — that is what a declared `tools:` means. An agent whose `tools:` maps to nothing pi
+provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
+An agent without `tools:` gets pi's default set plus whatever its extensions register.
+
+The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
+runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
+the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
+
+### What happens at run time
+
+Each directory is uploaded to `/sandbox/pi-config/extensions/<name>/` and logged as
+`Extension "<name>": uploaded to sandbox`. pi loads it after the provider extension and the hook
+adapter, so the sandbox hooks see every tool call before any extension does. Before each iteration
+the runner verifies the sandbox copy still matches the host directory; a mismatch stops the
+iteration with exit 96 and `fullsend: pi extension "<name>" is missing or was modified`, and nothing
+from the extension runs — so an extension must not write into its own directory, only into the
+workspace or `/tmp`. First use of each extension tool is logged as
+`[fullsend-hooks] extension tool: <name>`, and the `session_start` roster line ends with
+`extensions=<names>`.
+
+### Troubleshooting plugins
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Exit 96, `fullsend: pi extension "<name>" is missing or was modified` | The sandbox copy diverged from the host: the agent or the extension wrote into `/sandbox/pi-config/extensions/`, or planted a symlink or directory there | Write to the workspace or `/tmp` instead; re-run |
+| `Failed to load extension "<path>"` on stderr, exit 1 | pi could not import the entry point at run time even though validation accepted the directory | Re-run with `--debug='*'` and read `pi-debug.log` in the run directory |
+| `Unknown option --x` at startup | `pi.args` names a flag the extension does not register with `pi.registerFlag` | Drop the flag, or register it in the extension |
+| The extension loads, registers nothing, and prints no message | `package.json` has a `pi` object whose `pi.extensions` resolves to nothing — pi exits 0 in silence | Name real entry points in `pi.extensions`, or remove the `pi` object. Validation refuses this shape, so it can only appear if the directory changed after it was validated |
+| `Plugin "<name>": skipped — pi does not support Claude plugins` | The directory has `plugin.json` at its root or `.claude-plugin/plugin.json`, so it is read as a Claude plugin whatever else it contains | Remove the marker (`plugin.json` or `.claude-plugin/plugin.json`) if the directory is meant to be a pi extension; keep the entry as it is if the harness also runs under Claude Code |
+
+How the runner protects this path — the tree hash, the loader cache, the symlink rule, the `env`
+deny-list — is in
+[Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
+
 ## Not yet exercised
 
 `runtime: pi` is selectable and has been run end to end, but no **fleet lifecycle** run on Vertex is
@@ -200,8 +300,9 @@ for that purpose. `extension_error` events are not mapped.
 ## Troubleshooting
 
 **The model is not found, or the provider is missing.** A pi provider comes from an extension loaded
-with `-e`, and a failed extension is dropped **silently** — it simply does not appear. Re-run with
-`--debug` and read `pi-debug.log`, which captures pi's stderr including extension load errors.
+with `-e`, so an extension that did not load takes its provider with it. The table in
+[Plugins § Troubleshooting plugins](#troubleshooting-plugins) separates the two ways that happens — the loud
+one (`Failed to load extension`, exit 1) and the silent one (pi exits 0 having loaded nothing).
 
 **`No API key found for <provider>`.** The provider is registered but its credentials did not
 resolve. For Vertex providers that means ADC — check the project variable for *that* provider in the

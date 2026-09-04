@@ -264,3 +264,112 @@ test("runScript with a real python3 script (skipped without python3)", (t) => {
   assert.equal(runScript(m, "echo_block.py", { tool_name: "Bash", tool_input: { command: "ok" } }).block, false);
   assert.equal(runScript(m, "missing.py", { tool_name: "Bash", tool_input: {} }).block, true, "missing script blocks");
 });
+
+// ── Declared extensions (ADR 0094) ───────────────────────────────────────
+
+const allowlistManifest = {
+  ...manifest,
+  hooks: {
+    ...manifest.hooks,
+    groups: [
+      { phase: "PreToolUse", tools: ["*"], scripts: ["canary_pretool.py"] },
+      { phase: "PreToolUse", tools: ["*"], scripts: ["tool_allowlist_pretool.py"] },
+      { phase: "PostToolUse", tools: ["*"], scripts: ["canary_posttool.py"] },
+    ],
+  },
+  extensions: [{ name: "go-diagnostics", path: "/sandbox/pi-config/extensions/go-diagnostics", sha256: "a".repeat(64) }],
+};
+
+test("extension tool: every PreToolUse script runs, the allowlist included; first use is logged", () => {
+  const logs = [];
+  const { spawn, calls } = fakeSpawn({});
+  const m = { ...allowlistManifest, tools: null };
+  const { onToolCall, onToolResult } = createHooks(m, { spawn, log: (l) => logs.push(l) });
+
+  assert.equal(onToolCall({ toolName: "go_diag", input: { path: "pkg/a.go" } }), undefined);
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"], "no script is skipped for an extension tool");
+  assert.equal(calls[0].payload.tool_name, "go_diag", "extension tools keep their pi name");
+  assert.deepEqual(logs, ["[fullsend-hooks] extension tool: go_diag"]);
+
+  // Logged once per tool name, not per call.
+  onToolCall({ toolName: "go_diag", input: {} });
+  onToolCall({ toolName: "go_lint", input: {} });
+  assert.deepEqual(logs, ["[fullsend-hooks] extension tool: go_diag", "[fullsend-hooks] extension tool: go_lint"]);
+
+  // PostToolUse * groups still see the extension tool's result.
+  calls.length = 0;
+  assert.equal(onToolResult({ toolName: "go_diag", input: {}, content: "ok" }), undefined);
+  assert.deepEqual(calls.map((c) => c.script), ["canary_posttool.py"]);
+});
+
+test("extension tool: the allowlist script's verdict is honoured (the manifest is agent-writable, so it never grants a bypass)", () => {
+  const { spawn, calls } = fakeSpawn({ "tool_allowlist_pretool.py": { status: 1, stdout: JSON.stringify({ decision: "block", reason: "not allowlisted" }) } });
+  const { onToolCall } = createHooks({ ...allowlistManifest, tools: null }, { spawn, ...quiet });
+  assert.deepEqual(onToolCall({ toolName: "go_diag", input: {} }), { block: true, reason: "not allowlisted" },
+    "an extension tool the org did not put in FULLSEND_TOOL_ALLOWLIST is blocked like any other");
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"]);
+});
+
+test("extension tool: powershell is a pi built-in even though the tool map has no Claude name for it", () => {
+  const logs = [];
+  const { spawn } = fakeSpawn({});
+  const { onToolCall } = createHooks({ ...allowlistManifest, tools: null }, { spawn, log: (l) => logs.push(l) });
+  assert.equal(onToolCall({ toolName: "powershell", input: { command: "Get-Item ." } }), undefined);
+  assert.deepEqual(logs.filter((l) => l.includes("extension tool:")), [], "built-ins are never announced as extension tools");
+});
+
+test("extension tool: a built-in or Claude-vocabulary name is never treated as an extension tool", () => {
+  const logs = [];
+  const { spawn, calls } = fakeSpawn({ "tool_allowlist_pretool.py": { status: 1, stdout: JSON.stringify({ decision: "block", reason: "not allowlisted" }) } });
+  const { onToolCall } = createHooks({ ...allowlistManifest, tools: null }, { spawn, log: (l) => logs.push(l) });
+  assert.deepEqual(onToolCall({ toolName: "read", input: { path: "/x" } }), { block: true, reason: "not allowlisted" });
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"]);
+  calls.length = 0;
+  assert.deepEqual(onToolCall({ toolName: "Read", input: { path: "/x" } }), { block: true, reason: "not allowlisted" });
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"]);
+  assert.deepEqual(logs.filter((l) => l.includes("extension tool:")), [], "built-ins are never announced as extension tools");
+});
+
+test("extension tool: a declared tools: list changes nothing about which scripts run", () => {
+  const { spawn, calls } = fakeSpawn({ "tool_allowlist_pretool.py": { status: 1, stdout: JSON.stringify({ decision: "block", reason: "not allowlisted" }) } });
+  const { onToolCall } = createHooks({ ...allowlistManifest, tools: ["bash"] }, { spawn, ...quiet });
+  assert.deepEqual(onToolCall({ toolName: "go_diag", input: {} }), { block: true, reason: "not allowlisted" });
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"]);
+});
+
+test("extension tool: without manifest extensions an unknown tool is not an extension tool", () => {
+  const logs = [];
+  const { spawn, calls } = fakeSpawn({ "tool_allowlist_pretool.py": { status: 1, stdout: JSON.stringify({ decision: "block", reason: "not allowlisted" }) } });
+  const { onToolCall } = createHooks({ ...allowlistManifest, extensions: [], tools: null }, { spawn, log: (l) => logs.push(l) });
+  assert.deepEqual(onToolCall({ toolName: "go_diag", input: {} }), { block: true, reason: "not allowlisted" });
+  assert.deepEqual(calls.map((c) => c.script), ["canary_pretool.py", "tool_allowlist_pretool.py"]);
+  assert.deepEqual(logs.filter((l) => l.includes("extension tool:")), []);
+});
+
+test("session_start roster names the declared extensions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-hooks-ext-"));
+  const manifestPath = join(dir, "manifest.json");
+  const lines = [];
+  const origError = console.error;
+  console.error = (l) => lines.push(l);
+  process.env.FULLSEND_PI_MANIFEST = manifestPath;
+  try {
+    writeFileSync(manifestPath, JSON.stringify({ ...allowlistManifest, extensions: [{ name: "go-diagnostics" }, { name: "pi-fff" }] }));
+    const registered = {};
+    defaultExport({ on: (ev, fn) => { registered[ev] = fn; } });
+    registered.session_start({});
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^\[fullsend-hooks\] agent=triage hooks=.* bash-allowlist=gh,jq extensions=go-diagnostics,pi-fff$/);
+
+    lines.length = 0;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const plain = {};
+    defaultExport({ on: (ev, fn) => { plain[ev] = fn; } });
+    plain.session_start({});
+    assert.equal(lines.length, 1);
+    assert.doesNotMatch(lines[0], /extensions=/, "no suffix without extensions");
+  } finally {
+    console.error = origError;
+    delete process.env.FULLSEND_PI_MANIFEST;
+  }
+});

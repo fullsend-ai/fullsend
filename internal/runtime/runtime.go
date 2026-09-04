@@ -40,8 +40,14 @@ type RunParams struct {
 	FallbackModels []string
 	RepoDir        string
 	FullsendDir    string
-	PluginDirs     []string
-	Debug          string
+	// PluginDirs are the sandbox-side directories Claude Code is pointed at
+	// with --plugin-dir, one per Claude-format plugin the runner uploaded.
+	PluginDirs []string
+	// Plugins are the harness's declared plugins (host paths and formats),
+	// the same list Bootstrap received. PiRuntime.Run re-hashes the pi-format
+	// entries to render the sandbox preflight; other runtimes ignore them.
+	Plugins []PluginInput
+	Debug   string
 	// HooksSettingsPath, if set, is passed as --settings so Claude Code
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string

@@ -97,7 +97,10 @@ type piToolExecutionEndEvent struct {
 // read/write/edit.path, ls.path, grep/find.pattern). Each argument is
 // redacted before it is collapsed or capped — the secret patterns need the
 // whole token, so a display cut landing mid-token would let the fragment
-// through. Tools outside pi's built-in set yield "".
+// through. Tools outside pi's built-in set (extension tools, ADR 0094)
+// show their first string-valued argument among the conventional names
+// path, file, pattern, query, command, so live progress is not blank for
+// them; anything else yields "".
 func piToolContext(toolName string, args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
@@ -128,6 +131,15 @@ func piToolContext(toolName string, args json.RawMessage) string {
 		return capRunes(str("path"), maxPathDisplay)
 	case "grep", "find":
 		return capRunes(str("pattern"), maxPatternDisplay)
+	default:
+		for _, key := range []string{"path", "file", "pattern", "query", "command"} {
+			if s := str(key); s != "" {
+				if key == "path" || key == "file" {
+					return capRunes(s, maxPathDisplay)
+				}
+				return capRunes(s, maxPatternDisplay)
+			}
+		}
 	}
 	return ""
 }

@@ -223,7 +223,7 @@ and are omitted from this table.
 | `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) |
 | `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) |
 | `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively |
-| `plugins` | Marketplace layout | Unsupported — warned and skipped | Unsupported — warned and skipped |
+| `plugins` | Loads the `plugin.json` directories (marketplace layout) | Loads the extension directories: uploaded to `PI_CODING_AGENT_DIR/extensions/`, tree-hash preflight, `-e` ([Plugins](runtimes/pi.md#plugins-pi-extensions), ADR 0094) | Unsupported — warned and skipped |
 | `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` |
 | `validation_loop.feedback_mode` | Replaces the prompt on retry | Same | Same |
 
