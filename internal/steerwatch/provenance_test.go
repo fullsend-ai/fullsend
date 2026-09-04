@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -386,5 +387,42 @@ func TestRouteArmsHaveNotDrifted(t *testing.T) {
 	for event := range amendmentEvents {
 		assert.Contains(t, found, event,
 			"%q confers amendment authority but no route arm authorizes anyone for it", event)
+	}
+}
+
+// The equivalence that makes issue_comment amendment-eligible — the login
+// the route arm checks (github.event.comment.user.login) is the login the
+// run reports — holds only while the shim delivers `created` events. On an
+// `edited` event the sender is the editor, who need not be the comment's
+// author, and the route arm never inspects the action.
+//
+// That invariant lives in workflow YAML outside this package, so it is
+// pinned here: a shim that widened the types would silently reopen the gap.
+func TestIssueCommentIsCreatedOnly(t *testing.T) {
+	require.True(t, amendmentEvents["issue_comment"],
+		"this test exists to guard issue_comment's amendment eligibility")
+
+	shims := map[string]string{
+		"repo shim":     filepath.Join("..", "..", ".github", "workflows", "fullsend.yaml"),
+		"shim template": filepath.Join("..", "..", "internal", "scaffold", "fullsend-repo", "templates", "shim-per-repo.yaml"),
+	}
+	for name, path := range shims {
+		t.Run(name, func(t *testing.T) {
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			var wf struct {
+				On struct {
+					IssueComment struct {
+						Types []string `yaml:"types"`
+					} `yaml:"issue_comment"`
+				} `yaml:"on"`
+			}
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+
+			assert.Equal(t, []string{"created"}, wf.On.IssueComment.Types,
+				"widening issue_comment types breaks the actor-equals-authorizee equivalence "+
+					"that makes it the only amendment-eligible event; see amendmentEvents")
+		})
 	}
 }

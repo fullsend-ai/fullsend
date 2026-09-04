@@ -108,15 +108,23 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // author is the login the runner's own status comments are posted under (the
 // App), resolved by the caller from a status comment it can already identify.
 //
-// Authorship alone is not enough, which is why the body must also be a
-// terminal status comment. An agent can be induced to write anything into
-// its own output — an injection in a PR body asking it to include a steer
-// marker naming a specific run id is enough — and that output is posted by
-// the App, so it is genuinely App-authored. A stronger identity check
-// (performed_via_github_app, the App's client id) does not help for the same
-// reason: the problem is scope, not identity. Only the run's own status
-// comment is written by the runner rather than by the agent, so only a body
-// carrying the status markers can carry a receipt.
+// Authorship alone is not enough, which is why the body must also look like
+// a terminal status comment. An agent can be induced to write anything into
+// its own output — an injection asking it to include a steer marker naming a
+// specific run id is enough — and that output is posted by the App, so it is
+// genuinely App-authored. A stronger identity check (performed_via_github_app,
+// the App's client id) does not help for the same reason.
+//
+// KNOWN GAP, tracked before this ships: this check is necessary but NOT
+// sufficient. It authenticates two public strings, not the code path that
+// wrote them. An agent holding the same App installation token can post a
+// top-level comment carrying both status tags and a marker — via a
+// post-script shelling out to `gh`, which reaches neither NeutralizeMarkers
+// nor this package — and that comment passes. Closing it needs authenticity
+// the agent cannot mint: a status-only credential withheld from the sandbox,
+// or a receipt signed by the runner. Until then a forged receipt can still
+// suppress a queued run, and the skip check that reads this must be treated
+// as advisory rather than trusted.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {
 	if author == "" {
 		return SteerMarker{}, false
