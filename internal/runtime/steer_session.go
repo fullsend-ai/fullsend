@@ -24,22 +24,29 @@ const steerMailboxName = "steer-inbox.ndjson"
 // which is what closes the agent's stdin and ends the run.
 //
 // Both this file and the mailbox live in the runtime's config directory,
-// which is outside the agent-writable workspace tree but is not beyond the
-// agent's reach either — the codex and pi config guards exist precisely
-// because an agent can write there between iterations. Two residuals, both
-// accepted rather than defended, for the same reason the research doc
-// gives for poisoned session files (section 5):
+// which is outside the agent-writable workspace tree but not beyond the
+// agent's reach — the codex and pi config guards exist precisely because an
+// agent can write there between iterations. What that grants, and what
+// constrains it:
 //
-//   - An agent that appends to its own mailbox injects a user message into
-//     its own session. It already controls its own output, and a steer is
-//     content and never capability, so this grants nothing.
-//   - An agent that rewrites this pid file makes Settle send a TERM to
-//     some other pid as the sandbox user. That is a process it could have
-//     signalled directly anyway, and the worst case is that the feeder
-//     survives and the run ends on its timeout instead.
+//   - Appending to its own mailbox lets the agent inject a user message
+//     into its own session. That grants no capability it did not have —
+//     it already controls its own output — but it DOES reach the runner's
+//     bookkeeping, because the agent's line is echoed back exactly as the
+//     runner's are. Counting echoes was therefore wrong: an injected line
+//     mis-stamped a real steer's receipt and made the settle condition
+//     unsatisfiable. noteEcho now matches each echo to a runner-written
+//     message by identity and ignores anything else, so the injected line
+//     is inert rather than merely harmless-looking.
+//   - Rewriting the pid file makes Settle send a TERM to some other pid as
+//     the sandbox user — a process it could have signalled directly. The
+//     worst case is that the feeder survives and the run ends on its
+//     timeout.
 //
-// Neither is a privilege gain; signing files in a directory the agent
-// controls would not change that.
+// Neither is a privilege gain, and signing files in a directory the agent
+// controls would not change that; what the mailbox needed was for the
+// runner to stop trusting the shape of the echo stream and start checking
+// which message each echo names.
 const steerFeederPidName = "steer-feeder.pid"
 
 // steerExecTimeout bounds a mailbox append and the feeder kill. Both are a
@@ -107,14 +114,12 @@ type steerFeed struct {
 	exec sandboxExecCtxFunc
 
 	mu sync.Mutex
-	// sent counts every line written to the mailbox, including the
-	// initial prompt, which is why it starts at 1 once Run has written it.
-	sent int
-	// echoed counts every replayed message the agent reported consuming.
-	echoed int
-	// queued holds the steers in the order they were written, so the nth
-	// echo after the initial prompt can be attributed to the right one.
-	queued []SteerMessage
+	// outstanding holds every line the RUNNER wrote, in write order, each
+	// with the key its echo will carry. Matching by key rather than
+	// counting is what makes the mailbox's agent-writability harmless to
+	// the settle rule: an echo whose key matches nothing outstanding is a
+	// line the agent wrote, and is ignored entirely.
+	outstanding []pendingMessage
 	// inTurn is true between an echo and the result that follows it.
 	inTurn bool
 	// settled records that Settle was called: no further steers arrive.
@@ -129,6 +134,19 @@ type steerFeed struct {
 // sandboxExecCtxFunc is the context-aware sandbox exec used by the steer
 // path (sandbox.ExecContext in production).
 type sandboxExecCtxFunc func(ctx context.Context, sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
+
+// pendingMessage is one runner-written mailbox line awaiting its echo.
+type pendingMessage struct {
+	// key is what the echo will carry: pi's rpc id, or Claude Code's
+	// verbatim message content.
+	key string
+	// msg is the steer this line delivered; the zero value for the run's
+	// opening prompt, which is tracked but is not a steer.
+	msg SteerMessage
+	// steer distinguishes a steer from the opening prompt.
+	steer bool
+	acked bool
+}
 
 func newSteerFeed(sandboxName, configDir string, exec sandboxExecCtxFunc) *steerFeed {
 	return &steerFeed{
@@ -153,7 +171,7 @@ func (f *steerFeed) initCommand(line string) string {
 // command: `tail -f` on a missing file exits immediately, which would
 // close the agent's stdin at once and turn a steerable run into a
 // prompt-less one.
-func (f *steerFeed) seed(ctx context.Context, line string) error {
+func (f *steerFeed) seed(ctx context.Context, line, key string) error {
 	_, stderr, exitCode, err := f.exec(ctx, f.sandboxName, f.initCommand(line), steerExecTimeout)
 	if err != nil {
 		return fmt.Errorf("seeding the steer mailbox: %w", err)
@@ -161,15 +179,16 @@ func (f *steerFeed) seed(ctx context.Context, line string) error {
 	if exitCode != 0 {
 		return fmt.Errorf("seeding the steer mailbox: exit %d: %s", exitCode, sanitizeOutput(strings.TrimSpace(stderr)))
 	}
-	f.noteInitialPrompt()
+	f.noteInitialPrompt(key)
 	return nil
 }
 
-// noteInitialPrompt records that the opening message is in the mailbox.
-func (f *steerFeed) noteInitialPrompt() {
+// noteInitialPrompt records that the opening message is in the mailbox,
+// under the key its echo will carry.
+func (f *steerFeed) noteInitialPrompt(key string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sent = 1
+	f.outstanding = append(f.outstanding, pendingMessage{key: key})
 }
 
 // appendLine writes one message into the mailbox and records it as
@@ -181,7 +200,7 @@ func (f *steerFeed) noteInitialPrompt() {
 // The sandbox write happens under f.mu so a concurrent settle decision
 // cannot conclude "nothing is pending" against a line that is already on
 // its way into the mailbox.
-func (f *steerFeed) appendLine(ctx context.Context, msg SteerMessage, line string) error {
+func (f *steerFeed) appendLine(ctx context.Context, msg SteerMessage, line, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closing {
@@ -195,30 +214,66 @@ func (f *steerFeed) appendLine(ctx context.Context, msg SteerMessage, line strin
 	if exitCode != 0 {
 		return fmt.Errorf("writing steer to the mailbox: exit %d: %s", exitCode, sanitizeOutput(strings.TrimSpace(stderr)))
 	}
-	f.sent++
-	f.queued = append(f.queued, msg)
+	f.outstanding = append(f.outstanding, pendingMessage{key: key, msg: msg, steer: true})
 	return nil
 }
 
 // noteEcho records that the agent consumed one mailbox line at t and
-// reports whether the feeder should now be stopped. The first echo is the
-// initial prompt; every later one is attributed to the steer at the
-// matching position, which is why this counts rather than popping a queue:
-// a steer written before the agent had read the opening prompt would
-// otherwise be credited with the prompt's echo.
-func (f *steerFeed) noteEcho(t time.Time) (shouldClose bool) {
+// reports whether the feeder should now be stopped.
+//
+// The echo is matched to a runner-written message by identity — pi's rpc id
+// or Claude Code's verbatim content — and an echo matching nothing
+// outstanding is IGNORED. That is the whole defence: the mailbox lives in
+// the runtime's config directory, which the agent can write to, so a
+// counter advanced by any echo could be advanced by a line the agent wrote.
+// Counting produced two defects: the positional attribution stamped a real
+// steer's SteerResult on somebody else's echo, receipting a steer the agent
+// had not consumed; and an extra echo made the sent/echoed equality
+// unsatisfiable, so the feeder was never stopped and the run burned its
+// whole timeout.
+//
+// An agent that copies a runner message's key cannot get ahead of it: the
+// copy has to be appended after the line it copies, the feeder delivers in
+// order, and each outstanding entry is acked at most once — so the original
+// always claims its own echo and the copy matches nothing.
+func (f *steerFeed) noteEcho(t time.Time, id, content string) (shouldClose bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.echoed++
+
+	i := f.matchLocked(id, content)
+	if i < 0 {
+		// Not one of ours. Do not count it, do not credit a steer with it,
+		// and leave the settle condition exactly where it was.
+		return false
+	}
+	f.outstanding[i].acked = true
 	f.inTurn = true
-	if i := f.echoed - 2; i >= 0 && i < len(f.queued) {
+	if f.outstanding[i].steer {
 		f.results = append(f.results, SteerResult{
-			FollowUpRunID: f.queued[i].FollowUpRunID,
+			FollowUpRunID: f.outstanding[i].msg.FollowUpRunID,
 			DeliveredAt:   t,
 			Mode:          steerModeLive,
 		})
 	}
 	return f.markClosingLocked()
+}
+
+// matchLocked returns the index of the first un-acked outstanding message
+// this echo identifies, or -1. f.mu must be held.
+func (f *steerFeed) matchLocked(id, content string) int {
+	for i := range f.outstanding {
+		if f.outstanding[i].acked {
+			continue
+		}
+		key := f.outstanding[i].key
+		if key == "" {
+			continue
+		}
+		if (id != "" && key == id) || (content != "" && key == content) {
+			return i
+		}
+	}
+	return -1
 }
 
 // noteTurnEnd records that a turn finished and reports whether the feeder
@@ -244,10 +299,21 @@ func (f *steerFeed) settle() (shouldClose bool) {
 // end only once the runner has settled it, every written line has been
 // echoed back, and no turn is in flight. f.mu must be held.
 func (f *steerFeed) markClosingLocked() bool {
-	if f.closing || !f.settled || f.inTurn || f.sent != f.echoed {
+	if f.closing || !f.settled || f.inTurn || !f.allAckedLocked() {
 		return false
 	}
 	f.closing = true
+	return true
+}
+
+// allAckedLocked reports whether every line the runner wrote has been
+// echoed back. f.mu must be held.
+func (f *steerFeed) allAckedLocked() bool {
+	for i := range f.outstanding {
+		if !f.outstanding[i].acked {
+			return false
+		}
+	}
 	return true
 }
 
