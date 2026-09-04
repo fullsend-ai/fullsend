@@ -9,6 +9,12 @@ endpoints:
     protocol: rest
     access: read-only
     enforcement: enforce
+  - host: api.github.com
+    port: 443
+    protocol: graphql
+    access: read-only
+    enforcement: enforce
+    path: "/graphql"
   - host: github.com
     port: 443
     protocol: rest
