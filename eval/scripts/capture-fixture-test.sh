@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEST_DIR"' EXIT
+FAILURES=0
 
 mkdir -p "$TEST_DIR/bin"
 export GH_CALL_LOG="$TEST_DIR/gh-calls"
@@ -47,10 +48,56 @@ run_capture() {
   "$SCRIPT_DIR/capture-fixture.sh" >/dev/null
 }
 
+assert_call_count() {
+  local name="$1"
+  local expected="$2"
+  local actual
+  actual="$(wc -l < "$GH_CALL_LOG")"
+
+  if [[ "$actual" -ne "$expected" ]]; then
+    echo "FAIL: $name — expected $expected gh call(s), got $actual"
+    cat "$GH_CALL_LOG"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: $name"
+}
+
+assert_call_matches() {
+  local name="$1"
+  local pattern="$2"
+
+  if ! grep -q "$pattern" "$GH_CALL_LOG"; then
+    echo "FAIL: $name — gh call did not match expected arguments"
+    cat "$GH_CALL_LOG"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: $name"
+}
+
+assert_fixture_matches() {
+  local name="$1"
+  local expected_filter="$2"
+  local state_file="$CASE_WORKSPACE/output/fixture-state.json"
+
+  if ! jq -e "$expected_filter" "$state_file" >/dev/null; then
+    echo "FAIL: $name — fixture-state.json did not match expected output"
+    cat "$state_file"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: $name"
+}
+
 run_capture issue
-[[ "$(wc -l < "$GH_CALL_LOG")" -eq 1 ]]
-grep -q '^issue view .*--json state,labels,assignees,milestone,title,comments$' "$GH_CALL_LOG"
-jq -e '
+assert_call_count "issue uses one gh call" 1
+assert_call_matches "issue requests all fields" \
+  '^issue view .*--json state,labels,assignees,milestone,title,comments$'
+assert_fixture_matches "issue fixture JSON shape" '
   . == {
     fixture_type: "issue",
     fixture_url: "https://github.com/fullsend-ai/example/issues/42",
@@ -61,12 +108,13 @@ jq -e '
     milestone: "v1",
     comments: [{author: "reviewer", body: "Looks good", created_at: "2026-09-02T10:00:00Z"}]
   }
-' "$CASE_WORKSPACE/output/fixture-state.json" >/dev/null
+'
 
 run_capture pull_request
-[[ "$(wc -l < "$GH_CALL_LOG")" -eq 1 ]]
-grep -q '^pr view .*--json state,labels,assignees,milestone,title,mergeable,reviewDecision,comments,reviews$' "$GH_CALL_LOG"
-jq -e '
+assert_call_count "pull request uses one gh call" 1
+assert_call_matches "pull request requests all fields" \
+  '^pr view .*--json state,labels,assignees,milestone,title,mergeable,reviewDecision,comments,reviews$'
+assert_fixture_matches "pull request fixture JSON shape" '
   . == {
     fixture_type: "pull_request",
     fixture_url: "https://github.com/fullsend-ai/example/pull/42",
@@ -80,6 +128,11 @@ jq -e '
     comments: [{author: "reviewer", body: "Ship it", created_at: "2026-09-02T11:00:00Z"}],
     reviews: [{author: "maintainer", state: "APPROVED", body: "Approved"}]
   }
-' "$CASE_WORKSPACE/output/fixture-state.json" >/dev/null
+'
 
-echo "capture-fixture tests passed"
+if [[ "$FAILURES" -gt 0 ]]; then
+  echo "FAILURES: $FAILURES"
+  exit 1
+fi
+
+echo "All capture-fixture tests passed"
