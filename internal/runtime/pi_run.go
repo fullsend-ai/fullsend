@@ -53,18 +53,23 @@ const (
 	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
-// piModelAliases maps fleet aliases to pi catalog ids. A default must be an
-// id the running pi's catalog carries (see above) and the fleet's Vertex
-// projects serve — most preferred first:
+// piModelAliases maps the Claude aliases to the catalog ids this runtime
+// defaults to. A default must be an id the running pi's catalog carries
+// (see above) and one that is conservative enough to work out of the box:
+// which models a Vertex project serves is that project's own Model Garden
+// choice, so a deployment whose project enables a newer generation points
+// the alias at it with models.aliases in .fullsend/config.yaml (#6882)
+// rather than editing this table.
+//
+// Preference order for the defaults, most preferred first:
 //
 //	sonnet: claude-sonnet-5 → claude-sonnet-4-6
 //	opus:   claude-opus-5   → claude-opus-4-8 → claude-opus-4-6
 //	fable:  claude-fable-5-1 → claude-fable-5
 //	haiku:  claude-haiku-4-5
 //
-// The arrows are what to move to as enablement lands, not a history.
-// sonnet and opus sit on 4-6 because no fleet project serves the opus 5
-// generation and sonnet 5 is served in dev only.
+// The arrows are what to raise a default to, not a history. An id the
+// project does not serve fails the run rather than degrading (#7026).
 var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",
