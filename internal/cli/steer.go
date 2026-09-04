@@ -127,7 +127,25 @@ func steerEligible(o steerOpts) string {
 	if steerRunID() == 0 {
 		return "GITHUB_RUN_ID is not set"
 	}
+	if !preserveRunsEnabled() {
+		// harness-reference.md documents this as one of the three
+		// conditions steering needs, and promises the runner prints why it
+		// declined. Steering a run that is about to be cancelled is the
+		// mixed state ADR 0101 calls worse than today: the run absorbs an
+		// update, is cancelled anyway, and the queued run repeats the work
+		// with no receipt to skip on.
+		return "FULLSEND_PRESERVE_RUNS is not \"true\" on this repository, so this run would be cancelled rather than steered"
+	}
 	return ""
+}
+
+// preserveRunsEnabled reports whether the repository set the variable that
+// stops stage jobs cancelling a run in progress. The workflow passes it
+// into the runner's own step: `vars` is not otherwise visible here, and
+// FULLSEND_REPO_VARS reaches the sandbox environment rather than this
+// process.
+func preserveRunsEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("FULLSEND_PRESERVE_RUNS")), "true")
 }
 
 // steerRunID returns this job's workflow run id, or 0 when it is unset or
