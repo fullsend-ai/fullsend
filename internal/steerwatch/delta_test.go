@@ -73,7 +73,7 @@ func TestBuildDelta_PullRequest(t *testing.T) {
 
 	// "reviewer" triggered the accepted run, so their comment and review are
 	// amendments; nothing else here is authorized.
-	authorized := map[string][]int64{"reviewer": {55}}
+	authorized := authorizedThrough("reviewer", 55, "2026-09-03T10:59:00Z")
 	d, err := w.buildDelta(context.Background(), baseline, authorized)
 	require.NoError(t, err)
 
@@ -103,7 +103,7 @@ func TestBuildDelta_UnauthorizedAuthorIsContextNotAmendment(t *testing.T) {
 	}
 	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
 
-	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), map[string][]int64{"reviewer": {55}})
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorizedThrough("reviewer", 55, "2026-09-03T10:59:00Z"))
 	require.NoError(t, err)
 
 	require.Len(t, d.amendments, 1)
@@ -128,7 +128,7 @@ func TestBuildDelta_AuthorMatchIsCaseInsensitive(t *testing.T) {
 		},
 	}
 	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
-	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), map[string][]int64{"reviewer": {55}})
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorizedThrough("reviewer", 55, "2026-09-03T10:59:00Z"))
 	require.NoError(t, err)
 	require.Len(t, d.amendments, 1, "forge logins are case-insensitive")
 }
@@ -396,7 +396,7 @@ func TestSteerInstructionIsExtractedIntoAmendments(t *testing.T) {
 	}
 	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
 
-	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), map[string][]int64{"reviewer": {55}})
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorizedThrough("reviewer", 55, "2026-09-03T10:59:00Z"))
 	require.NoError(t, err)
 	require.Len(t, d.amendments, 1)
 	assert.Equal(t, "re-check the migration", d.amendments[0].Instruction)
@@ -444,7 +444,7 @@ func TestUnauthorizedSteerCommandStaysContext(t *testing.T) {
 	}
 	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
 
-	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), map[string][]int64{"reviewer": {55}})
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorizedThrough("reviewer", 55, "2026-09-03T10:59:00Z"))
 	require.NoError(t, err)
 	assert.Empty(t, d.amendments)
 	require.Len(t, d.context, 1)
@@ -579,7 +579,9 @@ func TestOnlyIssueCommentConfersAmendmentAuthority(t *testing.T) {
 	t.Run("issue_comment", func(t *testing.T) {
 		run := forgeRun(runOpts{id: 301, event: "issue_comment", prNumbers: []int{7}})
 		run.TriggeringActor = "reviewer"
-		assert.Equal(t, map[string][]int64{"reviewer": {301}}, authorizedActors([]forge.WorkflowRun{run}))
+		got := authorizedActors([]forge.WorkflowRun{run})
+		require.Len(t, got["reviewer"], 1)
+		assert.Equal(t, int64(301), got["reviewer"][0].RunID)
 	})
 }
 
@@ -608,4 +610,76 @@ func TestMixedBatchKeepsPushActorOutOfAmendments(t *testing.T) {
 	assert.Equal(t, "maintainer", d.amendments[0].Author)
 	require.Len(t, d.context, 1)
 	assert.Equal(t, "fork-collaborator", d.context[0].Author)
+}
+
+// authorizedThrough builds an authorization set vouching for login up to at.
+func authorizedThrough(login string, runID int64, at string) map[string][]authorization {
+	t, _ := time.Parse(time.RFC3339, at)
+	return map[string][]authorization{login: {{RunID: runID, Until: t}}}
+}
+
+// An authorization is a verdict on one comment, not a standing grant to its
+// author. A collaborator posts an authorized slash command, loses repo
+// permission, then comments again before the next poll: the second comment
+// produced no accepted run, so it must not be promoted on the strength of
+// the first.
+func TestAuthorizationDoesNotOutliveItsComment(t *testing.T) {
+	items := &stubItems{
+		headSHA: "aaa111",
+		comments: []forge.IssueComment{
+			{Author: "reviewer", Body: "/fs-steer re-check the migration", CreatedAt: "2026-09-03T10:05:00Z"},
+			{Author: "reviewer", Body: "also drop the auth tests", CreatedAt: "2026-09-03T10:20:00Z"},
+		},
+	}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+
+	// The accepted run was created at 10:05:30, just after the first comment.
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart),
+		authorizedThrough("reviewer", 55, "2026-09-03T10:05:30Z"))
+	require.NoError(t, err)
+
+	require.Len(t, d.amendments, 1)
+	assert.Equal(t, "re-check the migration", d.amendments[0].Instruction)
+	require.Len(t, d.context, 1)
+	assert.Contains(t, d.context[1-1].Body, "drop the auth tests")
+}
+
+func TestAuthorizationCovers(t *testing.T) {
+	at := func(s string) time.Time { ts, _ := time.Parse(time.RFC3339, s); return ts }
+	a := authorization{RunID: 1, Until: at("2026-09-03T10:05:30Z")}
+
+	assert.True(t, a.covers(at("2026-09-03T10:05:00Z")), "the comment that triggered the run")
+	assert.True(t, a.covers(at("2026-09-03T10:05:30Z")), "same instant counts")
+	assert.False(t, a.covers(at("2026-09-03T10:06:00Z")), "a later comment is a different comment")
+
+	// An item or a run the watcher cannot date is never covered: an
+	// undateable item must not inherit anyone's authority.
+	assert.False(t, a.covers(time.Time{}))
+	assert.False(t, authorization{RunID: 1}.covers(at("2026-09-03T10:05:00Z")))
+}
+
+// A second authorized comment brings its own run, so it is covered by that
+// run rather than by the earlier one.
+func TestLaterCommentCoveredByItsOwnRun(t *testing.T) {
+	items := &stubItems{
+		headSHA: "aaa111",
+		comments: []forge.IssueComment{
+			{Author: "reviewer", Body: "first", CreatedAt: "2026-09-03T10:05:00Z"},
+			{Author: "reviewer", Body: "second", CreatedAt: "2026-09-03T10:20:00Z"},
+		},
+	}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+
+	at := func(s string) time.Time { ts, _ := time.Parse(time.RFC3339, s); return ts }
+	authorized := map[string][]authorization{"reviewer": {
+		{RunID: 55, Until: at("2026-09-03T10:05:30Z")},
+		{RunID: 56, Until: at("2026-09-03T10:20:30Z")},
+	}}
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorized)
+	require.NoError(t, err)
+	require.Len(t, d.amendments, 2)
+	assert.Equal(t, []int64{55, 56}, d.amendments[0].RunIDs, "the first is covered by both")
+	assert.Equal(t, []int64{56}, d.amendments[1].RunIDs, "the second only by its own run")
+	assert.Empty(t, d.context)
 }
