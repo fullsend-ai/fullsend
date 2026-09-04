@@ -81,6 +81,30 @@ Each run produces artifacts in the output directory:
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |
+| `per_model_usage` | Per-model-spec breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled). See below |
+
+#### Per-model usage
+
+A map from pi model spec (`anthropic-vertex/claude-opus-4-6`) to
+`{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
+It exists because a pi sub-agent is a separate `pi` process whose tokens never appear in the
+parent's stream, so without it `total_cost_usd` would grow with no way to attribute it.
+
+- **What folds.** Tokens and cost, from both the parent and every child, summed across retry
+  iterations. Each iteration contributes one `requests` for the parent plus one per sub-agent call,
+  so `requests` counts inference *episodes*, not HTTP requests.
+- **The invariant.** The breakdown sums to the run totals for the five fields an entry has:
+  `sum(cost_usd) == total_cost_usd`, and likewise for `input_tokens`, `output_tokens`,
+  `cache_creation_input_tokens` and `cache_read_input_tokens`. `reasoning_tokens` is a run-level
+  total with no per-model counterpart, so it is outside the invariant. The parent's entry is
+  recorded on every iteration of an `Agent`-enabled run, including ones that dispatched no
+  sub-agent, which is what keeps the invariant true across a retry.
+- **What stays parent-only.** `num_turns` and `tool_calls` are read from the parent's stream and are
+  not broken down or added to per model — a child's turns and tool calls are recorded in its own
+  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`) instead.
+- A model spec of `unknown` is a usage record that carries no model spec at all; its cost is
+  bucketed there rather than dropped. A dispatch rejected *before* a model was resolved writes
+  no record, so it never reaches the breakdown.
 
 ## OpenAI credentials on pi and codex
 

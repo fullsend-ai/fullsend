@@ -4,16 +4,20 @@
 // no python; one test exercises a real python3 script when available.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import defaultExport, {
+  MANIFEST_SHA256_ENV,
   bashAllowlistViolation,
   claudeToolInput,
   claudeToolName,
   createHooks,
+  manifestDigestError,
   runScript,
 } from "./fullsend-hooks.js";
 
@@ -372,4 +376,48 @@ test("session_start roster names the declared extensions", () => {
     console.error = origError;
     delete process.env.FULLSEND_PI_MANIFEST;
   }
+});
+
+test("manifestDigestError: matches, mismatches, and nothing to check", () => {
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const sum = createHash("sha256").update(bytes).digest("hex");
+  assert.equal(manifestDigestError(bytes, sum), null, "the bytes the runner hashed");
+  assert.equal(manifestDigestError(bytes, sum.toUpperCase()), null, "hex case does not matter");
+  assert.equal(manifestDigestError(bytes, ` ${sum} `), null, "surrounding whitespace does not matter");
+  // No digest exported: a caller that bootstrapped the sandbox in another
+  // process gets neither the shell guard nor this check (pi_bootstrap.go
+  // piManifestHash), and failing closed here would break it.
+  assert.equal(manifestDigestError(bytes, undefined), null);
+  assert.equal(manifestDigestError(bytes, ""), null);
+  const other = Buffer.from(JSON.stringify({ ...manifest, hooks: { ...manifest.hooks, groups: [] } }));
+  const bad = manifestDigestError(other, sum);
+  assert.match(bad, new RegExp(`is not the ${sum} the runner recorded`), "a manifest whose hook plan was emptied is refused");
+});
+
+test("the extension exits non-zero when the manifest no longer matches the runner's digest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-hooks-digest-"));
+  const manifestPath = join(dir, "manifest.json");
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  const sum = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const extension = fileURLToPath(new URL("./fullsend-hooks.js", import.meta.url));
+  // A child of the Agent tool loads this file minutes into the iteration,
+  // so the manifest is re-checked there; the exit is what makes the tool
+  // report the dispatch as an error rather than returning a result no hook
+  // ever saw. Run out of process: the check calls process.exit.
+  const load = (env) =>
+    spawnSync(process.execPath, ["-e", `import(${JSON.stringify(extension)}).then((m) => m.default({ on: () => {} }))`], {
+      encoding: "utf8",
+      env: { ...process.env, FULLSEND_PI_MANIFEST: manifestPath, ...env },
+    });
+
+  const clean = load({ [MANIFEST_SHA256_ENV]: sum });
+  assert.equal(clean.status, 0, clean.stderr);
+
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, hooks: { ...manifest.hooks, groups: [] } }));
+  const tampered = load({ [MANIFEST_SHA256_ENV]: sum });
+  assert.notEqual(tampered.status, 0, "a rewritten manifest must not produce a hookless process");
+  assert.match(tampered.stderr, /refusing to run/);
+
+  const unchecked = load({});
+  assert.equal(unchecked.status, 0, "without an exported digest there is nothing to check");
 });

@@ -19,15 +19,37 @@
 // one's output; a script that cannot be spawned blocks (fail closed) — the
 // scripts own their individual fail-open cases (tirith).
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
+// MANIFEST_SHA256_ENV carries the digest of the manifest the runner wrote,
+// exported after .env is sourced (so .env cannot set or clear it) and after
+// the shell guard that matched it. That guard runs once, before the parent
+// pi starts; this extension also loads inside every sub-agent, minutes
+// later, and the manifest sits in the agent-writable config dir — so a
+// parent with `write` could otherwise blank hooks.groups mid-iteration and
+// dispatch children whose adapter loads a plan with no hooks in it.
+export const MANIFEST_SHA256_ENV = "FULLSEND_PI_MANIFEST_SHA256";
 const SCRIPT_TIMEOUT_MS = 60_000;
 const SCRIPT_MAX_BUFFER = 64 * 1024 * 1024;
 const LOG_PREFIX = "[fullsend-hooks]";
 
 export function loadManifest(path = process.env.FULLSEND_PI_MANIFEST || DEFAULT_MANIFEST_PATH) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+// manifestDigestError checks the manifest bytes against MANIFEST_SHA256_ENV
+// and returns the reason to refuse, or null when the bytes match — or when
+// no digest was exported, which is the case for a caller that bootstrapped
+// the sandbox in another process (the runner emits neither the guard nor
+// the export then; see piManifestHash in pi_bootstrap.go).
+export function manifestDigestError(bytes, expected) {
+  const want = typeof expected === "string" ? expected.trim().toLowerCase() : "";
+  if (want === "") return null;
+  const got = createHash("sha256").update(bytes).digest("hex");
+  if (got === want) return null;
+  return `sha256 ${got} is not the ${want} the runner recorded`;
 }
 
 // claudeToolName returns the name the hook scripts expect for a pi tool.
@@ -291,12 +313,33 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
 }
 
 export default function (pi) {
+  const manifestPath = process.env.FULLSEND_PI_MANIFEST || DEFAULT_MANIFEST_PATH;
   let manifest = null;
   let loadError = null;
+  let bytes = null;
   try {
-    manifest = loadManifest();
+    bytes = readFileSync(manifestPath);
   } catch (err) {
     loadError = err;
+  }
+  if (bytes !== null) {
+    // Verified on the bytes just read, then parsed from those same bytes —
+    // re-reading would leave a window in which the checked file and the
+    // parsed one differ. A mismatch is fatal rather than fail-closed-at-
+    // tool-time: the hook plan is not the only thing this file configures,
+    // and in a sub-agent a non-zero exit is what makes the Agent tool
+    // report the dispatch as an error instead of returning a result the
+    // hooks never saw.
+    const bad = manifestDigestError(bytes, process.env[MANIFEST_SHA256_ENV]);
+    if (bad) {
+      console.error(`${LOG_PREFIX} ${manifestPath} ${bad}; refusing to run (did the agent rewrite it during this iteration?)`);
+      process.exit(1);
+    }
+    try {
+      manifest = JSON.parse(bytes.toString("utf8"));
+    } catch (err) {
+      loadError = err;
+    }
   }
   const hooks = createHooks(manifest);
 

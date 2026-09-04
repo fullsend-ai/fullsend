@@ -27,7 +27,7 @@ import (
 // bootstrap; the check here is so a harness author learns at load which
 // entry is the problem. The list lives in this package because both
 // internal/harness and internal/runtime read it.
-var PiReservedExtensionNames = []string{"fullsend-hooks", "anthropic-vertex", "xai-vertex"}
+var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "anthropic-vertex", "xai-vertex"}
 
 // piReservedOptions are pi's own command-line options (cli/args.ts, read
 // at 0.84.4). An extension's args are appended verbatim after its

@@ -194,6 +194,13 @@ type aggregateMetrics struct {
 	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL",
 	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
+	// PerModelUsage attributes the totals above to the model specs that
+	// spent them. Only runtimes that dispatch sub-agents fill it (pi's
+	// Agent tool), and then on every iteration of such a run — including
+	// one that dispatched nothing, whose parent entry is what keeps the
+	// breakdown summing to the totals across a retry. A run on a runtime
+	// without sub-agents keeps metrics.json as it was.
+	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -3328,6 +3335,16 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	agg.Iterations = iteration
 	if m.Model != "" {
 		agg.Model = m.Model
+	}
+	// Iterations are retries of the same task, so the per-model entries add
+	// up the same way the totals do.
+	for spec, u := range m.PerModelUsage {
+		if agg.PerModelUsage == nil {
+			agg.PerModelUsage = make(map[string]agentruntime.ModelUsage, len(m.PerModelUsage))
+		}
+		entry := agg.PerModelUsage[spec]
+		entry.Add(u)
+		agg.PerModelUsage[spec] = entry
 	}
 }
 

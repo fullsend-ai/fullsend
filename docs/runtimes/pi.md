@@ -1,7 +1,6 @@
 # Pi
 
-[pi](https://github.com/earendil-works/pi) is fullsend's second agent runtime, opt-in per org or
-repo. It reaches models Claude Code cannot — **Grok** and **Gemini** alongside Claude — through the
+[pi](https://github.com/earendil-works/pi) is fullsend's second agent runtime, opt-in per repo. It reaches models Claude Code cannot — **Grok** and **Gemini** alongside Claude — through the
 same sandbox, credentials and egress policy.
 
 ```bash
@@ -110,10 +109,11 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 |---|---|
 | Credentials | Same WIF `external_account` + refreshed OIDC token as Claude Code for Vertex providers. `ANTHROPIC_*` unset on the Claude provider, `XAI_API_KEY` unset on the Grok one; `OPENAI_BASE_URL`/`AZURE_OPENAI_API_KEY` unset on the OpenAI one. OpenAI uses a runner-exchanged WIF token (ADR 0092) |
 | Unattended | No approval prompts, stdin closed, bounded retries; a missing credential exits 1 |
-| Artifacts | `output.jsonl`, `transcripts/<agent>-<ts>_<id>.jsonl`, `metrics.json` with `runtime: pi`, plus `pi-debug.log` with `--debug` |
-| Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
+| Artifacts | `output.jsonl`, `transcripts/<agent>-<ts>_<id>.jsonl` (plus `<agent>-sub<n>-…` per sub-agent and `<agent>-subagents-usage.jsonl`), `metrics.json` with `runtime: pi`, plus `pi-debug.log` with `--debug` |
+| Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce`, `FULLSEND_PI_SUBAGENT_THINKING` |
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
-| Not supported | Sub-agents, fallback chains, Claude-format plugins (named and skipped), Bedrock/Azure providers |
+| Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
+| Not supported | Fallback chains, Claude-format plugins (named and skipped), Bedrock/Azure providers |
 
 ## Running it locally
 
@@ -165,8 +165,9 @@ What a local pi run needs, beyond the guide:
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **Platforms** — verified end to end on macOS Apple Silicon (podman machine, Homebrew `openshell`)
   and Fedora with rootless Podman; the guide's platform notes apply unchanged.
-- **`review` and `retro`** complete with schema-valid results but in a single context — pi has no
-  sub-agent tool, so the parallel reviewer roster is not exercised (see [Not yet exercised](#not-yet-exercised)).
+- **`review` and `retro`** run their real sub-agent roster through the `Agent` tool; the children
+  default to `--thinking medium`, which keeps the roster inside the 20-minute review budget (see
+  [Sub-agents](#sub-agents)).
 - **Knobs** — `FULLSEND_PI_PROVIDER` sets the provider for bare model ids (default
   `anthropic-vertex`); `FULLSEND_PI_BASH_ALLOWLIST=enforce` makes the Bash first-token allowlist
   block instead of warn.
@@ -289,13 +290,115 @@ How the runner protects this path — the tree hash, the loader cache, the symli
 deny-list — is in
 [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
+## Sub-agents
+
+The `Agent` tool (registered under its legacy alias `Task` as well) comes from a runner-owned pi
+extension, `fullsend-agent.js`, so skills written for Claude Code's sub-agent roster — `pr-review`,
+`retro-analysis` — dispatch unchanged. Each child is its own `pi --print` process.
+
+| Parameter | Meaning |
+|---|---|
+| `prompt` (required) | The whole task. The child starts with no memory of the conversation, so the prompt must carry its own context package |
+| `description` | Short label; shows in the run log |
+| `model` | A model this run can serve (see below). Omitted → the parent's model |
+| `subagent_type` | `Explore` gives a read-only child (`read`, `grep`, `find`, `ls`, intersected with the parent's set); anything else, or omitted, gives the parent's tool set |
+| `run_in_background` | Accepted and ignored — a child always runs to completion inside the call |
+
+The call returns the child's final assistant message, trimmed and capped at 64 KB with a
+`[truncated]` marker.
+
+### Choosing a model
+
+For a run that reaches all three Vertex providers:
+
+| `model` | The child runs on |
+|---|---|
+| `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
+| `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
+| `google-vertex/gemini-3.7-flash` | Gemini, on pi's built-in provider |
+| `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
+
+Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can
+correct itself instead of losing the dispatch. The accepted set is closed — the run's model table,
+the parent's own spec, and the ids registered for a provider that has no table entry — rather than a
+provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
+`anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
+trailing `:<thinking level>` is dropped rather than passed through.
+
+### Running children in parallel
+
+Put several `Agent` calls in one assistant message: pi runs sibling tool calls from one message
+concurrently. At most four children run at once and the rest queue. The runtime note appended to the
+agent's system prompt says so, so a skill that asks for "dispatch these in parallel" gets it.
+
+### What a child inherits, and what it does not
+
+A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
+list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
+(`--no-builtin-tools` when that allowlist is empty). It inherits:
+
+- **The sandbox hooks.** Its `-e` list carries the vendored provider extensions and the hook adapter,
+  so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
+  Claude Code, where the same hooks run on `Agent` calls.
+- **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
+
+It does not inherit:
+
+- **Harness pi plugins.** A child's `-e` list is fixed at bootstrap, so a tool one of your
+  declared pi extensions (the pi-format `plugins:` entries) registers is not available inside a sub-agent.
+- **The parent's system prompt.** Children get a short sub-agent role note instead of the
+  orchestrator persona, whose "make several `Agent` calls in one message" advice a child cannot act
+  on.
+- **Provider credentials it does not use.** The environment is rebuilt for the provider the child
+  resolved to, so a Claude child under a Grok parent carries no stray `ANTHROPIC_API_KEY`.
+
+### Thinking level
+
+Children run at `--thinking medium`, not the parent's `high`: a full `pr-review` roster at `high`
+overran the 20-minute review budget. Override with
+`FULLSEND_PI_SUBAGENT_THINKING=<off|minimal|low|medium|high|xhigh|max>`; an unrecognised value warns
+and falls back to `medium`.
+
+### Where the output lands
+
+- **Transcripts** — `transcripts/<agent>-sub<seq>-<basename>.jsonl`, one per child. The sequence
+  number is the call's, so children sharing a session basename do not collide.
+- **Usage** — one JSON line per child (model, usage, stop reason, duration) in
+  `transcripts/<agent>-subagents-usage.jsonl`.
+- **`metrics.json`** — the totals include the children, and `per_model_usage` attributes them per
+  model spec, with the parent's own iteration as one entry so the breakdown sums to the totals
+  ([`fullsend run` § metrics.json](../cli/run.md#per-model-usage)). A record with no model spec is
+  bucketed under `unknown`.
+- **Run log** — `[fullsend-agent] #<seq> <model> start "<description>"` and
+  `[fullsend-agent] #<seq> done <ms>ms <stopReason>` per child.
+
+### Turning it off
+
+The tool is enabled when the agent's definition has no `tools:` frontmatter (the default set, as
+under Claude Code) or lists `Agent`/`Task`. An agent that lists tools without them gets no `Agent`
+tool, and the runtime note telling it to execute sub-agent definitions itself, in order.
+
+### Troubleshooting sub-agents
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `model "<spec>": ...; use opus, sonnet, haiku, or one of ...` | The `model` argument is not one this run can serve | Use one of the forms the message lists, or omit `model` to inherit the parent's |
+| `manifest changed since load; refusing to dispatch` | `fullsend-manifest.json` changed after the extension read it | Runner-owned config was rewritten inside the sandbox — treat it as tampering, not a transient |
+| `hook adapter changed since load; refusing to dispatch` | `fullsend-hooks.js` changed after bootstrap recorded its digest | The same: the child would otherwise have come up unhooked |
+| A child call fails after 15 minutes | The per-child deadline; the child is signalled and reaped | Narrow the child's prompt, or split the task across more children |
+| A child call reports `error` or `aborted` | The child's own run failed — model error, non-zero exit, or no `agent_end` | Read that child's transcript under `transcripts/<agent>-sub<seq>-*.jsonl` |
+
+How children are launched and kept honest — prompt delivery, the stop sequence, the per-dispatch
+digest re-checks — is in
+[Runtime Implementation § Pi sub-agents](../contributing/runtime-implementation.md#pi-sub-agents-the-agent-tool-contract).
+
 ## Not yet exercised
 
 `runtime: pi` is selectable and has been run end to end, but no **fleet lifecycle** run on Vertex is
-recorded yet. Pilot on a disposable repo with `triage`/`prioritize` before `code`/`fix`. `review` and
-`retro` run to schema-valid results, but in a **single context**: pi has no sub-agent tool, so the
-parallel persona roster and its per-persona models are never exercised — treat them as unsupported
-for that purpose. `extension_error` events are not mapped.
+recorded yet. Pilot on a disposable repo with `triage`/`prioritize` before `code`/`fix`. The
+sub-agent roster of `review`/`retro` has been exercised locally, not yet on a fleet lifecycle run —
+watch the wall clock on the first one (see [Sub-agents](#sub-agents)). `extension_error` events are
+not mapped.
 
 ## Troubleshooting
 
