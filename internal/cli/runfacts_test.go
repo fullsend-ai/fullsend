@@ -3,11 +3,14 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
 func TestBuildRunFactsEnvLines(t *testing.T) {
@@ -82,4 +85,37 @@ func TestRunFactsKeysAreReserved(t *testing.T) {
 	// agent's re-check depends on.
 	assert.True(t, reservedSandboxKeys["FULLSEND_RUN_HEAD_SHA"])
 	assert.True(t, reservedSandboxKeys["FULLSEND_RUN_STARTED_AT"])
+}
+
+// The run facts must be exported after .env.d is sourced, or a harness
+// host_files env file would overwrite them. reservedSandboxKeys stops an
+// env.sandbox entry shadowing them but says nothing about .env.d, so
+// position in the generated script is what actually protects them.
+func TestRunFactsAreExportedAfterEnvDSourcing(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Env:   &harness.EnvConfig{Sandbox: map[string]string{"SOME_VAR": "x"}},
+	}
+	lines := buildEnvScriptLines("", "/workspace/repo", h, nil,
+		runFacts{headSHA: "abc123", startedAt: time.Now()})
+
+	idx := func(substr string) int {
+		t.Helper()
+		for i, l := range lines {
+			if strings.Contains(l, substr) {
+				return i
+			}
+		}
+		t.Fatalf("no line containing %q in:\n%s", substr, strings.Join(lines, "\n"))
+		return -1
+	}
+
+	envD := idx("/.env.d/*.env")
+	sandboxVar := idx("export SOME_VAR=")
+	headSHA := idx("export FULLSEND_RUN_HEAD_SHA=")
+	startedAt := idx("export FULLSEND_RUN_STARTED_AT=")
+
+	assert.Greater(t, headSHA, envD, "FULLSEND_RUN_HEAD_SHA must be exported after .env.d is sourced")
+	assert.Greater(t, startedAt, envD, "FULLSEND_RUN_STARTED_AT must be exported after .env.d is sourced")
+	assert.Greater(t, headSHA, sandboxVar, "the run facts must also outrank env.sandbox")
 }
