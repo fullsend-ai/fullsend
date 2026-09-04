@@ -15,8 +15,8 @@ import (
 // `runtime: pi` (#6464).
 type PiRuntime struct{}
 
-// piVertexExtensionPath is the interim Claude-on-Vertex provider for pi
-// (twoGiants/pi-anthropic-vertex, pinned in the sandbox image by
+// piVertexExtensionPath is the Claude-on-Vertex provider for pi
+// (fullsend-ai/pi-anthropic-vertex, pinned in the sandbox image by
 // PI_ANTHROPIC_VERTEX_VERSION). pi's built-in google-vertex provider is
 // Gemini-only and the upstream anthropic-vertex provider
 // (earendil-works/pi#5262) is still open. Run loads it with `-e` alongside
@@ -29,10 +29,15 @@ type PiRuntime struct{}
 // google-auth-library reading GOOGLE_APPLICATION_CREDENTIALS — the WIF
 // external_account config plus the runner-refreshed OIDC token file the
 // harness delivers via host_files, the same path Claude Code on Vertex uses.
-// Its bundled Anthropic SDK would send a stray ANTHROPIC_API_KEY to Google
-// and honour ANTHROPIC_VERTEX_BASE_URL as the endpoint, so Run unsets the
-// ANTHROPIC_* variables for this provider. Swap for the upstream provider
-// once #5262 ships in a pinned pi release.
+// The extension bundles no Anthropic SDK, reads no ANTHROPIC_* variable
+// except ANTHROPIC_VERTEX_PROJECT_ID, and derives its endpoint host from the
+// region, so none of the ANTHROPIC_* family can steer it. Run's unset stays
+// load-bearing for a different reason: pi's built-in anthropic provider is
+// registered in the same process and discovers ANTHROPIC_AUTH_TOKEN and the
+// API-key variables from the environment, so a stray value in the
+// agent-writable .env would authenticate a direct-to-Anthropic path that
+// never reaches Vertex. Keep the unset. Swap for the upstream provider once
+// #5262 ships in a pinned pi release.
 const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
 // piXaiVertexExtensionPath is the Grok-on-Vertex provider for pi
@@ -103,8 +108,9 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // (piExtensionsGuard) and the hook adapter's SHA-256 check (piHooksGuard),
 // neither of which can see it. Setting the variable to false makes jiti
 // ignore any planted entry and create no cache directory at all (verified
-// on pi 0.84.4 — internal/runtime/testdata/pi/jiti-cache-check.sh
-// reproduces both halves). Run re-exports these after the agent-writable
+// on pi 0.84.4, and jiti is still 2.7.0 at the pinned 0.85.0 —
+// internal/runtime/testdata/pi/jiti-cache-check.sh reproduces both
+// halves). Run re-exports these after the agent-writable
 // .env is sourced, so the agent cannot switch the cache back on, and
 // harness validation reserves the JITI_* family from extension env.
 //

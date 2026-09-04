@@ -183,7 +183,7 @@ agent with `model: openai/<id>` on the `agents:` entry — no harness needs edit
 [Codex › Models](runtimes/codex.md#models).
 
 Harness `model:` and `agents:` entry `model:` values accept provider-qualified `provider/id` syntax
-(e.g. `google-vertex/gemini-3.7-flash`). On pi, a harness can also select a provider with a bare
+(e.g. `google-vertex/gemini-3.8-flash`). On pi, a harness can also select a provider with a bare
 `model:` plus `FULLSEND_PI_PROVIDER`.
 
 ### Per-repo alias overrides

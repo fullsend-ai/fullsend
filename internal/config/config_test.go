@@ -2507,7 +2507,7 @@ func TestValidModelRef(t *testing.T) {
 		{"sonnet", true},
 		{"claude-opus-4-6", true},
 		{"claude-sonnet-4-6@20250514", true},
-		{"google-vertex/gemini-3.7-flash", true},
+		{"google-vertex/gemini-3.8-flash", true},
 		{"xai-vertex/xai/grok-4.6", true},
 		{"anthropic-vertex/claude-opus-4-6", true},
 		{"", false},
@@ -2617,7 +2617,7 @@ func TestAgentSettings_Validate(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
-	for _, model := range []string{"opus", "claude-haiku-4-5@20251001", "google-vertex/gemini-3.7-flash", "xai-vertex/xai/grok-4.6"} {
+	for _, model := range []string{"opus", "claude-haiku-4-5@20251001", "google-vertex/gemini-3.8-flash", "xai-vertex/xai/grok-4.6"} {
 		cfg := parseAgentSettingsConfig(t, "agents:\n  - name: triage\n    model: "+model+"\n")
 		assert.NoError(t, cfg.(ConfigWriter).Validate(), model)
 	}

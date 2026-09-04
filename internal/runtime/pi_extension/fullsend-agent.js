@@ -303,8 +303,8 @@ export function childArgs(agent, { seq, modelSpec, tools }) {
 // hygiene (buildPiRunCommand) is applied to the shell that launched the
 // *parent*, so it only ever matched the parent's provider; a child on a
 // different provider would otherwise inherit, say, a stray
-// ANTHROPIC_API_KEY (which the bundled SDK sends to Vertex as X-Api-Key) or
-// an ambient GOOGLE_CLOUD_PROJECT. The rules below are the same ones
+// ANTHROPIC_API_KEY (which pi's built-in anthropic provider would use for a
+// direct-to-Anthropic call) or an ambient GOOGLE_CLOUD_PROJECT. The rules below are the same ones
 // pi_run.go applies, per resolved child provider.
 //
 // google-vertex and openai have no rules here on purpose, matching

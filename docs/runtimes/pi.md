@@ -19,7 +19,7 @@ resolve through fullsend's pinned alias table, and a bare id gets the provider f
 | Model | Spec | Provider |
 |---|---|---|
 | Claude | `anthropic-vertex/claude-opus-4-6` | vendored extension |
-| Gemini | `google-vertex/gemini-3.7-flash` | pi built-in |
+| Gemini | `google-vertex/gemini-3.8-flash` | pi built-in |
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
 
@@ -66,7 +66,7 @@ models:
 
 - Only the aliases you set change; the rest keep the fleet default.
 - Keys are `opus`, `sonnet`, `haiku`, `fable`. A value is a model id or `provider/id`
-  (`haiku: google-vertex/gemini-3.7-flash`); it cannot be another alias.
+  (`haiku: google-vertex/gemini-3.8-flash`); it cannot be another alias.
 - The override applies to both the parent run and sub-agent dispatch — a child that asks for
   `sonnet` resolves it through the same merged alias table as the parent.
 - The same block applies on [Claude Code](claude.md#models).
@@ -152,7 +152,7 @@ Pick a model the same way — on pi the model name is also the provider choice, 
 credentials cover Gemini:
 
 ```bash
-fullsend run triage ... --runtime pi --model google-vertex/gemini-3.7-flash
+fullsend run triage ... --runtime pi --model google-vertex/gemini-3.8-flash
 ```
 
 To keep an agent on pi (or off it) without passing flags every time, set `runtime:`/`model:` on
@@ -317,7 +317,7 @@ For a run that reaches all three Vertex providers:
 |---|---|
 | `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
 | `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
-| `google-vertex/gemini-3.7-flash` | Gemini, on pi's built-in provider |
+| `google-vertex/gemini-3.8-flash` | Gemini, on pi's built-in provider |
 | `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
 
 Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can

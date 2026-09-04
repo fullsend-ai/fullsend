@@ -706,7 +706,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			piXaiVertexProvider: piXaiVertexModels,
 		}, m.Agent.ProviderModels,
 			"the extension needs a closed id list for every provider a run can serve with no model-table entry")
-		assert.Contains(t, m.Agent.ProviderModels["google-vertex"], "gemini-3.7-flash", "the spec documented in docs/runtimes/pi.md")
+		assert.Contains(t, m.Agent.ProviderModels["google-vertex"], "gemini-3.8-flash", "the spec documented in docs/runtimes/pi.md")
 		assert.Equal(t, []string{"xai/grok-4.6"}, m.Agent.ProviderModels[piXaiVertexProvider],
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
@@ -800,7 +800,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 	})
 
 	// models.aliases accepts a provider-qualified value (docs/runtimes/pi.md
-	// documents `haiku: google-vertex/gemini-3.7-flash`), and the parent
+	// documents `haiku: google-vertex/gemini-3.8-flash`), and the parent
 	// resolves it through translatePiModel's "/" passthrough. The child
 	// table must not prefix it a second time: "anthropic-vertex/google-vertex/..."
 	// names no provider and loses the dispatch.
@@ -813,13 +813,13 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			sandboxName:  "sb",
 			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
 			agentName:    "review",
-			modelAliases: map[string]string{"haiku": "google-vertex/gemini-3.7-flash"},
+			modelAliases: map[string]string{"haiku": "google-vertex/gemini-3.8-flash"},
 		}
 		require.NoError(t, PiRuntime{}.Bootstrap(in))
 		var m piManifest
 		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
 		require.NotNil(t, m.Agent)
-		assert.Equal(t, "google-vertex/gemini-3.7-flash", m.Agent.Models["haiku"],
+		assert.Equal(t, "google-vertex/gemini-3.8-flash", m.Agent.Models["haiku"],
 			"a provider-qualified override passes through verbatim, as it does for the parent")
 		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
 			"bare fleet defaults still get the Anthropic Vertex prefix")

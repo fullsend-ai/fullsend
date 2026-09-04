@@ -18,10 +18,17 @@ import (
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
 // harness or agents: entry may also give `provider/id` directly. The
-// ids are pi 0.84.4's Anthropic catalog
+// ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
-// anthropic-vertex extension registers verbatim; whether Vertex accepts each
-// id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
+// anthropic-vertex extension re-points at Vertex: ids and pricing are
+// preserved, while the routing fields and the compat allowlist differ (the
+// provider swap also flips pi's supportsToolReferences default off). The
+// extension registers the catalog of the *running* pi, so this table can
+// name an id the pinned PI_VERSION does not carry: that was true of "fable"
+// -> claude-fable-5-1 until the pin moved to 0.85.0, whose catalog adds it
+// (#6882). Re-check the table against the pinned pi's anthropic.json on a
+// bump. Whether Vertex accepts each id is a lifecycle-test item
+// (docs/runtimes.md). Both the provider and the
 // final model string can be overridden from the runner environment.
 const (
 	piDefaultProvider = "anthropic-vertex"
@@ -46,12 +53,8 @@ const (
 )
 
 // piModelAliases maps fleet aliases to pi catalog ids. A default must name
-// an id the running pi's bundled catalog carries and the fleet's Vertex
-// projects serve: the anthropic-vertex extension registers the catalog of
-// the pi that is actually installed, so this table tracks PI_VERSION.
-// "fable" names claude-fable-5-1, which the catalog carries only from pi
-// 0.85.0 — it does not resolve on the 0.84.4 pin, which is why this change
-// lands after the bump in #7025.
+// an id the running pi's bundled catalog carries (see above) and the
+// fleet's Vertex projects serve.
 //
 // Preference order, most-preferred first (the rest wait on the fleet's
 // Vertex projects enabling the newer ids — neither project serves the
@@ -363,10 +366,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 	)
 	if vertex {
-		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
-		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
-		// ANTHROPIC_VERTEX_BASE_URL as the endpoint; AUTH_TOKEN and BASE_URL
-		// are cleared for hygiene. The project is pinned to the variable
+		// Claude-on-Vertex: the vendored extension reads none of these -- it
+		// builds its endpoint from the region and takes its credential from
+		// ADC -- but pi's built-in anthropic provider is loaded in the same
+		// process and discovers ANTHROPIC_AUTH_TOKEN and the API-key
+		// variables from the environment, so a stray value in the
+		// agent-writable .env would authenticate a direct-to-Anthropic path
+		// that never reaches Vertex. The project is pinned to the variable
 		// Claude Code on Vertex is driven by, so both runtimes hit the same
 		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
 		// extension reads that one first).
@@ -548,7 +554,7 @@ const piBinaryVar = "FULLSEND_PI_BIN"
 // different file while the extension source, its tree hash
 // (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
 // stay clean, because none of them can see the substitution. Verified on
-// pi 0.84.4 and jiti 2.7.0; the shell half is
+// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both; the shell half is
 // internal/runtime/testdata/pi/jiti-cache-check.sh.
 //
 // The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except
