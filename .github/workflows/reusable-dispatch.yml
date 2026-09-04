@@ -28,6 +28,16 @@
 # reconciliation is the agent's side of the bargain, and is why the runner
 # exports FULLSEND_RUN_HEAD_SHA and FULLSEND_RUN_STARTED_AT.
 #
+# What preserving gives up: ADR 0063 names per-stage cancel-in-progress as the
+# second of two layers protecting poll dispatch from duplicate side effects,
+# so a repository that sets FULLSEND_PRESERVE_RUNS is left with the first
+# layer alone — the poller's own lock — plus whatever idempotency the agent
+# has. The duplicate-poll case is where preserving is least defensible: two
+# duplicate dispatches are the same work rather than a newer state
+# superseding an older one, so both run to completion instead of one
+# replacing the other. This is the repository owner's call to make, which is
+# why it is a variable and not a guard, but it should be made knowingly.
+#
 # queue: max is deliberately not used: it is incompatible with
 # cancel-in-progress: true, so it cannot be expressed here, and N pending full
 # runs is the failure mode preserving the active run exists to remove.
