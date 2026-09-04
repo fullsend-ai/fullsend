@@ -202,7 +202,7 @@ cross-scenario state is shared. The `behaviour-test` Make target includes
 To adjust concurrency:
 
 ```bash
-# Run at default concurrency (12)
+# Run at default concurrency (20)
 make behaviour-test
 
 # Run with explicit concurrency
