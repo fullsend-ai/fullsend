@@ -204,7 +204,7 @@ func (rt ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.P
 			// The agent has consumed a mailbox line: the delivery ack for
 			// the opening prompt and for every steer after it.
 			if feed != nil {
-				steerCloseFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
+				steerCloseFeedIf(ctx, feed.noteEcho(e.At, e.ID, e.Content), feed, printer)
 			}
 		case ToolUseEvent:
 			metrics.ToolCalls.Add(1)
@@ -243,12 +243,13 @@ func (r ClaudeRuntime) startSteerFeed(ctx context.Context, params RunParams) (*s
 	if !params.Steerable {
 		return nil, nil
 	}
-	line, err := claudeInputLine(claudePrompt(params))
+	prompt := claudePrompt(params)
+	line, err := claudeInputLine(prompt)
 	if err != nil {
 		return nil, err
 	}
 	f := newSteerFeed(params.SandboxName, r.ConfigDir(), sandbox.ExecContext)
-	if err := f.seed(ctx, line); err != nil {
+	if err := f.seed(ctx, line, prompt); err != nil {
 		return nil, err
 	}
 	registerSteerFeed(params.SandboxName, f)

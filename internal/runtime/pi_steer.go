@@ -67,11 +67,14 @@ func (PiRuntime) Steer(ctx context.Context, sandboxName string, msg SteerMessage
 	if !ok {
 		return errNoSteerSession
 	}
-	line, err := piInputLine(uuid.NewString(), renderSteerEnvelope(msg), piSteerBehavior)
+	// The key is the rpc id: pi's `response` ack echoes it back, which
+	// identifies the message without relying on its content.
+	id := uuid.NewString()
+	line, err := piInputLine(id, renderSteerEnvelope(msg), piSteerBehavior)
 	if err != nil {
 		return err
 	}
-	return f.appendLine(ctx, msg, line)
+	return f.appendLine(ctx, msg, line, id)
 }
 
 // Settle implements Steerer for pi. As on Claude Code it does not close

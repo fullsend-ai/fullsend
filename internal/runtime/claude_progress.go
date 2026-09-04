@@ -323,11 +323,17 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			var ue struct {
 				IsReplay  bool   `json:"isReplay"`
 				Timestamp string `json:"timestamp"`
+				Message   struct {
+					// Content is a string for a replayed prompt and an
+					// array for a tool result; only the former unmarshals,
+					// and only the former carries isReplay anyway.
+					Content string `json:"content"`
+				} `json:"message"`
 			}
 			if err := json.Unmarshal(line, &ue); err != nil || !ue.IsReplay {
 				continue
 			}
-			onEvent(UserReplayEvent{At: steerEchoTime(ue.Timestamp)})
+			onEvent(UserReplayEvent{At: steerEchoTime(ue.Timestamp), Content: ue.Message.Content})
 
 		case "result":
 			seenResult = true
