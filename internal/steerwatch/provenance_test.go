@@ -2,6 +2,10 @@ package steerwatch
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -332,4 +336,55 @@ func TestFreshAfter_FallsBackToRunnerStart(t *testing.T) {
 		c.StartedAt = mustTime(t, runStart)
 	})
 	assert.Equal(t, mustTime(t, runStart), w.freshAfter)
+}
+
+// The amendment set is security-critical: an event here lets its run's actor
+// author text the envelope tells the agent takes precedence over its
+// original instructions. Pinned so widening it is a deliberate act with a
+// test to change, not a one-word edit.
+func TestAmendmentEventsIsExactlyIssueComment(t *testing.T) {
+	assert.Equal(t, map[string]bool{"issue_comment": true}, amendmentEvents)
+}
+
+func TestAmendmentEventsAreASubsetOfAcceptedEvents(t *testing.T) {
+	for event := range amendmentEvents {
+		assert.True(t, allowedEvents[event],
+			"%q confers amendment authority but is not even accepted as a follow-up", event)
+	}
+}
+
+// routeArmEvents are the events reusable-dispatch.yml's route step has a case
+// arm for. Pinned so that adding an arm fails here and forces a re-audit of
+// whether that event's actor is the principal the arm authorizes — the F1
+// question. See amendmentEvents for the audit itself.
+var routeArmEvents = []string{
+	"issue_comment",
+	"issues",
+	"pull_request_target",
+	"pull_request_review",
+}
+
+func TestRouteArmsHaveNotDrifted(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	// The arms are the `<event>)` labels of the `case "${EVENT_NAME}" in`
+	// statement in the route step.
+	body := string(content)
+	start := strings.Index(body, `case "${EVENT_NAME}" in`)
+	require.Positive(t, start, "the route step's event case statement moved")
+	armRe := regexp.MustCompile(`(?m)^\s{12}([a-z_]+)\)`)
+
+	var found []string
+	for _, m := range armRe.FindAllStringSubmatch(body[start:], -1) {
+		found = append(found, m[1])
+	}
+	assert.Equal(t, routeArmEvents, found,
+		"a route arm was added or removed; re-audit whether its run's actor is the "+
+			"principal that arm authorizes, then update routeArmEvents and amendmentEvents")
+
+	for event := range amendmentEvents {
+		assert.Contains(t, found, event,
+			"%q confers amendment authority but no route arm authorizes anyone for it", event)
+	}
 }
