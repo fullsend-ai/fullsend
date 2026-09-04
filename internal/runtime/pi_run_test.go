@@ -927,7 +927,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "sonnet", Tools: []string{"bash"}}
 	params := piTestParams()
 	params.ModelAliases = map[string]string{"sonnet": "claude-sonnet-5"}
-	cmd := buildPiRunCommand(params, m, nil)
+	cmd := buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-5'",
 		"config alias remaps the model in the build command")
 
@@ -936,7 +936,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	// the alias was resolved ahead of normalisation this produced
 	// "anthropic-vertex/xai/grok-4.6" and skipped the gate.
 	params.ModelAliases = map[string]string{"sonnet": "xai/grok-4.6"}
-	cmd = buildPiRunCommand(params, m, nil)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "xai alias value is normalised")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "xai-vertex gate fires for an aliased Grok spec")
 	assert.NotContains(t, cmd, "anthropic-vertex/xai", "no double prefix")

@@ -465,10 +465,15 @@ func piAgentExtensionDigests(hooksExt string, hooksEnabled bool) map[string]stri
 // pi reports one), and the Claude aliases always resolve on the Anthropic
 // Vertex provider, whatever provider the parent runs on. A persona-style
 // "@default" suffix is dropped.
+//
+// The table is built at Bootstrap from the fleet alias defaults: per-repo
+// models.aliases overrides (#6882) travel on RunParams and are not part of
+// the bootstrap contract, so they reach the parent's own model but not the
+// children's table — threading them through BootstrapInput is a follow-up.
 func piAgentModels(defModel string) map[string]string {
 	base, _, _ := strings.Cut(strings.TrimSpace(defModel), "@")
-	models := map[string]string{"default": translatePiModel(base)}
-	for alias, id := range piModelAliases {
+	models := map[string]string{"default": translatePiModel(base, nil)}
+	for alias, id := range mergedPiModelAliases(nil) {
 		models[alias] = piDefaultProvider + "/" + id
 	}
 	return models
