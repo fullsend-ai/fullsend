@@ -872,8 +872,8 @@ func TestTranslatePiModel_WithConfigAlias(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-5",
 		translatePiModel("sonnet", map[string]string{"sonnet": "anthropic-vertex/claude-sonnet-5"}),
 		"provider/id alias value is not re-prefixed")
-	assert.Equal(t, "google-vertex/gemini-3.7-flash",
-		translatePiModel("haiku", map[string]string{"haiku": "google-vertex/gemini-3.7-flash"}),
+	assert.Equal(t, "google-vertex/gemini-3.8-flash",
+		translatePiModel("haiku", map[string]string{"haiku": "google-vertex/gemini-3.8-flash"}),
 		"an alias can retarget to another provider")
 
 	// An alias mapped to Grok goes through the same xai normalisation as

@@ -86,15 +86,16 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # in-sandbox fixture capture run against a pinned, reviewed version
 # (internal/runtime/testdata/pi/regen.sh reads the pin from this file).
 #
-# 0.84.4 is the floor for Gemini on Vertex: 0.84.3 bundles https-proxy-agent
-# without its named export, so every google-vertex request fails with
-# "HttpsProxyAgent is not a constructor" whenever HTTPS_PROXY is set — which
-# the OpenShell sandbox always does (earendil-works/pi#8610, fixed in 0.84.4).
+# 0.84.4 is the FLOOR for Gemini on Vertex (the pin is above it): 0.84.3
+# bundles https-proxy-agent without its named export, so every google-vertex
+# request fails with "HttpsProxyAgent is not a constructor" whenever
+# HTTPS_PROXY is set — which the OpenShell sandbox always does
+# (earendil-works/pi#8610, fixed in 0.84.4).
 # To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
-ARG PI_VERSION=0.84.4
+ARG PI_VERSION=0.85.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}

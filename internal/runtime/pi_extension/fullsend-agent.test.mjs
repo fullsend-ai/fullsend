@@ -97,7 +97,7 @@ function fixture() {
         sonnet: "anthropic-vertex/claude-sonnet-4-6",
         haiku: "anthropic-vertex/claude-haiku-4-5",
       },
-      providerModels: { "google-vertex": ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-2.5-pro"] },
+      providerModels: { "google-vertex": ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-pro"] },
       thinking: "medium",
       tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
       exploreTools: ["read", "grep", "find", "ls"],
@@ -131,7 +131,7 @@ test("resolveModel: aliases, Claude ids and provider specs", () => {
   assert.equal(resolveModel(a, "anthropic-vertex/claude-sonnet-4-6", parent), "anthropic-vertex/claude-sonnet-4-6", "known provider passes through");
   assert.equal(resolveModel(a, "xai/grok-4.6", parent), "xai-vertex/xai/grok-4.6", "short Grok spec is normalized like the runner does");
   assert.equal(resolveModel(a, "xai-vertex/grok-4.6", parent), "xai-vertex/xai/grok-4.6");
-  assert.equal(resolveModel(a, "google-vertex/gemini-3.7-flash", parent), "google-vertex/gemini-3.7-flash", "pi's built-in Vertex Gemini provider needs no extension");
+  assert.equal(resolveModel(a, "google-vertex/gemini-3.8-flash", parent), "google-vertex/gemini-3.8-flash", "pi's built-in Vertex Gemini provider needs no extension");
   assert.throws(() => resolveModel(a, "anthropic/claude-sonnet-4-20250514", parent), /claude-sonnet-4-20250514.*opus, sonnet, haiku/s, "an invented Claude id is rejected, not passed through");
   assert.throws(() => resolveModel(a, "claude-sonnet-4-20250514", parent), /not available/);
   assert.throws(() => resolveModel(a, "openai/gpt-5", parent), /provider "openai"/, "a provider the run has no credentials for is rejected");
@@ -165,14 +165,14 @@ test("resolveModel: an id is checked against a closed set, not just its provider
   );
   assert.throws(() => resolveModel(a, "google-vertex/gemini-9-ultra", parent), /is not a model this run serves on "google-vertex"/);
   assert.throws(
-    () => resolveModel({ ...a, providerModels: undefined }, "google-vertex/gemini-3.7-flash", parent),
+    () => resolveModel({ ...a, providerModels: undefined }, "google-vertex/gemini-3.8-flash", parent),
     /is not a model this run serves/,
     "a manifest without providerModels serves no bare provider ids: it is written by the same Bootstrap as this file",
   );
 
   // What the closed set does accept.
   assert.equal(resolveModel(a, "google-vertex/gemini-2.5-pro", parent), "google-vertex/gemini-2.5-pro", "a catalog id the manifest lists");
-  assert.equal(resolveModel(a, "GOOGLE-VERTEX/GEMINI-3.7-FLASH", parent), "google-vertex/gemini-3.7-flash", "matched case-insensitively, returned canonical");
+  assert.equal(resolveModel(a, "GOOGLE-VERTEX/GEMINI-3.8-FLASH", parent), "google-vertex/gemini-3.8-flash", "matched case-insensitively, returned canonical");
   assert.equal(resolveModel(a, parent, parent), parent, "the parent's own spec, whatever provider it is on");
   assert.equal(resolveModel(a, "anthropic-vertex/claude-haiku-4-5", parent), "anthropic-vertex/claude-haiku-4-5", "a model-table entry");
 });
@@ -281,7 +281,7 @@ test("childEnv scrubs the provider credentials the child does not use", () => {
   assert.equal(grok.ANTHROPIC_API_KEY, "sk-parent", "not this child's provider, left alone");
 
   assert.equal(childEnv({ ...base, XAI_VERTEX_PROJECT_ID: "grok-proj" }, "xai-vertex/xai/grok-4.6").XAI_VERTEX_PROJECT_ID, "grok-proj", "an explicit value wins");
-  const gemini = childEnv(base, "google-vertex/gemini-3.7-flash");
+  const gemini = childEnv(base, "google-vertex/gemini-3.8-flash");
   assert.equal(gemini.GOOGLE_CLOUD_PROJECT, "ambient-proj", "a provider with no rules is untouched");
   assert.equal(base.FULLSEND_SUBAGENT_DEPTH, undefined, "the caller's env object is not mutated");
 });

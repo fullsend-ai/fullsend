@@ -257,7 +257,8 @@ func piIsErrorStop(reason string) bool {
 // already settled — so callers must not treat a non-nil error as "no
 // result was delivered".
 //
-// Pi's wire format (v0.84.2):
+// Pi's wire format (v0.84.2; dist/modes/json-event.js is byte-identical
+// from 0.84.4 to the pinned 0.85.0, so these shapes still hold):
 //   - Session header {type:session, version:3, id, timestamp, cwd} — no model.
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.

@@ -24,9 +24,11 @@ import (
 // preserved, while the routing fields and the compat allowlist differ (the
 // provider swap also flips pi's supportsToolReferences default off). The
 // extension registers the catalog of the *running* pi, so this table can
-// name an id the pinned PI_VERSION does not carry -- "fable" maps to
-// claude-fable-5-1, which lands only from pi 0.85.0 (#6882) -- and whether
-// Vertex accepts each id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
+// name an id the pinned PI_VERSION does not carry: that was true of "fable"
+// -> claude-fable-5-1 until the pin moved to 0.85.0, whose catalog adds it
+// (#6882). Re-check the table against the pinned pi's anthropic.json on a
+// bump. Whether Vertex accepts each id is a lifecycle-test item
+// (docs/runtimes.md). Both the provider and the
 // final model string can be overridden from the runner environment.
 const (
 	piDefaultProvider = "anthropic-vertex"
@@ -540,7 +542,7 @@ const piBinaryVar = "FULLSEND_PI_BIN"
 // different file while the extension source, its tree hash
 // (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
 // stay clean, because none of them can see the substitution. Verified on
-// pi 0.84.4 and jiti 2.7.0; the shell half is
+// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both; the shell half is
 // internal/runtime/testdata/pi/jiti-cache-check.sh.
 //
 // The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except

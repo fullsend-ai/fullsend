@@ -673,7 +673,7 @@ func TestValidate_ModelValid(t *testing.T) {
 		"claude-sonnet-4-6@default",
 		"claude-sonnet-4-6@20250514",
 		"claude-opus-4-1@20250805",
-		"google-vertex/gemini-3.7-flash",
+		"google-vertex/gemini-3.8-flash",
 		"xai-vertex/xai/grok-4.6",
 		"anthropic-vertex/claude-opus-4-6",
 	} {

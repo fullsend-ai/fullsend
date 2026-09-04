@@ -318,7 +318,7 @@ func ValidRuntimes() []string {
 // between config validation and harness validation so both accept the
 // same model identifier syntax.
 //
-// Examples: "opus", "sonnet", "google-vertex/gemini-3.7-flash",
+// Examples: "opus", "sonnet", "google-vertex/gemini-3.8-flash",
 // "xai-vertex/xai/grok-4.6".
 //
 // Rejected: "/leading", "trailing/", "a//b", empty string.
