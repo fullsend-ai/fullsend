@@ -54,6 +54,9 @@ type deltaItem struct {
 	Kind string
 	// State is a review's verdict, empty otherwise.
 	State string
+	// At is when the item was created, used to bind an amendment to the
+	// run that authorized it.
+	At time.Time
 	// Body is the item's text.
 	Body string
 	// Instruction is the text of an explicit /fs-steer command, extracted
@@ -124,8 +127,8 @@ func parseForgeTime(s string) time.Time {
 // checks the PR author while the run's actor is whoever pushed, so on a fork
 // PR anyone with push on the fork would otherwise inherit the PR author's
 // upstream standing. See amendmentEvents for the per-arm audit.
-func authorizedActors(runs []forge.WorkflowRun) map[string][]int64 {
-	out := make(map[string][]int64, len(runs))
+func authorizedActors(runs []forge.WorkflowRun) map[string][]authorization {
+	out := make(map[string][]authorization, len(runs))
 	for _, r := range runs {
 		if !amendmentEvents[r.Event] {
 			continue
@@ -134,9 +137,36 @@ func authorizedActors(runs []forge.WorkflowRun) map[string][]int64 {
 		if login == "" {
 			continue
 		}
-		out[login] = append(out[login], int64(r.ID))
+		out[login] = append(out[login], authorization{
+			RunID: int64(r.ID),
+			// A comment necessarily predates the run it triggered, so the
+			// run's creation is the cutoff for what that authorization
+			// covers.
+			Until: runCreatedAt(r),
+		})
 	}
 	return out
+}
+
+// authorization is one route job's verdict: the run it produced, and the
+// instant up to which it vouches for its actor.
+type authorization struct {
+	RunID int64
+	Until time.Time
+}
+
+// covers reports whether this authorization vouches for an item written at
+// at. An authorization is a verdict on one comment, not a standing grant to
+// its author: the route job checked the actor's permission at that moment,
+// and a later comment by the same login is a different comment that the
+// route job would check again. Binding by time keeps a collaborator who
+// loses permission mid-run from having their later comments promoted on the
+// strength of an earlier authorized one.
+func (a authorization) covers(at time.Time) bool {
+	if a.Until.IsZero() || at.IsZero() {
+		return false
+	}
+	return !at.After(a.Until)
 }
 
 // steerInstruction extracts the text of an explicit /fs-steer command.
@@ -179,7 +209,7 @@ const steerCommand = "/fs-steer"
 // buildDelta reads the current state of the work item and returns what
 // changed since baseline, split by whether its author is in the authorized
 // set. Only non-bot activity counts.
-func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized map[string][]int64) (delta, error) {
+func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized map[string][]authorization) (delta, error) {
 	var d delta
 	owner, repo, err := splitRepo(w.cfg.Repo)
 	if err != nil {
@@ -188,8 +218,13 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 
 	// place files an item into amendments or context by its own author.
 	place := func(item deltaItem) {
-		runIDs, ok := authorized[strings.ToLower(item.Author)]
-		if item.Author == "" || !ok {
+		var runIDs []int64
+		for _, a := range authorized[strings.ToLower(item.Author)] {
+			if a.covers(item.At) {
+				runIDs = append(runIDs, a.RunID)
+			}
+		}
+		if item.Author == "" || len(runIDs) == 0 {
 			d.context = append(d.context, item)
 			return
 		}
@@ -208,7 +243,7 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 		if isBot(c.Author) || !parseForgeTime(c.CreatedAt).After(baseline) {
 			continue
 		}
-		place(deltaItem{Author: c.Author, Kind: "comment", Body: c.Body})
+		place(deltaItem{Author: c.Author, Kind: "comment", Body: c.Body, At: parseForgeTime(c.CreatedAt)})
 	}
 
 	if w.cfg.Item.IsPullRequest {
@@ -233,7 +268,7 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 			if strings.TrimSpace(body) == "" {
 				body = "(no comment)"
 			}
-			place(deltaItem{Author: r.User, Kind: "review", State: r.State, Body: body})
+			place(deltaItem{Author: r.User, Kind: "review", State: r.State, Body: body, At: parseForgeTime(r.SubmittedAt)})
 		}
 		return d, nil
 	}

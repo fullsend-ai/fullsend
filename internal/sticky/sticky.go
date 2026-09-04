@@ -62,7 +62,10 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
 
-		newBody := BuildUpdatedBody(existing.Body, markedBody, cfg)
+		// The old body is collapsed into this comment's history, so it is
+		// re-posted. Anything smuggled into it before this defence existed
+		// would otherwise survive every later edit.
+		newBody := BuildUpdatedBody(statuscomment.NeutralizeMarkers(existing.Body), markedBody, cfg)
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
