@@ -489,6 +489,20 @@ func newRunCmd() *cobra.Command {
 }
 
 func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
+	// Captured first, before harness resolution, token minting and env
+	// expansion, each of which can take real time — a mint call retries over
+	// the network. Anything on the work item after this instant is activity
+	// the agent must reconcile against, and a later capture would classify
+	// some of it as predating the run.
+	//
+	// This is still not the honest baseline. The run was dispatched before
+	// this process started, so the true start is the workflow run's
+	// server-side created_at, which costs an API call to read; no host clock
+	// inside this process can reach it. Recorded here so the two halves do
+	// not disagree about what "run start" means — the follow-up run watcher
+	// reached the same conclusion and uses the run record's created_at.
+	runStartedAt := time.Now().UTC()
+
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -1170,10 +1184,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declared here so the status-notification defer (below) can read the
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
-
-	// The instant this run started, exported into the sandbox so the agent
-	// can tell which activity on the work item postdates it.
-	runStartedAt := time.Now().UTC()
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
