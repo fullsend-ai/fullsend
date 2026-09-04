@@ -16,20 +16,21 @@ import (
 )
 
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
-// (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
-// harness or agents: entry may also give `provider/id` directly. The
-// ids come from pi's first-party Anthropic catalog
+// (opus, sonnet, ...), mapped onto pi's `provider/id` form here; a harness
+// or agents: entry may also give `provider/id` directly, and both the
+// provider and the final model string can be overridden from the runner
+// environment.
+//
+// The ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
 // anthropic-vertex extension re-points at Vertex: ids and pricing are
 // preserved, while the routing fields and the compat allowlist differ (the
 // provider swap also flips pi's supportsToolReferences default off). The
-// extension registers the catalog of the *running* pi, so this table can
-// name an id the pinned PI_VERSION does not carry: that was true of "fable"
-// -> claude-fable-5-1 until the pin moved to 0.85.0, whose catalog adds it
-// (#6882). Re-check the table against the pinned pi's anthropic.json on a
-// bump. Whether Vertex accepts each id is a lifecycle-test item
-// (docs/runtimes.md). Both the provider and the
-// final model string can be overridden from the runner environment.
+// extension registers the catalog of the *running* pi, so this table tracks
+// PI_VERSION — re-check it against the pinned pi's anthropic.json on a
+// bump, as "fable" needed when 0.85.0 added claude-fable-5-1 (#6882).
+// Whether Vertex then accepts an id is a lifecycle-test item
+// (docs/runtimes.md).
 const (
 	piDefaultProvider = "anthropic-vertex"
 	piDefaultModel    = "opus"
@@ -52,18 +53,18 @@ const (
 	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
-// piModelAliases maps fleet aliases to pi catalog ids. A default must name
-// an id the running pi's bundled catalog carries (see above) and the
-// fleet's Vertex projects serve.
-//
-// Preference order, most-preferred first (the rest wait on the fleet's
-// Vertex projects enabling the newer ids — neither project serves the
-// opus 5 generation, and sonnet 5 is dev-only, so those two stay put):
+// piModelAliases maps fleet aliases to pi catalog ids. A default must be an
+// id the running pi's catalog carries (see above) and the fleet's Vertex
+// projects serve — most preferred first:
 //
 //	sonnet: claude-sonnet-5 → claude-sonnet-4-6
 //	opus:   claude-opus-5   → claude-opus-4-8 → claude-opus-4-6
 //	fable:  claude-fable-5-1 → claude-fable-5
 //	haiku:  claude-haiku-4-5
+//
+// The arrows are what to move to as enablement lands, not a history.
+// sonnet and opus sit on 4-6 because no fleet project serves the opus 5
+// generation and sonnet 5 is served in dev only.
 var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",

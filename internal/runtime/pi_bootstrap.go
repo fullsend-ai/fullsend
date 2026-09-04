@@ -466,32 +466,27 @@ func piAgentExtensionDigests(hooksExt string, hooksEnabled bool) map[string]stri
 // Vertex provider, whatever provider the parent runs on. A persona-style
 // "@default" suffix is dropped.
 //
-// configAliases are the per-repo models.aliases overrides (#6882); they
-// are merged with piModelAliases so a repo that remaps "sonnet" in
-// .fullsend/config.yaml gets the same remap in the sub-agent model table
-// (#7020).
+// configAliases are the per-repo models.aliases overrides (#6882), merged
+// in so a child resolves an alias exactly as the parent does (#7020). An
+// override may name its own provider, so each value is resolved the way
+// Run resolves the parent's:
+//
+//	xai/grok-4.6                    → xai-vertex/xai/grok-4.6
+//	google-vertex/gemini-3.8-flash  → unchanged
+//	claude-sonnet-5                 → anthropic-vertex/claude-sonnet-5
+//
+// Prefixing an already-qualified value would hand the child
+// "anthropic-vertex/google-vertex/…", which names no provider; leaving
+// "xai/…" short would name pi's built-in xai provider, which wants
+// XAI_API_KEY. translatePiModel is not reused here because it reads
+// FULLSEND_PI_PROVIDER, which would re-provider the Claude aliases under
+// an xai-vertex parent.
 func piAgentModels(defModel string, configAliases map[string]string) map[string]string {
 	base, _, _ := strings.Cut(strings.TrimSpace(defModel), "@")
 	models := map[string]string{"default": translatePiModel(base, configAliases)}
 	for alias, id := range mergedPiModelAliases(configAliases) {
-		// An override may name its provider explicitly — models.aliases
-		// accepts `provider/id` (docs/runtimes/pi.md: `haiku:
-		// google-vertex/gemini-3.7-flash`) — and prefixing that again
-		// would hand the child "anthropic-vertex/google-vertex/...",
-		// which resolves nowhere. Resolve each value the way Run resolves
-		// the parent's, so the two never disagree about one alias:
-		// xai-vertex specs are normalised to their canonical
-		// three-segment form (a bare "xai/grok-4.6" left alone would name
-		// pi's built-in xai provider, which wants XAI_API_KEY, and the
-		// child's xai-vertex env branch would never fire), any other
-		// provider-qualified value passes through, and only a bare id
-		// takes the prefix — which keeps the fleet's Claude aliases on
-		// Anthropic Vertex whatever provider the parent runs on.
-		// translatePiModel is deliberately not reused: it consults
-		// FULLSEND_PI_PROVIDER, so it would re-provider those Claude
-		// aliases under an xai-vertex parent. piDefaultProvider is passed
-		// as the provider precisely because it is never xai-vertex, so a
-		// bare id can never take normalizeXaiVertexModel's third branch.
+		// piDefaultProvider is never xai-vertex, so a bare id cannot take
+		// normalizeXaiVertexModel's provider-env branch.
 		if spec, ok := normalizeXaiVertexModel(piDefaultProvider, id); ok {
 			models[alias] = spec
 			continue
