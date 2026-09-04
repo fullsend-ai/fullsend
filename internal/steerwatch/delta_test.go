@@ -266,7 +266,10 @@ func TestBuildText(t *testing.T) {
 	})
 	assert.Zero(t, findings)
 
-	assert.Contains(t, text, "Runner update: your task inputs changed after this run started.")
+	// The opening sentinel is the ENVELOPE's, not this body's — see
+	// TestBuildText_DoesNotWriteTheEnvelopeOpeningLine. This assertion used
+	// to require it here, which is how the same line ended up written
+	// twice into one message without a test noticing.
 	assert.Contains(t, text, "55")
 	assert.Contains(t, text, "pull_request_target")
 	assert.Contains(t, text, "@reviewer", "the triggering actor, not the run actor")
@@ -682,4 +685,32 @@ func TestLaterCommentCoveredByItsOwnRun(t *testing.T) {
 	assert.Equal(t, []int64{55, 56}, d.amendments[0].RunIDs, "the first is covered by both")
 	assert.Equal(t, []int64{56}, d.amendments[1].RunIDs, "the second only by its own run")
 	assert.Empty(t, d.context)
+}
+
+// TestBuildText_DoesNotWriteTheEnvelopeOpeningLine pins the ownership
+// boundary. buildText returns the BODY that runtime.renderSteerEnvelope
+// wraps, and the envelope owns the "Runner update: ..." sentinel. Writing
+// it here too put that line inside the wrapped body — the position the
+// fullsend-ai/agents definitions are told to treat as an injection attempt
+// — so the runner emitted its own injection signal on every steered run.
+func TestBuildText_DoesNotWriteTheEnvelopeOpeningLine(t *testing.T) {
+	const openingLine = "Runner update: your task inputs changed after this run started."
+
+	run := forgeRun(runOpts{id: 337, event: "issue_comment", created: "2026-09-04T10:05:00Z"})
+	run.TriggeringActor = "octocat"
+	items := &stubItems{
+		comments: []forge.IssueComment{
+			{Author: "octocat", Body: "/fs-steer cover the error path", CreatedAt: "2026-09-04T10:04:50Z"},
+		},
+	}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), authorizedActors([]forge.WorkflowRun{run}))
+	require.NoError(t, err)
+	text, _, _ := w.buildText([]forge.WorkflowRun{run}, d)
+
+	assert.NotContains(t, text, openingLine,
+		"the envelope owns the opening line; buildText returns the body it wraps")
+	assert.True(t, strings.HasPrefix(text, "Triggered by follow-up workflow run(s)"),
+		"the body should lead with its own first line, not a truncated one")
 }

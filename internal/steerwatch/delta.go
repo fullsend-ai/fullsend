@@ -341,8 +341,14 @@ func diffLabels(before, after []string) (added, removed []string) {
 // already holds, rather than the runner rewriting the tree underneath it.
 func (w *Watcher) buildText(runs []forge.WorkflowRun, d delta) (string, int, map[int64]bool) {
 	var head strings.Builder
-	head.WriteString("Runner update: your task inputs changed after this run started.\n\n")
-
+	// No opening sentinel here. This text is the BODY the runtime's
+	// envelope wraps (runtime.renderSteerEnvelope), and the envelope owns
+	// the "Runner update: ..." line: it must come first, and the agent
+	// definitions in fullsend-ai/agents match on it both to recognise a
+	// runner amendment and to flag the same line *inside* work-item content
+	// as an injection attempt. Writing it here too put the sentinel in the
+	// position reserved for untrusted content, so the runner emitted its
+	// own injection signal on every steered run.
 	ids := make([]string, 0, len(runs))
 	events := map[string]bool{}
 	for _, r := range runs {
