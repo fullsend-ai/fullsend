@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,6 +71,11 @@ type stubClient struct {
 	workflowReady       bool
 
 	getFileFn func(ctx context.Context, owner, repo, path string) ([]byte, error)
+
+	createIssueErr         error
+	createCommentErr       error
+	listWorkflowRunsResult []forge.WorkflowRun
+	listWorkflowRunsErr    error
 }
 
 func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*forge.Repository, error) {
@@ -115,11 +121,37 @@ func (s *stubClient) GetFileContent(ctx context.Context, owner, repo, path strin
 	return nil, forge.ErrNotFound
 }
 
+func (s *stubClient) CreateIssue(_ context.Context, _, _, _, _ string, _ ...string) (*forge.Issue, error) {
+	if s.createIssueErr != nil {
+		return nil, s.createIssueErr
+	}
+	return &forge.Issue{Number: 1}, nil
+}
+
+func (s *stubClient) CreateIssueComment(_ context.Context, _, _ string, _ int, _ string) (*forge.IssueComment, error) {
+	if s.createCommentErr != nil {
+		return nil, s.createCommentErr
+	}
+	return &forge.IssueComment{ID: 1}, nil
+}
+
+func (s *stubClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	if s.listWorkflowRunsErr != nil {
+		return nil, s.listWorkflowRunsErr
+	}
+	return s.listWorkflowRunsResult, nil
+}
+
 // noopCLI is a CLIRunnerFunc that succeeds without doing anything.
 func noopCLI(_, _ string, _ ...string) (string, error) { return "", nil }
 
 // noopSettle is a SettleFunc that does nothing.
 func noopSettle(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+	return nil
+}
+
+// noopEventDelivery is an EventDeliveryFunc that does nothing.
+func noopEventDelivery(_ context.Context, _ forge.Client, _, _ string, _ int, _ string, _ func(string, ...any)) error {
 	return nil
 }
 
@@ -179,11 +211,12 @@ func TestCreateRepo_Success(t *testing.T) {
 		getFileFn:     installedGetFileFn,
 	}
 	e := &repoEnsurer{
-		e2eCfg: e2etest.EnvConfig{},
-		client: sc,
-		runCLI: noopCLI,
-		settle: noopSettle,
-		logf:   t.Logf,
+		e2eCfg:        e2etest.EnvConfig{},
+		client:        sc,
+		runCLI:        noopCLI,
+		settle:        noopSettle,
+		eventDelivery: noopEventDelivery,
+		logf:          t.Logf,
 	}
 
 	name, err := e.CreateRepo(context.Background(), "org", "triage scenario")
@@ -379,4 +412,103 @@ func TestFakeEnsurer_Succeeds(t *testing.T) {
 	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.NoError(t, err)
 	assert.Equal(t, "bt-fake-test", name)
+}
+
+// --- awaitEventDelivery tests ---
+
+func TestAwaitEventDelivery_ImmediateSuccess(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "completed", CreatedAt: time.Now().Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+}
+
+func TestAwaitEventDelivery_CommentError(t *testing.T) {
+	sc := &stubClient{
+		createCommentErr: fmt.Errorf("comment failed"),
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "posting warmup comment")
+}
+
+func TestAwaitEventDelivery_ExhaustsAttempts(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_IgnoresInProgressRuns(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "in_progress", CreatedAt: time.Now().Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_IgnoresOldRuns(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "completed", CreatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_ContextCancelled(t *testing.T) {
+	sc := &stubClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := awaitEventDelivery(ctx, sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+func TestCreateRepo_EventDeliveryError(t *testing.T) {
+	speedUpGitReadyPoll(t)
+	sc := &stubClient{getFileFn: installedGetFileFn}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{},
+		client: sc,
+		runCLI: noopCLI,
+		settle: noopSettle,
+		eventDelivery: func(_ context.Context, _ forge.Client, _, _ string, _ int, _ string, _ func(string, ...any)) error {
+			return fmt.Errorf("event delivery failed")
+		},
+		logf: t.Logf,
+	}
+
+	_, err := e.CreateRepo(context.Background(), "org", "test")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verifying event delivery")
+}
+
+func TestCreateRepo_WarmupIssueError(t *testing.T) {
+	speedUpGitReadyPoll(t)
+	sc := &stubClient{createIssueErr: fmt.Errorf("issue creation failed")}
+	e := &repoEnsurer{
+		e2eCfg:        e2etest.EnvConfig{},
+		client:        sc,
+		runCLI:        noopCLI,
+		settle:        noopSettle,
+		eventDelivery: noopEventDelivery,
+		logf:          t.Logf,
+	}
+
+	_, err := e.CreateRepo(context.Background(), "org", "test")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating warmup issue")
 }
