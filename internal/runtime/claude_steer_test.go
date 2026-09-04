@@ -686,3 +686,48 @@ func TestSteerFeed_CopiedKeyCannotOutrunTheOriginal(t *testing.T) {
 		t.Fatalf("a copied key produced a duplicate receipt: %+v", got)
 	}
 }
+
+// TestClaudeSteerAggregator_ReasoningIsTakenNotSummed is the regression
+// guard whose absence let a double-count through. ReasoningTokens looks
+// like its neighbours on ResultEvent but is not read from `re.Usage`:
+// parseClaudeStream accumulates thinking tokens into totalReasoning, never
+// resets it, and emits that running total on every result. Summing it
+// therefore counts every earlier turn again, and the error compounds with
+// turn count.
+func TestClaudeSteerAggregator_ReasoningIsTakenNotSummed(t *testing.T) {
+	var m RunMetrics
+	a := &claudeSteerAggregator{}
+
+	// Turn 1 thought 100 tokens; turn 2 thought 50 more, and the parser
+	// reports the running total of 150.
+	a.onResult(ResultEvent{NumTurns: 1, InputTokens: 10, OutputTokens: 5, ReasoningTokens: 100}, &m)
+	if m.ReasoningTokens != 100 {
+		t.Fatalf("after one turn: got %d, want 100", m.ReasoningTokens)
+	}
+	a.onResult(ResultEvent{NumTurns: 1, InputTokens: 10, OutputTokens: 5, ReasoningTokens: 150}, &m)
+
+	if m.ReasoningTokens != 150 {
+		t.Errorf("reasoning must be the parser's running total, got %d (summing gives 250)", m.ReasoningTokens)
+	}
+	// The per-turn fields must still add up, so the fix is scoped to the
+	// one field that is accumulated upstream.
+	if m.InputTokens != 20 || m.OutputTokens != 10 || m.NumTurns != 2 {
+		t.Errorf("per-turn fields stopped summing: in=%d out=%d turns=%d",
+			m.InputTokens, m.OutputTokens, m.NumTurns)
+	}
+}
+
+// TestClaudeSteerAggregator_PerMessageReasoningDoesNotRaiseTheTotal covers
+// the other half: TokensEvent carries one message's thinking tokens, not a
+// running total, so it must not be able to move the run-wide figure.
+func TestClaudeSteerAggregator_PerMessageReasoningDoesNotRaiseTheTotal(t *testing.T) {
+	var m RunMetrics
+	a := &claudeSteerAggregator{}
+	a.onResult(ResultEvent{NumTurns: 1, ReasoningTokens: 150}, &m)
+
+	a.onTokens(TokensEvent{InputTokens: 9000, ReasoningTokens: 400}, &m)
+
+	if m.ReasoningTokens != 150 {
+		t.Errorf("a per-message reasoning value overwrote the run total: got %d, want 150", m.ReasoningTokens)
+	}
+}

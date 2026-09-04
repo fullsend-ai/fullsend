@@ -115,6 +115,16 @@ func (ClaudeRuntime) Settle(ctx context.Context, sandboxName string) error {
 // not summed. Do not "fix" the cost line into a sum: turn 2 above is worth
 // about $0.008, and summing would report $0.11 for an $0.06 run, with the
 // error growing on every steer.
+//
+// ReasoningTokens belongs with the cost, not with the usage fields, and it
+// is the one that looks like it belongs with the others. Its siblings are
+// read off `re.Usage` on each result; reasoning is not on the wire there at
+// all — parseClaudeStream accumulates thinking tokens into totalReasoning,
+// never resets it, and emits that running total on every result. It was
+// summed here originally, which reported 250 for two turns of 100 and 150.
+// The rule is not "usage adds, cost is taken" but "whatever the parser has
+// already accumulated is taken"; reasoning is on the parser's side of that
+// line even though it arrives in the same struct.
 type claudeSteerAggregator struct {
 	turns      int
 	input      int
@@ -129,25 +139,38 @@ func (a *claudeSteerAggregator) onResult(e ResultEvent, metrics *RunMetrics) {
 	a.turns += e.NumTurns
 	a.input += e.InputTokens
 	a.output += e.OutputTokens
-	a.reasoning += e.ReasoningTokens
 	a.cacheRead += e.CacheReadInputTokens
 	a.cacheWrite += e.CacheCreationInputTokens
+	// Reasoning is TAKEN, not added: unlike its siblings it does not come
+	// from re.Usage on the result event. parseClaudeStream accumulates
+	// thinking tokens into totalReasoning and never resets it, then emits
+	// that running total on every result — so it is already the
+	// session-wide figure, exactly as total_cost_usd is, and adding it
+	// would count turn 1 again in turn 2.
+	a.reasoning = e.ReasoningTokens
 
 	metrics.NumTurns = a.turns
 	metrics.TotalCostUSD = e.TotalCostUSD
+	metrics.ReasoningTokens = a.reasoning
 	a.publish(metrics)
 }
 
-// onTokens folds the parser's incremental snapshot into metrics. That
-// snapshot is cumulative across the whole stream, not per-turn, so it
-// leads the completed-turn sum while a turn is in flight and trails it
-// afterwards (it is emitted only every tokenThreshold tokens). Taking the
-// larger of the two per field keeps a killed run's partial turn without
-// letting a throttled snapshot undo a finished turn's totals.
+// onTokens folds the parser's incremental snapshot into metrics. For the
+// four fields it covers, that snapshot is cumulative across the whole
+// stream rather than per-turn, so it leads the completed-turn sum while a
+// turn is in flight and trails it afterwards (it is emitted only every
+// tokenThreshold tokens). Taking the larger of the two per field keeps a
+// killed run's partial turn without letting a throttled snapshot undo a
+// finished turn's totals.
+//
+// Reasoning is deliberately absent. TokensEvent carries msgReasoning — one
+// message's thinking tokens, not a running total — so comparing it against
+// a run-wide figure is not a comparison of like with like, and the larger
+// value would win for the wrong reason. The non-steered handler omits it
+// here too; reasoning comes only from the result event.
 func (a *claudeSteerAggregator) onTokens(e TokensEvent, metrics *RunMetrics) {
 	metrics.InputTokens = max(a.input, e.InputTokens)
 	metrics.OutputTokens = max(a.output, e.OutputTokens)
-	metrics.ReasoningTokens = max(a.reasoning, e.ReasoningTokens)
 	metrics.CacheReadInputTokens = max(a.cacheRead, e.CacheRead)
 	metrics.CacheCreationInputTokens = max(a.cacheWrite, e.CacheWrite)
 }
@@ -155,7 +178,6 @@ func (a *claudeSteerAggregator) onTokens(e TokensEvent, metrics *RunMetrics) {
 func (a *claudeSteerAggregator) publish(metrics *RunMetrics) {
 	metrics.InputTokens = max(metrics.InputTokens, a.input)
 	metrics.OutputTokens = max(metrics.OutputTokens, a.output)
-	metrics.ReasoningTokens = max(metrics.ReasoningTokens, a.reasoning)
 	metrics.CacheReadInputTokens = max(metrics.CacheReadInputTokens, a.cacheRead)
 	metrics.CacheCreationInputTokens = max(metrics.CacheCreationInputTokens, a.cacheWrite)
 }
