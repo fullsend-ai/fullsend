@@ -687,6 +687,7 @@ func parsePiStreamMode(r io.Reader, onEvent func(AgentEvent), perPrompt bool) (s
 			// steer settle rule counts. A failed command is not a
 			// delivery, so it is deliberately not acked.
 			var resp struct {
+				ID      string `json:"id"`
 				Command string `json:"command"`
 				Success bool   `json:"success"`
 			}
@@ -696,7 +697,7 @@ func parsePiStreamMode(r io.Reader, onEvent func(AgentEvent), perPrompt bool) (s
 			if resp.Command == "prompt" && resp.Success {
 				// rpc puts no timestamp on the ack, so the parse time is
 				// the delivery time.
-				onEvent(UserReplayEvent{At: steerEchoTime("")})
+				onEvent(UserReplayEvent{At: steerEchoTime(""), ID: resp.ID})
 			}
 
 		case "turn_start", "turn_end", "tool_execution_update",

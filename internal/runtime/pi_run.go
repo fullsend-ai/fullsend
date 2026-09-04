@@ -870,7 +870,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 			// pi's rpc ack: the message left the mailbox and reached the
 			// agent. Only the steer path cares.
 			if feed != nil {
-				steerCloseFeedIf(ctx, feed.noteEcho(e.At), feed, printer)
+				steerCloseFeedIf(ctx, feed.noteEcho(e.At, e.ID, e.Content), feed, printer)
 			}
 			return
 		case ResultEvent:
@@ -983,13 +983,14 @@ func (r PiRuntime) startSteerFeed(ctx context.Context, params RunParams) (*steer
 	}
 	// The opening prompt carries no streamingBehavior: there is no turn to
 	// steer into yet.
-	line, err := piInputLine(uuid.NewString(), prompt, "")
+	promptID := uuid.NewString()
+	line, err := piInputLine(promptID, prompt, "")
 	if err != nil {
 		return nil, "", err
 	}
 	sessionID := newPiSessionID()
 	f := newSteerFeed(params.SandboxName, r.ConfigDir(), sandbox.ExecContext)
-	if err := f.seed(ctx, line); err != nil {
+	if err := f.seed(ctx, line, promptID); err != nil {
 		return nil, "", err
 	}
 	registerSteerFeed(params.SandboxName, f)
