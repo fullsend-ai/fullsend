@@ -263,6 +263,46 @@ jobs:
                     fi
                   fi
                   ;;
+                /fs-steer)
+                  # Steer the run already in flight on this work item
+                  # (ADR 0101). The comment fires the shim like any other
+                  # event; the stage job it selects queues normally and the
+                  # runner's watcher consumes that run as the steer. An
+                  # explicit stage prefix wins, otherwise a PR steers review
+                  # and an issue steers triage. The authorization floor is
+                  # the target stage's own: fix is a mutation stage and
+                  # keeps its write floor, so `fix:` cannot be used to
+                  # reach fix from a triage-level account.
+                  STEER_TARGET="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+                  case "${STEER_TARGET}" in
+                    review:) STEER_STAGE="review" ;;
+                    fix:)    STEER_STAGE="fix" ;;
+                    triage:) STEER_STAGE="triage" ;;
+                    *)
+                      if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                        STEER_STAGE="review"
+                      else
+                        STEER_STAGE="triage"
+                      fi
+                      ;;
+                  esac
+                  if [[ "${STEER_STAGE}" == "fix" && "${ISSUE_IS_PR}" != "true" ]]; then
+                    STEER_STAGE=""
+                  fi
+                  if [[ "${STEER_STAGE}" == "review" && "${ISSUE_IS_PR}" != "true" ]]; then
+                    STEER_STAGE=""
+                  fi
+                  if [[ -n "${STEER_STAGE}" && "${COMMENT_USER_TYPE}" != "Bot" ]]; then
+                    if [[ "${STEER_STAGE}" == "fix" ]]; then
+                      if is_authorized; then
+                        STAGE="fix"
+                        TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
+                      fi
+                    elif is_authorized triage; then
+                      STAGE="${STEER_STAGE}"
+                    fi
+                  fi
+                  ;;
                 /fs-retro)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     STAGE="retro"
@@ -611,6 +651,12 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'triage'
     runs-on: ${{ inputs.runner_image }}
+    # Every stage job below carries the same cancel-in-progress expression.
+    # Unset, or anything but "true", is today's behaviour: a newer event on
+    # the same work item cancels the run in flight. Set to "true" in a
+    # consumer repository, the run in flight instead absorbs the update
+    # through the runner's follow-up run watcher, and the newer event waits
+    # as the single pending run `queue: single` allows (ADR 0101).
     concurrency:
       group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: ${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}
@@ -704,6 +750,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: triage
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -843,6 +895,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: code
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -971,6 +1029,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1123,7 +1187,16 @@ jobs:
           if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
+              # Strip whichever slash command carried the instruction. A
+              # /fs-steer comment routed here (ADR 0101) would otherwise
+              # keep "/fs-steer" (and an optional "fix:" target) as the
+              # first words of the instruction.
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              if [[ "${INSTRUCTION}" == "${COMMENT_BODY}" ]]; then
+                INSTRUCTION="${COMMENT_BODY#/fs-steer}"
+                INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
+                INSTRUCTION="${INSTRUCTION#fix:}"
+              fi
               INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
             fi
@@ -1251,6 +1324,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: fix
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1361,6 +1440,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: retro
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1457,6 +1542,12 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: prioritize
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1821,6 +1912,12 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
+          # The steering runner declines unless this is "true": a run that is
+          # about to be cancelled cannot usefully be steered, and steering one
+          # that will be cancelled anyway is the mixed state ADR 0101 calls
+          # worse than today. `vars` is not otherwise visible to the runner —
+          # FULLSEND_REPO_VARS reaches the sandbox env, not this process.
+          FULLSEND_PRESERVE_RUNS: ${{ vars.FULLSEND_PRESERVE_RUNS }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

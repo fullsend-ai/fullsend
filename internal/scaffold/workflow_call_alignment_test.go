@@ -1333,3 +1333,98 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 		})
 	}
 }
+
+// TestReusableDispatchSteerArm validates the /fs-steer route arm (ADR 0101).
+// The arm selects the stage an in-flight or queued run would serve, so the
+// stage job carries the steer as a normal queued dispatch and the runner's
+// watcher consumes that run.
+//
+// The floors are the point: fix is a mutation stage, so `/fs-steer fix:`
+// must not become a way to reach fix from a triage-level account.
+func TestReusableDispatchSteerArm(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	section := extractStepSection(t, string(content), "Determine stage")
+
+	require.Contains(t, section, "/fs-steer)", "the route logic must have a /fs-steer arm")
+
+	arm := section[strings.Index(section, "/fs-steer)"):]
+	if end := strings.Index(arm, "/fs-retro"); end > 0 {
+		arm = arm[:end]
+	}
+
+	assert.Contains(t, arm, `review:) STEER_STAGE="review"`)
+	assert.Contains(t, arm, `fix:)    STEER_STAGE="fix"`)
+	assert.Contains(t, arm, `triage:) STEER_STAGE="triage"`)
+	assert.Contains(t, arm, `"${COMMENT_USER_TYPE}" != "Bot"`,
+		"a bot must not be able to steer a run")
+	assert.Contains(t, arm, "if is_authorized; then",
+		"the fix target must keep the write floor")
+	assert.Contains(t, arm, "elif is_authorized triage; then",
+		"review and triage steer at the triage floor, matching /fs-review and /fs-triage")
+}
+
+// TestReusableDispatchFixInstructionStripsSteer checks that a /fs-steer
+// comment routed to the fix stage does not leave the slash command in the
+// instruction handed to the agent.
+func TestReusableDispatchFixInstructionStripsSteer(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	body := string(content)
+	require.Contains(t, body, `INSTRUCTION="${COMMENT_BODY#/fs-fix}"`)
+	assert.Contains(t, body, `INSTRUCTION="${COMMENT_BODY#/fs-steer}"`,
+		"the fix stage must strip /fs-steer as well as /fs-fix")
+	assert.Contains(t, body, `INSTRUCTION="${INSTRUCTION#fix:}"`,
+		"and the explicit stage target that followed it")
+}
+
+// TestPerRepoShimRunName validates the run-name that binds a follow-up run
+// to its work item (ADR 0101). issue_comment and issues runs carry no
+// pull_requests[], so display_title (which is what run-name renders to) is
+// the only server-side field an in-flight run can match on.
+func TestPerRepoShimRunName(t *testing.T) {
+	content := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+
+	var shim struct {
+		RunName string `yaml:"run-name"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(content), &shim))
+	require.NotEmpty(t, shim.RunName, "the per-repo shim must declare a run-name")
+
+	assert.Contains(t, shim.RunName, "github.repository")
+	// For a comment on a PR, github.event.issue.number IS the PR number, so
+	// the pair covers every event the shim listens for.
+	assert.Contains(t, shim.RunName, "github.event.issue.number")
+	assert.Contains(t, shim.RunName, "github.event.pull_request.number")
+}
+
+// TestOwnShimMatchesTemplateRunName keeps this repository's own shim from
+// drifting away from the template on the one key steering depends on.
+//
+// The two are separate files with no sync between them: consumers get
+// templates/shim-per-repo.yaml through scaffold sync, while
+// .github/workflows/fullsend.yaml is this repository's live shim and is
+// reached by no sync at all — its "managed by fullsend" header names an
+// upstream path that does not exist. So a run-name added to the template
+// silently left this repository unable to bind issue_comment follow-ups to
+// their work item, which made steering here a no-op rather than a failure.
+func TestOwnShimMatchesTemplateRunName(t *testing.T) {
+	runNameOf := func(t *testing.T, content []byte, what string) string {
+		t.Helper()
+		var shim struct {
+			RunName string `yaml:"run-name"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &shim))
+		require.NotEmpty(t, shim.RunName, "%s must declare a run-name", what)
+		return shim.RunName
+	}
+
+	template := runNameOf(t, loadScaffoldFile("templates/shim-per-repo.yaml")(t), "the per-repo shim template")
+
+	own, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "fullsend.yaml"))
+	require.NoError(t, err, "this repository's own shim must be readable")
+
+	assert.Equal(t, template, runNameOf(t, own, "this repository's own shim"),
+		"the two shims must bind work items the same way; scaffold sync will never reconcile them")
+}

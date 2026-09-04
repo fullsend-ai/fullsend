@@ -9087,3 +9087,95 @@ plugins:
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
 	require.NoError(t, h.ValidateFilesExist())
 }
+
+func TestLoadWithBase_SteerInheritance(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+steer:
+  enabled: true
+  max_steers: 3
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Steer, "a child that says nothing about steer inherits the base's block")
+	assert.True(t, h.SteerEnabled())
+	assert.Equal(t, 3, h.SteerMaxSteers())
+}
+
+func TestLoadWithBase_SteerChildReplacesEntirely(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+steer:
+  enabled: true
+  max_steers: 9
+  poll_interval_seconds: 5
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+steer:
+  enabled: true
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.Steer)
+	// Whole-block replacement: the child asked to steer with the defaults,
+	// not with whatever cap and cadence the base happened to set.
+	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
+	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())
+}
+
+func TestLoadWithBase_SteerChildCanDisable(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+steer:
+  enabled: true
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+steer:
+  enabled: false
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.False(t, h.SteerEnabled(), "a child must be able to turn off a steering base")
+}
+
+func TestLoadWithBase_NoSteerAnywhere(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Nil(t, h.Steer)
+	assert.False(t, h.SteerEnabled())
+}

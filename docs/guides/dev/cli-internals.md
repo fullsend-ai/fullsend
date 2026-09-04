@@ -119,6 +119,8 @@ fullsend
 │   ├── --status-repo <owner/repo>           #   Repository for status comments
 │   ├── --status-number <int>                #   Issue/PR number for status comments
 │   └── --mint-url <url>                     #   Mint service URL for on-demand status tokens
+├── steer            <work-item-url> <text>   # Update the agent already running on an issue/PR
+│   └── --stage <review|fix|triage>          #   Target stage (default: review for a PR, triage for an issue)
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
@@ -703,6 +705,8 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/steercmd.go` | ~170 | `fullsend steer` — posts the `/fs-steer` comment that reaches a run in flight (ADR 0101) |
+| `internal/cli/steer.go` | ~400 | Runner-side steer wiring: eligibility, the follow-up run watcher's lifecycle, the marker, the skip check |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |

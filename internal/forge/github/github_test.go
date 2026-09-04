@@ -4548,3 +4548,166 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
+
+func TestListWorkflowRunsSince(t *testing.T) {
+	var gotPath, gotCreated, gotPerPage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCreated = r.URL.Query().Get("created")
+		gotPerPage = r.URL.Query().Get("per_page")
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{
+					"id": 33740015232, "name": "fullsend",
+					"path": ".github/workflows/fullsend.yml", "event": "issue_comment",
+					"status": "completed", "conclusion": "cancelled",
+					"created_at": "2026-09-03T10:05:00Z", "display_title": "org/repo#7",
+					"actor":            map[string]any{"login": "octocat"},
+					"triggering_actor": map[string]any{"login": "reviewer"},
+					"pull_requests":    []map[string]any{{"number": 7}},
+					"referenced_workflows": []map[string]any{{
+						"path": "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main",
+						"ref":  "refs/heads/main",
+						"sha":  "2a103497",
+					}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	since := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yml", since, 50)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/repos/org/repo/actions/workflows/fullsend.yml/runs", gotPath)
+	assert.Equal(t, ">=2026-09-03T10:00:00Z", gotCreated, "the created filter must survive URL encoding")
+	assert.Equal(t, "50", gotPerPage)
+
+	require.Len(t, runs, 1)
+	r := runs[0]
+	assert.Equal(t, 33740015232, r.ID)
+	assert.Equal(t, ".github/workflows/fullsend.yml", r.Path)
+	assert.Equal(t, "issue_comment", r.Event)
+	assert.Equal(t, "org/repo#7", r.DisplayTitle)
+	assert.Equal(t, "octocat", r.Actor)
+	assert.Equal(t, "reviewer", r.TriggeringActor)
+	assert.Equal(t, []int{7}, r.PullRequestNumbers)
+	require.Len(t, r.ReferencedWorkflows, 1)
+	assert.Equal(t, "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main", r.ReferencedWorkflows[0].Path)
+	assert.Equal(t, "refs/heads/main", r.ReferencedWorkflows[0].Ref)
+	assert.Equal(t, "2a103497", r.ReferencedWorkflows[0].SHA)
+}
+
+func TestListWorkflowRunsSince_DefaultsPerPage(t *testing.T) {
+	var gotPerPage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPerPage = r.URL.Query().Get("per_page")
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListWorkflowRunsSince(
+		context.Background(), "org", "repo", "fullsend.yml", time.Now(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+	assert.Equal(t, "50", gotPerPage)
+}
+
+func TestGetWorkflowRun_CarriesProvenance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42, "path": ".github/workflows/fullsend.yml", "event": "pull_request_target",
+			"created_at": "2026-09-03T10:00:00Z",
+			"referenced_workflows": []map[string]any{
+				{"path": "o/r/.github/workflows/reusable-dispatch.yml@main", "ref": "refs/heads/main", "sha": "abc"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	run, err := newTestClient(t, srv).GetWorkflowRun(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, ".github/workflows/fullsend.yml", run.Path)
+	require.Len(t, run.ReferencedWorkflows, 1)
+	assert.Equal(t, "abc", run.ReferencedWorkflows[0].SHA)
+}
+
+func TestListWorkflowRunJobs_Paginates(t *testing.T) {
+	// A large matrix pushes the stage job onto page 2. A caller looking for
+	// one job by name must not read its absence from page 1 as a verdict.
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		jobs := make([]map[string]any, 0, 100)
+		if page == "1" {
+			for i := 0; i < 100; i++ {
+				jobs = append(jobs, map[string]any{"id": i, "name": fmt.Sprintf("matrix-%d", i),
+					"status": "completed", "conclusion": "success"})
+			}
+		} else {
+			jobs = append(jobs, map[string]any{"id": 999, "name": "dispatch / Review",
+				"status": "in_progress", "conclusion": ""})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 101, "jobs": jobs})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "dispatch / Review", jobs[100].Name)
+}
+
+func TestListWorkflowRunJobs_SinglePageStops(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "jobs": []map[string]any{
+			{"id": 1, "name": "dispatch / Route", "status": "completed", "conclusion": "success"},
+			{"id": 2, "name": "dispatch / Review", "status": "queued"},
+		}})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "a short page is the last page")
+	assert.Len(t, jobs, 2)
+}
+
+func TestListIssueCommentsSince(t *testing.T) {
+	var gotSince string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSince = r.URL.Query().Get("since")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "hi", "user": map[string]any{"login": "octocat"},
+				"created_at": "2026-09-03T10:06:00Z"},
+		})
+	}))
+	defer srv.Close()
+
+	since := time.Date(2026, 9, 3, 10, 5, 0, 0, time.UTC)
+	comments, err := newTestClient(t, srv).ListIssueCommentsSince(context.Background(), "org", "repo", 7, since)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-03T10:05:00Z", gotSince)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "octocat", comments[0].Author)
+}
+
+func TestListIssueComments_SendsNoSinceWhenUnset(t *testing.T) {
+	var hadSince bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadSince = r.URL.Query()["since"]
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListIssueComments(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, hadSince, "the unfiltered listing must stay unfiltered")
+}

@@ -11,17 +11,50 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
-// killStrayProcessesTimeout bounds the sweep exec. The snippet itself waits
-// at most 2s between TERM and KILL, so anything beyond a few seconds is the
-// gateway, not the sandbox.
-const killStrayProcessesTimeout = 15 * time.Second
+// Grace periods between TERM and KILL in the sweep snippet.
+//
+// The default is what ClearIterationArtifacts has always used: the strays
+// it sweeps are leftovers from an iteration that already ended, so there is
+// nothing of theirs worth flushing and a short wait keeps the iteration
+// boundary quick.
+//
+// The interrupt grace is longer because that sweep stops a codex process
+// the runner intends to CONTINUE (see codexSteerQueue.interrupt): a fixed
+// short grace gives an agent no room to flush state on SIGTERM, which is
+// the objection raised on #6753. Ten seconds is bounded so
+// killStrayProcessesTimeoutFor still covers the whole TERM wait plus the
+// KILL pass.
+const (
+	defaultStrayGrace   = 2 * time.Second
+	interruptStrayGrace = 10 * time.Second
+	// strayGraceTick is the snippet's poll interval; the rendered loop
+	// bound is the grace divided by it.
+	strayGraceTick = 100 * time.Millisecond
+	// strayTimeoutHeadroom is what the exec timeout allows on top of the
+	// grace for the gateway round trip, the process listings and the KILL
+	// pass. With the default grace this reproduces the historical 15s.
+	strayTimeoutHeadroom = 13 * time.Second
+)
+
+// killStrayProcessesTimeout bounds a default-grace sweep exec.
+const killStrayProcessesTimeout = defaultStrayGrace + strayTimeoutHeadroom
+
+// killStrayProcessesTimeoutFor bounds a sweep exec for an arbitrary grace,
+// so a longer TERM wait cannot be cut short by the timeout that is meant to
+// catch a hung gateway.
+func killStrayProcessesTimeoutFor(grace time.Duration) time.Duration {
+	return grace + strayTimeoutHeadroom
+}
 
 // killStrayProcessesTemplate is the POSIX sh snippet ClearIterationArtifacts
 // runs through `sandbox exec` before it removes the previous iteration's
-// files. __KEEPALIVE__ is replaced with the shell-quoted
-// sandbox.KeepAliveCommand by killStrayProcessesScript; the rendered result
-// is pinned in testdata/kill_stray_processes.sh, which
-// kill_stray_processes_test.sh runs under a real shell.
+// files, and that codexSteerQueue.interrupt runs to stop a turn it means to
+// resume. killStrayProcessesScriptWithGrace replaces __KEEPALIVE__ with the
+// shell-quoted sandbox.KeepAliveCommand and __GRACE_TICKS__/__GRACE_LABEL__
+// with the TERM→KILL grace. Both renderings are pinned —
+// testdata/kill_stray_processes.sh (default 2s) and
+// testdata/kill_stray_processes_interrupt.sh (10s) — and
+// kill_stray_processes_test.sh runs either under a real shell.
 //
 // Why: pi's built-in bash tool spawns commands detached and kills that
 // process tree only on abort/timeout (pi 0.84.4, core/tools/bash.ts), so a
@@ -84,7 +117,7 @@ const killStrayProcessesTemplate = `# shellcheck shell=sh
 # matched on argv with any directory stripped from the command word
 # (/usr/bin/sleep infinity counts), so an agent-started literal
 # "sleep infinity" is spared as well. TERM first, then KILL whatever is
-# still alive after 2s. The count goes to stdout; a process listing or a
+# still alive after __GRACE_LABEL__. The count goes to stdout; a process listing or a
 # liveness probe that fails exits 3 so the runner warns instead of
 # trusting a zero. The user is selected by numeric uid: the sandbox user
 # need not be resolvable through NSS.
@@ -170,7 +203,7 @@ if [ "$count" -gt 0 ]; then
   }
   left=$(survivors)
   i=0
-  while [ "$i" -lt 20 ] && [ -n "$left" ] && [ "$left" != '?' ]; do
+  while [ "$i" -lt __GRACE_TICKS__ ] && [ -n "$left" ] && [ "$left" != '?' ]; do
     sleep 0.1
     i=$((i + 1))
     left=$(survivors)
@@ -194,9 +227,34 @@ exit 0
 `
 
 // killStrayProcessesScript renders the sweep snippet with the sandbox
-// keep-alive argv it must spare.
+// keep-alive argv it must spare and the default TERM→KILL grace. Its bytes
+// are pinned in testdata/kill_stray_processes.sh.
 func killStrayProcessesScript() string {
-	return strings.ReplaceAll(killStrayProcessesTemplate, "__KEEPALIVE__", shellQuote(sandbox.KeepAliveCommand))
+	return killStrayProcessesScriptWithGrace(defaultStrayGrace)
+}
+
+// killStrayProcessesScriptWithGrace renders the sweep snippet with a
+// specific TERM→KILL grace. grace must be a whole number of seconds and a
+// multiple of strayGraceTick; every call site passes a constant, so a
+// violation is a programming error rather than a runtime condition, and it
+// is clamped to one tick rather than rendering a loop that never waits.
+func killStrayProcessesScriptWithGrace(grace time.Duration) string {
+	ticks := int(grace / strayGraceTick)
+	if ticks < 1 {
+		ticks = 1
+	}
+	script := strings.ReplaceAll(killStrayProcessesTemplate, "__KEEPALIVE__", shellQuote(sandbox.KeepAliveCommand))
+	script = strings.ReplaceAll(script, "__GRACE_TICKS__", strconv.Itoa(ticks))
+	return strings.ReplaceAll(script, "__GRACE_LABEL__", strayGraceLabel(grace))
+}
+
+// strayGraceLabel renders the grace for the snippet's own comment, in whole
+// seconds when it divides evenly so the default keeps reading "2s".
+func strayGraceLabel(grace time.Duration) string {
+	if grace%time.Second == 0 {
+		return strconv.Itoa(int(grace/time.Second)) + "s"
+	}
+	return grace.String()
 }
 
 var strayProcessesKilledRe = regexp.MustCompile(`(?m)^stray processes killed: ([0-9]+)$`)
@@ -207,7 +265,14 @@ var strayProcessesKilledRe = regexp.MustCompile(`(?m)^stray processes killed: ([
 // (exit 3 is the snippet's own "ps failed"), or output the snippet never
 // produces — is returned as an error for the caller to downgrade.
 func killStrayProcesses(execFn sandboxExecFunc, sandboxName string) (int, error) {
-	stdout, stderr, exitCode, err := execFn(sandboxName, killStrayProcessesScript(), killStrayProcessesTimeout)
+	return killStrayProcessesWithGrace(execFn, sandboxName, defaultStrayGrace)
+}
+
+// killStrayProcessesWithGrace is killStrayProcesses with the TERM→KILL
+// grace chosen by the caller. The exec timeout scales with it so a longer
+// wait is not truncated by the bound that exists to catch a hung gateway.
+func killStrayProcessesWithGrace(execFn sandboxExecFunc, sandboxName string, grace time.Duration) (int, error) {
+	stdout, stderr, exitCode, err := execFn(sandboxName, killStrayProcessesScriptWithGrace(grace), killStrayProcessesTimeoutFor(grace))
 	if err != nil {
 		return 0, err
 	}
