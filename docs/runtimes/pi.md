@@ -67,6 +67,8 @@ models:
 - Only the aliases you set change; the rest keep the fleet default.
 - Keys are `opus`, `sonnet`, `haiku`, `fable`. A value is a model id or `provider/id`
   (`haiku: google-vertex/gemini-3.7-flash`); it cannot be another alias.
+- The override applies to both the parent run and sub-agent dispatch — a child that asks for
+  `sonnet` resolves it through the same merged alias table as the parent.
 - The same block applies on [Claude Code](claude.md#models).
 
 **What you see.** The plan block prints the remap — `Model: sonnet (from ...) → claude-sonnet-5

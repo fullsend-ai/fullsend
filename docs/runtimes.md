@@ -190,9 +190,11 @@ Harness `model:` and `agents:` entry `model:` values accept provider-qualified `
 
 Point an alias at a different model for one repo with `models.aliases` in `.fullsend/config.yaml`
 — `sonnet: claude-sonnet-5` changes `sonnet` and leaves the other aliases alone. Works on both
-runtimes; see [Pi › Per-repo alias overrides](runtimes/pi.md#per-repo-alias-overrides) for the
-syntax and what the plan block shows, and [Claude Code › Models](runtimes/claude.md#models) for
-the one limit there (sub-agent `model:` frontmatter is not remapped).
+runtimes; the override applies to the parent run and to sub-agent dispatch on pi (children
+resolve aliases through the same merged table). See [Pi › Per-repo alias
+overrides](runtimes/pi.md#per-repo-alias-overrides) for the syntax and what the plan block shows,
+and [Claude Code › Models](runtimes/claude.md#models) for the one limit there (sub-agent `model:`
+frontmatter is not remapped).
 
 ## Where the selection appears
 

@@ -18,7 +18,7 @@ import (
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
 // harness or agents: entry may also give `provider/id` directly. The
-// ids are pi 0.84.2's Anthropic catalog
+// ids are pi 0.84.4's Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
 // anthropic-vertex extension registers verbatim; whether Vertex accepts each
 // id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
@@ -45,11 +45,20 @@ const (
 	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
+// piModelAliases maps fleet aliases to pi catalog ids. A default must
+// name an id that the pinned pi's bundled catalog has AND the fleet's
+// Vertex projects serve. The intended upgrade order once the fleet
+// projects enable the newer ids:
+//
+//	sonnet: claude-sonnet-5 → claude-sonnet-4-6
+//	opus:   claude-opus-5   → claude-opus-4-8 → claude-opus-4-6
+//	fable:  claude-fable-5-1 → claude-fable-5       (5-1 on the pi bump)
+//	haiku:  claude-haiku-4-5
 var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",
 	"haiku":  "claude-haiku-4-5",
-	"fable":  "claude-fable-5-1",
+	"fable":  "claude-fable-5",
 }
 
 // piDocumentedAliases lists the aliases pi resolves through docs/runtimes/pi.md

@@ -699,7 +699,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"opus":    "anthropic-vertex/claude-opus-4-6",
 			"sonnet":  "anthropic-vertex/claude-sonnet-4-6",
 			"haiku":   "anthropic-vertex/claude-haiku-4-5",
-			"fable":   "anthropic-vertex/claude-fable-5-1",
+			"fable":   "anthropic-vertex/claude-fable-5",
 		}, m.Agent.Models)
 		assert.Equal(t, map[string][]string{
 			"google-vertex":     piGoogleVertexModels,
@@ -772,6 +772,31 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		m, _, _ := bootstrap(t, "---\nname: review\nmodel: grok-4.6\n---\nbody", false)
 		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["default"])
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
+	})
+
+	t.Run("config aliases reach the sub-agent model table", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:  "sb",
+			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:    "review",
+			modelAliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["sonnet"],
+			"per-repo config alias overrides the fleet default in the child model table")
+		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+			"unstated aliases keep the fleet default")
+		assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", m.Agent.Models["haiku"],
+			"unstated aliases keep the fleet default")
+		assert.Equal(t, "anthropic-vertex/claude-fable-5", m.Agent.Models["fable"],
+			"unstated aliases keep the fleet default")
 	})
 }
 

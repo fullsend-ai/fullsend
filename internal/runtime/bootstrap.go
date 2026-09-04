@@ -25,6 +25,11 @@ type BootstrapInput interface {
 	// each tagged with the runtime format it is in. A runtime loads the
 	// entries of its own kind and names and skips the rest.
 	Plugins() []PluginInput
+	// ModelAliases returns the per-repo model alias overrides from
+	// .fullsend/config.yaml (models.aliases). A nil map means no overrides.
+	// Used by the pi runtime to thread the overrides into sub-agent dispatch
+	// so children resolve aliases the same way the parent does (#7020).
+	ModelAliases() map[string]string
 }
 
 // PluginInput is one declared plugin: a host directory to upload, the

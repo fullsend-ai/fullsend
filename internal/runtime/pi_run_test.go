@@ -25,7 +25,7 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus", nil))
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet", nil))
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", translatePiModel("haiku", nil))
-	assert.Equal(t, "anthropic-vertex/claude-fable-5-1", translatePiModel("fable", nil))
+	assert.Equal(t, "anthropic-vertex/claude-fable-5", translatePiModel("fable", nil))
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("", nil), "empty falls back to the opus alias")
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8", nil), "bare ids get the provider prefix")
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6", nil), "provider/id passes through")
