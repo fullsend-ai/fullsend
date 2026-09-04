@@ -351,6 +351,14 @@ still be safe to re-run (idempotent or gracefully no-op on repeat) as defense in
 depth — but polling does not impose a new idempotency requirement beyond what
 event-driven dispatch already assumes under `cancel-in-progress`.
 
+> **Cross-reference (added later).** Layer 2 above is no longer unconditional. A
+> repository may set `FULLSEND_PRESERVE_RUNS=true` so stage jobs stop cancelling
+> the run in flight, which removes this layer and leaves the poller's lock and
+> agent idempotency. The duplicate-poll case is where that trade is least
+> favourable, because two duplicate dispatches are the same work rather than a
+> newer state superseding an older one. The default is unchanged and this ADR's
+> assumption still holds wherever the variable is unset.
+
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:
 
