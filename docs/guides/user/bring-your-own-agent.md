@@ -17,23 +17,25 @@ This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) 
 Building a custom agent takes four steps. `fullsend agent new` does the
 first one, which is most of the work:
 
-0. **Generate the skeleton** with `fullsend agent new` — harness, agent
-   definition, schema, post-script, trigger and registration. See below.
-1. **Fill in the agent definition** — the prompt is the only part the
-   generator cannot write for you.
+0. **Generate the skeleton** with `fullsend agent new`. It writes every file
+   an agent needs — how it runs, what it is allowed to do, which events start
+   it, and what happens to its output — and registers it. See below.
+1. **Write the instructions the agent follows.** This is the one file the
+   generator cannot fill in for you, because it is the actual job.
 2. **Test locally** with `fullsend run`. See [Testing locally](#testing-locally).
 3. **Commit and trigger it in CI.**
 
-The rest of this guide explains what step 0 generated and how to change it.
-Read it when you need to go beyond the defaults, or when you are writing a
-harness by hand — the [four steps by hand](#the-four-steps-by-hand) below are
-the long form.
+The rest of this guide explains what step 0 generated, names each file, and
+shows how to change it. Read it when you need to go beyond the defaults, or if
+you would rather write everything yourself — the
+[four steps by hand](#the-four-steps-by-hand) below are the long form.
 
 ### Step 0: generate the skeleton
 
 First complete [Before you begin](#before-you-begin) — `agent new` needs the
-fullsend CLI on your PATH and a scaffolded repository, and running the agent
-afterwards needs the inference and GitHub App prerequisites listed there.
+fullsend CLI on your PATH and a repository you have already run
+`fullsend github setup` on. Actually running the agent afterwards needs the
+inference and GitHub App setup listed there too.
 
 Then [`fullsend agent new`](../../cli/agent.md#agent-new) writes a complete,
 valid, registered agent from a name and a role, so you edit prose rather than

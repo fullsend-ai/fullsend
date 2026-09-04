@@ -21,8 +21,9 @@ Manage agents in fullsend config. Generate a new agent, add, list, set (runtime,
 
 ## `agent new`
 
-Generate a complete, valid, runnable custom agent and register it. This is the
-fastest path from nothing to a working agent — you edit prose, not plumbing.
+Generate a complete, valid, runnable custom agent and register it. Every file
+an agent needs is written for you; the only one you have to edit is the
+instructions the agent follows.
 
 ```bash
 fullsend agent new lint-docs --fullsend-dir .fullsend \
@@ -89,8 +90,9 @@ it ships with marked sections to fill in. Everything else is complete.
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
 The policy, provider and profile files are shared by every agent in the
-directory, so they are never overwritten — including with `--force`. A per-repo
-install does not vendor them, which is why `agent new` writes them.
+directory, so they are never overwritten — including with `--force`.
+`fullsend github setup` does not copy these into your repository, which is why
+`agent new` writes them when they are absent.
 
 ### Flags
 
@@ -101,12 +103,12 @@ install does not vendor them, which is why `agent new` writes them.
 | `--role` | `triage` | Mint role the agent runs as (see the table below) |
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
 | `--on` | `command:/fs-<name>` | Trigger preset; mutually exclusive with `--trigger` |
-| `--trigger` | | Raw CEL trigger expression; mutually exclusive with `--on` |
+| `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
 | `--model` | `opus` | Model for the agent |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`) |
-| `--slug` | `<owner>-<name>` | Harness slug; `<owner>` comes from the `origin` remote |
-| `--image` | per-role pin | Sandbox image |
+| `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
+| `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
 | `--validation-loop` | `false` | Add a `validation_loop` checking output against the schema |
 | `--no-register` | `false` | Write the files but do not touch `config.yaml` |
@@ -115,8 +117,14 @@ install does not vendor them, which is why `agent new` writes them.
 
 ### Roles
 
-`--role` is the **mint** role, not the agent's name. It selects which GitHub App
-identity and permissions the mint issues. The hosted mint serves these:
+`--role` is not the agent's name. It decides which GitHub identity the agent
+acts as and what that identity may do.
+
+Agents do not carry long-lived credentials. At run time they ask a service
+called the **mint** for a short-lived GitHub token, and `role:` is what they
+ask for. The mint only issues tokens for roles it knows, so a role it does not
+serve fails at the first run rather than at generation time — which is why this
+command refuses an unknown one up front. The hosted mint serves these:
 
 | `--role` | Permissions | Providers |
 |----------|-------------|-----------|
@@ -127,15 +135,18 @@ identity and permissions the mint issues. The hosted mint serves these:
 | `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro |
 
 Pick the role whose permissions fit what the agent does. An unknown role fails
-immediately with this table rather than returning `403` from the mint at the
-first dispatch. To use a role the hosted mint does not serve, you need your own
-mint — see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
+immediately with this table, rather than returning `403` from the mint the
+first time the agent runs. To use a role the hosted mint does not serve, you
+need to run your own — see
+[Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
 ### Triggers
 
-Every generated agent gets a `trigger:`. An agent without one registers and
-validates but is **silently never dispatched**, so `agent new` refuses to write
-one. `--on` takes a preset:
+A trigger is the rule that decides which GitHub events start the agent —
+a comment, a label, a new issue, a pull request. Every generated agent gets
+one, because an agent without a trigger is accepted everywhere and then simply
+never runs, with nothing reported anywhere to tell you why. `agent new`
+therefore refuses to write one without a trigger. `--on` takes a preset:
 
 | `--on` | Fires when |
 |--------|-----------|
@@ -144,10 +155,11 @@ one. `--on` takes a preset:
 | `issue-opened` | A new issue is opened |
 | `pr-opened` | A non-fork pull request is opened, updated, or marked ready |
 
-The emitted expressions are exactly the ones in
-[CEL Triggers Reference](../guides/user/cel-triggers-reference.md#common-trigger-patterns);
-a test asserts the two stay identical. For anything else, pass `--trigger` with
-raw CEL — it is compiled before any file is written.
+The expressions these presets produce are exactly the ones written out in the
+[CEL Triggers Reference](../guides/user/cel-triggers-reference.md#common-trigger-patterns),
+and a test keeps the two identical. For anything the presets do not cover, pass
+`--trigger` with your own expression — it is compiled and checked before any
+file is written, so a mistake fails here rather than at the first event.
 
 Both `command:` and `pr-opened` refuse comments and pull requests from forks.
 That matters most for `--role coder`, which can write to the repository.
