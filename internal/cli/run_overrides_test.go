@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,6 +171,71 @@ func TestResolveBackend_OverrideWinsOverConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "pi", backend.Runtime.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
+}
+
+func TestResolveStallTimeout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		env     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset uses the default", want: defaultStallTimeout},
+		{name: "explicit duration", env: "90s", want: 90 * time.Second},
+		{name: "surrounding space is trimmed", env: " 2m ", want: 2 * time.Minute},
+		{name: "zero disables the watchdog", env: "0", want: 0},
+		{name: "malformed value keeps the default and reports", env: "ten minutes", want: defaultStallTimeout, wantErr: true},
+		{name: "bare number is not a duration", env: "600", want: defaultStallTimeout, wantErr: true},
+		{name: "negative is rejected", env: "-1m", want: defaultStallTimeout, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveStallTimeout(envMap(map[string]string{envStallTimeout: tc.env}))
+			assert.Equal(t, tc.want, got)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), envStallTimeout)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestEffectiveStallTimeout: the watchdog is disabled (0, the value
+// startStallWatchdog treats as "no watchdog") when the stall timeout is not
+// strictly below the run timeout — the global deadline would always fire
+// first — and passes through untouched when it is below.
+func TestEffectiveStallTimeout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		stall, run time.Duration
+		want       time.Duration
+	}{
+		{name: "below the run timeout stays enabled", stall: 5 * time.Minute, run: 30 * time.Minute, want: 5 * time.Minute},
+		{name: "equal to the run timeout is disabled", stall: 10 * time.Minute, run: 10 * time.Minute, want: 0},
+		{name: "above the run timeout is disabled", stall: 31 * time.Minute, run: 30 * time.Minute, want: 0},
+		{name: "explicitly disabled stays disabled", stall: 0, run: 30 * time.Minute, want: 0},
+		{name: "default vs default run timeout stays enabled", stall: defaultStallTimeout, run: 30 * time.Minute, want: defaultStallTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, effectiveStallTimeout(tc.stall, tc.run))
+		})
+	}
+}
+
+func TestAggregateMetrics_StalledOmittedWhenFalse(t *testing.T) {
+	t.Parallel()
+	clean, err := json.Marshal(aggregateMetrics{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(clean), "stalled")
+
+	stalled, err := json.Marshal(aggregateMetrics{Stalled: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(stalled), `"stalled":true`)
 }
 
 func TestModelOverrideSource(t *testing.T) {

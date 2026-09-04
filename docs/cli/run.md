@@ -58,6 +58,12 @@ fullsend run triage --fullsend-dir . --target-repo ../repo \
   --runtime pi --model google-vertex/gemini-2.5-flash --effort medium
 ```
 
+## Stall watchdog
+
+The global run timeout is wall-clock, so a wedged agent looks exactly like a thinking one until it expires — and the run is billed for the difference. The watchdog watches the runtime output stream instead: every well-formed line the runtime writes counts as liveness, including lines that map to no agent event (pi's `tool_execution_update` while a tool streams output, Claude Code's `user` tool-result messages), so an actively streaming tool is never mistaken for a stall. After half of `FULLSEND_STALL_TIMEOUT` of stream silence it warns once (`::warning::no agent events for 7m30s` in CI), and after the full duration it fires the same cancel the global timeout uses, which kills the local `openshell sandbox exec` client. The agent process inside the sandbox is not signalled directly: it dies moments later when the run's deferred cleanup deletes the sandbox (under `--keep-sandbox` it keeps running in the kept sandbox, exactly as after a global timeout). The run then fails with `agent stalled` and records `"stalled": true` in `metrics.json`.
+
+`FULLSEND_STALL_TIMEOUT` takes a Go duration and defaults to `15m`; `0` disables the watchdog. The default sits above Claude Code's bash ceiling — `BASH_MAX_TIMEOUT_MS` defaults to 600000ms (10 minutes) and the model routinely requests the full ceiling for test suites — so a legitimately quiet long command is not killed as stalled; a repo that raises `BASH_MAX_TIMEOUT_MS` should raise the stall timeout with it. The value must be strictly below the harness `timeout_minutes`: at or above it the global timeout always fires first, so the watchdog is not armed and the run logs that stall protection is inactive. A value that is not a duration is reported on stderr and ignored, and the default applies.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory:
@@ -81,6 +87,7 @@ Each run produces artifacts in the output directory:
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |
+| `stalled` | Present (`true`) only when the run was killed by the stall watchdog |
 
 ## OpenAI credentials on pi and codex
 

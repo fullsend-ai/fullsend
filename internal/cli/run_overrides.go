@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -18,6 +19,7 @@ const (
 	envModel          = "FULLSEND_MODEL"
 	envEffort         = "FULLSEND_EFFORT"
 	envFallbackModels = "FULLSEND_FALLBACK_MODELS"
+	envStallTimeout   = "FULLSEND_STALL_TIMEOUT"
 	// envPiModel is the pre-#6526 pi-only model override, kept as an alias of
 	// FULLSEND_MODEL for pi runs. FULLSEND_PI_PROVIDER stays pi-only (it is
 	// the provider prefix for bare ids, not a model choice).
@@ -125,6 +127,49 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		}
 	}
 	return o, nil
+}
+
+// defaultStallTimeout is how long the runtime event stream may stay silent
+// before the run is killed as stalled. Streaming tool output counts as
+// liveness (every well-formed stream line resets the clock), so this floor
+// only has to cover genuinely silent calls. The binding constraint is Claude
+// Code's bash ceiling: BASH_MAX_TIMEOUT_MS defaults to 600000ms (10m) and
+// the model routinely requests the full ceiling for test suites, so the
+// default must sit above it or a legitimately quiet 10m command is killed as
+// stalled. 15m gives that headroom; repos that raise BASH_MAX_TIMEOUT_MS or
+// know their event cadence tune FULLSEND_STALL_TIMEOUT to match.
+const defaultStallTimeout = 15 * time.Minute
+
+// resolveStallTimeout returns the event-inactivity timeout for the run:
+// FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
+// disables the watchdog), the default when it is unset. A malformed value
+// returns the default plus an error, so the caller can say so instead of
+// silently running without the watchdog it thinks it configured.
+func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envStallTimeout))
+	if raw == "" {
+		return defaultStallTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultStallTimeout, fmt.Errorf("%s=%q is not a duration (e.g. 10m, 0 to disable): %w", envStallTimeout, raw, err)
+	}
+	if d < 0 {
+		return defaultStallTimeout, fmt.Errorf("%s=%q must not be negative (0 disables the watchdog)", envStallTimeout, raw)
+	}
+	return d, nil
+}
+
+// effectiveStallTimeout disables the watchdog (returns 0) when it could never
+// fire: sandbox.ExecStreamReader wraps the command in the global run
+// timeout's context, so a stall timeout at or above it always loses the race
+// to the global deadline. Below it, the configured value stands unchanged —
+// no clamping or deriving, existing configs keep their behavior.
+func effectiveStallTimeout(stall, run time.Duration) time.Duration {
+	if stall >= run {
+		return 0
+	}
+	return stall
 }
 
 // validateRuntimeName mirrors the config validation so a flag/env override
