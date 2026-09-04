@@ -274,14 +274,60 @@ to delete or keep.
 
 ### Running it
 
-Generation is step one. To actually run the agent, fill in the marked sections
-of `agents/<name>.md`, then follow
-[Running agents locally](../guides/user/running-agents-locally.md) — a real run
-needs GCP credentials, a sandbox image, and an `--env-file` supplying
-`GITHUB_ISSUE_URL`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
-`GH_TOKEN`. Set `POST_<NAME>_DRY_RUN=1` (for example
-`POST_LINT_DOCS_DRY_RUN=1`) so the generated post-script prints its comment
-instead of posting it.
+Generation is step one. Fill in the marked sections of `agents/<name>.md`,
+then run it. A real run needs GCP credentials, a sandbox image, and the
+environment listed in
+[Running agents locally](../guides/user/running-agents-locally.md).
+
+You can exercise the whole pipeline without spending any inference by using
+the `dummy` runtime, which runs the real sandbox and the real post-script but
+replaces the model with a scripted result. Set `POST_<NAME>_DRY_RUN=1` so the
+post-script prints its comment instead of posting it:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json
+POST_LINT_DOCS_DRY_RUN=1 \
+  GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
+  GH_TOKEN="$(gh auth token)" \
+  ANTHROPIC_VERTEX_PROJECT_ID=... CLOUD_ML_REGION=us-east5 \
+  fullsend run lint-docs --fullsend-dir .fullsend \
+    --runtime dummy --forge github --target-repo .
+```
+
+The tail of a successful run:
+
+```
+    Agent exit code: 0
+    Agent runs: 1
+
+  • Cleaning up sandbox
+  ✓ Sandbox deleted (45.7s)
+  • Running post-script: .fullsend/scripts/post-lint-docs.sh
+**2 broken links added in docs/**
+
+### Broken links
+
+- `docs/a.md:14` -> `../missing.md`
+- `docs/b.md:3` -> `/docs/gone.md`
+post-lint-docs: dry run, not posting
+  ✓ Post-script completed (0.1s)
+```
+
+The `dummy` runtime reads a scripted result from
+`.fullsend/behaviour/current-scenario.yaml`; write one that produces
+`output/agent-result.json` to try this. That last block is the whole contract
+working: the sandbox started, the agent wrote its result, and the post-script
+found it and rendered the comment.
+
+Three things that stop a local run before it starts, all of them easy to hit:
+
+- `--forge github` is required. Without it no forge overlay applies, so the
+  environment the harness expects is never assembled.
+- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file. The harness
+  copies it into the sandbox, so the run fails validation without it — even
+  under `dummy`, which does no inference.
+- `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
+  agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
 
 In CI, commit `.fullsend/` and fire the agent with whatever its trigger
 describes — for the default preset, comment `/fs-<name>` on an issue or pull

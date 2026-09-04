@@ -302,8 +302,12 @@ func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer)
 	printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
 	printer.Raw(fmt.Sprintf("  2. Test locally:\n       fullsend run %s --fullsend-dir %s \\\n         --target-repo . --env-file .env.local\n",
 		opts.Name, f.fullsendDir))
-	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION\n")
-	printer.Raw("     and GH_TOKEN. See docs/guides/user/running-agents-locally.md.\n")
+	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID,\n")
+	printer.Raw("     CLOUD_ML_REGION, and GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP\n")
+	printer.Raw("     credentials file — the harness copies that file into the sandbox, so the\n")
+	printer.Raw("     run stops before it starts without it. GH_TOKEN must be a real token: a\n")
+	printer.Raw("     connectivity check runs before the agent does. See\n")
+	printer.Raw("     docs/guides/user/running-agents-locally.md.\n")
 	if cmd := slashCommandFromTrigger(opts.Trigger); cmd != "" {
 		printer.Raw(fmt.Sprintf("  3. Commit %s, then comment `%s` on an issue or pull request to run it in CI.\n",
 			filepath.Clean(f.fullsendDir), cmd))
