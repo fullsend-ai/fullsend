@@ -410,8 +410,10 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		printer.StepStart("Found existing comment, updating in-place")
 
 		// Same as sticky.Post: the old body is re-posted as history, so a
-		// marker smuggled into it earlier must not survive the edit.
-		newBody := sticky.BuildUpdatedBody(statuscomment.NeutralizeMarkers(string(existing.Body)), markedBody, cfg)
+		// marker smuggled into it earlier must not survive the edit — and
+		// the runner's own marker is left intact so BuildUpdatedBody can
+		// still strip it by exact prefix.
+		newBody := sticky.BuildUpdatedBody(sticky.NeutralizeHistory(string(existing.Body), cfg), markedBody, cfg)
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + existing.ID)
