@@ -915,3 +915,58 @@ func TestPerRepoConfig_AuthorizationOwnersFile_NoFallback(t *testing.T) {
 		assert.True(t, cfg.AuthorizationOwnersFile())
 	})
 }
+
+func TestOrgConfig_AuthorizationOwnersFile(t *testing.T) {
+	cfg := &orgConfig{}
+	assert.False(t, cfg.AuthorizationOwnersFile())
+	cfg.SetAuthorizationOwnersFile(true)
+	assert.False(t, cfg.AuthorizationOwnersFile())
+}
+
+func TestPerRepoConfig_SetAuthorizationOwnersFile(t *testing.T) {
+	t.Run("enable adds provider", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetAuthorizationOwnersFile(true)
+		assert.True(t, cfg.AuthorizationOwnersFile())
+		assert.Len(t, cfg.Authorization, 1)
+	})
+
+	t.Run("enable is idempotent", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetAuthorizationOwnersFile(true)
+		cfg.SetAuthorizationOwnersFile(true)
+		assert.Len(t, cfg.Authorization, 1)
+	})
+
+	t.Run("disable removes provider", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		cfg.SetAuthorizationOwnersFile(false)
+		assert.False(t, cfg.AuthorizationOwnersFile())
+		assert.Nil(t, cfg.Authorization)
+	})
+
+	t.Run("disable preserves other providers", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{
+				{Provider: "owners_file"},
+				{Provider: "other"},
+			},
+		}
+		cfg.SetAuthorizationOwnersFile(false)
+		assert.False(t, cfg.AuthorizationOwnersFile())
+		assert.Equal(t, []AuthorizationProvider{{Provider: "other"}}, cfg.Authorization)
+	})
+
+	t.Run("disable is no-op when not set", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetAuthorizationOwnersFile(false)
+		assert.Nil(t, cfg.Authorization)
+	})
+}
+
+func TestPerRepoDefaults_AuthorizationOwnersFile(t *testing.T) {
+	d := &perRepoDefaults{}
+	assert.False(t, d.AuthorizationOwnersFile())
+}

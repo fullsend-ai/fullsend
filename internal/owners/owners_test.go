@@ -139,6 +139,13 @@ func TestResolve(t *testing.T) {
 	})
 }
 
+func TestRoleString(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "approver", Approver.String())
+	assert.Equal(t, "reviewer", Reviewer.String())
+	assert.Equal(t, "none", None.String())
+}
+
 func TestMapToActorRole(t *testing.T) {
 	t.Parallel()
 
