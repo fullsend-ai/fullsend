@@ -348,3 +348,48 @@ func TestToolSpans_EndToEndFileSink(t *testing.T) {
 		"the execute_tool span must be parented under the agent span in the file sink")
 	assert.NotContains(t, content, "3 hits", "tool spans carry no content, gate off or on")
 }
+
+func TestToolSpanTracker_IDIsScannedBeforeItBecomesAnAttribute(t *testing.T) {
+	// The id is stream-derived like the name and lands on a Level 1 span
+	// the output scan exempts, so it gets the collector's redactID rule:
+	// any finding drops the attribute (never a substituted id, which could
+	// collide) while the raw id still keys use/result correlation.
+	tr, rec, _ := toolSpanFixture(t)
+	tainted := "toolu_ghp_" + strings.Repeat("A1b2C3d4", 5)
+	tr.Handle(agentruntime.ToolUseEvent{ID: tainted, Name: "Bash"})
+	tr.Handle(agentruntime.ToolResultEvent{ID: tainted, Result: "ok"})
+	tr.Handle(agentruntime.ToolResultEvent{ID: "orphan_ghp_" + strings.Repeat("A1b2C3d4", 5)})
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 2, "the tainted pair still correlates into one span, plus the orphan")
+	for _, s := range spans {
+		attrs := toolSpanAttrs(s)
+		assert.NotContains(t, attrs, attribute.Key("gen_ai.tool.call.id"), "a finding drops the id attribute")
+		assert.NotContains(t, s.Name+attrs["gen_ai.tool.name"].AsString(), "ghp_")
+	}
+	assert.Equal(t, codes.Ok, spans[0].Status.Code)
+	assert.True(t, toolSpanAttrs(spans[1])["fullsend.tool.unmatched"].AsBool())
+	assert.Empty(t, tr.open)
+}
+
+func TestToolSpanTracker_RawIDKeysCorrelationEvenWhenMasksCollide(t *testing.T) {
+	// Two distinct tainted ids mask to the same token. Keying the open-call
+	// map by the masked form would make the second call supersede the first;
+	// keying by the raw id keeps both pairs correlated.
+	tr, rec, _ := toolSpanFixture(t)
+	a := "toolu_ghp_" + strings.Repeat("A1b2C3d4", 5)
+	b := "toolu_ghp_" + strings.Repeat("Z9y8X7w6", 5)
+	tr.Handle(agentruntime.ToolUseEvent{ID: a, Name: "Bash"})
+	tr.Handle(agentruntime.ToolUseEvent{ID: b, Name: "Read"})
+	tr.Handle(agentruntime.ToolResultEvent{ID: a})
+	tr.Handle(agentruntime.ToolResultEvent{ID: b})
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 2)
+	for _, s := range spans {
+		assert.Equal(t, codes.Ok, s.Status.Code)
+		assert.NotContains(t, toolSpanAttrs(s), attribute.Key("error.type"))
+		assert.NotContains(t, toolSpanAttrs(s), attribute.Key("gen_ai.tool.call.id"))
+	}
+	assert.Empty(t, tr.open)
+}

@@ -50,11 +50,12 @@ const maxToolSpanNameBytes = 128
 // result whose call was never seen (its tool_use line was skipped) becomes
 // a marked span of near-zero duration. Events without an id — pi and codex
 // emit none, and server-side tools get none because their result never
-// arrives as a tool_result — produce no span. The name goes through the
-// same output pipeline as span content (Unicode normalization, then secret
-// redaction) and is bounded before it reaches the span: it lands on a Level
-// 1 span in the telemetry file the output scan exempts on the strength of
-// that treatment. Delivery is synchronous on one goroutine, so no lock.
+// arrives as a tool_result — produce no span. The name and the call id go
+// through the same output pipeline as span content (Unicode normalization,
+// then secret redaction): the name is bounded, the id is dropped on any
+// finding (safeID) — both land on a Level 1 span in the telemetry file the
+// output scan exempts on the strength of that treatment. Delivery is
+// synchronous on one goroutine, so no lock.
 type toolSpanTracker struct {
 	tracer   trace.Tracer
 	ctx      context.Context
@@ -146,10 +147,21 @@ func (t *toolSpanTracker) safeName(name string) string {
 	return strings.ToValidUTF8(truncateStatusMsgTo(name, maxToolNameBytes), "")
 }
 
+// safeID returns the call id fit for a span attribute: scanned like every
+// other stream-derived string, and dropped on any finding — a substituted
+// id could falsely collide with another call's. The raw id still keys
+// use/result correlation, so a dropped attribute never breaks a pair.
+func (t *toolSpanTracker) safeID(id string) string {
+	if len(t.pipeline.Scan(id).Findings) > 0 {
+		return ""
+	}
+	return id
+}
+
 func (t *toolSpanTracker) start(id, name string) trace.Span {
-	attrs := []attribute.KeyValue{
-		attribute.String("gen_ai.operation.name", "execute_tool"),
-		stringAttr("gen_ai.tool.call.id", id),
+	attrs := []attribute.KeyValue{attribute.String("gen_ai.operation.name", "execute_tool")}
+	if safe := t.safeID(id); safe != "" {
+		attrs = append(attrs, stringAttr("gen_ai.tool.call.id", safe))
 	}
 	spanName := "execute_tool"
 	if name != "" {

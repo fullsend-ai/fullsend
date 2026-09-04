@@ -154,7 +154,10 @@ an id — pi and codex emit none, and the parser gives server-side tools
 `fullsend.tool_calls`. The name passes through `security.OutputPipeline()`
 — Unicode normalization, then secret redaction, the same pipeline as span
 content — and is bounded to 256 bytes before it becomes the attribute; the
-span name keeps at most 128 bytes of it.
+span name keeps at most 128 bytes of it. The call id is scanned through the
+same pipeline and dropped from the span on any finding — never substituted,
+since a masked id could collide with another call's — while the raw bounded
+id still keys the open-call map, so correlation is unaffected.
 The tracker records at most `maxToolSpansPerIteration` (1,024) spans per
 iteration and reports the overflow, which `runAgent` records as
 `fullsend.tool_spans.dropped` on the agent span — a burst of agent-controlled

@@ -4627,8 +4627,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		// Skip the telemetry JSONL: it is still open for append, and any
 		// Level 3 conversation content in it was already redacted at
 		// assembly (contentCollector) before reaching a span, as were the
-		// tool names on execute_tool spans (toolSpanTracker), so it needs
-		// no post-hoc sweep.
+		// tool names and call ids on execute_tool spans (toolSpanTracker), so
+		// it needs no post-hoc sweep.
 		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}
