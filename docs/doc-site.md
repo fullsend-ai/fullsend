@@ -26,7 +26,7 @@ npm run docs:preview
 ## How it works
 
 - `docs/` contains all markdown content, organized by section (agents, guides, ADRs, etc.)
-- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing
+- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing. After the HTML build, it copies each page's `.md` source into `docs/.vitepress/dist/` next to the matching `.html` (README files land as `index.md`) so the same URL plus `.md` is a static file. Indexable HTML pages advertise that file with `<link rel="alternate" type="text/markdown">`.
 - `getMarkdownFiles()` auto-discovers markdown files and subdirectory READMEs for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans)
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.

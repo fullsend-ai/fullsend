@@ -6,6 +6,10 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 
 ## Docs
 
+Each docs page is also a markdown file. Fetch the source by adding a `.md` suffix to the page URL (`/docs/agents/triage` → `/docs/agents/triage.md`). Directory URLs (trailing slash) use `index.md` (`/docs/agents/` → `/docs/agents/index.md`).
+
+The links below are the current stable docs (`https://fullsend.sh/docs/...`). Other builds live under `/docs/v/<version>/`: aliases `stable`, `edge`, and `dev`, plus tagged releases `vX.Y.Z`. The same `.md` suffix applies (`/docs/v/v0.39.0/agents/triage` → `/docs/v/v0.39.0/agents/triage.md`). The version list is at https://fullsend.sh/docs/v/.
+
 - [Getting Started](https://fullsend.sh/docs/guides/getting-started/)
 - [Agents Overview](https://fullsend.sh/docs/agents/)
 - [Triage Agent](https://fullsend.sh/docs/agents/triage)
