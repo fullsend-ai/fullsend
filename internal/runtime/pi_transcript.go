@@ -17,18 +17,26 @@ import (
 
 // piSubagentSessionDir matches a sub-agent's session directory in a remote
 // path: fullsend-agent.js gives child <seq> its own `--session-dir
-// <sessionsDir>/agent-<seq>`, so the sequence number is recoverable from
+// <sessionsDir>/<prefix>-<seq>`, so the sequence number is recoverable from
 // the path and the child transcript can be named after the call that made
-// it rather than colliding with the parent's on basename alone.
-var piSubagentSessionDir = regexp.MustCompile(`/agent-(\d+)/`)
+// it rather than colliding with the parent's on basename alone. The prefix
+// is `agent` for an anonymous child and the persona name for a persona
+// dispatch (#7031); a persona name is lowercase alphanumeric segments
+// joined by hyphens, so the sequence is the last hyphen-separated run of
+// digits and the greedy first group backtracks off it.
+var piSubagentSessionDir = regexp.MustCompile(`/sessions/([a-z0-9][a-z0-9-]*)-(\d+)/`)
 
 // piSubagentTranscriptName renders the local name of a session file found
-// under the sessions dir: <agentLabel>-sub<seq>-<basename> for a child,
-// <agentLabel>-<basename> for the parent's own session.
+// under the sessions dir: <agentLabel>-sub<seq>-<basename> for an anonymous
+// child, <agentLabel>-sub<seq>-<persona>-<basename> when the child ran as a
+// persona, and <agentLabel>-<basename> for the parent's own session.
 func piSubagentTranscriptName(agentLabel, remotePath string) string {
 	base := filepath.Base(remotePath)
 	if m := piSubagentSessionDir.FindStringSubmatch(remotePath); m != nil {
-		return fmt.Sprintf("%s-sub%s-%s", agentLabel, m[1], base)
+		if m[1] == "agent" {
+			return fmt.Sprintf("%s-sub%s-%s", agentLabel, m[2], base)
+		}
+		return fmt.Sprintf("%s-sub%s-%s-%s", agentLabel, m[2], m[1], base)
 	}
 	return fmt.Sprintf("%s-%s", agentLabel, base)
 }

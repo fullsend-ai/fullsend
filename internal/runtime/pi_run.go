@@ -106,44 +106,37 @@ func validatePiModel(model string, configAliases map[string]string) error {
 	return nil
 }
 
-// aliasFamilyPrefixes maps each alias key to the model-id prefixes that
-// belong to its vendor family. An alias value whose resolved id (provider
-// stripped) does not start with any of the listed prefixes is a cross-vendor
-// override — legal today but deprecated (#7031).
-var aliasFamilyPrefixes = map[string][]string{
-	"opus":   {"claude-opus"},
-	"sonnet": {"claude-sonnet"},
-	"haiku":  {"claude-haiku"},
-	"fable":  {"claude-fable"},
-}
+// claudeModelIDPrefix is what makes a resolved alias value same-vendor. The
+// four alias keys all name Claude families, so an alias stays "inside its
+// family" when it resolves to any Claude id — `sonnet: claude-sonnet-5`
+// picks a generation, and `sonnet: claude-opus-4-6` deliberately routes one
+// alias at another Claude model, which is a repo's business. What the rule
+// forbids is an alias that resolves to another *vendor*, because then every
+// log line, cost line and status comment that prints "sonnet" names a model
+// from a different family (#7031).
+const claudeModelIDPrefix = "claude-"
 
 // warnCrossVendorAliases emits a deprecation warning to stderr for every
-// config alias whose value resolves to a model outside the alias's vendor
-// family. Cross-vendor aliases are accepted for now but will become a
-// validation error in a future release (#7031).
+// config alias whose value resolves to a non-Claude model. Cross-vendor
+// aliases are accepted for now but will become a validation error in a
+// future release; a repo that wants a child on another vendor should name
+// it under agents[].subagents instead (#7031).
 func warnCrossVendorAliases(configAliases map[string]string) {
 	for key, val := range configAliases {
-		prefixes, ok := aliasFamilyPrefixes[key]
-		if !ok {
+		if _, ok := piModelAliases[key]; !ok {
 			continue
 		}
-		// Extract the bare id: strip provider prefix if present.
+		// Extract the bare id: strip the provider prefix if present.
 		id := val
 		if i := strings.LastIndex(val, "/"); i >= 0 {
 			id = val[i+1:]
 		}
-		id = strings.ToLower(id)
-		match := false
-		for _, p := range prefixes {
-			if strings.HasPrefix(id, p) {
-				match = true
-				break
-			}
+		if strings.HasPrefix(strings.ToLower(id), claudeModelIDPrefix) {
+			continue
 		}
-		if !match {
-			fmt.Fprintf(os.Stderr, "Warning: models.aliases.%s=%q targets a model outside the %s family; "+
-				"cross-vendor aliases are deprecated and will become a validation error in a future release\n", key, val, key)
-		}
+		fmt.Fprintf(os.Stderr, "Warning: models.aliases.%s=%q resolves to a model outside the Claude family; "+
+			"cross-vendor aliases are deprecated and will become a validation error in a future release — "+
+			"put the model on the agent's model: or on agents[].subagents instead\n", key, val)
 	}
 }
 

@@ -103,6 +103,15 @@ type piAgentManifest struct {
 	// model spec and tool set. The extension dispatches subagent_type
 	// values that name a persona using these specs (#7031).
 	Personas map[string]piPersonaManifestEntry `json:"personas,omitempty"`
+	// SubagentDefault is the canonicalised agents[].subagents.default spec:
+	// the model a child that names no persona runs on when the orchestrator
+	// passes no model argument. It outranks the parent's live model, which
+	// is the whole point — a repo sets it so children stop inheriting an
+	// expensive parent — but an explicit argument still wins (#7031).
+	SubagentDefault string `json:"subagentDefault,omitempty"`
+	// SkippedPersonas maps a persona file that did not register to the
+	// reason, so a dispatch naming it is rejected with that reason.
+	SkippedPersonas map[string]string `json:"skippedPersonas,omitempty"`
 }
 
 // piManifest is the JSON document at ConfigDir/fullsend-manifest.json.
@@ -209,19 +218,19 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	hooksInput, hooksEnabled := input.(SandboxHooksBootstrap)
 	agentTool := piAgentToolEnabled(def)
 
-	// Discover personas early so the system prompt can list them (#7031).
+	// Persona files are discovered here and validated when the manifest is
+	// built; the system prompt is written after that so it lists only what
+	// actually registered (#7031).
 	var personas []piPersona
+	var skipped []piSkippedPersona
 	if agentTool {
 		var err error
-		personas, err = discoverPersonas(input.SkillDirs(), agentName)
+		personas, skipped, err = discoverPersonas(input.SkillDirs(), agentName)
 		if err != nil {
 			return fmt.Errorf("discovering personas: %w", err)
 		}
 	}
 
-	if err := uploadBytes(sandboxName, cfg+"/"+piAppendSystemFile, piAppendSystem(agentName, def, agentTool, discoveredPersonaNames(personas))); err != nil {
-		return fmt.Errorf("writing %s: %w", piAppendSystemFile, err)
-	}
 	settings, err := piSettingsJSON()
 	if err != nil {
 		return err
@@ -303,11 +312,19 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}
-		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases(), personas, input.AgentSubagents())
+		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases(), personas, skipped, input.AgentSubagents(), input.ParentModel())
 		if err != nil {
 			return err
 		}
 		manifest.Agent = block
+	}
+
+	var registered []string
+	if manifest.Agent != nil {
+		registered = registeredPersonaNames(manifest.Agent.Personas)
+	}
+	if err := uploadBytes(sandboxName, cfg+"/"+piAppendSystemFile, piAppendSystem(agentName, def, agentTool, registered)); err != nil {
+		return fmt.Errorf("writing %s: %w", piAppendSystemFile, err)
 	}
 
 	version, err := piPreflightVersion(sandboxName)
@@ -409,7 +426,8 @@ func piSubagentNote(personaNames []string) string {
 	base := "\n## Runtime note\n\n" +
 		"This agent runs on the pi runtime (FULLSEND_RUNTIME=pi). The Agent tool (alias Task) " +
 		"dispatches sub-agents as under Claude Code: `prompt` (required), `description`, `model` " +
-		"(opus, sonnet, haiku, or a provider/id spec available in this run; omit to inherit yours) and " +
+		"(opus, sonnet, haiku, or a provider/id spec available in this run; omit to take this run's " +
+		"sub-agent default, else yours) and " +
 		"`subagent_type` (`Explore` for a read-only sub-agent). Each call runs to completion and " +
 		"returns the sub-agent's final message; to run sub-agents in parallel, make several Agent " +
 		"calls in one message. `run_in_background` is accepted and ignored.\n"
@@ -438,7 +456,7 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 // personas are the pre-discovered sub-agent personas (from discoverPersonas).
 // subagentsCfg is the merged agents[].subagents map from the config, driving
 // per-persona model overrides (#7031).
-func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string, personas []piPersona, subagentsCfg map[string]*string) (*piAgentManifest, error) {
+func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string, personas []piPersona, skipped []piSkippedPersona, subagentsCfg map[string]*string, parentModel string) (*piAgentManifest, error) {
 	piBin, providerExts, err := piAgentProbe(sandboxName)
 	if err != nil {
 		return nil, err
@@ -474,29 +492,29 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		UsageFile:        r.piAgentUsagePath(),
 	}
 
-	// Resolve per-persona models when personas were discovered (#7031).
-	if len(personas) > 0 {
-		// Build the trusted spec set: every value from the models table, every
-		// provider-model id (qualified), and the parent's own spec.
-		trustedSpecs := make(map[string]string)
-		for _, spec := range manifest.Models {
-			trustedSpecs[strings.ToLower(spec)] = spec
-		}
-		for provider, ids := range manifest.ProviderModels {
-			for _, id := range ids {
-				full := provider + "/" + id
-				trustedSpecs[strings.ToLower(full)] = full
-			}
-		}
-		parentSpec := manifest.Models["default"]
-		trustedSpecs[strings.ToLower(parentSpec)] = parentSpec
+	// Resolve per-persona models and the blanket subagents.default (#7031).
+	// This runs even when no persona was discovered: `subagents.default`
+	// applies to anonymous children (retro dispatches nothing else), and a
+	// key naming no persona must be caught rather than silently ignored.
+	//
+	// Build the trusted spec set first: every value from the models table,
+	// every provider-model id (qualified), and the parent's own spec. The
+	// resolved persona specs are checked against this set and only then
+	// written into the manifest, so a persona can never widen the set that
+	// admits it.
+	trustedSpecs := piTrustedSpecs(manifest.Models, manifest.ProviderModels, parentModel, configAliases)
 
-		resolved, err := resolvePersonaModels(personas, subagentsCfg, parentSpec, configAliases, trustedSpecs)
-		if err != nil {
-			return nil, fmt.Errorf("resolving persona models: %w", err)
-		}
+	resolved, defaultSpec, skippedOut, err := resolvePersonaModels(personas, skipped, subagentsCfg, manifest.Models, trustedSpecs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving persona models: %w", err)
+	}
+	if len(resolved) > 0 {
 		manifest.Personas = resolved
 	}
+	if len(skippedOut) > 0 {
+		manifest.SkippedPersonas = skippedOut
+	}
+	manifest.SubagentDefault = defaultSpec
 
 	return manifest, nil
 }

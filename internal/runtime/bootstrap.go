@@ -35,6 +35,13 @@ type BootstrapInput interface {
 	// (or "default"); values are model references (nil = tombstone).
 	// Used by the pi runtime to resolve each persona's model (#7031).
 	AgentSubagents() map[string]*string
+	// ParentModel returns the model this run's agent actually runs on --
+	// after the agents: entry, --model and the alias remap -- or "" when
+	// the caller does not know it. The pi runtime adds it to the set a
+	// persona's model is checked against, so a persona pinned to the
+	// parent's own model is accepted even when that model is outside the
+	// alias table (#7031).
+	ParentModel() string
 }
 
 // PluginInput is one declared plugin: a host directory to upload, the

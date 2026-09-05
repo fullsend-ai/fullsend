@@ -38,6 +38,7 @@ func (b bootstrapInput) SkillDirs() []string                { return b.skillDirs
 func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
 func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
 func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
+func (b bootstrapInput) ParentModel() string                { return "" }
 
 // claudePlugins and piPlugins build the two kinds of plugin input from
 // host directories, so a test names the format it means.

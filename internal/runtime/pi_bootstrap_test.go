@@ -656,6 +656,18 @@ func TestPiSubagentTranscriptName(t *testing.T) {
 		"pi may nest a session under its working directory")
 	assert.Equal(t, "review-agent-x.jsonl", piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/agent-x.jsonl"),
 		"only a directory named agent-<digits> marks a child")
+
+	// A persona dispatch names its session dir after the persona (#7031),
+	// so the transcript carries the persona rather than losing the marker
+	// and looking like the parent's own session.
+	assert.Equal(t, "review-sub2-correctness-s.jsonl",
+		piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/correctness-2/s.jsonl"))
+	assert.Equal(t, "review-sub7-style-conventions-s.jsonl",
+		piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/style-conventions-7/s.jsonl"),
+		"a hyphenated persona name keeps its hyphens and gives up only the sequence")
+	assert.Equal(t, "review-sub12-s.jsonl",
+		piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/agent-12/s.jsonl"),
+		"a multi-digit anonymous sequence still parses")
 }
 
 // TestPiAgentTool_ManifestBlock covers the `agent` manifest block Bootstrap

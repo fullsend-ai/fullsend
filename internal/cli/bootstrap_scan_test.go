@@ -49,6 +49,7 @@ func (b scanBootstrap) SkillDirs() []string                { return b.skillDirs 
 func (b scanBootstrap) Plugins() []runtime.PluginInput     { return b.plugins }
 func (b scanBootstrap) ModelAliases() map[string]string    { return nil }
 func (b scanBootstrap) AgentSubagents() map[string]*string { return nil }
+func (b scanBootstrap) ParentModel() string                { return "" }
 
 // scanPiPlugin is one pi-format entry: those are scanned tree-wide,
 // because the runtime executes every file in them.
