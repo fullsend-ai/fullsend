@@ -112,6 +112,7 @@ def check_command(command: str) -> tuple[bool, str]:
         return True, reason
 
     block_reason = ""
+    has_only_analysis_incomplete = True
     for finding in findings:
         if not isinstance(finding, dict):
             continue
@@ -119,6 +120,16 @@ def check_command(command: str) -> tuple[bool, str]:
         rule = finding.get("rule_id", finding.get("rule", "unknown"))
         detail = finding.get("title", finding.get("message", finding.get("detail", "")))
         msg = f"Tirith [{severity}] {rule}: {detail}"
+
+        # analysis_incomplete means the scanner could not parse the
+        # construct — it is not a confirmed threat.  Log as a warning
+        # regardless of severity so that ordinary POSIX idioms (bracket
+        # tests, nested command-substitution arithmetic) are not blocked.
+        if rule == "analysis_incomplete":
+            log_finding(rule, severity, msg, "warn")
+            continue
+
+        has_only_analysis_incomplete = False
         if severity_meets_threshold(severity, TIRITH_FAIL_ON):
             log_finding(rule, severity, msg, "block")
             if not block_reason:
@@ -128,6 +139,13 @@ def check_command(command: str) -> tuple[bool, str]:
 
     if block_reason:
         return True, block_reason
+
+    # When every finding was analysis_incomplete (or the findings list
+    # was empty), the non-zero exit code and top-level action are
+    # consequences of the scanner declining to analyse — not confirmed
+    # threats.  Allow the command.
+    if has_only_analysis_incomplete:
+        return False, ""
 
     # v0.3.x: honour the top-level action field even when no individual
     # finding met the severity threshold.
