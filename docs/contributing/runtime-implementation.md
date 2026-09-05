@@ -241,7 +241,7 @@ JSON on stdin; the script's exit code and stdout are the reply.
 | | Input | Reply |
 |---|---|---|
 | **PreToolUse** | `{"tool_name": ..., "tool_input": {...}}` | exit `0` = allow. Blocking scripts exit `1` and print `{"decision":"block","reason":"..."}`; the adapter must stop the tool call and surface the reason |
-| **PostToolUse** | the same plus the tool output as `tool_response` (Claude Code; string or structured object such as Bash `{stdout, stderr, interrupted, isImage}`), `tool_result` accepted as a fallback | *Blocking* (standalone `canary_posttool.py`, and `posttool_chain.py` when its canary stage fires): exit `1` + `{"decision":"block",...}`; the adapter drops the result. *Sanitizing* stages (suppress/unicode/redact): always exit `0` and, when they changed something, print `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput": <same shape as the input value>}, "tool_result": <scan text>}`. Empty stdout = unchanged |
+| **PostToolUse** | the same plus the tool output as `tool_response` (Claude Code; string or structured object such as Bash `{stdout, stderr, interrupted, isImage}`), `tool_result` accepted as a fallback; Claude Code also sends `cwd` (its working directory, which follows the agent's persisted `cd`), and the pi adapter sends its process working directory — the checkout, which child shells cannot move — as `cwd`; the redact stage uses it to locate the checkout, and an adapter that omits it gets no bare-JWT skip (see *Sanitizer scope*) | *Blocking* (standalone `canary_posttool.py`, and `posttool_chain.py` when its canary stage fires): exit `1` + `{"decision":"block",...}`; the adapter drops the result. *Sanitizing* stages (suppress/unicode/redact): always exit `0` and, when they changed something, print `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput": <same shape as the input value>}, "tool_result": <scan text>}`. Empty stdout = unchanged |
 
 Shape rules:
 
@@ -260,6 +260,8 @@ The PostToolUse stages exist to remove *controls-relevant* content and nothing e
 - a source-style `name = expr` counts only when the value is a quoted literal.
 
 A sweep of 900 fullsend files through the chain rewrites only test files holding token-shaped fakes.
+
+The bare-JWT prefix pattern is skipped when a file-content tool (`Read`, `Grep`, `Edit`, `MultiEdit`, `Write`, `NotebookEdit`, `NotebookRead`) is called with a path inside the checkout — the nearest `.git` ancestor of the hook input's `cwd`, searched only strictly below the sandbox workspace (`/sandbox/workspace`, the runner's constant; overridable only on the hook's own command line, the seam the subprocess tests use, and not from environment variables, since Claude Code applies a checkout's `.claude/settings.json` env block to hook processes over the launch environment; the interpreter's own integrity under claude and pi — PATH resolution, `PYTHONPATH`, the user site directory — is a separate, pre-existing exposure), none meaning no skip; the path is normalized, then resolved; `..` segments and `~` paths never skip, nor do `@`-prefixed paths and URL forms (pi strips the `@`, expands `~` and converts `file://` before opening while its adapter forwards the raw argument; any scheme is refused) — because a jwt.io-style fixture is byte-for-byte a valid token and masking it corrupts what the agent edits against, while the runner's own OIDC token file sits beside the checkout and still masks. Bash, WebFetch and MCP output are unaffected.
 
 **Context suppression** condenses the output of exactly one verification command, and only from positive evidence:
 
@@ -588,7 +590,7 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 
 `Bootstrap` installs `security.HookFiles` under `/sandbox/pi-config/hooks/`, writes the `HookPlan` into `fullsend-manifest.json` and loads the embedded `fullsend-hooks.js` extension with `-e` under `--no-extensions` (per pi v0.84.2 `docs/extensions.md`).
 
-`fullsend-hooks.js` sends the scripts `{tool_name, tool_input, tool_result, tool_response}` with Claude tool names (`bash→Bash`, `read→Read`, `write→Write`, `edit→Edit`, `grep→Grep`, `find→Glob`, `ls→LS`; `path` mirrored to `file_path`) and reads back either the v1 `tool_result` or the v2 `hookSpecificOutput.updatedToolOutput` (#6357), so the same extension works before and after the PostToolUse chain lands.
+`fullsend-hooks.js` sends the scripts `{tool_name, tool_input, tool_result, tool_response}` (plus `cwd`, pi's process working directory — the checkout — so the redact stage's checkout-scoped bare-JWT skip applies under pi too) with Claude tool names (`bash→Bash`, `read→Read`, `write→Write`, `edit→Edit`, `grep→Grep`, `find→Glob`, `ls→LS`; `path` mirrored to `file_path`) and reads back either the v1 `tool_result` or the v2 `hookSpecificOutput.updatedToolOutput` (#6357), so the same extension works before and after the PostToolUse chain lands.
 
 - PreToolUse groups run in `HookPlan` order and stop at the first block; a script that cannot be spawned blocks; PostToolUse blocks withhold the result and mark it `isError`.
 - An unreadable manifest, or one without a hook plan, blocks every tool call.
