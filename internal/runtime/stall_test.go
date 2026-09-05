@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -354,10 +356,16 @@ func streamingRuntimeFiles(t *testing.T) []string {
 	return files
 }
 
-// TestStreamingRuntimesArmTheWatchdog: claude, pi and codex share one
-// ExecStreamReader -> handler -> parse shape, so all three must arm the
-// watchdog, feed it per stream line, and report its verdict ahead of the
-// Wait error.
+// TestStreamingRuntimesArmTheWatchdog is a source-shape guard, not a
+// behavioural test: it pins the three call-site substrings rather than
+// exercising them, so renaming a helper or splitting one of these calls
+// across lines fails it, and the assertion message names what to restore.
+//
+// It earns that cost by covering all three runtimes at once. What the
+// watchdog does end to end is proved behaviourally through the real Run
+// path by TestClaudeRuntime_Run_StallSweepsTheSandboxOnce; this test is
+// what says pi and codex still share that path — the omission that let
+// codex ship unguarded while claude and pi were covered.
 func TestStreamingRuntimesArmTheWatchdog(t *testing.T) {
 	for _, file := range streamingRuntimeFiles(t) {
 		src, err := os.ReadFile(file)
@@ -422,6 +430,51 @@ func TestStallKill_QuietWhenNothingWasRunning(t *testing.T) {
 	stallKill(recordingExec(new([]string), "stray processes killed: 0\n", "", 0, nil), "sb-3", &out, func() {})()
 
 	assert.Empty(t, out.String())
+}
+
+// TestClaudeRuntime_Run_StallSweepsTheSandboxOnce drives the real Run path —
+// ExecStreamReader, the line hook, the watchdog goroutine, stallKill and the
+// stalledErr verdict — against a fake openshell on PATH, the same stub shape
+// claude_test.go already uses. The unit tests above cover each piece in
+// isolation; this is the one that proves they compose: a stream that goes
+// quiet ends with the sandbox swept exactly once and ErrStalled returned,
+// not with a plain non-zero exit.
+//
+// The fake answers both exec channels. The agent channel writes one
+// well-formed line (liveness, so the clock starts from a real event) and then
+// goes silent under `exec sleep`, which puts the pid ExecStreamReader's
+// cancel actually kills on the far end of the pipe; the sweep channel is
+// recognised by the snippet's own output marker and logs each call.
+func TestClaudeRuntime_Run_StallSweepsTheSandboxOnce(t *testing.T) {
+	binDir := t.TempDir()
+	sweepLog := filepath.Join(binDir, "sweeps.log")
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do last=\"$a\"; done\n" +
+		"case \"$last\" in\n" +
+		"  *'stray processes killed'*)\n" +
+		"    echo sweep >> " + sweepLog + "\n" +
+		"    echo 'stray processes killed: 1'\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\"}\\n'\n" +
+		"exec sleep 60\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var metrics RunMetrics
+	_, err := ClaudeRuntime{}.Run(context.Background(), RunParams{
+		SandboxName:   "sb-stall",
+		AgentBaseName: "test-agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Timeout:       60 * time.Second,
+		StallTimeout:  300 * time.Millisecond,
+	}, ui.New(io.Discard), time.Now(), &metrics)
+
+	require.ErrorIs(t, err, ErrStalled, "a stream that goes silent must fail as stalled, not as a plain exit")
+
+	logged, readErr := os.ReadFile(sweepLog)
+	require.NoError(t, readErr, "the stall kill must have swept the sandbox")
+	assert.Equal(t, 1, countLines(string(logged), "sweep"), "the sandbox must be swept exactly once")
 }
 
 // TestParseCodexStream_ProgressLinesResetTheSilenceClock: codex item.started
