@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -4700,6 +4701,113 @@ func TestWriteMetricsJSON(t *testing.T) {
 	}
 	if got.ToolCalls != 34 {
 		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
+}
+
+// TestAggregateRunMetrics_PartialCancelledRun verifies that partial token
+// metrics from a cancelled run (no ResultEvent, only TokensEvent) are folded
+// into the aggregate correctly. This is the core data-flow assertion for #6936:
+// the cancellation short-circuit writes metrics using the aggregate, so the
+// aggregate must contain the partial tokens.
+func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Simulate a cancelled run: metrics populated via TokensEvent (no
+	// ResultEvent, so NumTurns/TotalCostUSD stay zero).
+	m := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m.ToolCalls.Store(10)
+
+	aggregateRunMetrics(&agg, &m, 1)
+
+	if agg.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", agg.TokenUsage.CacheRead)
+	}
+	if agg.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", agg.ToolCalls)
+	}
+	if agg.Model != "claude-opus-4-6" {
+		t.Errorf("model = %q, want claude-opus-4-6", agg.Model)
+	}
+	if agg.NumTurns != 0 {
+		t.Errorf("num_turns = %d, want 0 (cancelled run has no ResultEvent)", agg.NumTurns)
+	}
+	if agg.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (cancelled run has no ResultEvent)", agg.TotalCostUSD)
+	}
+}
+
+// TestWriteMetricsJSON_CancelledRunPartialTokens verifies that partial
+// metrics from a cancelled run round-trip through writeMetricsJSON and
+// contain the expected token values but zero cost. This is the persistence
+// assertion for #6936: the artifact must contain non-zero token usage even
+// when TotalCostUSD is unavailable.
+func TestWriteMetricsJSON_CancelledRunPartialTokens(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build aggregate matching the cancelled-run evidence from #6936.
+	m := aggregateMetrics{
+		Iterations: 1,
+		ToolCalls:  10,
+		Model:      "claude-opus-4-6",
+	}
+	m.TokenUsage.Input = 599
+	m.TokenUsage.Output = 119
+	m.TokenUsage.CacheCreation = 148_943
+	m.TokenUsage.CacheRead = 583_298
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Token usage must be non-zero — the primary assertion for #6936.
+	if got.TokenUsage.Input == 0 {
+		t.Error("expected non-zero token_usage.input in cancelled-run metrics")
+	}
+	if got.TokenUsage.Output == 0 {
+		t.Error("expected non-zero token_usage.output in cancelled-run metrics")
+	}
+	if got.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", got.TokenUsage.Output)
+	}
+	if got.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", got.TokenUsage.CacheCreation)
+	}
+	if got.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", got.TokenUsage.CacheRead)
+	}
+	if got.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (dollar cost unavailable on cancellation)", got.TotalCostUSD)
+	}
+	if got.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", got.ToolCalls)
 	}
 }
 
