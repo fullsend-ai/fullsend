@@ -286,7 +286,7 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}
-		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled)
+		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases())
 		if err != nil {
 			return err
 		}
@@ -400,7 +400,7 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 // piAgentManifestFor builds the manifest block for fullsend-agent.js. tools
 // is the parent's --tools list (nil for the default set); children get the
 // built-ins from it minus Agent/Task.
-func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool) (*piAgentManifest, error) {
+func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string) (*piAgentManifest, error) {
 	piBin, providerExts, err := piAgentProbe(sandboxName)
 	if err != nil {
 		return nil, err
@@ -426,7 +426,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		SessionsDir:      r.piSessionsDir(),
 		Extensions:       exts,
 		ExtensionDigests: piAgentExtensionDigests(hooksExt, hooksEnabled),
-		Models:           piAgentModels(def.Model),
+		Models:           piAgentModels(def.Model, configAliases),
 		ProviderModels:   piAgentProviderModels(),
 		Thinking:         piAgentThinking(),
 		Tools:            childTools,
@@ -466,14 +466,35 @@ func piAgentExtensionDigests(hooksExt string, hooksEnabled bool) map[string]stri
 // Vertex provider, whatever provider the parent runs on. A persona-style
 // "@default" suffix is dropped.
 //
-// The table is built at Bootstrap from the fleet alias defaults: per-repo
-// models.aliases overrides (#6882) travel on RunParams and are not part of
-// the bootstrap contract, so they reach the parent's own model but not the
-// children's table — threading them through BootstrapInput is a follow-up.
-func piAgentModels(defModel string) map[string]string {
+// configAliases are the per-repo models.aliases overrides (#6882), merged
+// in so a child resolves an alias exactly as the parent does (#7020). An
+// override may name its own provider, so each value is resolved the way
+// Run resolves the parent's:
+//
+//	xai/grok-4.6                    → xai-vertex/xai/grok-4.6
+//	google-vertex/gemini-3.8-flash  → unchanged
+//	claude-sonnet-5                 → anthropic-vertex/claude-sonnet-5
+//
+// Prefixing an already-qualified value would hand the child
+// "anthropic-vertex/google-vertex/…", which names no provider; leaving
+// "xai/…" short would name pi's built-in xai provider, which wants
+// XAI_API_KEY. translatePiModel is not reused here because it reads
+// FULLSEND_PI_PROVIDER, which would re-provider the Claude aliases under
+// an xai-vertex parent.
+func piAgentModels(defModel string, configAliases map[string]string) map[string]string {
 	base, _, _ := strings.Cut(strings.TrimSpace(defModel), "@")
-	models := map[string]string{"default": translatePiModel(base, nil)}
-	for alias, id := range mergedPiModelAliases(nil) {
+	models := map[string]string{"default": translatePiModel(base, configAliases)}
+	for alias, id := range mergedPiModelAliases(configAliases) {
+		// piDefaultProvider is never xai-vertex, so a bare id cannot take
+		// normalizeXaiVertexModel's provider-env branch.
+		if spec, ok := normalizeXaiVertexModel(piDefaultProvider, id); ok {
+			models[alias] = spec
+			continue
+		}
+		if strings.Contains(id, "/") {
+			models[alias] = id
+			continue
+		}
 		models[alias] = piDefaultProvider + "/" + id
 	}
 	return models

@@ -1855,7 +1855,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry)
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err

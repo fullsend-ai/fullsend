@@ -773,6 +773,102 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["default"])
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
 	})
+
+	t.Run("config aliases reach the sub-agent model table", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:  "sb",
+			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:    "review",
+			modelAliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["sonnet"],
+			"per-repo config alias overrides the fleet default in the child model table")
+		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+			"unstated aliases keep the fleet default")
+		assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", m.Agent.Models["haiku"],
+			"unstated aliases keep the fleet default")
+		assert.Equal(t, "anthropic-vertex/claude-fable-5-1", m.Agent.Models["fable"],
+			"unstated aliases keep the fleet default")
+	})
+
+	// models.aliases accepts a provider-qualified value (docs/runtimes/pi.md
+	// documents `haiku: google-vertex/gemini-3.8-flash`), and the parent
+	// resolves it through translatePiModel's "/" passthrough. The child
+	// table must not prefix it a second time: "anthropic-vertex/google-vertex/..."
+	// names no provider and loses the dispatch.
+	t.Run("provider-qualified config alias is not re-prefixed", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:  "sb",
+			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:    "review",
+			modelAliases: map[string]string{"haiku": "google-vertex/gemini-3.8-flash"},
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "google-vertex/gemini-3.8-flash", m.Agent.Models["haiku"],
+			"a provider-qualified override passes through verbatim, as it does for the parent")
+		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+			"bare fleet defaults still get the Anthropic Vertex prefix")
+	})
+
+	// An xai-vertex override has to reach the child in the canonical
+	// three-segment form the extension registers. Left as "xai/grok-4.6"
+	// the child's provider reads as pi's built-in "xai", which wants
+	// XAI_API_KEY, so the xai-vertex env branch never fires — the parent
+	// normalises the same value (pi_run_test.go), and the two must agree.
+	t.Run("xai-vertex config alias is normalised for the child", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:  "sb",
+			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:    "review",
+			modelAliases: map[string]string{"sonnet": "xai/grok-4.6"},
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["sonnet"],
+			"the short xai/ form is normalised, matching how the parent resolves it")
+	})
+
+	// The agent definition's own model is an alias the repo remapped, so the
+	// "default" entry must resolve through the same merged table.
+	t.Run("config alias applies to the agent definition's own model", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:  "sb",
+			agentPath:    writeAgentFile(t, "---\nname: review\nmodel: sonnet\n---\nReview the PR."),
+			agentName:    "review",
+			modelAliases: map[string]string{"sonnet": "claude-sonnet-5"},
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["default"],
+			"the child default follows the repo's remap of the agent's own alias")
+	})
 }
 
 func TestPiAgentProbeCommand(t *testing.T) {

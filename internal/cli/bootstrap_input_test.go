@@ -39,7 +39,7 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 			Enabled: &disabled,
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil)
 	require.NoError(t, err)
 
 	_, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -47,6 +47,25 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 	assert.Equal(t, "sandbox-1", boot.SandboxName())
 	assert.Equal(t, "agents/test.md", boot.AgentPath())
 	assert.Equal(t, "test", boot.AgentName())
+	assert.Nil(t, boot.ModelAliases(), "no per-repo overrides means no alias map")
+}
+
+// The per-repo models.aliases map reaches the runtime through
+// BootstrapInput, which is how it lands in pi's sub-agent model table
+// (#7020); a run with overrides must carry them here, not just on
+// RunParams.
+func TestNewHarnessBootstrap_CarriesModelAliases(t *testing.T) {
+	disabled := false
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Security: &harness.SecurityConfig{
+			Enabled: &disabled,
+		},
+	}
+	aliases := map[string]string{"sonnet": "claude-sonnet-5"}
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases)
+	require.NoError(t, err)
+	assert.Equal(t, aliases, boot.ModelAliases())
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
@@ -61,7 +80,7 @@ func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
 			},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil)
 	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -82,7 +101,7 @@ func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
 			SandboxHooks: &harness.SandboxHooks{},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443", nil)
 	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -111,7 +130,7 @@ func TestNewHarnessBootstrap_CarriesPlugins(t *testing.T) {
 			},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sb", "code", "")
+	boot, err := newHarnessBootstrap(h, "sb", "code", "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/fs/skills/a"}, boot.SkillDirs())
 	assert.Equal(t, []agentruntime.PluginInput{
@@ -129,7 +148,7 @@ func TestNewHarnessBootstrap_CarriesPlugins(t *testing.T) {
 	require.True(t, hooked, "security defaults on, so the hooks wrapper is returned")
 
 	// No plugins: nil, not an empty slice, so runtimes can len() it.
-	bare, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "")
+	bare, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "", nil)
 	require.NoError(t, err)
 	assert.Nil(t, bare.Plugins())
 	got, err := pluginInputs(nil)
@@ -150,7 +169,7 @@ func TestNewHarnessBootstrap_UndetectablePlugin(t *testing.T) {
 	_, err := newHarnessBootstrap(&harness.Harness{
 		Agent:   "a.md",
 		Plugins: []harness.PluginSpec{{Path: dir}},
-	}, "sb", "code", "")
+	}, "sb", "code", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins[0]")
 	assert.Contains(t, err.Error(), "not a Claude plugin")
@@ -158,7 +177,7 @@ func TestNewHarnessBootstrap_UndetectablePlugin(t *testing.T) {
 	_, err = newHarnessBootstrap(&harness.Harness{
 		Agent:   "a.md",
 		Plugins: []harness.PluginSpec{{Path: filepath.Join(t.TempDir(), "missing")}},
-	}, "sb", "code", "")
+	}, "sb", "code", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins[0]")
 }
