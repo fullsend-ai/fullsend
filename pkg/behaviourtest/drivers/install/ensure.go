@@ -2,11 +2,12 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
+	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
@@ -18,322 +19,165 @@ const (
 	// GetWorkflow before giving up.
 	settleMaxAttempts = 30
 
-	// settlePoll is the delay between GetWorkflow polls.
-	settlePoll = 5 * time.Second
-
-	// resetMaxAttempts is the number of GetRepo polls to confirm
-	// deletion propagation or creation availability after a repo
-	// reset cycle. With exponential backoff (2×) and a 1s initial
-	// delay, 5 attempts cover up to ~1+2+4+8 = 15s of API lag.
-	resetMaxAttempts = 5
+	// gitReadyMaxAttempts is the number of GetRef polls to confirm
+	// the git layer is ready after repo creation.
+	gitReadyMaxAttempts = 15
 )
 
-// resetRetryDelay is the initial delay for exponential backoff when
-// polling GetRepo after delete or create. Doubled on each retry.
-// Overridden in tests to avoid slow retry loops.
-var resetRetryDelay = time.Second
+// settlePoll is the delay between GetWorkflow polls. Overridden in tests.
+var settlePoll = 5 * time.Second
 
-// ensurer lazily creates and installs repos on demand for behaviour
-// scenarios. Results are cached by org/repo key so that a second scenario
-// leasing the same name within a suite run skips redundant work.
+// gitReadyPoll is the delay between GetRef polls. Overridden in tests.
+var gitReadyPoll = 2 * time.Second
+
+// ensurer creates ephemeral repos with fullsend installed. Each call
+// generates a unique repo name, creates the repo, waits for git
+// readiness, installs fullsend via repos install, validates, and waits
+// for Actions to index the workflow.
 //
 // This is an unexported interface used internally by composedDriver.
-// The suite does not construct or reference it directly.
-//
-// Thread safety: EnsureRepo is safe for concurrent callers.
-// A singleflight.Group serializes in-flight ensures per key so that
-// concurrent first-calls for the same repo only perform create+install
-// once; other callers wait and share the result.
 type ensurer interface {
-	// EnsureRepo guarantees org/repoName exists and has fullsend installed.
-	// If the repo does not exist it is created (the forge's auto_init
-	// provides the initial commit). If fullsend is not installed (per
-	// post-install validation) it runs the per-repo install flow
-	// (inference provision + github setup).
-	EnsureRepo(ctx context.Context, org, repoName string) error
+	CreateRepo(ctx context.Context, org, hint string) (repoName string, err error)
 }
 
 // SettleFunc is called after a repo is freshly created or installed to
-// wait until GitHub Actions recognises the workflow file. The default
-// implementation polls GetWorkflow; tests inject a no-op.
+// wait until GitHub Actions recognises the workflow file.
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
-type repoEnsurer struct {
-	e2eCfg e2etest.EnvConfig
-	client forge.Client
-	token  string
-	binary string
-	logf   func(string, ...any)
-	runCLI CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
-	settle SettleFunc    // injectable; defaults to awaitWorkflowReady
+// EventDeliveryFunc is called after a repo's workflow is indexed to
+// verify that GitHub's event delivery pipeline is live end-to-end.
+// issueNumber is a pre-created warmup issue on the repo.
+type EventDeliveryFunc func(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error
 
-	mu       sync.Mutex
-	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
-	inflight singleflight.Group
+type repoEnsurer struct {
+	e2eCfg        e2etest.EnvConfig
+	client        forge.Client
+	token         string
+	binary        string
+	fullsendRef   string
+	logf          func(string, ...any)
+	runCLI        CLIRunnerFunc
+	settle        SettleFunc
+	eventDelivery EventDeliveryFunc
 }
 
-// newRepoEnsurer returns an ensurer backed by the given forge client
-// and CLI binary. The ensurer shares the same credentials and
-// configuration as the per-repo install driver.
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
-	token, binary string,
+	token, binary, fullsendRef string,
 	logf func(string, ...any),
 ) ensurer {
 	return &repoEnsurer{
-		e2eCfg:  e2eCfg,
-		client:  client,
-		token:   token,
-		binary:  binary,
-		logf:    logf,
-		runCLI:  e2etest.TryRunCLI,
-		settle:  awaitWorkflowReady,
-		ensured: make(map[string]struct{}),
+		e2eCfg:        e2eCfg,
+		client:        client,
+		token:         token,
+		binary:        binary,
+		fullsendRef:   fullsendRef,
+		logf:          logf,
+		runCLI:        e2etest.TryRunCLI,
+		settle:        awaitWorkflowReady,
+		eventDelivery: awaitEventDelivery,
 	}
 }
 
-func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) error {
-	key := org + "/" + repoName
-
-	e.mu.Lock()
-	if _, ok := e.ensured[key]; ok {
-		e.mu.Unlock()
-		e.logf("[ensure] %s already ensured this run, skipping", key)
-		return nil
-	}
-	e.mu.Unlock()
-
-	// singleflight deduplicates concurrent callers for the same key so
-	// only one goroutine runs doEnsure; others wait and share the result.
-	_, err, _ := e.inflight.Do(key, func() (any, error) {
-		// Re-check the cache inside the flight — a prior flight may
-		// have populated it before this one started.
-		e.mu.Lock()
-		if _, ok := e.ensured[key]; ok {
-			e.mu.Unlock()
-			return nil, nil
-		}
-		e.mu.Unlock()
-
-		if err := e.doEnsure(ctx, org, repoName); err != nil {
-			return nil, err
-		}
-
-		e.mu.Lock()
-		e.ensured[key] = struct{}{}
-		e.mu.Unlock()
-
-		return nil, nil
-	})
-
-	return err
+func generateRepoName(hint string) string {
+	h := sha256.Sum256([]byte(hint))
+	return fmt.Sprintf("bt-%s-%s", uuid.New().String()[:8], hex.EncodeToString(h[:4]))
 }
 
-// doEnsure performs the actual create-if-missing + install work.
-// It always re-vendors the CLI binary so that pool repos run the
-// binary built from the current checkout. Without this, leased repos
-// that pass post-install validation keep a stale vendored binary from
-// a prior run, silently missing dispatch fixes on the current branch.
-func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error {
+func scenarioHash(hint string) string {
+	h := sha256.Sum256([]byte(hint))
+	return hex.EncodeToString(h[:4])
+}
+
+func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string, error) {
+	repoName := generateRepoName(hint)
 	target := org + "/" + repoName
 
-	// Step 1: delete the existing repo to reset accumulated git history.
-	// Pool repos grow to GB scale from repeated test runs; the pre-review
-	// shallow-clone deepening step takes 12+ minutes fetching bloated
-	// history. Deleting and recreating gives a clean single-commit repo.
-	if err := e.resetRepo(ctx, org, repoName, target); err != nil {
-		return err
-	}
-
-	// Step 2: create repo (needed after reset, or if it never existed).
-	if err := e.ensureRepoExists(ctx, org, repoName, target); err != nil {
-		return err
-	}
-
-	// Step 3: the repo is always freshly created (step 1 deleted any
-	// prior version), so fullsend is never pre-installed. Run the full
-	// install flow and settle for Actions readiness.
-	e.logf("[ensure] %s needs install (fresh repo)", target)
-
-	// Step 4: run github setup --vendor to install fullsend and push
-	// the current binary.
-	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
-		return err
-	}
-	if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
-		return fmt.Errorf("post-install validation for %s: %w", target, err)
-	}
-
-	// Step 5: wait for Actions to recognise the workflow file.
-	if e.settle != nil {
-		if err := e.settle(ctx, e.client, org, repoName, PerRepoTriageWorkflow, e.logf); err != nil {
-			return fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
-		}
-	}
-
-	return nil
-}
-
-// resetRepo deletes an existing repo to clear accumulated git history.
-// Pool repos grow to gigabyte scale from repeated test runs; the
-// pre-review shallow-clone deepening step takes 12+ minutes fetching
-// the bloated history. A fresh repo starts with just the auto_init
-// commit. No-op when the repo does not exist.
-//
-// Fork repos derived from the source (e.g. test-repo-01-fork) are
-// deleted first. When a source repo is deleted and recreated, existing
-// forks become orphaned — the fork creation step then fails because
-// the fork repo exists but isn't a valid fork of the new source.
-func (e *repoEnsurer) resetRepo(ctx context.Context, org, repoName, target string) error {
-	// Delete fork repos before the source so they don't become orphaned.
-	forkName := repoName + "-fork"
-	forkTarget := org + "/" + forkName
-	if _, forkErr := e.client.GetRepo(ctx, org, forkName); forkErr == nil {
-		e.logf("[ensure] deleting fork %s before source reset", forkTarget)
-		if err := e.client.DeleteRepo(ctx, org, forkName); err != nil {
-			if !forge.IsNotFound(err) {
-				return fmt.Errorf("deleting fork repo %s for reset: %w", forkTarget, err)
-			}
-		} else {
-			if err := e.awaitDeletion(ctx, org, forkName, forkTarget); err != nil {
-				return err
-			}
-		}
-	} else if !forge.IsNotFound(forkErr) {
-		return fmt.Errorf("checking fork repo %s for reset: %w", forkTarget, forkErr)
-	}
-
-	_, err := e.client.GetRepo(ctx, org, repoName)
-	if err != nil {
-		if forge.IsNotFound(err) {
-			e.logf("[ensure] %s does not exist, no history to reset", target)
-			return nil
-		}
-		return fmt.Errorf("checking repo %s for reset: %w", target, err)
-	}
-
-	e.logf("[ensure] deleting %s to reset accumulated git history", target)
-	if err := e.client.DeleteRepo(ctx, org, repoName); err != nil {
-		if forge.IsNotFound(err) {
-			return nil // race: deleted between check and delete
-		}
-		return fmt.Errorf("deleting repo %s for history reset: %w", target, err)
-	}
-
-	// Wait for GitHub API to propagate the deletion. Without this,
-	// ensureRepoExists may see a stale cached response for the deleted
-	// repo, skip re-creation, and subsequent operations fail with 404.
-	return e.awaitDeletion(ctx, org, repoName, target)
-}
-
-// awaitDeletion polls GetRepo with exponential backoff until the repo
-// returns 404, confirming the deletion has propagated through the
-// GitHub API's eventual-consistency layer. If the repo is still
-// visible after all attempts the function returns nil anyway — the
-// subsequent ensureRepoExists call will handle the conflict.
-func (e *repoEnsurer) awaitDeletion(ctx context.Context, org, repoName, target string) error {
-	e.logf("[ensure] waiting for %s deletion to propagate", target)
-	delay := resetRetryDelay
-	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("context cancelled while waiting for %s deletion: %w", target, err)
-		}
-		_, err := e.client.GetRepo(ctx, org, repoName)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				e.logf("[ensure] %s deletion confirmed after %d attempt(s)", target, attempt)
-				return nil
-			}
-			return fmt.Errorf("checking deletion of %s: %w", target, err)
-		}
-		if attempt < resetMaxAttempts {
-			e.logf("[ensure] %s still visible, attempt %d/%d — backing off %v", target, attempt, resetMaxAttempts, delay)
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled while waiting for %s deletion: %w", target, ctx.Err())
-			}
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled while waiting for %s deletion: %w", target, ctx.Err())
-			case <-time.After(delay):
-			}
-			delay *= 2
-		}
-	}
-	e.logf("[ensure] %s still visible after %d attempts; proceeding", target, resetMaxAttempts)
-	return nil
-}
-
-// ensureRepoExists creates the repo if it does not already exist.
-// The forge's CreateRepo uses auto_init, so GitHub creates an initial
-// commit with a README — no explicit seeding is needed.
-// Idempotent: a repo that already exists is left untouched.
-func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, target string) error {
-	_, err := e.client.GetRepo(ctx, org, repoName)
-	if err == nil {
-		return nil // repo exists
-	}
-	if !forge.IsNotFound(err) {
-		return fmt.Errorf("checking repo %s: %w", target, err)
-	}
-
+	description := fmt.Sprintf("Behaviour test: %s", hint)
 	e.logf("[ensure] creating %s (auto_init provides initial commit)", target)
-	if _, createErr := e.client.CreateRepo(ctx, org, repoName, "Behaviour test repo", false); createErr != nil {
-		return fmt.Errorf("creating repo %s: %w", target, createErr)
+	if _, err := e.client.CreateRepo(ctx, org, repoName, description, false); err != nil {
+		return "", fmt.Errorf("creating repo %s: %w", target, err)
 	}
 
-	// Wait for the newly created repo to be visible via the API.
-	// GitHub's eventual consistency means operations on a just-created
-	// repo can 404 until propagation completes.
-	return e.awaitCreation(ctx, org, repoName, target)
+	if err := e.awaitGitReady(ctx, org, repoName, target); err != nil {
+		return "", err
+	}
+
+	// Create a warmup issue BEFORE installing fullsend. No workflow
+	// exists yet, so the issues.opened event is silently ignored —
+	// no wasted triage run. The issue is used after install to verify
+	// event delivery via a comment that triggers the shim but skips
+	// the dispatch job (body does not start with /fs-).
+	var warmupIssueNumber int
+	if e.eventDelivery != nil {
+		issue, err := e.client.CreateIssue(ctx, org, repoName, "warmup", "event delivery probe")
+		if err != nil {
+			return "", fmt.Errorf("creating warmup issue on %s: %w", target, err)
+		}
+		warmupIssueNumber = issue.Number
+	}
+
+	if err := e.installFullsend(org, repoName, target); err != nil {
+		return "", err
+	}
+
+	if err := ValidatePostInstall(ctx, e.client, org, repoName); err != nil {
+		return "", fmt.Errorf("post-install validation for %s: %w", target, err)
+	}
+
+	if e.settle != nil {
+		if err := e.settle(ctx, e.client, org, repoName, TriageWorkflow, e.logf); err != nil {
+			return "", fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
+		}
+	}
+
+	if e.eventDelivery != nil {
+		if err := e.eventDelivery(ctx, e.client, org, repoName, warmupIssueNumber, TriageWorkflow, e.logf); err != nil {
+			return "", fmt.Errorf("verifying event delivery on %s: %w", target, err)
+		}
+	}
+
+	return repoName, nil
 }
 
-// awaitCreation polls GetRepo with exponential backoff until the
-// newly created repo is visible via the API. GitHub's eventual
-// consistency means operations on a just-created repo can return 404
-// until propagation completes.
-func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target string) error {
-	e.logf("[ensure] waiting for %s creation to propagate", target)
-	delay := resetRetryDelay
-	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("context cancelled while waiting for %s creation: %w", target, err)
-		}
-		_, err := e.client.GetRepo(ctx, org, repoName)
+// awaitGitReady polls GetRef("heads/main") until the git layer is ready.
+// This fixes 422/409 errors that occur when the API reports the repo
+// exists but the git layer hasn't initialized yet.
+func (e *repoEnsurer) awaitGitReady(ctx context.Context, org, repoName, target string) error {
+	e.logf("[ensure] waiting for git readiness on %s", target)
+	for attempt := 1; attempt <= gitReadyMaxAttempts; attempt++ {
+		_, err := e.client.GetRef(ctx, org, repoName, "heads/main")
 		if err == nil {
-			e.logf("[ensure] %s creation confirmed after %d attempt(s)", target, attempt)
+			e.logf("[ensure] %s git ready after %d attempt(s)", target, attempt)
 			return nil
 		}
-		if !forge.IsNotFound(err) {
-			return fmt.Errorf("checking creation of %s: %w", target, err)
-		}
-		if attempt < resetMaxAttempts {
-			e.logf("[ensure] %s not yet visible, attempt %d/%d — backing off %v", target, attempt, resetMaxAttempts, delay)
+
+		if attempt < gitReadyMaxAttempts {
 			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled while waiting for %s creation: %w", target, ctx.Err())
+				return fmt.Errorf("context cancelled waiting for git readiness on %s: %w", target, ctx.Err())
 			}
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("context cancelled while waiting for %s creation: %w", target, ctx.Err())
-			case <-time.After(delay):
+				return fmt.Errorf("context cancelled waiting for git readiness on %s: %w", target, ctx.Err())
+			case <-time.After(gitReadyPoll):
 			}
-			delay *= 2
 		}
 	}
-	return fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts)
+	return fmt.Errorf("git layer on %s not ready after %d attempts", target, gitReadyMaxAttempts)
 }
 
-// installFullsend runs inference provision (when a GCP project is
-// configured) and fullsend github setup for the target repo.
-func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) error {
-	return common.RunGitHubSetup(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.runCLI, e.logf)
+func (e *repoEnsurer) installFullsend(org, repoName, target string) error {
+	fullTarget := org + "/" + repoName
+	return common.RunReposInstall(
+		e.binary, e.token, fullTarget,
+		e.e2eCfg.MintURL, e.fullsendRef, e.e2eCfg.GCPProjectID, e.e2eCfg.WIFProvider,
+		e.runCLI, e.logf,
+	)
 }
 
 // awaitWorkflowReady polls the forge's GetWorkflow API until the given
-// workflow file is visible and in "active" state, or until the attempt
-// limit is exhausted. On newly created repos, GitHub Actions takes a
-// variable amount of time to index committed workflow files; events
-// dispatched before the workflow is indexed are silently dropped.
+// workflow file is visible, or until the attempt limit is exhausted.
 func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
 	target := org + "/" + repo
 	logf("[ensure] waiting for Actions to recognise %s on %s", workflowFile, target)
@@ -358,4 +202,54 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	}
 
 	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
+}
+
+// awaitEventDelivery posts a comment on a pre-created warmup issue and
+// polls ListWorkflowRuns until a completed run appears, proving that
+// GitHub's event delivery pipeline is live for this repo. The comment
+// body does not start with /fs-, so the shim's dispatch job is skipped
+// by its if: condition — no triage or agent work runs.
+//
+// On pre-existing repos (the old pool flow) the pipeline is already
+// warm and the run appears in seconds. On freshly created ephemeral
+// repos there can be a gap between workflow indexing and event delivery
+// readiness; this function absorbs that gap.
+func awaitEventDelivery(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error {
+	target := org + "/" + repo
+	logf("[ensure] verifying event delivery on %s", target)
+
+	probeTime := time.Now()
+
+	if _, err := client.CreateIssueComment(ctx, org, repo, issueNumber, "fullsend event delivery probe"); err != nil {
+		return fmt.Errorf("posting warmup comment on %s: %w", target, err)
+	}
+
+	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
+		runs, err := client.ListWorkflowRuns(ctx, org, repo, workflowFile)
+		if err == nil {
+			for _, run := range runs {
+				t, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+				if parseErr != nil {
+					continue
+				}
+				if !t.Before(probeTime.Add(-30*time.Second)) && run.Status == "completed" {
+					logf("[ensure] event delivery confirmed on %s after %d attempt(s) (run %d)", target, attempt, run.ID)
+					return nil
+				}
+			}
+		}
+
+		if attempt < settleMaxAttempts {
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			case <-time.After(settlePoll):
+			}
+		}
+	}
+
+	return fmt.Errorf("event delivery not confirmed on %s after %d attempts", target, settleMaxAttempts)
 }

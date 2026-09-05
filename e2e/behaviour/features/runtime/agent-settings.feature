@@ -11,7 +11,7 @@
 Feature: Per-agent runtime and model on agents: entries in config.yaml
 
   Scenario: an agents: entry selects the runtime for one agent over the repo-wide key
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And the repository runtime is "claude"
     And the repository agents are configured with:
       """
@@ -38,7 +38,7 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
   # Gated like pi.feature: one small haiku run on Vertex per suite run.
   @requires:capability:runtime-pi
   Scenario: an agents: entry puts one custom agent on pi with its own model
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And a custom harness "pi-override" with:
       """
       agent: agents/pi-override.md

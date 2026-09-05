@@ -183,8 +183,18 @@ func ValidateWorkflowRef(ref, repository string, isPerRepo bool, workflowHostRep
 			matched = true
 		}
 
+		if !matched && workflowHostRepos["*"] {
+			if idx := strings.Index(lowerRef, "/.github/workflows/"); idx > 0 {
+				relPath = lowerRef[idx+1:]
+				matched = true
+			}
+		}
+
 		if !matched {
 			for host := range workflowHostRepos {
+				if host == "*" {
+					continue
+				}
 				hostPrefix := strings.ToLower(host) + "/"
 				if strings.HasPrefix(lowerRef, hostPrefix) {
 					relPath = strings.TrimPrefix(lowerRef, hostPrefix)

@@ -139,7 +139,6 @@ func TestGivenSeededRemoteBranch(t *testing.T) {
 
 	require.NoError(t, givenSeededRemoteBranch(w, "agent/<issue>-impl"))
 
-	assert.Equal(t, []string{"agent/7-impl"}, scmDriver.deletedBranches, "leftover branch is reset first")
 	assert.Equal(t, []string{"agent/7-impl"}, scmDriver.createdBranches)
 	assert.Equal(t, []string{"agent/7-impl"}, scmDriver.seededBranches)
 	assert.Equal(t, []string{"agent/7-impl"}, w.CreatedBranches)

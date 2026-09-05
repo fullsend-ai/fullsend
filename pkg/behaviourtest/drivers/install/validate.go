@@ -47,9 +47,9 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 	return nil, lastErr
 }
 
-// ValidatePerRepoPostInstall checks that a per-repo install left the
-// expected files and configuration in the target repo.
-func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, repo string) error {
+// ValidatePostInstall checks that a vendored install left the expected
+// files and configuration in the target repo.
+func ValidatePostInstall(ctx context.Context, client forge.Client, org, repo string) error {
 	shimPath := ".github/workflows/fullsend.yaml"
 	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
@@ -78,6 +78,36 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	}
 	if _, err := getFileWithRetry(ctx, client, org, repo, layers.VendoredBinaryPathPerRepo); err != nil {
 		return fmt.Errorf("post-install: missing vendored binary at %s: %w", layers.VendoredBinaryPathPerRepo, err)
+	}
+	return nil
+}
+
+// ValidatePostInstallRefPinned checks that a ref-pinned repos
+// install left the expected workflow and config. Unlike
+// ValidatePostInstall it does NOT check for a vendored binary or
+// marker — ref-pinned installs resolve the binary at runtime via the
+// action.yml uses: reference.
+func ValidatePostInstallRefPinned(ctx context.Context, client forge.Client, org, repo string) error {
+	shimPath := ".github/workflows/fullsend.yaml"
+	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
+		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
+	}
+
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
+	if err != nil {
+		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
+	}
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
+	}
+	if err := cfgW.Validate(); err != nil {
+		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
+	}
+	cfg := cfgW.(config.PerRepoConfigReader)
+	if cfg.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
 	}
 	return nil
 }

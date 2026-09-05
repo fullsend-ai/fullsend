@@ -3,7 +3,10 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
@@ -64,6 +67,109 @@ func ProvisionInference(
 		return "", fmt.Errorf("inference status %s: %w", target, err)
 	}
 	logf("[install] repo-scoped inference WIF provider: %s", wifProvider)
+	return wifProvider, nil
+}
+
+// RunReposInstall runs `fullsend repos install` for the given target with
+// ref-pinned resolution, vendored binary, and mint URL. Each call uses a
+// unique temp manifest path so concurrent scenarios don't collide; repos
+// install creates the file automatically.
+func RunReposInstall(
+	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) error {
+	manifest := filepath.Join(os.TempDir(), fmt.Sprintf("repos-%d.yaml", time.Now().UnixNano()))
+	defer os.Remove(manifest)
+
+	args := []string{
+		"repos", "install", target,
+		"--vendor",
+		"--runtime", "dummy",
+		"--direct",
+		"--forge", "github",
+		"-f", manifest,
+	}
+	if fullsendRef != "" {
+		args = append(args, "--fullsend-ref", fullsendRef)
+	}
+	if mintURL != "" {
+		args = append(args, "--mint-url", mintURL)
+	}
+	if project := strings.TrimSpace(gcpProjectID); project != "" {
+		args = append(args, "--inference-project", project)
+	}
+	if wif := strings.TrimSpace(wifProvider); wif != "" {
+		args = append(args, "--inference-wif-provider", wif)
+	}
+
+	logf("[install] running fullsend %s", strings.Join(args, " "))
+	if _, err := runCLI(binary, token, args...); err != nil {
+		return fmt.Errorf("repos install %s: %w", target, err)
+	}
+	return nil
+}
+
+// EnvFullsendRef resolves the fullsend ref for behaviour tests.
+// Resolution chain: BEHAVIOUR_FULLSEND_REF → PR head SHA from event
+// payload → GITHUB_HEAD_REF → GITHUB_REF_NAME → "" (defaults to v0).
+func EnvFullsendRef() string {
+	if v := os.Getenv("BEHAVIOUR_FULLSEND_REF"); v != "" {
+		return v
+	}
+	if sha := prHeadSHAFromEvent(); sha != "" {
+		return sha
+	}
+	if v := os.Getenv("GITHUB_HEAD_REF"); v != "" {
+		return v
+	}
+	if v := os.Getenv("GITHUB_REF_NAME"); v != "" {
+		return v
+	}
+	return ""
+}
+
+// prHeadSHAFromEvent extracts the head SHA from a GitHub event payload.
+func prHeadSHAFromEvent() string {
+	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+	if eventPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Clean(eventPath))
+	if err != nil {
+		return ""
+	}
+	var event struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return ""
+	}
+	return event.PullRequest.Head.SHA
+}
+
+// ResolveOrgWIFProvider looks up the org-level WIF provider via
+// `fullsend inference status <org>` and returns the full provider path.
+func ResolveOrgWIFProvider(
+	binary, token, org, gcpProjectID string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) (string, error) {
+	statusArgs := []string{"inference", "status", org, "--project", gcpProjectID, "--format", "json"}
+	logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
+	out, err := runCLI(binary, token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	wifProvider, err := ParseInferenceStatusWIFProvider(out)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	logf("[install] org-scoped inference WIF provider: %s", wifProvider)
 	return wifProvider, nil
 }
 
