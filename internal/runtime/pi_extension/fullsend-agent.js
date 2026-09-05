@@ -54,6 +54,11 @@ const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const DEFAULT_THINKING = "medium";
 const DEFAULT_EXPLORE_TOOLS = ["read", "grep", "find", "ls"];
+// Claude Code's built-in agent types, as the fleet's pinned CLI (2.1.258)
+// lists them in "Available agents:". Orchestrators emit these today, so
+// they keep the lenient anonymous path even when personas are registered;
+// only other unknown names are rejected. Re-check on a Claude Code pin bump.
+const CLAUDE_BUILTIN_AGENT_TYPES = new Set(["claude", "explore", "general-purpose", "plan", "statusline-setup"]);
 const TOOL_NAME = "Agent";
 const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
@@ -98,8 +103,8 @@ export const AGENT_TOOL_PARAMETERS = {
   properties: {
     prompt: { type: "string", description: "The full task for the sub-agent, including all context it needs; it starts with no memory of this conversation." },
     description: { type: "string", description: "A short (3-5 word) label for the task, shown in progress output." },
-    model: { type: "string", description: "Model for the sub-agent: opus, sonnet, haiku, or a provider/id spec available in this run. Omit to inherit the current model." },
-    subagent_type: { type: "string", description: "Explore gives a read-only sub-agent (read, grep, find, ls); any other value or omission gives the current tool set." },
+    model: { type: "string", description: "Model for the sub-agent: opus, sonnet, haiku, or a provider/id spec available in this run. Omit to use the model this run configures for sub-agents, else the current one. Ignored when subagent_type names a persona." },
+    subagent_type: { type: "string", description: "One of the registered sub-agent personas (the runtime note lists them), or `Explore` for a read-only sub-agent (read, grep, find, ls). A persona runs on the model and tool set the runner resolved for it, and any `model` argument is ignored. Omit for a sub-agent with the current tool set; any other value is rejected when personas are registered." },
     run_in_background: { type: "boolean", description: "Accepted for compatibility; sub-agents always run to completion inside the call." },
   },
   required: ["prompt"],
@@ -185,7 +190,12 @@ function stripThinkingSuffix(spec) {
 // manifest's --thinking, and a spec-borne level would silently override it.
 export function resolveModel(agent, spec, parentSpec) {
   const models = agent?.models ?? {};
-  const fallback = (typeof parentSpec === "string" && parentSpec.trim()) || models.default || "";
+  // subagents.default: the repo's blanket model for children that name no
+  // persona. It fills only an empty argument, and outranks the parent so
+  // children stop inheriting an expensive one. Bootstrap already checked
+  // it against the trusted set.
+  const subagentDefault = typeof agent?.subagentDefault === "string" ? agent.subagentDefault.trim() : "";
+  const fallback = subagentDefault || (typeof parentSpec === "string" && parentSpec.trim()) || models.default || "";
   let s = typeof spec === "string" ? spec.trim() : "";
   if (s === "") return fallback;
   s = cut(s, "@")[0];
@@ -273,10 +283,12 @@ export function childTools(agent, subagentType) {
   const parent = (agent?.tools ?? []).filter((t) => t !== TOOL_NAME && t !== TOOL_ALIAS);
   const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
   if (explore) return (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).filter((t) => parent.includes(t));
-  // Persona dispatch: intersect the persona's declared tools with the
-  // parent's set, the same way Explore does (#7031).
+  // Persona dispatch intersects with the parent, as Explore does. A
+  // present-but-empty array means "no tools" and must stay empty --
+  // childArgs turns it into --no-builtin-tools; widening to the parent
+  // here would hand a restricted persona bash, write and edit.
   const persona = lookupPersona(agent, subagentType);
-  if (persona && Array.isArray(persona.tools) && persona.tools.length > 0) {
+  if (persona && Array.isArray(persona.tools)) {
     const parentSet = new Set(parent);
     return persona.tools.filter((t) => parentSet.has(t));
   }
@@ -683,11 +695,31 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     const persona = lookupPersona(agent, subagentType);
     let modelSpec;
     if (persona) {
-      modelSpec = persona.model;
+      modelSpec = typeof persona.model === "string" ? persona.model.trim() : "";
       if (typeof params?.model === "string" && params.model.trim() !== "") {
         log(`${LOG_PREFIX} #${id} persona "${subagentType}": ignoring model="${params.model}" — persona model used instead`);
       }
-    } else if (subagentType !== "" && subagentType.toLowerCase() !== "explore") {
+      if (modelSpec === "") {
+        // Nothing configured this persona, so inherit the parent's live
+        // model. The caller's argument is deliberately not passed: a
+        // persona never takes its model from the caller.
+        try {
+          modelSpec = resolveModel(agent, "", parentModel);
+        } catch (err) {
+          return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
+        }
+        if (!modelSpec) {
+          // Structural guard: falling through to the shared resolve below
+          // would consult params.model, and a persona never takes its
+          // model from the caller.
+          return { seq: id, isError: true, error: `persona "${subagentType}" has no model and this run reports none to inherit`, text: "", stopReason: "rejected", model: "" };
+        }
+      }
+    } else if (subagentType !== "" && agent?.skippedPersonas?.[subagentType.toLowerCase()]) {
+      // A persona file that did not register at Bootstrap: say why rather
+      // than run the name as an anonymous child with the parent's tools.
+      return { seq: id, isError: true, error: `subagent_type "${subagentType}" names a persona that was not registered: ${agent.skippedPersonas[subagentType.toLowerCase()]}`, text: "", stopReason: "rejected", model: "" };
+    } else if (subagentType !== "" && !CLAUDE_BUILTIN_AGENT_TYPES.has(subagentType.toLowerCase())) {
       // Unknown non-empty type: reject when personas are registered (the
       // caller likely misspelled a persona name); otherwise accept for
       // forward compatibility.
@@ -779,6 +811,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     log(`${LOG_PREFIX} #${id} done ${durationMs}ms ${stopReason || "unknown"}`);
     recordUsage({
       seq: id,
+      // The persona this child ran as, so a cost report can say which
+      // persona spent what; per-model aggregation is unaffected.
+      ...(persona ? { persona: subagentType.trim().toLowerCase() } : {}),
       model: modelSpec,
       provider: state.provider || providerOf(modelSpec),
       description: capBytes(description, MAX_DESCRIPTION_BYTES),

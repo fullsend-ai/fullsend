@@ -960,6 +960,15 @@ test("childTools: persona with declared tools uses them intersected with parent"
   assert.deepEqual(tools, ["read", "grep"], "persona tools intersected with parent");
 });
 
+// The intersection must actually contain, not just pass through: a persona
+// naming a tool the parent withheld must not get it back.
+test("childTools: persona tools are intersected with the parent, not unioned", () => {
+  const { manifest } = personaFixture();
+  manifest.agent.tools = ["read", "grep", "find", "ls"];
+  manifest.agent.personas.greedy = { model: "anthropic-vertex/claude-haiku-4-5", tools: ["read", "write", "edit", "bash"] };
+  assert.deepEqual(childTools(manifest.agent, "greedy"), ["read"]);
+});
+
 test("childTools: persona without declared tools gets parent set", () => {
   const { manifest } = personaFixture();
   const tools = childTools(manifest.agent, "style");
@@ -990,6 +999,116 @@ test("persona dispatch uses persona model even when model arg is empty", async (
   );
   assert.equal(res.isError, false, res.error);
   assert.equal(res.model, "anthropic-vertex/claude-haiku-4-5", "style persona model used");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The live fleet SKILL.md dispatches security-triage with capital "Explore"
+// and no persona name; with personas registered that must still be the
+// read-only anonymous path, not an unknown-persona rejection.
+test("capital Explore stays the anonymous read-only path with personas registered", async () => {
+  const { dir, manifest } = personaFixture();
+  const tools = childTools(manifest.agent, "Explore");
+  assert.deepEqual(tools, ["read", "grep", "find", "ls"], "Explore keeps the read-only set");
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "Explore" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-sonnet-4-6", "Explore inherits the parent");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A persona whose declared tools are all unservable arrives as an empty
+// array. It must stay empty rather than fall back to the parent's full set,
+// which would hand a restricted persona bash/write/edit.
+test("childTools: persona with an empty tools array gets no tools", () => {
+  const { manifest } = personaFixture();
+  manifest.agent.personas.locked = { model: "anthropic-vertex/claude-haiku-4-5", tools: [] };
+  assert.deepEqual(childTools(manifest.agent, "locked"), []);
+});
+
+// Nothing configured this persona, so the manifest carries no model and the
+// child inherits the parent's live model — the same one an anonymous child
+// gets. The orchestrator's argument must still not win.
+test("persona with no manifest model inherits the live parent, not the model arg", async () => {
+  const { dir, manifest } = personaFixture();
+  manifest.agent.personas.inherit = {};
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", model: "haiku", subagent_type: "inherit" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-sonnet-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// subagents.default is the lever retro needs: its children name no persona.
+test("subagentDefault fills an empty model argument for an anonymous child", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.subagentDefault = "anthropic-vertex/claude-haiku-4-5";
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run({ prompt: "ok" }, { parentModel: "anthropic-vertex/claude-opus-4-6" });
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-haiku-4-5", "default beats the parent's model");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("an explicit model argument still beats subagentDefault", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.subagentDefault = "anthropic-vertex/claude-haiku-4-5";
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", model: "opus" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-opus-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// Orchestrators emit Claude Code's built-in type names today; those keep
+// the lenient anonymous path even with personas registered.
+test("Claude Code built-in agent types stay lenient with personas registered", async () => {
+  const { dir, manifest } = personaFixture();
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  for (const type of ["general-purpose", "Plan", "plan", "claude", "statusline-setup"]) {
+    const res = await tool.run(
+      { prompt: "ok", subagent_type: type },
+      { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+    );
+    assert.equal(res.isError, false, `${type}: ${res.error}`);
+    assert.equal(res.model, "anthropic-vertex/claude-sonnet-4-6", `${type} takes the anonymous path`);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The only persona of a name was skipped at Bootstrap (empty or unservable
+// tools): dispatching that name must not fall through to an anonymous child
+// with the parent's full tool set, even when no persona registered at all.
+test("a skipped persona is rejected by name, even with no personas registered", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.skippedPersonas = { locked: "declares an empty tool set" };
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run({ prompt: "ok", subagent_type: "locked" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(res.isError, true);
+  assert.match(res.error, /was not registered: declares an empty tool set/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The usage line carries the persona (the transcript name and the log
+// line already do); an anonymous child's line keeps its old shape.
+test("usage record carries the persona for a persona dispatch only", async () => {
+  const { dir, manifest } = personaFixture();
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  await tool.run({ prompt: "ok", subagent_type: "correctness" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  await tool.run({ prompt: "ok" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  const lines = readFileSync(manifest.agent.usageFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const bySeq = Object.fromEntries(lines.map((r) => [r.seq, r]));
+  assert.equal(bySeq[1].persona, "correctness");
+  assert.equal(bySeq[1].model, "anthropic-vertex/claude-opus-4-6");
+  assert.ok(!("persona" in bySeq[2]), "anonymous child: no persona key");
   rmSync(dir, { recursive: true, force: true });
 });
 
