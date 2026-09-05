@@ -2190,8 +2190,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
-		// later spans. Nil when the Level 3 gate is off; nil is inert.
+		// later spans. Nil when the Level 3 gate is off; nil is inert. The
+		// tool-span tracker is per iteration for the same reason and is not
+		// gated: execute_tool spans are metadata.
 		collector := newContentCollectorIfEnabled()
+		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -2214,7 +2217,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
-			OnEvent:           contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
+			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
@@ -2238,6 +2241,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if runErr != nil {
 			attachIterationContent("error")
+			recordToolSpanOverflow(agentSpan, toolSpans.Finish())
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
@@ -2285,6 +2289,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			contentFinishReason = "error"
 		}
 		attachIterationContent(contentFinishReason)
+		recordToolSpanOverflow(agentSpan, toolSpans.Finish())
 		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
@@ -3523,6 +3528,15 @@ func finalizeRootSpan(span trace.Span, runErr error, exitCode int, validationPas
 	span.End()
 }
 
+// recordToolSpanOverflow marks an agent span whose iteration reported more
+// tool calls than the tracker records (maxToolSpansPerIteration), so a
+// consumer can tell a partial execute_tool set from a complete one.
+func recordToolSpanOverflow(span trace.Span, dropped int) {
+	if dropped > 0 {
+		span.SetAttributes(attribute.Int("fullsend.tool_spans.dropped", dropped))
+	}
+}
+
 // finalizeSandboxSpan records the sandbox-create outcome and ends the
 // span. On failure the create error — which embeds raw supervisor/
 // gateway/container logs — gets the same treatment as the agent and root
@@ -4363,8 +4377,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		}
 		// Skip the telemetry JSONL: it is still open for append, and any
 		// Level 3 conversation content in it was already redacted at
-		// assembly (contentCollector) before reaching a span, so it needs
-		// no post-hoc sweep.
+		// assembly (contentCollector) before reaching a span, as were the
+		// tool names and call ids on execute_tool spans (toolSpanTracker), so
+		// it needs no post-hoc sweep.
 		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}

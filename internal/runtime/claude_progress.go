@@ -39,6 +39,7 @@ type innerEvent struct {
 
 type contentBlock struct {
 	Type string `json:"type"`
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -66,6 +67,28 @@ type assistantMessage struct {
 	} `json:"message"`
 }
 
+// userMessage contains tool_result blocks from user messages. As with
+// assistantMessage, Claude Code's stream-json nests the content array
+// under "message"; older/flat shapes put content at the top level. We
+// accept both.
+type userMessage struct {
+	Type    string          `json:"type"`
+	Content json.RawMessage `json:"content"`
+	Message struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// userContentItem is one content block within a user message. Only
+// tool_result blocks are consumed; the block's content arrives either as
+// a plain string or as an array of text blocks.
+type userContentItem struct {
+	Type      string          `json:"type"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
 // systemEvent is Claude Code's initial "system"/"init" event, which carries the
 // resolved model name. The result event does not include the model.
 type systemEvent struct {
@@ -81,6 +104,7 @@ type systemEvent struct {
 
 type contentItem struct {
 	Type     string          `json:"type"`
+	ID       string          `json:"id"`
 	Name     string          `json:"name"`
 	Text     string          `json:"text"`
 	Thinking string          `json:"thinking"`
@@ -114,6 +138,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 	var (
 		seenStreamEvent bool
 		currentToolName string
+		currentToolID   string
 		toolInputJSON   strings.Builder
 		// per-message token tracking for throttled TokensEvent
 		totalInput       int
@@ -164,6 +189,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			return err
 		}
 		if isPrefix {
+			// Lines beyond streamBufSize are skipped whole. For user
+			// lines this loses any tool_result they carry (e.g. results
+			// holding base64 image blocks) — the event is never emitted
+			// and content capture cannot mark the loss.
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
 			}
@@ -218,6 +247,13 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				}
 				if cb.Type == "tool_use" || cb.Type == "server_tool_use" {
 					currentToolName = cb.Name
+					// A server-side tool's result arrives inside the assistant
+					// message, never as a user tool_result, so an id could never
+					// be matched: leave it empty.
+					currentToolID = ""
+					if cb.Type == "tool_use" {
+						currentToolID = cb.ID
+					}
 					toolInputJSON.Reset()
 				}
 
@@ -240,10 +276,12 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			case "content_block_stop":
 				if currentToolName != "" {
 					onEvent(ToolUseEvent{
+						ID:      currentToolID,
 						Name:    currentToolName,
 						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
 					})
 					currentToolName = ""
+					currentToolID = ""
 					toolInputJSON.Reset()
 				}
 
@@ -369,13 +407,73 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				case "tool_use":
 					onEvent(ToolUseEvent{
+						ID:      item.ID,
 						Name:    item.Name,
 						Summary: extractSafeContext(item.Name, item.Input),
 					})
 				}
 			}
+
+		case "user":
+			var msg userMessage
+			if err := json.Unmarshal(line, &msg); err != nil {
+				continue
+			}
+			content := msg.Message.Content
+			if len(content) == 0 {
+				content = msg.Content
+			}
+			var items []userContentItem
+			if err := json.Unmarshal(content, &items); err != nil {
+				continue
+			}
+			for _, item := range items {
+				if item.Type != "tool_result" {
+					continue
+				}
+				text, partial := toolResultText(item.Content)
+				onEvent(ToolResultEvent{
+					ID:      item.ToolUseID,
+					Result:  text,
+					IsError: item.IsError,
+					Partial: partial,
+				})
+			}
 		}
 	}
+}
+
+// toolResultText flattens a tool_result block's content. The wire
+// carries it either as a plain JSON string or as an array of content
+// blocks, of which only text blocks contribute; they are joined with
+// newlines. partial reports that non-text blocks (or undecodable
+// content) were skipped — the returned text is a fragment of what the
+// wire carried.
+func toolResultText(raw json.RawMessage) (text string, partial bool) {
+	if len(raw) == 0 {
+		// An absent content key carried nothing to skip.
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, false
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", true
+	}
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			texts = append(texts, b.Text)
+		} else {
+			partial = true
+		}
+	}
+	return strings.Join(texts, "\n"), partial
 }
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits

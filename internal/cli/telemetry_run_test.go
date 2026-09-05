@@ -1074,15 +1074,10 @@ func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 	t.Fatal("gen_ai.request.model attribute not found")
 }
 
-func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
-	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
-		"gate off must leave OnEvent nil so the runtime's default renderer runs")
-}
-
-func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {
+func TestIterationEventHandler_TeesToRendererAndCollector(t *testing.T) {
 	var rendered []agentruntime.AgentEvent
 	c := newContentCollector(4096)
-	handler := contentEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c)
+	handler := iterationEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c, nil)
 	require.NotNil(t, handler)
 
 	handler(agentruntime.TextEvent{Text: "hello"})
@@ -1148,8 +1143,8 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 }
 
 // TestContentCapture_GateOffProducesNoContent is the negative control: with
-// the gate off the collector is nil, OnEvent stays nil (default renderer),
-// and nothing content-shaped reaches the file sink.
+// the gate off the collector is nil and nothing content-shaped reaches the
+// file sink (tool spans are metadata and are emitted regardless).
 func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
