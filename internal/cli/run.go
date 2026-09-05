@@ -1516,6 +1516,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// span continues the parent trace.
 	var lastExitCode int
 	var transcriptErrorOverride bool
+	var agentExitReason string // behavioral exit subtype (e.g., "error_max_turns") passed to post-script; see #6877
 	var runCount int
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
@@ -1754,6 +1755,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// skipped in the latter case, so this is defensive).
 			if postValidatedIterDir != "" {
 				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s", postValidatedIterDir))
+			}
+			// Pass the behavioral exit reason (e.g., "error_max_turns",
+			// "error_max_cost") so the post-script can distinguish "agent
+			// chose not to change anything" from "agent was interrupted
+			// mid-work." See #6877.
+			if agentExitReason != "" {
+				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_AGENT_EXIT_REASON=%s", agentExitReason))
 			}
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
@@ -2135,6 +2143,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
 		transcriptErrorOverride = false
+		agentExitReason = ""
 
 		// Each iteration gets its own subdirectory for output and transcripts.
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", iteration))
@@ -2254,25 +2263,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		lastExitCode = exitCode
 
 		// Check the tee'd output.jsonl for is_error:true result events.
-		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
-		// invalid_grant, quota exhaustion) while setting is_error:true in
-		// the transcript. Treat these as failures so downstream gating
-		// (transcript surfacing, post-script skip) can act. See #2786.
+		// The transcript is checked regardless of exit code to catch both:
+		// 1. API/infra failures where Claude exits 0 but reports errors
+		//    (is_error:true) — these skip the post-script entirely (#2786).
+		// 2. Behavioral limits (error_max_turns, error_max_cost) where
+		//    Claude exits non-zero mid-work — these pass the reason to
+		//    the post-script so it can report accurately (#6877).
 		// This runs before the agent span is finalized so the span's
 		// status reflects the transcript-reported failure (#5361).
 		var transcriptErrMsg string
-		if exitCode == 0 {
-			outputJSONL := filepath.Join(iterDir, "output.jsonl")
-			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
+		outputJSONL := filepath.Join(iterDir, "output.jsonl")
+		if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
+			transcriptErrMsg = transcriptErrorMessage(te)
+			outcome := classifyTranscriptError(transcriptErrMsg, te.Subtype, exitCode)
+			if outcome.exitReason != "" {
+				agentExitReason = outcome.exitReason
+			}
+			if outcome.overrideExitCode {
 				lastExitCode = 1
 				transcriptErrorOverride = true
-				transcriptErrMsg = transcriptErrorMessage(te)
-				// The console line prints the same bounded, sanitized string
-				// the span event records: the raw fields can carry ANSI
-				// escapes, a newline-led ::workflow-command::, or an
-				// unbounded Subtype into the CI job log.
-				printer.StepWarn("Agent exited with code 0 but transcript contains error: " + transcriptErrMsg)
 			}
+			printer.StepWarn(outcome.warnMsg)
 		}
 
 		// finish_reason reflects how the generation ended: a clean exit is
@@ -2434,6 +2445,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
+		// If the sweep validated an earlier iteration, clear
+		// agentExitReason so the post-script does not receive the last
+		// iteration's behavioral exit reason for an iteration that may
+		// not have hit a behavioral limit. See #6877.
+		if sweep.validatedIter > 0 && sweep.validatedIter != runCount {
+			agentExitReason = ""
+		}
 	}
 
 	// Write aggregated behavioral metrics.
@@ -3538,6 +3556,61 @@ func finalizeSandboxSpan(span trace.Span, err error) {
 		span.SetStatus(codes.Ok, "")
 	}
 	span.End()
+}
+
+// isBehavioralExitSubtype reports whether a transcript error subtype
+// indicates a behavioral limit (the agent was interrupted mid-work) rather
+// than an infrastructure or API failure. Behavioral exits pass context to
+// the post-script via FULLSEND_AGENT_EXIT_REASON rather than skipping it
+// entirely, so the post-script can report accurately instead of emitting
+// a misleading "no changes needed" message. See #6877.
+func isBehavioralExitSubtype(subtype string) bool {
+	switch subtype {
+	case "error_max_turns", "error_max_cost":
+		return true
+	default:
+		return false
+	}
+}
+
+// transcriptCheckOutcome captures how a transcript error should be handled
+// by the iteration loop. See classifyTranscriptError.
+type transcriptCheckOutcome struct {
+	// exitReason is the behavioral exit subtype to pass to the post-script
+	// (e.g., "error_max_turns"). Empty for non-behavioral errors.
+	exitReason string
+	// overrideExitCode indicates that lastExitCode should be set to 1 and
+	// transcriptErrorOverride should be set to true (API/infra failures
+	// where Claude exits 0 but reports errors in the transcript). See #2786.
+	overrideExitCode bool
+	// warnMsg is the console warning message for the printer.
+	warnMsg string
+}
+
+// classifyTranscriptError determines how a transcript error should be
+// handled based on its subtype and the process exit code. Three categories:
+//  1. Behavioral limits (error_max_turns, error_max_cost): pass the reason
+//     to the post-script so it can report accurately. See #6877.
+//  2. API/infra failures with exit code 0: override the exit code to 1 so
+//     the post-script is skipped. See #2786.
+//  3. Non-behavioral errors with non-zero exit code: the exit code already
+//     signals failure; the transcript error enriches span telemetry.
+func classifyTranscriptError(errMsg, subtype string, exitCode int) transcriptCheckOutcome {
+	if isBehavioralExitSubtype(subtype) {
+		return transcriptCheckOutcome{
+			exitReason: subtype,
+			warnMsg:    "Agent hit behavioral limit: " + errMsg,
+		}
+	}
+	if exitCode == 0 {
+		return transcriptCheckOutcome{
+			overrideExitCode: true,
+			warnMsg:          "Agent exited with code 0 but transcript contains error: " + errMsg,
+		}
+	}
+	return transcriptCheckOutcome{
+		warnMsg: "Transcript contains error: " + errMsg,
+	}
 }
 
 // transcriptErrorMessage builds the message for a transcript-reported
