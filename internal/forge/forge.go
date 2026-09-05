@@ -369,6 +369,14 @@ type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
 }
 
+// RateLimitQuerier is implemented by clients that can explicitly query
+// the rate limit endpoint (GET /rate_limit). Unlike RateLimitReporter,
+// which returns the last observed response headers, this makes a
+// dedicated API call and does not count against the primary rate limit.
+type RateLimitQuerier interface {
+	GetRateLimit(ctx context.Context) (RateLimit, error)
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID            int
