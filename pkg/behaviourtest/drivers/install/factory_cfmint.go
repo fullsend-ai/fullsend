@@ -105,7 +105,7 @@ func buildCFMintDriver(
 
 	drv := newComposedDriver(org, md, ens, client, logf)
 	if cd, ok := drv.(*composedDriver); ok {
-		cd.logRateLimit("suite init")
+		cd.queryRateLimit("suite init")
 	}
 	return drv, nil
 }

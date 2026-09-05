@@ -4013,6 +4013,42 @@ func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ str
 	return forge.ErrNotSupported
 }
 
+// GetRateLimit queries GET /rate_limit and returns the core resource
+// bucket. This call does not count against the primary rate limit.
+func (c *LiveClient) GetRateLimit(ctx context.Context) (forge.RateLimit, error) {
+	resp, err := c.get(ctx, "/rate_limit")
+	if err != nil {
+		return forge.RateLimit{}, fmt.Errorf("get rate limit: %w", err)
+	}
+	var body struct {
+		Resources struct {
+			Core struct {
+				Limit     int   `json:"limit"`
+				Remaining int   `json:"remaining"`
+				Reset     int64 `json:"reset"`
+				Used      int   `json:"used"`
+			} `json:"core"`
+		} `json:"resources"`
+	}
+	if err := decodeJSON(resp, &body); err != nil {
+		return forge.RateLimit{}, fmt.Errorf("decode rate limit: %w", err)
+	}
+	core := body.Resources.Core
+	var reset time.Time
+	if core.Reset > 0 {
+		reset = time.Unix(core.Reset, 0)
+	}
+	return forge.RateLimit{
+		Limit:     core.Limit,
+		Remaining: core.Remaining,
+		Reset:     reset,
+		Resource:  "core",
+		Observed:  time.Now(),
+	}, nil
+}
+
+var _ forge.RateLimitQuerier = (*LiveClient)(nil)
+
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {
 	var apiErr *APIError

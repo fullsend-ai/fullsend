@@ -61,7 +61,7 @@ func (d *composedDriver) MarkDeleted(repoName string) {
 }
 
 func (d *composedDriver) Finalize(ctx context.Context) error {
-	d.logRateLimit("Finalize start")
+	d.queryRateLimit("Finalize start")
 
 	if !KeepRepos() {
 		d.mu.Lock()
@@ -79,7 +79,7 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 				}
 			}
 		}
-		d.logRateLimit("Finalize after cleanup")
+		d.queryRateLimit("Finalize after cleanup")
 	}
 
 	if d.mint == nil {
@@ -102,6 +102,19 @@ func (d *composedDriver) logRateLimit(label string) {
 	}
 	rl, seen := r.RateLimit()
 	if !seen {
+		return
+	}
+	d.logf("[rate-limit] %s: %s", label, rl.String())
+}
+
+func (d *composedDriver) queryRateLimit(label string) {
+	q, ok := d.client.(forge.RateLimitQuerier)
+	if !ok {
+		return
+	}
+	rl, err := q.GetRateLimit(context.Background())
+	if err != nil {
+		d.logf("[rate-limit] %s: query failed: %v", label, err)
 		return
 	}
 	d.logf("[rate-limit] %s: %s", label, rl.String())
