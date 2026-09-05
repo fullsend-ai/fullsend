@@ -170,11 +170,41 @@ func steerRunName(repo string, number int) string {
 // steerDeadline bounds the watch at the earlier of the agent's own budget
 // and the point where the forge token is about to expire.
 func steerDeadline(runStart time.Time, timeout time.Duration) time.Time {
-	budget := timeout
-	if tokenBudget := steerTokenLife - steerTokenMargin; budget > tokenBudget {
-		budget = tokenBudget
+	return runStart.Add(steerBudget(timeout))
+}
+
+// steerBudget is the wall clock a steered run actually gets: the agent's own
+// budget, clipped to what is left of the forge token's life.
+//
+// This is the single source for the bound. steerDeadline turns it into the
+// instant the watcher and the run context stop at, and steerAwareTimeout
+// hands it to the timeout detection, so a change to the cap reaches both
+// without a matching edit somewhere else.
+func steerBudget(timeout time.Duration) time.Duration {
+	if tokenBudget := steerTokenLife - steerTokenMargin; timeout > tokenBudget {
+		return tokenBudget
 	}
-	return runStart.Add(budget)
+	return timeout
+}
+
+// steerAwareTimeout returns the budget a finished run was bounded by, which
+// is what "did it run out of clock" has to be measured against.
+//
+// For an unsteered run that is the harness timeout, unchanged. For a steered
+// one it is steerBudget, which can be shorter — and when it is, a run killed
+// at the budget does not reach nine tenths of the harness timeout, so the
+// detection reads it as "finished early" rather than "ran out of clock".
+// With a validation loop that surfaces as "validation failed"; without one
+// the run returns nil and reports success, having been cut off mid-work.
+//
+// Not a regression from #7042: the divergence is steerDeadline capping below
+// the harness timeout, and #7042 only made it visible by giving the timeout
+// branch precedence over the validation-failed branch.
+func steerAwareTimeout(timeout time.Duration, steered bool) time.Duration {
+	if !steered {
+		return timeout
+	}
+	return steerBudget(timeout)
 }
 
 // startSteerWatcher builds and starts the follow-up run watcher. It returns

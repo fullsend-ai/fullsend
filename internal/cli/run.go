@@ -1203,6 +1203,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// defer writes it onto the terminal comment so the run queued behind
 	// this one can skip work already covered (ADR 0101).
 	var steerMarker statuscomment.SteerMarker
+	// steerActive records that at least one iteration ran with a steer
+	// session, which is what makes the run's real budget steerBudget rather
+	// than the harness timeout.
+	var steerActive bool
 	// steerSeen and steerBaseline carry the judged follow-up run ids and the
 	// delta window across validation loop iterations, so a retry neither
 	// re-examines them nor re-sends content already delivered.
@@ -2279,6 +2283,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts.seen = steerSeen
 		iterSteerOpts.baseline = steerBaseline
 		steerSess := startSteerWatcher(ctx, iterSteerOpts)
+		steerActive = steerActive || steerSess != nil
 
 		// A steered run outlives a single-turn budget, and params.Timeout
 		// bounds one exec — on Codex that is each exec in the resume loop,
@@ -2414,7 +2419,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
-		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed, timeout)
+		// Measured against the budget that actually bounded the run: a
+		// steered one stops at steerBudget, which can be shorter than the
+		// harness timeout. See steerAwareTimeout.
+		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed,
+			steerAwareTimeout(timeout, steerActive))
 		if lastIterTimedOut {
 			// The exec ended at the budget but the agent's processes did
 			// not (OpenShell has no per-exec kill). Terminate them before
@@ -2662,7 +2671,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
+	// The same budget the detection used, so the reported figure is the one
+	// the run was actually held to rather than a limit it never reached.
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount,
+		lastIterElapsed, steerAwareTimeout(timeout, steerActive))
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
