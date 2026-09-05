@@ -188,6 +188,7 @@ define run-timed
 endef
 
 script-test:
+	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
