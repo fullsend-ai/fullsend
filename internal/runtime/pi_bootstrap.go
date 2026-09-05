@@ -99,6 +99,19 @@ type piAgentManifest struct {
 	MaxConcurrent  int      `json:"maxConcurrent"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 	UsageFile      string   `json:"usageFile"`
+	// Personas maps discovered sub-agent persona names to their resolved
+	// model spec and tool set. The extension dispatches subagent_type
+	// values that name a persona using these specs (#7031).
+	Personas map[string]piPersonaManifestEntry `json:"personas,omitempty"`
+	// SubagentDefault is the canonicalised agents[].subagents.default spec:
+	// the model a child that names no persona runs on when the orchestrator
+	// passes no model argument. It outranks the parent's live model, which
+	// is the whole point — a repo sets it so children stop inheriting an
+	// expensive parent — but an explicit argument still wins (#7031).
+	SubagentDefault string `json:"subagentDefault,omitempty"`
+	// SkippedPersonas maps a persona file that did not register to the
+	// reason, so a dispatch naming it is rejected with that reason.
+	SkippedPersonas map[string]string `json:"skippedPersonas,omitempty"`
 }
 
 // piManifest is the JSON document at ConfigDir/fullsend-manifest.json.
@@ -199,12 +212,25 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating pi config dirs: %w", err)
 	}
 
+	// Emit deprecation warnings for cross-vendor model alias overrides (#7031).
+	warnCrossVendorAliases(input.ModelAliases())
+
 	hooksInput, hooksEnabled := input.(SandboxHooksBootstrap)
 	agentTool := piAgentToolEnabled(def)
 
-	if err := uploadBytes(sandboxName, cfg+"/"+piAppendSystemFile, piAppendSystem(agentName, def, agentTool)); err != nil {
-		return fmt.Errorf("writing %s: %w", piAppendSystemFile, err)
+	// Persona files are discovered here and validated when the manifest is
+	// built; the system prompt is written after that so it lists only what
+	// actually registered (#7031).
+	var personas []piPersona
+	var skipped []piSkippedPersona
+	if agentTool {
+		var err error
+		personas, skipped, err = discoverPersonas(input.SkillDirs(), agentName)
+		if err != nil {
+			return fmt.Errorf("discovering personas: %w", err)
+		}
 	}
+
 	settings, err := piSettingsJSON()
 	if err != nil {
 		return err
@@ -286,11 +312,19 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}
-		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases())
+		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases(), personas, skipped, input.AgentSubagents(), input.ParentModel())
 		if err != nil {
 			return err
 		}
 		manifest.Agent = block
+	}
+
+	var registered []string
+	if manifest.Agent != nil {
+		registered = registeredPersonaNames(manifest.Agent.Personas)
+	}
+	if err := uploadBytes(sandboxName, cfg+"/"+piAppendSystemFile, piAppendSystem(agentName, def, agentTool, registered)); err != nil {
+		return fmt.Errorf("writing %s: %w", piAppendSystemFile, err)
 	}
 
 	version, err := piPreflightVersion(sandboxName)
@@ -359,7 +393,11 @@ func piBashAllowlistMode() string {
 // piAppendSystem renders the agent definition for APPEND_SYSTEM.md. Claude
 // Code shows the agent its own name/description; pi gets the same header so
 // prompts that refer to "this agent" still resolve.
-func piAppendSystem(agentName string, def *piAgentDef, agentTool bool) []byte {
+//
+// personaNames lists the discovered persona names; when non-empty the runtime
+// note includes them so the agent knows which subagent_type values are
+// available and that it should omit the model argument for persona dispatch.
+func piAppendSystem(agentName string, def *piAgentDef, agentTool bool, personaNames []string) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent: %s\n\n", agentName)
 	if def.Description != "" {
@@ -369,7 +407,7 @@ func piAppendSystem(agentName string, def *piAgentDef, agentTool bool) []byte {
 	b.WriteString(def.Body)
 	b.WriteString("\n")
 	if agentTool {
-		b.WriteString(piSubagentNote)
+		b.WriteString(piSubagentNote(personaNames))
 	} else {
 		b.WriteString(piNoSubagentNote)
 	}
@@ -379,13 +417,27 @@ func piAppendSystem(agentName string, def *piAgentDef, agentTool bool) []byte {
 // piSubagentNote tells the agent the Agent tool behaves as under Claude
 // Code and how parallel dispatch works on pi, so the skills' "dispatch in
 // parallel" text maps onto one assistant message with several calls.
-const piSubagentNote = "\n## Runtime note\n\n" +
-	"This agent runs on the pi runtime (FULLSEND_RUNTIME=pi). The Agent tool (alias Task) " +
-	"dispatches sub-agents as under Claude Code: `prompt` (required), `description`, `model` " +
-	"(opus, sonnet, haiku, or a provider/id spec available in this run; omit to inherit yours) and " +
-	"`subagent_type` (`Explore` for a read-only sub-agent). Each call runs to completion and " +
-	"returns the sub-agent's final message; to run sub-agents in parallel, make several Agent " +
-	"calls in one message. `run_in_background` is accepted and ignored.\n"
+//
+// When personaNames is non-empty the note lists the registered personas and
+// instructs the agent to dispatch by subagent_type (omitting the model
+// argument), so persona-based dispatch works automatically without the
+// agent having to know which model each persona resolves to.
+func piSubagentNote(personaNames []string) string {
+	base := "\n## Runtime note\n\n" +
+		"This agent runs on the pi runtime (FULLSEND_RUNTIME=pi). The Agent tool (alias Task) " +
+		"dispatches sub-agents as under Claude Code: `prompt` (required), `description`, `model` " +
+		"(opus, sonnet, haiku, or a provider/id spec available in this run; omit to take this run's " +
+		"sub-agent default, else yours) and " +
+		"`subagent_type` (`Explore` for a read-only sub-agent). Each call runs to completion and " +
+		"returns the sub-agent's final message; to run sub-agents in parallel, make several Agent " +
+		"calls in one message. `run_in_background` is accepted and ignored.\n"
+	if len(personaNames) == 0 {
+		return base
+	}
+	return base + "\nRegistered sub-agent personas: " + strings.Join(personaNames, ", ") +
+		". Dispatch a persona by setting `subagent_type` to the persona name; omit `model` — " +
+		"the runner resolves the correct model for each persona.\n"
+}
 
 // piNoSubagentNote makes the absence of a sub-agent tool explicit for an
 // agent whose tools: frontmatter leaves out Agent/Task, so skills written
@@ -400,7 +452,11 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 // piAgentManifestFor builds the manifest block for fullsend-agent.js. tools
 // is the parent's --tools list (nil for the default set); children get the
 // built-ins from it minus Agent/Task.
-func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string) (*piAgentManifest, error) {
+//
+// personas are the pre-discovered sub-agent personas (from discoverPersonas).
+// subagentsCfg is the merged agents[].subagents map from the config, driving
+// per-persona model overrides (#7031).
+func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string, personas []piPersona, skipped []piSkippedPersona, subagentsCfg map[string]*string, parentModel string) (*piAgentManifest, error) {
 	piBin, providerExts, err := piAgentProbe(sandboxName)
 	if err != nil {
 		return nil, err
@@ -420,7 +476,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 			}
 		}
 	}
-	return &piAgentManifest{
+	manifest := &piAgentManifest{
 		Enabled:          true,
 		PiBin:            piBin,
 		SessionsDir:      r.piSessionsDir(),
@@ -434,7 +490,33 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		MaxConcurrent:    piAgentMaxConcurrent,
 		TimeoutSeconds:   piAgentTimeoutSeconds,
 		UsageFile:        r.piAgentUsagePath(),
-	}, nil
+	}
+
+	// Resolve per-persona models and the blanket subagents.default (#7031).
+	// This runs even when no persona was discovered: `subagents.default`
+	// applies to anonymous children (retro dispatches nothing else), and a
+	// key naming no persona must be caught rather than silently ignored.
+	//
+	// Build the trusted spec set first: every value from the models table,
+	// every provider-model id (qualified), and the parent's own spec. The
+	// resolved persona specs are checked against this set and only then
+	// written into the manifest, so a persona can never widen the set that
+	// admits it.
+	trustedSpecs := piTrustedSpecs(manifest.Models, manifest.ProviderModels, parentModel, configAliases)
+
+	resolved, defaultSpec, skippedOut, err := resolvePersonaModels(personas, skipped, subagentsCfg, manifest.Models, trustedSpecs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving persona models: %w", err)
+	}
+	if len(resolved) > 0 {
+		manifest.Personas = resolved
+	}
+	if len(skippedOut) > 0 {
+		manifest.SkippedPersonas = skippedOut
+	}
+	manifest.SubagentDefault = defaultSpec
+
+	return manifest, nil
 }
 
 // piAgentExtensionDigests records the sha256 of every child -e entry that

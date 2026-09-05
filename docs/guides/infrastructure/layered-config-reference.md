@@ -91,19 +91,22 @@ the overlay → base → code defaults chain.
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
-### Per-agent `runtime`, `model`, `effort` on `agents:` entries
+### Per-agent `runtime`, `model`, `effort`, `subagents` on `agents:` entries
 
-An `agents:` entry may set `runtime`, `model` and `effort` for that agent.
-The `ref` field records the branch or tag that was resolved when the agent was
-adopted via `agent add`; `agent update` re-resolves against this ref instead
-of the default branch when it is present (empty for SHA-pinned or legacy entries).
+An `agents:` entry may set `runtime`, `model`, `effort` and `subagents` for
+that agent. The `ref` field records the branch or tag that was resolved when
+the agent was adopted via `agent add`; `agent update` re-resolves against
+this ref instead of the default branch when it is present (empty for
+SHA-pinned or legacy entries).
 
 An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
-base layer). The keyed merge by `DerivedName()` carries the three settings
-field by field: the overlay's non-empty value wins, an empty value inherits
-the parent's. There is no way to unset a parent's value from the overlay
-short of restating the entry.
+base layer). The keyed merge by `DerivedName()` carries the four settings
+field by field: for `runtime`, `model` and `effort` the overlay's non-empty
+value wins and an empty value inherits the parent's. `subagents` uses
+per-key merge: overlay entries override or tombstone (`~`) individual
+persona keys while unstated keys inherit from the parent. There is no way to
+unset a parent's scalar value from the overlay short of restating the entry.
 
 ```yaml
 # config.base.yaml (preset)

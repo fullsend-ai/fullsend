@@ -102,9 +102,9 @@ the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.run
 ### Per-agent runtime, model and effort
 
 The `agents:` list is the per-agent place in `config.yaml`: an entry names an agent and can set
-its `runtime`, `model` and `effort`. A built-in agent (`triage`, `code`, `review`, `fix`, `retro`,
-`prioritize`) is tuned with a name-only entry; a custom agent carries the settings on its
-`source:` entry.
+its `runtime`, `model`, `effort` and `subagents`. A built-in agent (`triage`, `code`, `review`,
+`fix`, `retro`, `prioritize`) is tuned with a name-only entry; a custom agent carries the settings
+on its `source:` entry.
 
 ```yaml
 runtime: pi                    # repo default for agents that set none
@@ -115,6 +115,10 @@ agents:
     runtime: claude
     model: sonnet
     effort: high
+  - name: review
+    subagents:
+      default: haiku           # personas that name no model, and children that name no persona
+      correctness: opus
   - source: https://raw.githubusercontent.com/acme/agents/<sha>/harness/lint.yaml#sha256=…
     model: haiku
 ```

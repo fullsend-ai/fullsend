@@ -1855,7 +1855,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases)
+	// Thread the agent's subagents config into BootstrapInput so the pi
+	// runtime can resolve each persona's model (#7031).
+	var agentSubagents map[string]*string
+	if entryFound {
+		agentSubagents = entry.Subagents
+	}
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
