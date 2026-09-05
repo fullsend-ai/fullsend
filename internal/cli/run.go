@@ -2179,6 +2179,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
+		// Inject the per-iteration deadline so the agent can pace itself.
+		// This runs before every iteration (including the first) because the
+		// deadline is an absolute timestamp that must reflect the current time.
+		// See #7042.
+		if err := injectIterationDeadline(sandboxName, timeout); err != nil {
+			printer.StepWarn("Failed to inject iteration deadline: " + err.Error())
+		}
+
 		// 9a. Run agent.
 		printer.StepStart("Running agent")
 		printer.Blank()
@@ -2329,6 +2337,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			} else {
 				printer.StepInfo("Extracted " + debugLogName)
 			}
+		}
+
+		// Detect timeout exhaustion inside the validation loop (#7042).
+		// When the agent used >= 90% of its budget and exited non-zero, it
+		// was killed by the timeout rather than finishing deliberately. Break
+		// out with a distinct error instead of retrying blindly — fleet data
+		// shows 0/11 timeout retries rescued a run. Schema-failure retries
+		// (agent exits early with invalid output) are unaffected because
+		// they do not trigger agentTimedOut.
+		if h.ValidationLoop != nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
+			printer.StepWarn(fmt.Sprintf(
+				"Agent timed out (used %s of %s budget) — not retrying",
+				lastIterElapsed.Round(time.Second), timeout))
+			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
+			}
+			return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
+				lastIterElapsed.Round(time.Second), timeout)
 		}
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
@@ -2519,9 +2545,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// timeout rather than finishing deliberately. Report as a failure so
 	// the post-script does not treat "no branch" as intentional success.
 	//
-	// Agents with a validation loop already fail via the check above when
-	// no iteration passes validation, so this is scoped to the no-loop
-	// path. See #5075.
+	// Agents with a validation loop detect timeouts inside the loop and
+	// return early with the same error message (#7042), so this is scoped
+	// to the no-loop path. See #5075.
 	if h.ValidationLoop == nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
 		return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
 			lastIterElapsed.Round(time.Second), timeout)
@@ -2729,21 +2755,23 @@ var oidcDenyKeys = map[string]bool{
 // are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
-	"PATH":                     true,
-	"HOME":                     true,
-	"SHELL":                    true,
-	"LD_PRELOAD":               true,
-	"LD_LIBRARY_PATH":          true,
-	"BASH_ENV":                 true,
-	"ENV":                      true,
-	"FULLSEND_FETCH_URL":       true,
-	"FULLSEND_FETCH_TOKEN":     true,
-	"FULLSEND_OUTPUT_DIR":      true,
-	"FULLSEND_OUTPUT_SCHEMA":   true,
-	"FULLSEND_OUTPUT_FILE":     true,
-	"FULLSEND_TARGET_REPO_DIR": true,
-	"FULLSEND_ROLE":            true,
-	"FULLSEND_SLUG":            true,
+	"PATH":                        true,
+	"HOME":                        true,
+	"SHELL":                       true,
+	"LD_PRELOAD":                  true,
+	"LD_LIBRARY_PATH":             true,
+	"BASH_ENV":                    true,
+	"ENV":                         true,
+	"FULLSEND_FETCH_URL":          true,
+	"FULLSEND_FETCH_TOKEN":        true,
+	"FULLSEND_OUTPUT_DIR":         true,
+	"FULLSEND_OUTPUT_SCHEMA":      true,
+	"FULLSEND_OUTPUT_FILE":        true,
+	"FULLSEND_TARGET_REPO_DIR":    true,
+	"FULLSEND_ROLE":               true,
+	"FULLSEND_SLUG":               true,
+	"FULLSEND_TIMEOUT_MINUTES":    true,
+	"FULLSEND_ITERATION_DEADLINE": true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 }
 
@@ -2811,6 +2839,29 @@ func buildRoleSlugEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
+// buildTimeoutEnvLines generates the export line for FULLSEND_TIMEOUT_MINUTES.
+// This is the static portion of the budget export; the per-iteration
+// FULLSEND_ITERATION_DEADLINE is injected by injectIterationDeadline inside the
+// loop because it changes every iteration. See #7042.
+func buildTimeoutEnvLines(h *harness.Harness) []string {
+	timeout := h.TimeoutMinutes
+	if timeout == 0 {
+		timeout = 30 // match the default in runAgent
+	}
+	return []string{fmt.Sprintf("export FULLSEND_TIMEOUT_MINUTES='%d'", timeout)}
+}
+
+// injectIterationDeadline appends FULLSEND_ITERATION_DEADLINE to the sandbox
+// .env file. The deadline is an absolute epoch-seconds value computed from the
+// current time and the iteration timeout, allowing agents to pace themselves.
+// See #7042.
+func injectIterationDeadline(sandboxName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout).Unix()
+	cmd := fmt.Sprintf("echo 'export FULLSEND_ITERATION_DEADLINE=%d' >> %s/.env", deadline, sandbox.SandboxWorkspace)
+	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+	return err
+}
+
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
@@ -2831,6 +2882,12 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// Expose harness identity so skills can reference their own role/slug
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
+
+	// Expose the timeout budget so agents can pace themselves (skip optional
+	// phases, write partial results) instead of guessing. The per-iteration
+	// deadline (FULLSEND_ITERATION_DEADLINE) is injected inside the loop
+	// (injectIterationDeadline) because it changes every iteration. See #7042.
+	lines = append(lines, buildTimeoutEnvLines(h)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
