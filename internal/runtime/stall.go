@@ -20,12 +20,29 @@ var ErrStalled = errors.New("agent stalled")
 
 // stallPollDivisor sets the watchdog poll interval as a fraction of the stall
 // timeout, so detection lands within ~5% of the threshold at any setting.
-// stallMaxPoll caps it for long timeouts (the default 10m polls every 30s).
+// stallMaxPoll caps it for long timeouts (the default 15m polls every 30s).
 const (
 	stallPollDivisor = 20
 	stallMaxPoll     = 30 * time.Second
 	stallMinPoll     = time.Millisecond
 )
+
+// StallDetectionLatency is how long after the silence threshold the watchdog
+// can take to notice it: it polls, so a stall crossing the threshold right
+// after a tick waits one full interval to be seen. Exported because the
+// runner decides whether arming the watchdog is worth it at all, and that
+// decision is about when the kill actually lands, not when the threshold is
+// nominally crossed (internal/cli/run_overrides.go).
+func StallDetectionLatency(timeout time.Duration) time.Duration {
+	interval := timeout / stallPollDivisor
+	if interval > stallMaxPoll {
+		interval = stallMaxPoll
+	}
+	if interval < stallMinPoll {
+		interval = stallMinPoll
+	}
+	return interval
+}
 
 // Watchdog lifecycle. stop() and the fire branch in watch() both attempt
 // watchdogArmed -> {watchdogStopped,watchdogFired} via CompareAndSwap: exactly
@@ -44,13 +61,9 @@ const (
 // one until the global timeout expires — and gets billed for the difference.
 // Every well-formed line the stream parser reads is proof of life: note()
 // records it, half a timeout of silence logs a warning, and a full timeout of
-// silence calls kill, which is the same context cancel the global timeout
-// uses (sandbox.ExecStreamReader). That cancel SIGKILLs the local `openshell
-// sandbox exec` client only — it does not signal the agent inside the
-// sandbox. The agent dies when runAgent returns and its deferred
-// sandbox.Delete (internal/cli/run.go) destroys the sandbox; under
-// --keep-sandbox nothing stops it, exactly as with the global timeout. The
-// watchdog owns no context of its own and never touches the caller's.
+// silence calls kill — stallKill at every runtime call site, which terminates
+// the agent inside the sandbox and only then releases the local exec client.
+// The watchdog owns no context of its own and never touches the caller's.
 //
 // A nil *stallWatchdog is a disabled watchdog: every method is a no-op, so
 // call sites need no branch for FULLSEND_STALL_TIMEOUT=0.
@@ -78,6 +91,37 @@ type stallWatchdog struct {
 	// instead, so an event that lands after the tick computed its silence
 	// still suppresses the warning.
 	mu sync.Mutex
+}
+
+// stallKill is the kill every streaming runtime hands the watchdog.
+//
+// cancel — the context cancel from sandbox.ExecStreamReader, and the whole of
+// what the global timeout does — SIGKILLs the local `openshell sandbox exec`
+// client; it does not signal the agent, which keeps writing the workspace and
+// spending tokens until the run's deferred sandbox.Delete tears the sandbox
+// down (and forever, under --keep-sandbox). OpenShell exposes no signal API,
+// so the in-sandbox half is the stray-process sweep run over a second exec
+// channel: it TERM->KILLs the sandbox user's processes, sparing only its own
+// shell's ancestry and the keep-alive, which is exactly the wedged agent.
+// The sweep runs first so the stream reaches EOF on its own; cancel then
+// releases the client whatever the sweep did.
+//
+// Unlike ClearIterationArtifacts' sweep this one is not serialized against
+// the credential refreshers' writes (internal/cli/run.go's sandboxMu is not
+// reachable from here): a refresher upload killed mid-write leaves a
+// truncated credential file in a sandbox the stalled run is already tearing
+// down, so it has nothing left to break.
+func stallKill(execFn sandboxExecFunc, sandboxName string, w io.Writer, cancel func()) func() {
+	return func() {
+		defer cancel()
+		n, err := killStrayProcesses(execFn, sandboxName)
+		switch {
+		case err != nil:
+			fmt.Fprintf(w, "  Warning: could not terminate the stalled agent inside the sandbox: %v\n", sanitizeOutput(err.Error()))
+		case n > 0:
+			fmt.Fprintf(w, "  Terminated %d stalled sandbox process(es)\n", n)
+		}
+	}
 }
 
 // startStallWatchdog arms a watchdog that calls kill after timeout of event
@@ -137,14 +181,7 @@ func (w *stallWatchdog) stalledErr() error {
 }
 
 func (w *stallWatchdog) watch() {
-	interval := w.timeout / stallPollDivisor
-	if interval > stallMaxPoll {
-		interval = stallMaxPoll
-	}
-	if interval < stallMinPoll {
-		interval = stallMinPoll
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(StallDetectionLatency(w.timeout))
 	defer ticker.Stop()
 
 	// The lastEvent value a warning was already emitted for. Comparing

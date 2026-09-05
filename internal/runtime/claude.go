@@ -130,13 +130,12 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	}
 	defer cancel()
 
-	// cancel is the sandbox command's own cancel (a context derived inside
-	// ExecStreamReader) — the same kill the global timeout uses. It SIGKILLs
-	// the local `openshell sandbox exec` client; the agent inside the sandbox
-	// dies when the caller's deferred sandbox.Delete tears the sandbox down
-	// (see the stallWatchdog doc). The watchdog never touches ctx, which the
-	// caller owns.
-	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
 	defer stall.stop()
 
 	var r io.Reader = stdout
