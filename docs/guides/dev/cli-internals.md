@@ -38,7 +38,10 @@ fullsend
 │       │   ├── --service-account <id>       #   Map an existing service account
 │       │   ├── --ref <ref>                  #   Tighten to a ref: emits this ref + refs/pull/*
 │       │   ├── --format <json|md>           #   Document format
-│       │   └── --out <file>                 #   Write to a file instead of stdout
+│       │   ├── --out <file>                 #   Write to a file instead of stdout
+│       │   ├── --forge <github|gitlab>      #   Forge type (default: github)
+│       │   ├── --issuer <url>               #   OIDC issuer URL (required for gitlab)
+│       │   └── --jwks-file <path>           #   JWKS file for private issuers
 │       ├── import   [reply.json]            # Record the admin's reply in config.yaml
 │       │   ├── --audience/--identity-provider-id/--service-account-id
 │       │   ├── --variables                  #   Set FULLSEND_OPENAI_* repo variables instead
@@ -700,7 +703,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/admin.go` | ~2415 | Install/uninstall/analyze/enable/disable |
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status (GCP) |
-| `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
+| `internal/cli/inference_openai.go` | ~1190 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
