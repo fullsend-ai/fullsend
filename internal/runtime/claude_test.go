@@ -31,12 +31,13 @@ type bootstrapInput struct {
 	modelAliases map[string]string
 }
 
-func (b bootstrapInput) SandboxName() string             { return b.sandboxName }
-func (b bootstrapInput) AgentPath() string               { return b.agentPath }
-func (b bootstrapInput) AgentName() string               { return b.agentName }
-func (b bootstrapInput) SkillDirs() []string             { return b.skillDirs }
-func (b bootstrapInput) Plugins() []PluginInput          { return b.plugins }
-func (b bootstrapInput) ModelAliases() map[string]string { return b.modelAliases }
+func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
+func (b bootstrapInput) AgentPath() string                  { return b.agentPath }
+func (b bootstrapInput) AgentName() string                  { return b.agentName }
+func (b bootstrapInput) SkillDirs() []string                { return b.skillDirs }
+func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
+func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
+func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
 
 // claudePlugins and piPlugins build the two kinds of plugin input from
 // host directories, so a test names the format it means.

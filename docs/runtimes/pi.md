@@ -65,8 +65,10 @@ models:
 ```
 
 - Only the aliases you set change; the rest keep the fleet default.
-- Keys are `opus`, `sonnet`, `haiku`, `fable`. A value is a model id or `provider/id`
-  (`haiku: google-vertex/gemini-3.8-flash`); it cannot be another alias.
+- Keys are `opus`, `sonnet`, `haiku`, `fable`. A value is a model id or `provider/id`;
+  it cannot be another alias. **Cross-vendor overrides** (e.g., `sonnet: google-vertex/gemini-3.8-flash`)
+  are deprecated and will become a validation error in a future release — use
+  `agents[].subagents` to route individual personas to a different vendor's model.
 - The override applies to both the parent run and sub-agent dispatch — a child that asks for
   `sonnet` resolves it through the same merged alias table as the parent.
 - The same block applies on [Claude Code](claude.md#models).
@@ -303,7 +305,7 @@ extension, `fullsend-agent.js`, so skills written for Claude Code's sub-agent ro
 | `prompt` (required) | The whole task. The child starts with no memory of the conversation, so the prompt must carry its own context package |
 | `description` | Short label; shows in the run log |
 | `model` | A model this run can serve (see below). Omitted → the parent's model |
-| `subagent_type` | `Explore` gives a read-only child (`read`, `grep`, `find`, `ls`, intersected with the parent's set); anything else, or omitted, gives the parent's tool set |
+| `subagent_type` | `Explore` gives a read-only child; a registered persona name dispatches with that persona's resolved model and tools; any other non-empty value is rejected when personas are registered. Omitted or empty: the parent's tool set and model |
 | `run_in_background` | Accepted and ignored — a child always runs to completion inside the call |
 
 The call returns the child's final assistant message, trimmed and capped at 64 KB with a
@@ -326,6 +328,41 @@ the parent's own spec, and the ids registered for a provider that has no table e
 provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
 `anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
 trailing `:<thinking level>` is dropped rather than passed through.
+
+### Per-persona model configuration
+
+Skills can declare **personas** — sub-agent definitions under `sub-agents/*.md` in a
+skill root — and repos can map each persona to a model with `agents[].subagents` in
+`.fullsend/config.yaml`:
+
+```yaml
+agents:
+  - name: review
+    subagents:
+      default: haiku                 # every persona without an explicit entry
+      correctness: opus
+      security: opus
+      challenger: xai/grok-4.6       # cross-vendor is explicit, pi only
+      style-conventions: google-vertex/gemini-3.7-flash
+```
+
+The runner resolves each persona's model at Bootstrap, canonicalises it through the
+alias table, and checks it against the trusted closed set before writing it into the
+manifest. The resolution order for each persona is:
+
+1. repo `subagents.<persona>` (explicit per-persona override)
+2. repo `subagents.default` (blanket override for all personas)
+3. persona frontmatter `model:` (alias-resolved)
+4. parent's model (inherited)
+
+When `subagent_type` names a registered persona, the extension dispatches with that
+persona's resolved model and tool set. A `model` argument is **ignored** (with a log
+line) — the runner's resolution is authoritative. An unknown non-empty `subagent_type`
+is **rejected** when personas are registered, with the registered names listed in the
+error.
+
+`fullsend agent set review --subagent correctness=opus --subagent default=haiku`
+configures the mapping from the CLI.
 
 ### Running children in parallel
 

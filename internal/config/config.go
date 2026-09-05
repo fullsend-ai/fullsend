@@ -41,19 +41,28 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // Source — an override-only entry — when Name is a built-in agent
 // (ValidAgentNames) or matches a sourced entry in a parent layer; the
 // built-in keeps resolving through the agents-repo fallback.
+//
+// Subagents maps persona names to model references, controlling which
+// model each sub-agent persona runs on. The "default" key sets the
+// fallback for personas without an explicit entry. A nil *string value
+// tombstones an inherited entry (per-key layered merge, like
+// ConfigModelAliases). Values are ValidModelRef through the repo alias
+// table. Keys must match ValidSubagentKey.
 type AgentEntry struct {
-	Name    string `yaml:"name,omitempty"`
-	Source  string `yaml:"source,omitempty"`
-	Ref     string `yaml:"ref,omitempty"`
-	Enabled *bool  `yaml:"enabled,omitempty"`
-	Runtime string `yaml:"runtime,omitempty"`
-	Model   string `yaml:"model,omitempty"`
-	Effort  string `yaml:"effort,omitempty"`
+	Name      string             `yaml:"name,omitempty"`
+	Source    string             `yaml:"source,omitempty"`
+	Ref       string             `yaml:"ref,omitempty"`
+	Enabled   *bool              `yaml:"enabled,omitempty"`
+	Runtime   string             `yaml:"runtime,omitempty"`
+	Model     string             `yaml:"model,omitempty"`
+	Effort    string             `yaml:"effort,omitempty"`
+	Subagents map[string]*string `yaml:"subagents,omitempty"`
 }
 
-// HasSettings reports whether the entry tunes runtime, model or effort.
+// HasSettings reports whether the entry tunes runtime, model, effort
+// or subagents.
 func (a AgentEntry) HasSettings() bool {
-	return a.Runtime != "" || a.Model != "" || a.Effort != ""
+	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0
 }
 
 // IsOverrideOnly reports whether the entry only tunes an agent defined
@@ -75,19 +84,20 @@ func AgentSettingsFor(agents []AgentEntry, name string) (AgentEntry, bool) {
 	return AgentEntry{}, false
 }
 
-// UpsertAgentSettings sets runtime/model/effort for name on a layer's
-// local agent list: on the entry with that name when present, else as a
-// new override-only entry. An empty value clears that setting. Returns
-// the updated list.
-func UpsertAgentSettings(agents []AgentEntry, name, runtime, model, effort string) []AgentEntry {
+// UpsertAgentSettings sets runtime/model/effort/subagents for name on
+// a layer's local agent list: on the entry with that name when present,
+// else as a new override-only entry. An empty value clears that
+// setting. Returns the updated list.
+func UpsertAgentSettings(agents []AgentEntry, name, runtime, model, effort string, subagents map[string]*string) []AgentEntry {
 	lower := strings.ToLower(name)
 	for i := range agents {
 		if strings.ToLower(agents[i].DerivedName()) == lower {
 			agents[i].Runtime, agents[i].Model, agents[i].Effort = runtime, model, effort
+			agents[i].Subagents = subagents
 			return agents
 		}
 	}
-	return append(agents, AgentEntry{Name: name, Runtime: runtime, Model: model, Effort: effort})
+	return append(agents, AgentEntry{Name: name, Runtime: runtime, Model: model, Effort: effort, Subagents: subagents})
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that a plain string
@@ -311,6 +321,26 @@ func ValidProviders() []string {
 func ValidRuntimes() []string {
 	return []string{"claude", "pi", "codex", "dummy", "dummy-playback"}
 }
+
+// validSubagentKey matches a sub-agent persona key: one or more segments
+// of lowercase alphanumeric characters joined by single hyphens, or the
+// reserved word "default". Maximum 64 characters.
+var validSubagentKey = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// ValidSubagentKey reports whether key is a well-formed sub-agent
+// persona name: lowercase alphanumeric segments joined by hyphens,
+// or "default". Maximum 64 characters.
+func ValidSubagentKey(key string) bool {
+	return len(key) <= 64 && (key == "default" || validSubagentKey.MatchString(key))
+}
+
+// reservedSubagentKeys are persona names that cannot be used because
+// they collide with built-in agent types or reserved identifiers.
+var reservedSubagentKeys = []string{"default", "explore"}
+
+// ReservedSubagentKeys returns the persona names reserved by the
+// runtime (in addition to the run's own agent name and ValidAgentNames).
+func ReservedSubagentKeys() []string { return slices.Clone(reservedSubagentKeys) }
 
 // validModelRef matches a provider-qualified model reference: one or more
 // segments of [A-Za-z0-9_.@-]+ joined by single forward slashes. It
@@ -566,6 +596,14 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 	}
 	if entry.Effort != "" && !ValidEffort(entry.Effort) {
 		return fmt.Errorf("agents[%d] (%s): invalid effort %q: must be one of %s", i, label, entry.Effort, strings.Join(ValidEffortLevels(), ", "))
+	}
+	for key, val := range entry.Subagents {
+		if !ValidSubagentKey(key) {
+			return fmt.Errorf("agents[%d] (%s): invalid subagent key %q: must be lowercase alphanumeric segments joined by hyphens (max 64 chars), or \"default\"", i, label, key)
+		}
+		if val != nil && !ValidModelRef(*val) {
+			return fmt.Errorf("agents[%d] (%s): subagents.%s: invalid model %q: must be a model id or provider/id", i, label, key, *val)
+		}
 	}
 	return nil
 }

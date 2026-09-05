@@ -260,8 +260,9 @@ function servableSpecs(agent, parentSpec) {
 
 // childTools is the --tools allowlist for a child: Explore gets the
 // read-only set intersected with the parent's, anything else the parent's
-// built-in set. The Agent tool itself is never in it (children cannot
-// dispatch).
+// built-in set. When a persona declares tools, the child gets those tools
+// intersected with the parent's set. The Agent tool itself is never in it
+// (children cannot dispatch).
 //
 // The intersection matters because a sub-agent must never be able to reach
 // past its parent: an agent whose tools: frontmatter withheld `grep` would
@@ -269,19 +270,31 @@ function servableSpecs(agent, parentSpec) {
 // an agent that declared no tools:, whose set is pi's defaults and already
 // a superset of the read-only tools.
 export function childTools(agent, subagentType) {
-  const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
   const parent = (agent?.tools ?? []).filter((t) => t !== TOOL_NAME && t !== TOOL_ALIAS);
-  if (!explore) return parent;
-  return (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).filter((t) => parent.includes(t));
+  const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
+  if (explore) return (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).filter((t) => parent.includes(t));
+  // Persona dispatch: intersect the persona's declared tools with the
+  // parent's set, the same way Explore does (#7031).
+  const persona = lookupPersona(agent, subagentType);
+  if (persona && Array.isArray(persona.tools) && persona.tools.length > 0) {
+    const parentSet = new Set(parent);
+    return persona.tools.filter((t) => parentSet.has(t));
+  }
+  return parent;
 }
 
 // childArgs renders the child's argv (without the binary): the parent's
 // flag set minus the shell hygiene the parent already did. The prompt is
 // not here — it goes over stdin (see the file header).
-export function childArgs(agent, { seq, modelSpec, tools }) {
+//
+// personaName, when non-empty, names the persona driving the dispatch; the
+// session dir becomes "sessions/<persona>-<seq>" instead of
+// "sessions/agent-<seq>" so transcripts are labelled by persona (#7031).
+export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
+  const prefix = personaName ? personaName : "agent";
   const args = [
     "--print", "--mode", "json", "--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
-    "--session-dir", `${agent.sessionsDir}/agent-${seq}`,
+    "--session-dir", `${agent.sessionsDir}/${prefix}-${seq}`,
   ];
   for (const ext of agent.extensions ?? []) args.push("-e", ext);
   if (tools.length === 0) {
@@ -331,6 +344,30 @@ export function childEnv(base, modelSpec) {
     if (project) env.XAI_VERTEX_PROJECT_ID = project;
   }
   return env;
+}
+
+// lookupPersona returns the persona entry from the manifest's personas table
+// for the given subagent_type, or undefined if it is not a persona name. The
+// match is case-insensitive to mirror the CLI's key normalisation.
+function lookupPersona(agent, subagentType) {
+  if (typeof subagentType !== "string" || subagentType.trim() === "") return undefined;
+  const key = subagentType.trim().toLowerCase();
+  if (key === "explore") return undefined;
+  const personas = agent?.personas;
+  if (!personas || typeof personas !== "object") return undefined;
+  // The manifest's keys are already lowercase; normalise the lookup for safety.
+  for (const [name, entry] of Object.entries(personas)) {
+    if (name.toLowerCase() === key) return entry;
+  }
+  return undefined;
+}
+
+// registeredPersonaNames returns the persona names from the manifest, or an
+// empty array when none are registered. Used for error messages.
+function registeredPersonaNames(agent) {
+  const personas = agent?.personas;
+  if (!personas || typeof personas !== "object") return [];
+  return Object.keys(personas);
 }
 
 function joinText(content) {
@@ -544,11 +581,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
   // runChild spawns one child and resolves when it is gone. It resolves a
   // handle synchronously through `out` so the caller can terminate the
   // child on abort or shutdown while it is still running.
-  const runChild = (id, params, modelSpec, tools, out) =>
+  const runChild = (id, params, modelSpec, tools, out, personaName) =>
     new Promise((resolve) => {
       const state = newStreamState();
       const startedAt = now();
-      const args = childArgs(agent, { seq: id, modelSpec, tools });
+      const args = childArgs(agent, { seq: id, modelSpec, tools, personaName });
       let child;
       try {
         child = spawn(agent.piBin || "pi", args, {
@@ -640,11 +677,31 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
   const run = async (params, { parentModel, signal } = {}) => {
     const id = ++seq;
     const description = typeof params?.description === "string" ? params.description : "";
+    const subagentType = typeof params?.subagent_type === "string" ? params.subagent_type.trim() : "";
+    // Persona dispatch (#7031): when subagent_type names a registered persona,
+    // use its resolved model and log if the caller also supplied a model arg.
+    const persona = lookupPersona(agent, subagentType);
     let modelSpec;
-    try {
-      modelSpec = resolveModel(agent, params?.model, parentModel);
-    } catch (err) {
-      return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
+    if (persona) {
+      modelSpec = persona.model;
+      if (typeof params?.model === "string" && params.model.trim() !== "") {
+        log(`${LOG_PREFIX} #${id} persona "${subagentType}": ignoring model="${params.model}" — persona model used instead`);
+      }
+    } else if (subagentType !== "" && subagentType.toLowerCase() !== "explore") {
+      // Unknown non-empty type: reject when personas are registered (the
+      // caller likely misspelled a persona name); otherwise accept for
+      // forward compatibility.
+      const names = registeredPersonaNames(agent);
+      if (names.length > 0) {
+        return { seq: id, isError: true, error: `subagent_type "${subagentType}" is not a registered persona; available: ${names.join(", ")}`, text: "", stopReason: "rejected", model: "" };
+      }
+    }
+    if (!modelSpec) {
+      try {
+        modelSpec = resolveModel(agent, params?.model, parentModel);
+      } catch (err) {
+        return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
+      }
     }
     if (typeof params?.prompt !== "string" || params.prompt.trim() === "") {
       return { seq: id, isError: true, error: "prompt is required", text: "", stopReason: "rejected", model: modelSpec };
@@ -684,8 +741,8 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         if (drift) {
           return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
         }
-        log(`${LOG_PREFIX} #${id} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
-        outcome = await runChild(id, params, modelSpec, tools, ticket);
+        log(`${LOG_PREFIX} #${id}${persona ? ` [${subagentType}]` : ""} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
+        outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? subagentType.trim().toLowerCase() : "");
       } finally {
         release();
       }

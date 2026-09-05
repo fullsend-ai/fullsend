@@ -106,6 +106,47 @@ func validatePiModel(model string, configAliases map[string]string) error {
 	return nil
 }
 
+// aliasFamilyPrefixes maps each alias key to the model-id prefixes that
+// belong to its vendor family. An alias value whose resolved id (provider
+// stripped) does not start with any of the listed prefixes is a cross-vendor
+// override — legal today but deprecated (#7031).
+var aliasFamilyPrefixes = map[string][]string{
+	"opus":   {"claude-opus"},
+	"sonnet": {"claude-sonnet"},
+	"haiku":  {"claude-haiku"},
+	"fable":  {"claude-fable"},
+}
+
+// warnCrossVendorAliases emits a deprecation warning to stderr for every
+// config alias whose value resolves to a model outside the alias's vendor
+// family. Cross-vendor aliases are accepted for now but will become a
+// validation error in a future release (#7031).
+func warnCrossVendorAliases(configAliases map[string]string) {
+	for key, val := range configAliases {
+		prefixes, ok := aliasFamilyPrefixes[key]
+		if !ok {
+			continue
+		}
+		// Extract the bare id: strip provider prefix if present.
+		id := val
+		if i := strings.LastIndex(val, "/"); i >= 0 {
+			id = val[i+1:]
+		}
+		id = strings.ToLower(id)
+		match := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(id, p) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			fmt.Fprintf(os.Stderr, "Warning: models.aliases.%s=%q targets a model outside the %s family; "+
+				"cross-vendor aliases are deprecated and will become a validation error in a future release\n", key, val, key)
+		}
+	}
+}
+
 // mergedPiModelAliases returns a copy of piModelAliases with per-key
 // overrides from configAliases applied. Always a fresh map, so a caller
 // can never mutate the package-level table through it.

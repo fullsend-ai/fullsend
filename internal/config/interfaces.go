@@ -293,6 +293,16 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			if oi.entry.Effort != "" {
 				merged.Effort = oi.entry.Effort
 			}
+			// Subagents merge per key: overlay entries override or
+			// tombstone parent entries; unstated keys inherit.
+			if oi.entry.Subagents != nil {
+				if merged.Subagents == nil {
+					merged.Subagents = make(map[string]*string)
+				}
+				for k, v := range oi.entry.Subagents {
+					merged.Subagents[k] = v
+				}
+			}
 		}
 		result = append(result, merged)
 	}

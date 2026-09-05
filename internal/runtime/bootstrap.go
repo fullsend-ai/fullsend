@@ -30,6 +30,11 @@ type BootstrapInput interface {
 	// Used by the pi runtime to thread the overrides into sub-agent dispatch
 	// so children resolve aliases the same way the parent does (#7020).
 	ModelAliases() map[string]string
+	// AgentSubagents returns the per-agent subagents map from the merged
+	// config agents: entry for this run's agent. Keys are persona names
+	// (or "default"); values are model references (nil = tombstone).
+	// Used by the pi runtime to resolve each persona's model (#7031).
+	AgentSubagents() map[string]*string
 }
 
 // PluginInput is one declared plugin: a host directory to upload, the

@@ -942,3 +942,94 @@ test("real pi: the prompt goes over stdin because argv cannot carry it", { timeo
     assert.equal(userText(res.stdout), prompt, `pi did not receive ${label} as the initial message`);
   }
 });
+
+// --- Persona dispatch tests (#7031) ---
+
+function personaFixture() {
+  const f = fixture();
+  f.manifest.agent.personas = {
+    correctness: { model: "anthropic-vertex/claude-opus-4-6", tools: ["read", "grep"] },
+    style: { model: "anthropic-vertex/claude-haiku-4-5" },
+  };
+  return f;
+}
+
+test("childTools: persona with declared tools uses them intersected with parent", () => {
+  const { manifest } = personaFixture();
+  const tools = childTools(manifest.agent, "correctness");
+  assert.deepEqual(tools, ["read", "grep"], "persona tools intersected with parent");
+});
+
+test("childTools: persona without declared tools gets parent set", () => {
+  const { manifest } = personaFixture();
+  const tools = childTools(manifest.agent, "style");
+  // style has no tools declared, so it gets the parent's full set minus Agent/Task
+  assert.deepEqual(tools, manifest.agent.tools);
+});
+
+test("persona dispatch uses persona model and ignores model arg", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", model: "haiku", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-opus-4-6", "persona model used");
+  assert.ok(logs.some((l) => l.includes("ignoring model")), "logged that model arg was ignored");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("persona dispatch uses persona model even when model arg is empty", async () => {
+  const { dir, manifest } = personaFixture();
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "style" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-haiku-4-5", "style persona model used");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown subagent_type rejected when personas registered", async () => {
+  const { dir, manifest } = personaFixture();
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "nonexistent" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.error, /not a registered persona/);
+  assert.match(res.error, /correctness/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown subagent_type accepted when no personas registered", async () => {
+  const { dir, manifest } = fixture();
+  // No personas field on the manifest — unknown types pass through
+  const tool = createAgentTool(manifest, { spawn, ...quiet });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "custom-type" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("childArgs: persona dispatch names session dir with persona name", () => {
+  const { manifest } = personaFixture();
+  const args = childArgs(manifest.agent, { seq: 1, modelSpec: "anthropic-vertex/claude-opus-4-6", tools: ["read"], personaName: "correctness" });
+  const sessionDirIdx = args.indexOf("--session-dir");
+  assert.ok(sessionDirIdx >= 0);
+  assert.ok(args[sessionDirIdx + 1].endsWith("/correctness-1"), `session dir should include persona name: ${args[sessionDirIdx + 1]}`);
+});
+
+test("childArgs: non-persona dispatch names session dir with agent prefix", () => {
+  const { manifest } = personaFixture();
+  const args = childArgs(manifest.agent, { seq: 2, modelSpec: "anthropic-vertex/claude-opus-4-6", tools: ["read"], personaName: "" });
+  const sessionDirIdx = args.indexOf("--session-dir");
+  assert.ok(sessionDirIdx >= 0);
+  assert.ok(args[sessionDirIdx + 1].endsWith("/agent-2"), `session dir should use agent prefix: ${args[sessionDirIdx + 1]}`);
+});

@@ -145,23 +145,32 @@ func newAgentRemoveCmd() *cobra.Command {
 
 func newAgentSetCmd() *cobra.Command {
 	var fullsendDir, runtimeName, model, effort string
+	var subagentFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "Set an agent's runtime, model or effort in config (per-repo)",
-		Long: `Sets runtime, model and/or effort for one agent in .fullsend/config.yaml.
-The agent is a built-in one (triage, code, review, fix, retro, prioritize)
-or a custom agents: entry by name. For a built-in agent without an entry a
-name-only entry is added. Only the flags given change; pass an empty value
-(--model "") to clear a setting. Per-repo configs only.`,
+		Short: "Set an agent's runtime, model, effort or subagent models in config (per-repo)",
+		Long: `Sets runtime, model, effort and/or subagent models for one agent in
+.fullsend/config.yaml. The agent is a built-in one (triage, code, review,
+fix, retro, prioritize) or a custom agents: entry by name. For a built-in
+agent without an entry a name-only entry is added. Only the flags given
+change; pass an empty value (--model "") to clear a setting. Per-repo
+configs only.
+
+The --subagent flag maps a persona name to a model (repeatable):
+
+  fullsend agent set review --subagent correctness=opus --subagent default=haiku
+  fullsend agent set review --subagent style-conventions=  # clears (tombstones)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 			return runAgentSet(fullsendDir, args[0], agentSetFlags{
 				runtime: runtimeName, model: model, effort: effort,
-				runtimeSet: cmd.Flags().Changed("runtime"),
-				modelSet:   cmd.Flags().Changed("model"),
-				effortSet:  cmd.Flags().Changed("effort"),
+				runtimeSet:   cmd.Flags().Changed("runtime"),
+				modelSet:     cmd.Flags().Changed("model"),
+				effortSet:    cmd.Flags().Changed("effort"),
+				subagentSet:  cmd.Flags().Changed("subagent"),
+				subagentArgs: subagentFlags,
 			}, printer)
 		},
 	}
@@ -169,6 +178,7 @@ name-only entry is added. Only the flags given change; pass an empty value
 	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
 	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
+	cmd.Flags().StringArrayVar(&subagentFlags, "subagent", nil, "persona=model mapping for sub-agents (repeatable; persona= clears)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -177,13 +187,16 @@ name-only entry is added. Only the flags given change; pass an empty value
 type agentSetFlags struct {
 	runtime, model, effort          string
 	runtimeSet, modelSet, effortSet bool
+	subagentSet                     bool
+	subagentArgs                    []string
 }
 
-// runAgentSet upserts runtime/model/effort for one agent on the overlay
-// config.yaml and validates the result the way `fullsend run` will.
+// runAgentSet upserts runtime/model/effort/subagents for one agent on
+// the overlay config.yaml and validates the result the way `fullsend
+// run` will.
 func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Printer) error {
-	if !f.runtimeSet && !f.modelSet && !f.effortSet {
-		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort")
+	if !f.runtimeSet && !f.modelSet && !f.effortSet && !f.subagentSet {
+		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort, --subagent")
 	}
 	absDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
@@ -211,9 +224,47 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if f.effortSet {
 		effort = f.effort
 	}
+
+	// Parse --subagent k=v flags into the subagents map. Start from the
+	// current effective subagents so unset keys are preserved.
+	var subagents map[string]*string
+	if current.Subagents != nil {
+		subagents = make(map[string]*string, len(current.Subagents))
+		for k, v := range current.Subagents {
+			cp := *v
+			subagents[k] = &cp
+		}
+	}
+	if f.subagentSet {
+		if subagents == nil {
+			subagents = make(map[string]*string)
+		}
+		for _, arg := range f.subagentArgs {
+			k, v, _ := strings.Cut(arg, "=")
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" {
+				return fmt.Errorf("--subagent: empty key in %q", arg)
+			}
+			if !config.ValidSubagentKey(k) {
+				return fmt.Errorf("--subagent: invalid key %q: must be lowercase alphanumeric segments joined by hyphens (max 64 chars), or \"default\"", k)
+			}
+			if v == "" {
+				// Empty value = tombstone (nil pointer clears an inherited entry).
+				subagents[k] = nil
+			} else {
+				subagents[k] = &v
+			}
+		}
+		// Drop empty map so it does not serialize as `subagents: {}`.
+		if len(subagents) == 0 {
+			subagents = nil
+		}
+	}
+
 	// Only the overlay's own entries are written; an agent registered in
 	// config.base.yaml gets an overlay entry that merges onto it by name.
-	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort)
+	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort, subagents)
 	w.SetAgents(local)
 
 	if err := cfg.Validate(); err != nil {
