@@ -48,7 +48,7 @@ Each iteration's diff is compared to the previous iteration's diff. If the diffs
 
 ### Cost and turn accounting
 
-The functional test framework (#1682) already enforces `max_turns` and `max_cost_usd` per run. Extending these thresholds across retries catches slow-burn flapping: an agent that uses 5 turns per attempt but makes 8 attempts has consumed 40 turns total, which may exceed the cross-run budget even if each individual run was within bounds.
+The functional test framework (#1682) already enforces its eval-case `max_turns` and `max_cost_usd` thresholds per run, after the fact; separately, a harness's own `max_cost_usd` cap ([ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md)) stops a run mid-flight at a spend ceiling. Neither is cumulative across runs. Extending these thresholds across retries catches slow-burn flapping: an agent that uses 5 turns per attempt but makes 8 attempts has consumed 40 turns total, which may exceed the cross-run budget even if each individual run was within bounds.
 
 ### Review comment velocity
 
