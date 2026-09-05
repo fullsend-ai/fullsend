@@ -58,6 +58,22 @@ fullsend run triage --fullsend-dir . --target-repo ../repo \
   --runtime pi --model google-vertex/gemini-2.5-flash --effort medium
 ```
 
+On pi, when the agent's skills ship sub-agent personas, Bootstrap prints the resolved
+per-persona table just after this block — one line per persona with the model it resolved to
+and which entry decided, plus the blanket `default` used by children that name no persona:
+
+```console
+subagents: challenger → xai-vertex/xai/grok-4.6 (from subagents.challenger)
+subagents: correctness → anthropic-vertex/claude-opus-4-6 (from frontmatter)
+subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs-currency)
+```
+
+A malformed `subagents` key or model reference is rejected by config validation, before the
+sandbox is created, like the other invalid overrides above. A key that names no discovered
+persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
+harness's skills have been read — so the sandbox exists but the agent has not started. See
+[pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory:

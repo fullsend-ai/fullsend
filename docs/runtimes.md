@@ -117,7 +117,7 @@ agents:
     effort: high
   - name: review
     subagents:
-      default: haiku           # all personas unless overridden
+      default: haiku           # personas that name no model, and children that name no persona
       correctness: opus
   - source: https://raw.githubusercontent.com/acme/agents/<sha>/harness/lint.yaml#sha256=…
     model: haiku

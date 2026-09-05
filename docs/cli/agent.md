@@ -99,7 +99,7 @@ fullsend agent set review --fullsend-dir .fullsend --subagent correctness=opus -
 | `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear (tombstone) an inherited entry |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
 See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for
