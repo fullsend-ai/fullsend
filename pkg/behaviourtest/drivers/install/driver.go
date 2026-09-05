@@ -88,7 +88,6 @@ const (
 )
 
 // KeepRepos reports whether test repos should be preserved after runs.
-// TODO: revert to `os.Getenv("E2E_KEEP_REPOS") == "true"` after debugging flaky url-dispatch failure.
 func KeepRepos() bool {
-	return true || os.Getenv("E2E_KEEP_REPOS") == "true"
+	return os.Getenv("E2E_KEEP_REPOS") == "true"
 }
