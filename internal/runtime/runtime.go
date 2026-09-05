@@ -85,7 +85,14 @@ type RunParams struct {
 	// thinking one, so without this a wedge is billed for the full window.
 	// Zero disables the watchdog. The CLI resolves it from
 	// FULLSEND_STALL_TIMEOUT and passes it here — runtimes do not read env
-	// themselves (#6526). Runtimes that stream no events ignore it.
+	// themselves (#6526).
+	//
+	// Honoured by every streaming runtime — claude, pi and codex, the three
+	// that drain an NDJSON stream through sandbox.ExecStreamReader. The
+	// scripted runtimes (dummy, dummy-playback) emit no stream and ignore
+	// it; they run a fixed list of operations, so there is nothing to wedge.
+	// opencode's Run is still a stub; implementing it means arming the
+	// watchdog too, like the other three.
 	StallTimeout time.Duration
 	OutputPath   string           // if set, tee stream-json stdout to this file
 	OnEvent      func(AgentEvent) // if non-nil, called with normalized events during Run
