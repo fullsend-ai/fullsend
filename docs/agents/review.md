@@ -36,7 +36,8 @@ maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher —
+subject to the skips below.
 
 ### Automatic skips
 
@@ -44,7 +45,7 @@ The review agent does not run automatically — though `/fs-review` always works
 
 - **The PR is a draft.** Opening or pushing to a draft does not trigger a review; it runs once the PR is marked ready for review. (Applying the `ready-for-review` label to a draft still dispatches — the label is an explicit request.)
 - **The PR carries the `fullsend-no-review` label.** See [Control labels](#control-labels) below.
-- **The diff is documentation prose only.** A PR whose changed files are all markdown under `docs/` — excluding `docs/ADRs/**` — is skipped with a notice in the job summary. The pattern is deliberately narrow: markdown elsewhere in the tree (`skills/*/SKILL.md`, `AGENTS.md`, `CLAUDE.md`) is executable agent instruction, non-markdown files under `docs/` include published schemas and site code, and a lockfile-only diff can repoint a dependency — all of those are still reviewed.
+- **The diff is documentation prose only.** A PR whose changed files are all markdown under `docs/` — excluding `docs/ADRs/**`, `docs/normative/**`, `docs/contributing/**`, `docs/reference/**`, and `docs/.vitepress/**` — is skipped with a notice in the job summary. The pattern is deliberately narrow: those five directories carry contracts other repos and workflows build against, markdown elsewhere in the tree (`skills/*/SKILL.md`, `AGENTS.md`, `CLAUDE.md`) is executable agent instruction, and a lockfile-only diff can repoint a dependency — all of those are still reviewed. A file renamed into `docs/` is judged on the path it came from, and a file listing that could not be read or was truncated never skips.
 
 See [ADR 0096](../ADRs/0096-skip-provably-unnecessary-review-dispatch.md) for the rationale.
 
