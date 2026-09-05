@@ -3860,24 +3860,10 @@ func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
-// TestBuildTimeoutEnvLines verifies that buildTimeoutEnvLines generates the
-// correct export line for FULLSEND_TIMEOUT_MINUTES (#7042).
-func TestBuildTimeoutEnvLines(t *testing.T) {
+func TestReservedSandboxKeys_IncludesTimeoutKeys(t *testing.T) {
 	t.Parallel()
-	t.Run("explicit timeout", func(t *testing.T) {
-		t.Parallel()
-		h := &harness.Harness{Agent: "agents/test.md", TimeoutMinutes: 20}
-		lines := buildTimeoutEnvLines(h)
-		require.Len(t, lines, 1)
-		assert.Equal(t, "export FULLSEND_TIMEOUT_MINUTES='20'", lines[0])
-	})
-	t.Run("zero falls back to 30", func(t *testing.T) {
-		t.Parallel()
-		h := &harness.Harness{Agent: "agents/test.md"}
-		lines := buildTimeoutEnvLines(h)
-		require.Len(t, lines, 1)
-		assert.Equal(t, "export FULLSEND_TIMEOUT_MINUTES='30'", lines[0])
-	})
+	assert.True(t, reservedSandboxKeys["FULLSEND_TIMEOUT_MINUTES"])
+	assert.True(t, reservedSandboxKeys["FULLSEND_ITERATION_DEADLINE"])
 }
 
 // TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES
@@ -3898,6 +3884,130 @@ func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
 	lines := buildSandboxEnvLines(h)
 	require.Len(t, lines, 1)
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestEffectiveTimeoutMinutes(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 20, effectiveTimeoutMinutes(&harness.Harness{TimeoutMinutes: 20}))
+	assert.Equal(t, defaultTimeoutMinutes, effectiveTimeoutMinutes(&harness.Harness{}))
+}
+
+// TestIterationTimedOut pins the kill test (#7042, same rule as #5075): a
+// failed iteration (the runner's lastExitCode, which already folds in a
+// transcript-reported error) at or past 90 % of the budget.
+func TestIterationTimedOut(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	assert.False(t, iterationTimedOut(0, timeout, timeout), "finished cleanly at 100 %")
+	assert.False(t, iterationTimedOut(1, 17*time.Minute+59*time.Second, timeout), "failed at 89 %")
+	assert.True(t, iterationTimedOut(1, 18*time.Minute, timeout), "failed at 90 %")
+	assert.True(t, iterationTimedOut(-1, timeout, timeout), "killed at 100 %")
+	assert.False(t, iterationTimedOut(1, 3*time.Minute, timeout), "early exit with bad output")
+}
+
+// TestIterationEnvSourceLine pins the last line of .env: sourcing an absent
+// file must not turn .env's exit status non-zero.
+func TestIterationEnvSourceLine(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t,
+		"if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi",
+		iterationEnvSourceLine())
+}
+
+// TestIterationEnvCommand pins the shell the runner executes before every
+// iteration: it rewrites (not appends to) the runner-owned file with the
+// budget and the kill time as Unix seconds (#7042).
+func TestIterationEnvCommand(t *testing.T) {
+	t.Parallel()
+	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
+	assert.Equal(t,
+		fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix()),
+		iterationEnvCommand(20, deadline))
+}
+
+// TestWriteIterationEnv checks the exit code is not swallowed: sandbox.Exec
+// returns a nil error for an ordinary command failure.
+func TestWriteIterationEnv(t *testing.T) {
+	t.Parallel()
+	deadline := time.Unix(1788717600, 0)
+	t.Run("ok", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(name, cmd string, _ time.Duration) (string, string, int, error) {
+			assert.Equal(t, "fs-test", name)
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline))
+		assert.Equal(t, iterationEnvCommand(20, deadline), got)
+	})
+	t.Run("non-zero exit", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "sh: read-only file system\n", 1, nil
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		require.Error(t, err)
+		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
+	})
+	t.Run("exec error", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "", 124, fmt.Errorf("command timed out after 10s")
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		require.EqualError(t, err, "command timed out after 10s")
+	})
+	t.Run("clear", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(_, cmd string, _ time.Duration) (string, string, int, error) {
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, clearIterationEnv(exec, "fs-test"))
+		assert.Equal(t, "rm -f /sandbox/workspace/.fullsend/iteration.env", got)
+	})
+}
+
+func TestTimeoutNoRetryMessage(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "Agent timed out (used 20m0s of 20m0s budget) — not retrying",
+		timeoutNoRetryMessage(20*time.Minute+400*time.Millisecond, 20*time.Minute))
+}
+
+// TestRunTerminalError covers the retry contract of #7042: a killed
+// iteration ends the run with the timeout error, a valid result still wins,
+// and an early exit with invalid output stays a validation failure.
+func TestRunTerminalError(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	cases := []struct {
+		name            string
+		hasLoop, passed bool
+		timedOut        bool
+		runCount        int
+		elapsed         time.Duration
+		wantErrMsg      string // empty = no error
+	}{
+		{name: "loop, killed at budget, nothing valid", hasLoop: true, timedOut: true, runCount: 1, elapsed: timeout, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
+		{name: "loop, killed at budget, output validated", hasLoop: true, passed: true, timedOut: true, runCount: 1, elapsed: timeout},
+		{name: "loop, early exit with invalid output", hasLoop: true, runCount: 2, elapsed: 3 * time.Minute, wantErrMsg: "validation failed after 2 iteration(s)"},
+		{name: "loop, validation passed", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute},
+		{name: "no loop, killed at budget", timedOut: true, runCount: 1, elapsed: 19 * time.Minute, wantErrMsg: "agent timed out after 19m0s without completing (timeout: 20m0s)"},
+		{name: "no loop, exited in time", runCount: 1, elapsed: 3 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := runTerminalError(tc.hasLoop, tc.passed, tc.timedOut, tc.runCount, tc.elapsed, timeout)
+			if tc.wantErrMsg == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.wantErrMsg)
+		})
+	}
 }
 
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {

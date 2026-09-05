@@ -908,7 +908,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 // extension's usage file lives outside them and is named explicitly, or a
 // retry would re-count the first iteration's children.
 func (r PiRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s %s %s",
 		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile),
 		shellQuote(r.piAgentUsagePath()), shellQuote(r.piAgentUsagePath()+piSubagentUsageReadSuffix))

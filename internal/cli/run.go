@@ -1143,6 +1143,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if h.TimeoutMinutes > 0 {
 		printer.KeyValue("Timeout", fmt.Sprintf("%d minutes", h.TimeoutMinutes))
+	} else {
+		printer.KeyValue("Timeout", fmt.Sprintf("%d minutes (default)", defaultTimeoutMinutes))
 	}
 	printer.Blank()
 
@@ -1660,10 +1662,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the correct iteration's output rather than blindly taking the last.
 	var validatedIterNum int
 
-	// lastIterElapsed records the wall-clock duration of the most recent
-	// agent iteration. Used after the loop to detect timeout exhaustion
-	// for agents without a validation loop. See #5075.
+	// lastIterElapsed is the wall-clock duration of the most recent agent
+	// iteration; lastIterTimedOut records whether that iteration spent its
+	// budget (agentTimedOut) and exited non-zero. See #5075, #7042.
 	var lastIterElapsed time.Duration
+	var lastIterTimedOut bool
 
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
@@ -2070,10 +2073,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	timeout := time.Duration(h.TimeoutMinutes) * time.Minute
-	if timeout == 0 {
-		timeout = 30 * time.Minute
-	}
+	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -2132,6 +2132,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
 
+	// Per-iteration sandbox writes follow the run's cancellation.
+	execCtx := func(name, command string, timeout time.Duration) (string, string, int, error) {
+		return sandbox.ExecContext(ctx, name, command, timeout)
+	}
+
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
 		transcriptErrorOverride = false
@@ -2179,19 +2184,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// Inject the per-iteration deadline so the agent can pace itself.
-		// This runs before every iteration (including the first) because the
-		// deadline is an absolute timestamp that must reflect the current time.
-		// See #7042.
-		if err := injectIterationDeadline(sandboxName, timeout); err != nil {
-			printer.StepWarn("Failed to inject iteration deadline: " + err.Error())
-		}
-
 		// 9a. Run agent.
 		printer.StepStart("Running agent")
 		printer.Blank()
 
 		agentStart := time.Now()
+		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+			// The deadline is advisory; a stale one from the previous
+			// iteration is the only harmful state, so clear it and go on.
+			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
+			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
+				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
+					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
+				}
+				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
+			}
+		}
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
@@ -2302,6 +2310,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
+		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed, timeout)
+		if lastIterTimedOut {
+			// The exec ended at the budget but the agent's processes did
+			// not (OpenShell has no per-exec kill). Terminate them before
+			// extraction so the output below is final and no inference is
+			// spent past the budget (#7042).
+			printer.StepInfo("Agent exceeded its budget; terminating its processes in the sandbox")
+			if lockErr := withSandboxLock(ctx, func(waited time.Duration) {
+				printer.StepInfo(fmt.Sprintf(
+					"Waiting %s for a credential refresh to finish before terminating agent processes", waited))
+			}, func() error {
+				agentruntime.TerminateStrayProcesses(sandboxName, os.Stderr)
+				return nil
+			}); lockErr != nil {
+				printer.StepWarn("Could not terminate agent processes: " + lockErr.Error())
+			}
+		}
 
 		// 9b. Extract output files.
 		extractStart := time.Now()
@@ -2339,24 +2364,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// Detect timeout exhaustion inside the validation loop (#7042).
-		// When the agent used >= 90% of its budget and exited non-zero, it
-		// was killed by the timeout rather than finishing deliberately. Break
-		// out with a distinct error instead of retrying blindly — fleet data
-		// shows 0/11 timeout retries rescued a run. Schema-failure retries
-		// (agent exits early with invalid output) are unaffected because
-		// they do not trigger agentTimedOut.
-		if h.ValidationLoop != nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
-			printer.StepWarn(fmt.Sprintf(
-				"Agent timed out (used %s of %s budget) — not retrying",
-				lastIterElapsed.Round(time.Second), timeout))
-			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
-				printer.StepWarn("Failed to write metrics.json: " + err.Error())
-			}
-			return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
-				lastIterElapsed.Round(time.Second), timeout)
-		}
-
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
 		//
@@ -2379,6 +2386,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if h.ValidationLoop != nil {
 				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
 				repoExtractedOK = false
+				if lastIterTimedOut {
+					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+					break
+				}
 				continue
 			}
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
@@ -2402,6 +2413,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				if lastIterTimedOut {
+					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+					break
+				}
 				continue
 			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
@@ -2445,6 +2460,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			validationFeedback = feedback
 		}
 
+		// A killed iteration is not retried: the next one would replay the
+		// same run with the same budget; the sweep still checks its output (#7042).
+		if lastIterTimedOut {
+			if iteration < maxIterations {
+				printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+			}
+			break
+		}
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
@@ -2535,25 +2558,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	if h.ValidationLoop != nil && !validationPassed {
-		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
-	}
-
-	// Detect timeout exhaustion for agents without a validation loop
-	// (e.g., the code agent). When the agent used >= 90% of its time
-	// budget and exited non-zero, it was almost certainly killed by the
-	// timeout rather than finishing deliberately. Report as a failure so
-	// the post-script does not treat "no branch" as intentional success.
-	//
-	// Agents with a validation loop detect timeouts inside the loop and
-	// return early with the same error message (#7042), so this is scoped
-	// to the no-loop path. See #5075.
-	if h.ValidationLoop == nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
-		return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
-			lastIterElapsed.Round(time.Second), timeout)
-	}
-
-	return nil
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -2839,27 +2844,92 @@ func buildRoleSlugEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
-// buildTimeoutEnvLines generates the export line for FULLSEND_TIMEOUT_MINUTES.
-// This is the static portion of the budget export; the per-iteration
-// FULLSEND_ITERATION_DEADLINE is injected by injectIterationDeadline inside the
-// loop because it changes every iteration. See #7042.
-func buildTimeoutEnvLines(h *harness.Harness) []string {
-	timeout := h.TimeoutMinutes
-	if timeout == 0 {
-		timeout = 30 // match the default in runAgent
+// defaultTimeoutMinutes applies when a harness sets no timeout_minutes.
+const defaultTimeoutMinutes = 30
+
+// effectiveTimeoutMinutes is the per-iteration budget the runner enforces
+// and exports as FULLSEND_TIMEOUT_MINUTES.
+func effectiveTimeoutMinutes(h *harness.Harness) int {
+	if h.TimeoutMinutes > 0 {
+		return h.TimeoutMinutes
 	}
-	return []string{fmt.Sprintf("export FULLSEND_TIMEOUT_MINUTES='%d'", timeout)}
+	return defaultTimeoutMinutes
 }
 
-// injectIterationDeadline appends FULLSEND_ITERATION_DEADLINE to the sandbox
-// .env file. The deadline is an absolute epoch-seconds value computed from the
-// current time and the iteration timeout, allowing agents to pace themselves.
-// See #7042.
-func injectIterationDeadline(sandboxName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout).Unix()
-	cmd := fmt.Sprintf("echo 'export FULLSEND_ITERATION_DEADLINE=%d' >> %s/.env", deadline, sandbox.SandboxWorkspace)
-	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
-	return err
+// iterationTimedOut is #5075's test applied to every path: a failed
+// iteration (non-zero exit, or exit 0 with a transcript-reported error) that
+// spent 90 % or more of its budget. pi and codex fold the transcript case
+// into their exit code before the runner sees it, so the runner's
+// lastExitCode is the one input that means the same on all runtimes.
+func iterationTimedOut(exitCode int, elapsed, timeout time.Duration) bool {
+	return exitCode != 0 && agentTimedOut(elapsed, timeout)
+}
+
+// iterationEnvFile is the runner-owned file .env sources after every
+// harness-controlled entry; it holds the budget and the deadline (#7042).
+const (
+	iterationEnvDir  = sandbox.SandboxWorkspace + "/.fullsend"
+	iterationEnvFile = iterationEnvDir + "/iteration.env"
+)
+
+// iterationEnvSourceLine is the last line bootstrapEnv writes to .env. The
+// `if` keeps .env's exit status 0 while the file is absent.
+func iterationEnvSourceLine() string {
+	return fmt.Sprintf("if [ -f %s ]; then . %s; fi", iterationEnvFile, iterationEnvFile)
+}
+
+// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
+// and the Unix time at which the running iteration is killed.
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+}
+
+// runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
+// returns err only when openshell itself fails to start or times out.
+func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) error {
+	_, stderr, exitCode, err := exec(sandboxName, command, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("exit %d: %s", exitCode, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
+// writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+}
+
+// clearIterationEnv removes a previous iteration's file so a stale deadline
+// cannot outlive the iteration it described.
+func clearIterationEnv(exec sandboxExecFunc, sandboxName string) error {
+	return runIterationEnvCommand(exec, sandboxName, "rm -f "+iterationEnvFile)
+}
+
+// timeoutNoRetryMessage is the console line printed when a killed iteration
+// forgoes a retry it was configured for.
+func timeoutNoRetryMessage(elapsed, timeout time.Duration) string {
+	return fmt.Sprintf("Agent timed out (used %s of %s budget) — not retrying", elapsed.Round(time.Second), timeout)
+}
+
+// runTerminalError decides how the run ends after the post-loop steps. A
+// valid result wins; the timeout error replaces "validation failed" only when
+// nothing validated (#7042). Without a loop the timeout alone fails the run
+// (#5075).
+func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, elapsed, timeout time.Duration) error {
+	timeoutErr := fmt.Errorf("agent timed out after %s without completing (timeout: %s)", elapsed.Round(time.Second), timeout)
+	switch {
+	case hasLoop && !validationPassed && timedOut:
+		return timeoutErr
+	case hasLoop && !validationPassed:
+		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
+	case !hasLoop && timedOut:
+		return timeoutErr
+	}
+	return nil
 }
 
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
@@ -2882,12 +2952,6 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// Expose harness identity so skills can reference their own role/slug
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
-
-	// Expose the timeout budget so agents can pace themselves (skip optional
-	// phases, write partial results) instead of guessing. The per-iteration
-	// deadline (FULLSEND_ITERATION_DEADLINE) is injected inside the loop
-	// (injectIterationDeadline) because it changes every iteration. See #7042.
-	lines = append(lines, buildTimeoutEnvLines(h)...)
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
@@ -2934,6 +2998,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// env.sandbox takes precedence on collision — the common use case is
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
+
+	// Runner-owned budget and deadline come after every harness-controlled
+	// entry so none of them can shadow the values (#7042).
+	lines = append(lines, iterationEnvSourceLine())
 
 	content := strings.Join(lines, "\n") + "\n"
 
