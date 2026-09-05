@@ -159,6 +159,10 @@ Do NOT push code, create issues, or modify anything directly.
 Your only output is the JSON result file.
 ````
 
+The agent's environment also carries its budget: `FULLSEND_TIMEOUT_MINUTES` (the harness's
+`timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed).
+Write the result before the deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
+
 Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
