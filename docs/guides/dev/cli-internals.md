@@ -434,6 +434,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
+│  │  ├── FULLSEND_TIMEOUT_MINUTES=<budget>   │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  └── sources .env.d/*.env files          │                   │

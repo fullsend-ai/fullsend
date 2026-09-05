@@ -3860,6 +3860,46 @@ func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
+// TestBuildTimeoutEnvLines verifies that buildTimeoutEnvLines generates the
+// correct export line for FULLSEND_TIMEOUT_MINUTES (#7042).
+func TestBuildTimeoutEnvLines(t *testing.T) {
+	t.Parallel()
+	t.Run("explicit timeout", func(t *testing.T) {
+		t.Parallel()
+		h := &harness.Harness{Agent: "agents/test.md", TimeoutMinutes: 20}
+		lines := buildTimeoutEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_TIMEOUT_MINUTES='20'", lines[0])
+	})
+	t.Run("zero falls back to 30", func(t *testing.T) {
+		t.Parallel()
+		h := &harness.Harness{Agent: "agents/test.md"}
+		lines := buildTimeoutEnvLines(h)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "export FULLSEND_TIMEOUT_MINUTES='30'", lines[0])
+	})
+}
+
+// TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES
+// and FULLSEND_ITERATION_DEADLINE in env.sandbox are rejected as reserved (#7042).
+func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
+	t.Parallel()
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                  "allowed",
+				"FULLSEND_TIMEOUT_MINUTES":    "999",
+				"FULLSEND_ITERATION_DEADLINE": "1234567890",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
