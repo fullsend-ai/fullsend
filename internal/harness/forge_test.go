@@ -761,6 +761,26 @@ func TestValidate_ForgeHostFileSrcURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "forge.github.host_files[0].src must be a local path")
 }
 
+// TestValidate_ForgeHostFileDestTargetsRunnerEnv verifies that forge-level
+// host_files entries targeting the runner's bootstrap .env file are rejected
+// during validation. See #7010.
+func TestValidate_ForgeHostFileDestTargetsRunnerEnv(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				HostFiles: []HostFile{
+					{Src: "env/override.env", Dest: "/sandbox/workspace/.env"},
+				},
+			},
+		},
+	}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "targets the runner's bootstrap .env file")
+}
+
 func TestValidate_ForgeHostFileValid(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
