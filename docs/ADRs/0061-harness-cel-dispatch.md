@@ -21,6 +21,10 @@ Accepted (partially supersedes static stage routing from
 [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md); preserves its
 synchronous `workflow_call` execution model)
 
+The event-only CEL context is superseded by
+[ADR 0099](0099-entity-first-harness-evaluation.md), which retains one harness
+predicate but evaluates it against a resolved entity and optional event.
+
 ## Context
 
 Custom agents should be easy to author and portable across forges. Today, adding
