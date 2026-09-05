@@ -346,6 +346,7 @@ export function childEnv(base, modelSpec) {
   if (provider === "anthropic-vertex") {
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    delete env.ANTHROPIC_OAUTH_TOKEN;
     delete env.ANTHROPIC_BASE_URL;
     delete env.ANTHROPIC_VERTEX_BASE_URL;
     const project = base.ANTHROPIC_VERTEX_PROJECT_ID || base.GOOGLE_CLOUD_PROJECT;
