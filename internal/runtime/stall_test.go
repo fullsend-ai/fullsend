@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"regexp"
@@ -316,13 +317,169 @@ func TestRuntimeRun_DoesNotRebindTheCallerContext(t *testing.T) {
 	// on a NEW variable name is fine; only rebinding `ctx` is the hazard.
 	rebind := regexp.MustCompile(`(?m)^\tctx(, [A-Za-z_][A-Za-z0-9_]*)? :?= context\.`)
 
-	for _, file := range []string{"claude.go", "pi_run.go"} {
+	for _, file := range streamingRuntimeFiles(t) {
 		src, err := os.ReadFile(file)
 		require.NoError(t, err)
 
 		assert.NotRegexp(t, rebind, string(src),
 			"%s rebinds the caller's ctx at function-body scope; the watchdog must reuse the ExecStreamReader cancel instead", file)
-		assert.Contains(t, string(src), "startStallWatchdog(params.StallTimeout, printer, cancel)",
+		assert.Contains(t, string(src), "stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel)",
 			"%s must arm the watchdog on the sandbox command's own cancel, not on a context it derives", file)
 	}
+}
+
+// streamingRuntimeFiles returns the runtime sources that drain a stream
+// through sandbox.ExecStreamReader — the ones the watchdog applies to. It is
+// derived from the call sites rather than listed, so a fourth streaming
+// runtime cannot be added without the watchdog: that omission is exactly how
+// codex shipped unguarded while claude and pi were covered.
+func streamingRuntimeFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	var files []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, readErr := os.ReadFile(name)
+		require.NoError(t, readErr)
+		if strings.Contains(string(src), "sandbox.ExecStreamReader(") {
+			files = append(files, name)
+		}
+	}
+	require.ElementsMatch(t, []string{"claude.go", "pi_run.go", "codex_run.go"}, files)
+	return files
+}
+
+// TestStreamingRuntimesArmTheWatchdog: claude, pi and codex share one
+// ExecStreamReader -> handler -> parse shape, so all three must arm the
+// watchdog, feed it per stream line, and report its verdict ahead of the
+// Wait error.
+func TestStreamingRuntimesArmTheWatchdog(t *testing.T) {
+	for _, file := range streamingRuntimeFiles(t) {
+		src, err := os.ReadFile(file)
+		require.NoError(t, err)
+		s := string(src)
+		assert.Contains(t, s, "startStallWatchdog(params.StallTimeout, printer,", "%s must arm the watchdog", file)
+		assert.Contains(t, s, ", stall.note)", "%s must feed the watchdog per stream line", file)
+		assert.Contains(t, s, "stall.stalledErr()", "%s must report ErrStalled ahead of the Wait error", file)
+	}
+}
+
+// TestStallKill_TerminatesTheAgentThenReleasesTheClient: cancelling the exec
+// only SIGKILLs the local openshell client, so the kill must sweep the
+// sandbox first — otherwise the agent keeps writing the workspace and
+// spending tokens until teardown, and indefinitely under --keep-sandbox.
+func TestStallKill_TerminatesTheAgentThenReleasesTheClient(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	var sandboxName string
+	execFn := func(name, cmd string, _ time.Duration) (string, string, int, error) {
+		sandboxName = name
+		assert.Equal(t, killStrayProcessesScript(), cmd)
+		order = append(order, "sweep")
+		return "stray processes killed: 2\n", "", 0, nil
+	}
+	var out bytes.Buffer
+
+	stallKill(execFn, "sb-1", &out, func() { order = append(order, "cancel") })()
+
+	assert.Equal(t, []string{"sweep", "cancel"}, order,
+		"the in-sandbox agent must be killed before the client is released")
+	assert.Equal(t, "sb-1", sandboxName)
+	assert.Contains(t, out.String(), "Terminated 2 stalled sandbox process(es)")
+}
+
+// TestStallKill_ReleasesTheClientWhenTheSweepFails: a broken exec channel
+// must not strand the run — the client cancel still has to happen, with the
+// sweep failure reported rather than swallowed.
+func TestStallKill_ReleasesTheClientWhenTheSweepFails(t *testing.T) {
+	t.Parallel()
+
+	cancelled := false
+	execFn := func(string, string, time.Duration) (string, string, int, error) {
+		return "", "", 0, errors.New("gateway unreachable")
+	}
+	var out bytes.Buffer
+
+	stallKill(execFn, "sb-2", &out, func() { cancelled = true })()
+
+	assert.True(t, cancelled, "cancel must run even when the sandbox sweep fails")
+	assert.Contains(t, out.String(), "could not terminate the stalled agent inside the sandbox")
+	assert.Contains(t, out.String(), "gateway unreachable")
+}
+
+// TestStallKill_QuietWhenNothingWasRunning: a sweep that signalled nothing
+// says nothing, so the stall verdict is not diluted by a "killed 0" line.
+func TestStallKill_QuietWhenNothingWasRunning(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	stallKill(recordingExec(new([]string), "stray processes killed: 0\n", "", 0, nil), "sb-3", &out, func() {})()
+
+	assert.Empty(t, out.String())
+}
+
+// TestParseCodexStream_ProgressLinesResetTheSilenceClock: codex item.started
+// and item.updated lines map to no AgentEvent but stream while a command
+// runs, so they must feed the watchdog — the same rule as pi and Claude.
+func TestParseCodexStream_ProgressLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	var events []AgentEvent
+	lines := 0
+	onLine := func() { lines++; w.note() }
+
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"item.started","item":{"type":"command_execution"}}` + "\n" +
+		`{"type":"item.updated","item":{"type":"command_execution"}}` + "\n" +
+		"not json\n" +
+		"\n"
+	_, err := parseCodexStreamLines(strings.NewReader(input),
+		func(e AgentEvent) { events = append(events, e) }, onLine)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, lines, "each well-formed line is liveness; garbage and blanks are not")
+	assert.Positive(t, w.lastEvent.Load(),
+		"a progress line must reset the watchdog's silence clock")
+	// The progress lines emit nothing; the only event is the terminal
+	// ResultEvent for a stream that carried no turn outcome.
+	require.Len(t, events, 1)
+	assert.IsType(t, ResultEvent{}, events[0])
+}
+
+// TestParseCodexStream_OversizedLinesResetTheSilenceClock: the codex twin of
+// the pi and Claude oversized-line liveness tests.
+func TestParseCodexStream_OversizedLinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	lines := 0
+	time.Sleep(2 * time.Millisecond)
+	input := `{"type":"big","pad":"` + strings.Repeat("a", streamBufSize+1) + `"}` + "\n"
+	_, err := parseCodexStreamLines(strings.NewReader(input), func(AgentEvent) {},
+		func() { lines++; w.note() })
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, lines, "a fully consumed oversized line must count as liveness")
+	assert.Positive(t, w.lastEvent.Load(),
+		"an oversized line must reset the watchdog's silence clock")
+}
+
+// TestStallDetectionLatency_IsThePollInterval: the runner sizes its
+// arm/disarm decision on this, so it must be the interval watch() actually
+// ticks at — a fraction of the timeout, capped at 30s and floored at 1ms.
+func TestStallDetectionLatency_IsThePollInterval(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, stallMaxPoll, StallDetectionLatency(15*time.Minute), "long timeouts are capped")
+	assert.Equal(t, 15*time.Second, StallDetectionLatency(5*time.Minute), "below the cap it is timeout/20")
+	assert.Equal(t, stallMinPoll, StallDetectionLatency(time.Nanosecond), "a tiny timeout still ticks")
 }
