@@ -50,16 +50,15 @@ on:
   workflow_dispatch:
   workflow_call:
 
-# TEMPORARILY DISABLED for stress testing (PR #6875). Restore after.
-# concurrency:
-#   group: >-
-#     ${{ github.event_name == 'pull_request_target'
-#         && format('e2e-{0}', github.event.pull_request.number)
-#         || format('{0}-{1}', github.workflow, github.ref) }}
-#   cancel-in-progress: >-
-#     ${{ (github.event_name == 'pull_request_target'
-#         && github.event.action != 'labeled')
-#         || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request_target'
+        && format('e2e-{0}', github.event.pull_request.number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ (github.event_name == 'pull_request_target'
+        && github.event.action != 'labeled')
+        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
