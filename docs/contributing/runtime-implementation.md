@@ -616,10 +616,10 @@ ignores the Vertex credential path.
 
 **Applying the invariant** (in `pi_bootstrap.go`):
 
-`piAgentModels` builds the child model table and must apply the same
-three-way dispatch independently — it cannot reuse `translatePiModel`
-because that reads `FULLSEND_PI_PROVIDER`, which would re-provider the
-Claude aliases under an xai-vertex parent. PR #7028 demonstrated the
+The alias resolution loop in `piAgentModels` applies the same three-way
+dispatch independently — it cannot reuse `translatePiModel` for alias
+entries because that reads `FULLSEND_PI_PROVIDER`, which would re-provider
+the Claude aliases under an xai-vertex parent. #7028 demonstrated the
 failure mode: the original implementation prepended `anthropic-vertex/`
 unconditionally, producing double-prefixed specs for provider-qualified
 values and wrong two-segment specs for xai values.
