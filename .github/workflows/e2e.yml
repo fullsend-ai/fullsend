@@ -50,18 +50,16 @@ on:
   workflow_dispatch:
   workflow_call:
 
-concurrency:
-  group: >-
-    ${{ github.event_name == 'pull_request_target'
-        && format('e2e-{0}', github.event.pull_request.number)
-        || format('{0}-{1}', github.workflow, github.ref) }}
-  # Label events are auth, not a code change — never cancel an in-progress run.
-  # Cancel for opened/synchronize/reopened and for non-main non-PR triggers.
-  # Explicit outer parens: (A && B) || (C && D).
-  cancel-in-progress: >-
-    ${{ (github.event_name == 'pull_request_target'
-        && github.event.action != 'labeled')
-        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
+# TEMPORARILY DISABLED for stress testing (PR #6875). Restore after.
+# concurrency:
+#   group: >-
+#     ${{ github.event_name == 'pull_request_target'
+#         && format('e2e-{0}', github.event.pull_request.number)
+#         || format('{0}-{1}', github.workflow, github.ref) }}
+#   cancel-in-progress: >-
+#     ${{ (github.event_name == 'pull_request_target'
+#         && github.event.action != 'labeled')
+#         || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
