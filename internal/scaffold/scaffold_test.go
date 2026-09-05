@@ -1018,6 +1018,44 @@ func TestPrependManagedHeaderNoHeader(t *testing.T) {
 	assert.Equal(t, content, result, "files without headers should be returned unchanged")
 }
 
+func TestScaffoldGitHubROProfile_GraphQLEndpoint(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-github-ro.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Endpoints []struct {
+			Host        string `yaml:"host"`
+			Port        int    `yaml:"port"`
+			Protocol    string `yaml:"protocol"`
+			Access      string `yaml:"access"`
+			Enforcement string `yaml:"enforcement"`
+			Path        string `yaml:"path"`
+		} `yaml:"endpoints"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// The scaffold copy must include a GraphQL endpoint for api.github.com
+	// so that generated agents can use `gh --json`, `gh pr view`, etc.
+	// without hitting an egress policy denial. The fleet copy in
+	// fullsend-ai/agents has this endpoint; if this test fails, the
+	// scaffold has drifted. See #7014.
+	var found bool
+	for _, ep := range profile.Endpoints {
+		if ep.Host == "api.github.com" && ep.Protocol == "graphql" {
+			found = true
+			assert.Equal(t, "/graphql", ep.Path,
+				"GraphQL endpoint path must be /graphql")
+			assert.Equal(t, "read-only", ep.Access,
+				"GraphQL endpoint access must be read-only")
+			assert.Equal(t, "enforce", ep.Enforcement,
+				"GraphQL endpoint enforcement must be enforce")
+			break
+		}
+	}
+	assert.True(t, found,
+		"scaffold fullsend-github-ro profile must include a GraphQL endpoint for api.github.com")
+}
+
 func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
 	data, err := FullsendRepoFile("profiles/fullsend-vertex-ai.yaml")
 	require.NoError(t, err)
