@@ -22,6 +22,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | Repo variable | GCP region for Agent Platform inference | `global` |
+| `FULLSEND_PRESERVE_RUNS` | Repo variable | Let the agent run already working on an issue or PR finish when a newer event arrives, instead of cancelling it. The newer event then waits as the single pending run. Unset — the default — cancels, as before. Comparison is case-insensitive, so `TRUE` and `True` also preserve; any other value, including `1` and `yes`, cancels. See [CI workflows](../../contributing/ci-workflows.md) for what preserving gives up | `true` |
 | `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |

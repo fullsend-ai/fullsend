@@ -489,6 +489,20 @@ func newRunCmd() *cobra.Command {
 }
 
 func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
+	// Captured first, before harness resolution, token minting and env
+	// expansion, each of which can take real time — a mint call retries over
+	// the network. Anything on the work item after this instant is activity
+	// the agent must reconcile against, and a later capture would classify
+	// some of it as predating the run.
+	//
+	// This is still not the honest baseline. The run was dispatched before
+	// this process started, so the true start is the workflow run's
+	// server-side created_at, which costs an API call to read; no host clock
+	// inside this process can reach it. Recorded here so the two halves do
+	// not disagree about what "run start" means — the follow-up run watcher
+	// reached the same conclusion and uses the run record's created_at.
+	runStartedAt := time.Now().UTC()
+
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -1881,7 +1895,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
-	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(),
+		runFacts{headSHA: runHeadSHA(forgePlatform), startedAt: runStartedAt}, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2744,6 +2759,8 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_TARGET_REPO_DIR": true,
 	"FULLSEND_ROLE":            true,
 	"FULLSEND_SLUG":            true,
+	"FULLSEND_RUN_HEAD_SHA":    true,
+	"FULLSEND_RUN_STARTED_AT":  true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 }
 
@@ -2811,8 +2828,49 @@ func buildRoleSlugEnvLines(h *harness.Harness) []string {
 	return lines
 }
 
-func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
+// runFacts is what the work item looked like when this run started. It is
+// exported into the sandbox so an agent can tell, before it writes its
+// result, whether the item moved under it — which it must do once a
+// repository sets FULLSEND_PRESERVE_RUNS, because the run in flight is then
+// no longer cancelled when a newer event arrives.
+type runFacts struct {
+	// headSHA is the work item's head at run start; empty for issues.
+	headSHA string
+	// startedAt is when the run started, in UTC.
+	startedAt time.Time
+}
+
+func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, facts runFacts, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
+
+	content := strings.Join(buildEnvScriptLines(sandboxName, remoteRepositoryDir, h, runtimeEnvExports, facts, fetchEnv...), "\n") + "\n"
+
+	tmpFile, err := os.CreateTemp("", "fullsend-env-*.sh")
+	if err != nil {
+		return fmt.Errorf("creating temp env file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("writing temp env file: %w", err)
+	}
+	tmpFile.Close()
+
+	if err := sandbox.UploadFile(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
+		return fmt.Errorf("copying .env file to sandbox: %w", err)
+	}
+
+	return uploadHostFiles(sandboxName, h)
+}
+
+// buildEnvScriptLines assembles the sandbox .env script.
+//
+// The ORDER of these lines is behaviour, not formatting: later exports win,
+// and .env.d is sourced in the middle, so anything that must outrank a
+// harness-supplied env file has to come after it. There is a test pinning
+// that for the run facts.
+func buildEnvScriptLines(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, facts runFacts, fetchEnv ...fetchServiceEnv) []string {
 	outputDir := sandbox.SandboxWorkspace + "/output"
 
 	var lines []string
@@ -2878,25 +2936,23 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
 
-	content := strings.Join(lines, "\n") + "\n"
+	// Expose this run's baseline so the agent can re-check, once, whether the
+	// work item moved under it before it writes its result.
+	//
+	// Last, and after .env.d, for the same reason env.sandbox is: a file
+	// sourced from .env.d would otherwise overwrite these. reservedSandboxKeys
+	// stops an env.sandbox entry shadowing them, but it says nothing about
+	// .env.d, so position is what actually protects them. It does not close
+	// every route — a host_files entry whose dest is the runner's own .env
+	// replaces the file wholesale — and that gap is repo-wide rather than
+	// specific to these two keys; see the tracking issue.
+	lines = append(lines, buildRunFactsEnvLines(facts)...)
 
-	tmpFile, err := os.CreateTemp("", "fullsend-env-*.sh")
-	if err != nil {
-		return fmt.Errorf("creating temp env file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
+	return lines
+}
 
-	if _, err := tmpFile.WriteString(content); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("writing temp env file: %w", err)
-	}
-	tmpFile.Close()
-
-	if err := sandbox.UploadFile(sandboxName, tmpFile.Name(), remoteEnvFile); err != nil {
-		return fmt.Errorf("copying .env file to sandbox: %w", err)
-	}
-
-	// Copy host files into the sandbox.
+// uploadHostFiles copies the harness's host_files into the sandbox.
+func uploadHostFiles(sandboxName string, h *harness.Harness) error {
 	for _, hf := range h.HostFiles {
 		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
 		// credential vars in host_files src path expansion (#5832).
@@ -4760,6 +4816,37 @@ func extractMapString(m map[string]any, keys ...string) string {
 		current = v
 	}
 	return ""
+}
+
+// runHeadSHA returns the work item's head at run start, or "" when the run
+// is not against a pull or merge request.
+//
+// GITHUB_SHA is deliberately not a fallback: on pull_request_target it is the
+// base branch, and a base SHA presented as the head would make an agent
+// report a head move on every run.
+func runHeadSHA(forgePlatform string) string {
+	if forgePlatform == "gitlab" {
+		return os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
+	}
+	if sha := os.Getenv("PR_HEAD_SHA"); sha != "" {
+		return sha
+	}
+	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// buildRunFactsEnvLines exports this run's baseline into the sandbox.
+//
+// They are written here rather than through env.sandbox or an env/*.env file:
+// .env.d files are sourced after this one and would expand ${VAR} host-side to
+// an empty string, and a ${VAR} in harness env.sandbox hard-fails
+// ValidateRunnerEnvWith for consumers that do not define it.
+func buildRunFactsEnvLines(facts runFacts) []string {
+	return []string{
+		fmt.Sprintf("export FULLSEND_RUN_STARTED_AT='%s'", facts.startedAt.UTC().Format(time.RFC3339)),
+		// The SHA is forge-supplied; single-quote it the way every other
+		// exported value here is, rather than trusting its shape.
+		fmt.Sprintf("export FULLSEND_RUN_HEAD_SHA='%s'", strings.ReplaceAll(facts.headSHA, "'", "'\\''")),
+	}
 }
 
 // prHeadSHAFromEventPath extracts pull_request.head.sha from the event

@@ -3536,7 +3536,7 @@ func TestBootstrapEnv_IncludesFetchServiceVars(t *testing.T) {
 	h := &harness.Harness{Agent: "agents/test.md"}
 	fEnv := fetchServiceEnv{addr: "127.0.0.1:54321", token: "deadbeef"}
 
-	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, fEnv)
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, runFacts{}, fEnv)
 
 	// Expected to fail at sandbox.UploadFile — we just verify the fetch
 	// env var code path was reached (coverage) and the error is from upload.
@@ -3547,7 +3547,7 @@ func TestBootstrapEnv_IncludesFetchServiceVars(t *testing.T) {
 func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 	h := &harness.Harness{Agent: "agents/test.md"}
 
-	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, runFacts{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
@@ -3569,7 +3569,7 @@ func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
 		},
 	}
 
-	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, runFacts{})
 
 	// Expected to fail at sandbox operations — the schema code path is
 	// exercised before the failure.
@@ -3584,7 +3584,7 @@ func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
 		},
 	}
 
-	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil, runFacts{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
