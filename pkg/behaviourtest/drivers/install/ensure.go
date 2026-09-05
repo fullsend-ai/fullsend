@@ -26,6 +26,11 @@ const (
 	// reset cycle. With exponential backoff (2×) and a 1s initial
 	// delay, 5 attempts cover up to ~1+2+4+8 = 15s of API lag.
 	resetMaxAttempts = 5
+
+	// actorAccessMaxAttempts bounds awaitActorAccess. With the same
+	// 1s-doubling backoff as the reset waits, 7 attempts cover
+	// ~1+2+4+8+16+32 = 63s of collaborator-index lag.
+	actorAccessMaxAttempts = 7
 )
 
 // resetRetryDelay is the initial delay for exponential backoff when
@@ -172,7 +177,10 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 		}
 	}
 
-	return nil
+	// Step 6: wait until the recreated repo resolves a role for the
+	// account this token acts as, so the first event the scenario
+	// raises is dispatched with the actor's real role.
+	return e.awaitActorAccess(ctx, org, repoName, target)
 }
 
 // resetRepo deletes an existing repo to clear accumulated git history.
@@ -321,6 +329,98 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 		}
 	}
 	return fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts)
+}
+
+// commitAuthorLister is implemented by clients that can report the
+// account attributed as author of a repo's newest commit.
+type commitAuthorLister interface {
+	LatestCommitAuthorLogin(ctx context.Context, owner, repo string) (string, error)
+}
+
+// collaboratorPermissionGetter is the GitHub-specific lookup the harness
+// dispatch relies on (forge.GitHubExtensions); the ensurer probes it
+// through the same narrow method so test doubles need not implement the
+// whole extension set.
+type collaboratorPermissionGetter interface {
+	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+}
+
+// actorLogin returns the login the ensurer's token acts as. Installation
+// tokens cannot ask GET /user, but every commit the install flow just
+// made through the API is attributed to the app's bot user, so the
+// newest commit on the repo names it. GET /user is the fallback for
+// PATs used in local runs. "" means the identity could not be learned.
+func (e *repoEnsurer) actorLogin(ctx context.Context, org, repoName string) (string, error) {
+	if lister, ok := e.client.(commitAuthorLister); ok {
+		login, err := lister.LatestCommitAuthorLogin(ctx, org, repoName)
+		if err != nil {
+			return "", err
+		}
+		if login != "" {
+			return login, nil
+		}
+	}
+	login, err := e.client.GetAuthenticatedUser(ctx)
+	if err != nil {
+		// Installation tokens are refused by GET /user; that is not
+		// a fault, just no identity to probe with.
+		return "", nil
+	}
+	return login, nil
+}
+
+// awaitActorAccess waits until GetCollaboratorPermission on the
+// recreated repo resolves a role for the account the token acts as.
+// Repo visibility (awaitCreation) and the collaborator view of an
+// account on a new repo ID are separate GitHub consistency domains: on
+// a recreated pool repo the suite labelled the issue as soon as the
+// repo object existed, the harness dispatch's permission lookup for the
+// labelling actor answered 200 with an empty role_name (github.go's
+// GetCollaboratorPermission maps that to ErrNotFound: "no permission
+// for fullsend-ai-e2e[bot]"), the role fell to none and the matrix came
+// back empty (#6701). The probe here is the same endpoint from the
+// ensurer's own token; whether that view and the workflow token's view
+// converge at exactly the same moment is not documented by GitHub, so
+// this is the closest available signal, to be validated in E2E.
+//
+// A client without the permission lookup (GitLab, plain test doubles)
+// skips the wait; one that cannot name its own account skips it with a
+// log line rather than block the suite.
+func (e *repoEnsurer) awaitActorAccess(ctx context.Context, org, repoName, target string) error {
+	perms, ok := e.client.(collaboratorPermissionGetter)
+	if !ok {
+		return nil
+	}
+	login, err := e.actorLogin(ctx, org, repoName)
+	if err != nil {
+		return fmt.Errorf("resolving actor login for %s: %w", target, err)
+	}
+	if login == "" {
+		e.logf("[ensure] cannot determine the account this token acts as; skipping actor access wait for %s", target)
+		return nil
+	}
+	e.logf("[ensure] waiting for %s to resolve a role for %s", target, login)
+	delay := resetRetryDelay
+	for attempt := 1; attempt <= actorAccessMaxAttempts; attempt++ {
+		role, err := perms.GetCollaboratorPermission(ctx, org, repoName, login)
+		if err == nil {
+			e.logf("[ensure] %s resolves role %q for %s after %d attempt(s)", target, role, login, attempt)
+			return nil
+		}
+		if !forge.IsNotFound(err) {
+			return fmt.Errorf("checking %s access to %s: %w", login, target, err)
+		}
+		if attempt < actorAccessMaxAttempts {
+			e.logf("[ensure] %s resolves no role for %s yet, attempt %d/%d — backing off %v", target, login, attempt, actorAccessMaxAttempts, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for %s access to %s: %w", login, target, ctx.Err())
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+	}
+	return fmt.Errorf("%s resolves no role for %s after %d attempts following creation; dispatch would resolve no role for the labelling actor", target, login, actorAccessMaxAttempts)
 }
 
 // installFullsend runs inference provision (when a GCP project is

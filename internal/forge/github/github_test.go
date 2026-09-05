@@ -4548,3 +4548,45 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
+
+func TestLatestCommitAuthorLogin(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{{"sha": "abc", "author": map[string]any{"login": "fullsend-ai-e2e[bot]"}}})
+	}))
+	defer srv.Close()
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	login, err := client.LatestCommitAuthorLogin(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai-e2e[bot]", login)
+	assert.Equal(t, "/repos/org/repo/commits?per_page=1", gotPath)
+}
+
+func TestLatestCommitAuthorLogin_NoLinkedAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{{"sha": "abc", "author": nil}})
+	}))
+	defer srv.Close()
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	login, err := client.LatestCommitAuthorLogin(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "", login)
+}
+
+func TestLatestCommitAuthorLogin_EmptyRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	login, err := client.LatestCommitAuthorLogin(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "", login)
+}
