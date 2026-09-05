@@ -28,7 +28,7 @@ computed from that trace (`eval-measurements.jsonl`). The step is
 Fullsend does not pick an observability product for scores. The portable
 contract is a local JSONL artifact next to telemetry; remote export reuses
 the same OpenTelemetry (`OTEL_EXPORTER_OTLP_*`) configuration as agent
-traces when implemented.
+traces.
 
 OTLP (OpenTelemetry Protocol) is the wire format that carries spans and
 scores to any compatible backend — Phoenix, MLflow, Jaeger, etc.
@@ -42,21 +42,25 @@ fullsend run
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ writes  output/<runDir>/eval-measurements.jsonl when at least one
        new score is produced (+ eval-measure-ledger.txt for idempotency)
+  └─ if OTEL_EXPORTER_OTLP_* set → OTLP export of scores as
+       gen_ai.evaluation.result span events on the same TraceID
+       (the W3C Trace ID shared with the agent run — fail-open;
+       local JSONL always wins)
 ```
-
-> **Planned:** portable remote score export via the same `OTEL_EXPORTER_OTLP_*`
-> path as agent traces. Not yet implemented.
 
 | Artifact | When | Purpose |
 |---|---|---|
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores *(planned)* | OTEL configured | Scores on the OTLP path — any OTLP backend |
+| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + **span event** `gen_ai.evaluation.result` ([normative GenAI events](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md#event-gen_aievaluationresult); [library support matrix](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md)) correlated by TraceID / parent span ID. Attribute names follow the convention; the convention’s carrier is a **log record** — fullsend uses a span event because only a traces OTLP exporter is configured (log-side consumers will not auto-discover these; a logs-path emit is follow-up). |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
-Fullsend does not forward vendor-specific score credentials in managed
-workflows.
+Any OTLP backend can **correlate** scores to the agent run by TraceID.
+Vendor score UIs (for example MLflow Assessments panels) may still need a
+collector or side consumer that maps the evaluation event — fullsend does
+not call those product APIs. Scores are not rewritten into
+`run-telemetry.jsonl` (derived products must not mutate primary facts).
 
 ## Measurements vs functional evals
 
@@ -255,6 +259,24 @@ least one new measurement row is appended (including `label: skip`). No
 file is written when telemetry/manifest is missing, no traces match, or
 every candidate row is already in the ledger.
 
-> **Planned:** portable OTLP score export (same `OTEL_*` as traces) is the
-> ADR 0087 remote contract and is not wired yet. Until it lands, consume the
-> JSONL artifact (or your own pipeline) for remote dashboards.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+is set, newly written scores also export as OTLP **span events**
+(`fullsend.eval_measure` + `gen_ai.evaluation.result`) on the same
+`trace_id`. Attribute names follow the GenAI convention; the convention’s
+carrier is a log record — fullsend uses the traces path because only a
+traces exporter is configured (see artifact table). Export is fail-open and
+does not rewrite `run-telemetry.jsonl`.
+The idempotency ledger keys local rows; a remote OTLP failure after a
+successful local write will not retry that row on the next run (remote is
+best-effort once). Re-export offline by pointing at a fresh out dir, or by
+clearing **both** `eval-measure-ledger.txt` and `eval-measurements.jsonl` —
+clearing only the ledger re-appends duplicate rows to the JSONL
+(`AppendMeasurements` is `O_APPEND` with no dedup).
+
+Managed measure assumes one platform `run-telemetry.jsonl` per runDir (each
+`fullsend run` creates a unique `output/fs-<slug>-<hash>/`). If inbound
+`TRACEPARENT` is present and unsampled, score export skips only rows whose
+`trace_id` matches that parent TraceID (same orphan-avoidance rule as agent
+`parentSampledProcessor`); other TraceIDs in the batch still export.
+Cross-run cost/correlation rollup is out of scope here (see hierarchical
+work-graph IDs).
