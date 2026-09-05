@@ -149,15 +149,18 @@ func TestRunAgent_BudgetHaltsValidationRetries(t *testing.T) {
 	dir := newBudgetHarnessDir(t, 0.05, 3)
 	outputBase := t.TempDir()
 
+	var out strings.Builder
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	err := runAgent(context.Background(), "code", dir, outputBase, t.TempDir(), "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 	// Validation never passes, so the run reports failure; the assertions
 	// below are about what the budget stopped, not the exit status.
 	t.Logf("runAgent returned: %v", err)
 
 	assert.Equal(t, 1, countStubRuns(t, logPath),
 		"a second iteration started even though iteration 1 exhausted max_cost_usd")
+	assert.Contains(t, out.String(), "Skipping remaining retries",
+		"a suppressed retry must be announced, not just recorded in metrics.json")
 
 	entries, readErr := os.ReadDir(outputBase)
 	require.NoError(t, readErr)
@@ -173,21 +176,32 @@ func TestRunAgent_BudgetHaltsValidationRetries(t *testing.T) {
 
 // The flip side: when the loop ends for its own reasons (iterations
 // exhausted), crossing the cap on that final iteration suppresses nothing
-// and must NOT be recorded as over_budget.
+// and must NOT be recorded as over_budget. The run log must not claim
+// otherwise either — the cap-reached warning fires before the loop knows
+// whether a retry is coming, so it may only speak about retries that
+// remain, never about halting the run.
 func TestRunAgent_BudgetCrossedOnFinalIterationIsNotMarked(t *testing.T) {
 	logPath := useBudgetRunStub(t, 0.06, false)
 	dir := newBudgetHarnessDir(t, 0.05, 1)
 	outputBase := t.TempDir()
 
+	var out strings.Builder
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	err := runAgent(context.Background(), "code", dir, outputBase, t.TempDir(), "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 	t.Logf("runAgent returned: %v", err)
 
 	assert.Equal(t, 1, countStubRuns(t, logPath))
 	m := readRunMetrics(t, outputBase)
 	assert.False(t, m.OverBudget, "a run that was ending anyway must not carry the over_budget marker")
 	assert.InDelta(t, 0.06, m.TotalCostUSD, 1e-9)
+
+	assert.Contains(t, out.String(), "any remaining retries will be skipped",
+		"crossing the cap is still worth reporting")
+	assert.NotContains(t, out.String(), "Skipping remaining retries",
+		"nothing was suppressed, so the log must not say retries were skipped")
+	assert.NotContains(t, out.String(), "no further iterations will start",
+		"the warning must not claim a halt while over_budget stays false")
 }
 
 // Under the cap, the loop must keep retrying: the budget guard must not eat
@@ -218,13 +232,16 @@ func TestRunAgent_BudgetHaltsExtractionFailureRetries(t *testing.T) {
 	dir := newBudgetHarnessDir(t, 0.05, 3)
 	outputBase := t.TempDir()
 
+	var out strings.Builder
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	err := runAgent(context.Background(), "code", dir, outputBase, t.TempDir(), "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 	t.Logf("runAgent returned: %v", err)
 
 	assert.Equal(t, 1, countStubRuns(t, logPath),
 		"a second iteration started even though the budget was exhausted before the extraction-failure retry")
+	assert.Contains(t, out.String(), "Skipping remaining retries",
+		"the top-of-loop guard must announce the suppression it records")
 	m := readRunMetrics(t, outputBase)
 	assert.True(t, m.OverBudget, "the top-of-loop guard must record the suppressed extraction-failure retry")
 	assert.InDelta(t, 0.06, m.TotalCostUSD, 1e-9)

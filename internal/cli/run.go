@@ -2192,6 +2192,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// recorded in the metrics.
 		if budgetExhausted {
 			aggMetrics.OverBudget = true
+			printer.StepInfo("Skipping remaining retries: reached max_cost_usd budget")
 			break
 		}
 
@@ -2340,9 +2341,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// anyway. Cancelling the run's context here instead would reassign
 		// the ctx that the status-comment defer closes over, making every
 		// run report "cancelled".
+		// The message says only what crossing the cap guarantees. Whether
+		// a retry is actually suppressed is not known yet: this iteration
+		// may still pass validation and break out, or be the last one, in
+		// which case nothing was skipped and over_budget stays unset. The
+		// two suppression sites announce that when it happens.
 		if !budgetExhausted && exceedsCostBudget(aggMetrics.TotalCostUSD, maxCostUSD) {
 			budgetExhausted = true
-			printer.StepWarn(fmt.Sprintf("Reached max_cost_usd budget ($%.4f of $%.4f) — no further iterations will start", aggMetrics.TotalCostUSD, maxCostUSD))
+			printer.StepWarn(fmt.Sprintf("Reached max_cost_usd budget ($%.4f of $%.4f) — any remaining retries will be skipped", aggMetrics.TotalCostUSD, maxCostUSD))
 		}
 
 		// Check the tee'd output.jsonl for is_error:true result events.
