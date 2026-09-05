@@ -80,7 +80,7 @@ When the code agent opens a PR:
 - The PR description summarizes what was changed and why.
 - The code agent has already run the test suite in its sandbox and iterated until tests pass.
 - After pushing, GitHub's required checks run. If checks fail, the code agent fetches logs, fixes the issue, and pushes again (up to a configurable retry cap).
-- Once checks are green, the review agents take over automatically (triggered by the PR creation or push event).
+- Once checks are green, the review agents take over automatically (triggered by the PR creation or push event), unless one of the [Stage 3](#stage-3-review) skips applies.
 
 ### Reviewing agent output
 
@@ -98,7 +98,7 @@ The review stage runs N independent review agents in parallel. One is randomly s
 - **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
-Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
+Every push to a PR in the review stage triggers a new review round, unless the push lands on a draft, on a `fullsend-no-review`-labeled PR, or is documentation prose only. Short of those, `ready-for-merge` is never stale — it reflects the current PR head.
 
 ## The stages in detail
 
@@ -127,11 +127,13 @@ The code agent:
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
 5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
-6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
+6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`, unless a Stage 3 skip applies.
 
 ### Stage 3: Review
 
 **Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
+
+**Not triggered when:** the PR is a draft (review runs once it is marked ready), the PR carries the `fullsend-no-review` label, or the diff is documentation prose only. `/fs-review` overrides all three — see the [review agent reference](../../agents/review.md#automatic-skips) for the exact exclusions.
 
 The review swarm:
 
@@ -139,7 +141,7 @@ The review swarm:
 2. **One coordinator** (randomly selected) collects verdicts and posts a consolidated comment.
 3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](../../agents/fix.md) (rework).
 
-Re-review happens automatically on every push to the PR. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
+Re-review happens automatically on every push to the PR that is not skipped above. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ### Stage 4: Fix
 
@@ -166,7 +168,8 @@ The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 
 ### Stopping automation
 
-- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
+- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting.
+- Apply the `fullsend-no-review` label to a PR to stop automatic review dispatch on it. Review is triggered by PR events (`pull_request_target`), so there is no triggering label to remove; the label is the lever, and it leaves `/fs-review` working for when you do want a round. Closing the PR also stops dispatch.
 - Close the issue. Agents don't act on closed issues (except `/fs-triage` which explicitly reopens).
 
 ### Restarting a stage
@@ -180,7 +183,7 @@ The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 
 At any point you can:
 
-1. Push commits to the agent's PR branch — the review agents will re-review.
+1. Push commits to the agent's PR branch — the review agents will re-review, unless a Stage 3 skip applies (mark the PR draft or apply `fullsend-no-review` if you would rather they didn't).
 2. Close the agent's PR and open your own — the issue labels are your entry point.
 3. Remove the `ready-to-code` label to prevent the code agent from starting, then implement the fix yourself.
 
