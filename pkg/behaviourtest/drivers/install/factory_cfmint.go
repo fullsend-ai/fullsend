@@ -103,7 +103,11 @@ func buildCFMintDriver(
 	}
 	ens := newRepoEnsurer(e2eCfg, client, token, binary, fullsendRef, logf)
 
-	return newComposedDriver(org, md, ens, client, logf), nil
+	drv := newComposedDriver(org, md, ens, client, logf)
+	if cd, ok := drv.(*composedDriver); ok {
+		cd.logRateLimit("suite init")
+	}
+	return drv, nil
 }
 
 // cfmintMintDriver deploys a CF Worker preview mint.
