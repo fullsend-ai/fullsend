@@ -252,16 +252,7 @@ export default defineConfig({
           text: "Agents",
           collapsed: true,
           link: "/agents/",
-          items: [
-            { text: "Triage", link: "/agents/triage" },
-            { text: "Code", link: "/agents/code" },
-            { text: "Review", link: "/agents/review" },
-            { text: "Fix", link: "/agents/fix" },
-            { text: "Retro", link: "/agents/retro" },
-            { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
-          ],
+          items: getMarkdownFiles("agents", "agents"),
         },
         {
           text: "User Guides",
@@ -276,6 +267,11 @@ export default defineConfig({
               collapsed: true,
               items: [
                 { text: "Overview", link: "/guides/user/customizing-overview" },
+                {
+                  text: "Default, derived and custom agents",
+                  link: "/guides/user/default-vs-custom-agents.md",
+                },
+                { text: "Agent escalation ladder", link: "/guides/user/escalation-ladder.md" },
                 {
                   text: "Configuring with AGENTS.md",
                   link: "/guides/user/customizing-with-agents-md",

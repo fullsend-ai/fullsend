@@ -403,8 +403,8 @@ disables nothing because no agent has that harness name.
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents from scratch
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring with Skills](customizing-with-skills.md) — extending agents with skills
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into derived or custom agent territory?
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom-agents.md) — when does configuration cross into derived or custom agent territory?
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Getting Started](../getting-started/) — initial setup
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) — running your own mint with custom agent roles

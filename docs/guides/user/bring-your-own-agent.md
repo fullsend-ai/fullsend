@@ -381,6 +381,6 @@ allowed_remote_resources:
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring Agent Behavior](customizing-agents.md) — harness configuration and `base:` composition
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom-agents.md) — when configuration crosses into custom agent territory
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity
