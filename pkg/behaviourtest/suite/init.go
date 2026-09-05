@@ -39,6 +39,10 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World) (
 	w := template.Clone()
 	resetScenarioWorld(w)
 
+	if err := steps.ValidateSlotClean(w); err != nil {
+		return ctx, err
+	}
+
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil
 }
@@ -102,6 +106,7 @@ func resetScenarioWorld(w *world.World) {
 	w.AllowedResourcesOriginal = nil
 	w.AgentsOverridden = false
 	w.AgentsOriginal = nil
+	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""

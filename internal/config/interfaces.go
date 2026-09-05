@@ -52,6 +52,7 @@ type ConfigReader interface {
 	StatusNotificationsReader
 	ConfigVersion() string
 	IsOrgMode() bool
+	AuthorizationOwnersFile() bool
 }
 
 // --- Mode-specific read interfaces ---
@@ -96,6 +97,7 @@ type PerRepoConfigReader interface {
 type ConfigWriter interface {
 	ConfigReader
 	SetKillSwitch(bool)
+	SetAuthorizationOwnersFile(bool)
 	SetAgents([]AgentEntry)
 	SetAllowedRemoteResources([]string)
 	SetStatusNotifications(*StatusNotificationConfig)
@@ -184,6 +186,14 @@ func (c *orgConfig) StatusNotifications() *StatusNotificationConfig {
 
 // SetKillSwitch sets the kill switch state.
 func (c *orgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+
+// AuthorizationOwnersFile returns false for org configs; OWNERS
+// authorization is per-repo only.
+func (c *orgConfig) AuthorizationOwnersFile() bool { return false }
+
+// SetAuthorizationOwnersFile is a no-op for org configs; OWNERS
+// authorization is per-repo only.
+func (c *orgConfig) SetAuthorizationOwnersFile(bool) {}
 
 // SetAgents replaces the registered agent entries.
 func (c *orgConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
@@ -413,6 +423,18 @@ func (c *perRepoConfig) ConfigVersion() string {
 // IsOrgMode reports that this is a per-repo configuration.
 func (c *perRepoConfig) IsOrgMode() bool { return false }
 
+// AuthorizationOwnersFile returns whether OWNERS-file authorization is enabled.
+// Intentionally no parent fallback: OWNERS auth is a per-repo opt-in that must
+// not be inheritable from config.base.yaml.
+func (c *perRepoConfig) AuthorizationOwnersFile() bool {
+	for _, p := range c.Authorization {
+		if p.Provider == "owners_file" {
+			return true
+		}
+	}
+	return false
+}
+
 // ConfigRoles returns the configured agent roles. nil (key omitted)
 // falls through to parent. Non-nil (including empty) replaces the
 // parent list entirely.
@@ -576,6 +598,30 @@ func (c *perRepoConfig) ConfigModelAliases() map[string]string {
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
 // an explicit false is distinguishable from unset (nil) across layers.
 func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
+
+// SetAuthorizationOwnersFile enables or disables OWNERS-file authorization.
+func (c *perRepoConfig) SetAuthorizationOwnersFile(v bool) {
+	if v {
+		for _, p := range c.Authorization {
+			if p.Provider == "owners_file" {
+				return
+			}
+		}
+		c.Authorization = append(c.Authorization, AuthorizationProvider{Provider: "owners_file"})
+	} else {
+		filtered := make([]AuthorizationProvider, 0, len(c.Authorization))
+		for _, p := range c.Authorization {
+			if p.Provider != "owners_file" {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
+			c.Authorization = nil
+		} else {
+			c.Authorization = filtered
+		}
+	}
+}
 
 // SetAgents replaces the registered agent entries.
 func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
