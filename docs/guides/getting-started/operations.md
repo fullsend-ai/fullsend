@@ -26,6 +26,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 
+
 ### GitLab
 
 For GitLab repos, re-run `repos install` with updated values to converge configuration:
@@ -40,6 +41,12 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
+
+## Accepting a GitHub App permission update
+
+GitHub emails organization owners when a fullsend App requests updated permissions — for example when the coder App starts asking for `packages:read`. Go to your org → **Settings** → **Third-party Access** → **GitHub Apps** (`https://github.com/organizations/<org>/settings/installations`), click **Configure** on the App, and use the **Review request** banner to accept. Only org **owners** see the banner; members see nothing.
+
+Agents keep working while the request is pending: during a rollout the mint mints tokens without the pending permission and logs the gap, so nothing breaks before you accept — accepting is what unlocks the capability the permission covers. See [the installation-owner step](../infrastructure/app-permission-rollout.md#installation-owner-accept-the-update) of the rollout runbook.
 
 ## Syncing workflow templates
 

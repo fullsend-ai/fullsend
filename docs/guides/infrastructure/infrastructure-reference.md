@@ -124,71 +124,26 @@ App registration control the code/fix rollout for normal dispatches.
 
 ### Roll Out a GitHub App Permission
 
-Use this sequence for any new role permission; the current example is
-`packages:read` for the `coder` role (which covers both code and fix stages).
-Changing the mint's role map does not update existing GitHub App installations.
-GitHub rejects the entire installation-token request (`422`) when mint asks for a
-permission the installation has not approved yet — there is no partial downscope.
+Changing the mint's role permission map does not update existing GitHub App
+installations, and GitHub rejects the entire installation-token request (`422`)
+when the mint asks for a permission an installation has not accepted — there is
+no partial downscope. To keep a rollout from breaking installations that have not
+accepted yet, the mint compares the role's requested permissions with the
+installation's granted map before the token POST: permissions listed in
+`optionalRolePermissions` (`internal/mintcore/github.go`, currently `packages`
+for the `coder` and `fix` roles) are dropped when ungranted and logged as
+`installation permissions not granted: … dropped=…`, while any other ungranted
+permission fails immediately with `required permissions missing for role …`.
+When an installation lookup omits the `permissions` field entirely (or returns it empty), the mint
+sends the full requested set and lets GitHub validate it at token creation time.
+`fullsend github setup` mirrors the same split: a pending optional permission is
+a warning that does not block setup, and any other missing permission is an
+error.
 
-For shared hosted Apps (for example `fullsend-ai-coder`), the App owner adds the
-permission once on the App registration; each installing org's owners must then
-[Accept the update](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app).
-New installations of an already-updated App receive the new permission at install
-time. Self-managed App owners update their own App registration, then Accept on
-their installation.
-
-The implementation sequence is: update `canonicalRolePermissions`, the GCF
-embedded mint source, and `AgentAppConfig` together; have mint intersect the
-requested role map with the installation's granted `permissions`; and have CLI
-`checkPermissions` warn with the installing org's Accept URL instead of failing
-**for optional permissions only**. Only permissions explicitly listed in `optionalRolePermissions`
-(currently `packages` for `coder` and direct `fix`-role callers) may be omitted when ungranted — all
-other permissions remain required and fail before the token POST, preserving
-the pre-existing behavior where GitHub's `422` surfaced immediately. Dropped
-optional permissions are logged with `org=` and `installation_id=`. The
-preflight avoids the two token-creation POSTs that the earlier
-packages-specific retry would incur for each lagging installation.
-
-When an installation lookup omits the `permissions` field, mint preserves the
-requested map for compatibility with older or incomplete GitHub responses and
-lets GitHub validate it at token creation time; the granted-set preflight
-applies only when that map is present.
-
-This opt-in degradation means a caller that needs the omitted optional
-permission may receive a later GitHub `403`; it does not silently drop any
-other permission. Missing non-optional permissions fail once with a `422`, the
-missing scopes, and guidance covering both App registration and installation
-approval.
-
-Recommended operator order for adding **`packages:read`** to `coder` (code / fix):
-
-1. Add **Packages: Read-only** on the GitHub App's **Permissions & events** page
-   (hosted: `https://github.com/organizations/fullsend-ai/settings/apps/<app-slug>/permissions`).
-   Optionally include a short note to users explaining why.
-2. Update the App used by the pool installations as well, and have each
-   `halfsend-01` … `halfsend-12` installation owner Accept its pending update.
-   For the test-app setup, that is `fullsend-test-coder`; for pools using the
-   shared hosted App, update `fullsend-ai-coder`. Neither app set should be
-   left permanently on permission-drop warnings.
-3. Deploy mint. Lagging installations keep authenticating; they simply omit
-   `packages:read` until they Accept. The preflight avoids the two-POST retry
-   volume that the old rollout path incurred.
-4. Release the CLI after the App registration and mint change. `fullsend github setup` reports
-   pending **optional** permissions — those listed in `optionalRolePermissions`,
-   currently `packages:read` — as warnings with the installing org's Accept URL
-   and does not block, so a CLI release is not blocked on every installation
-   accepting at once. Any other missing permission is still a setup error,
-   exactly as before the rollout mechanism existed.
-5. Tell installation owners to Accept the pending permission update (GitHub also
-   emails org owners), and use the mint permission logs to find lagging installs.
-
-Do **not** block mint or CLI deploy on every installation reporting
-`packages:read` — inactive or unreachable installs would stall the platform.
-Permission-drop logs and setup warnings are outreach signals during rollout,
-not deploy gates. To add another permission in the future, add it to
-`canonicalRolePermissions`, the matching App config and GCF embed; add it to
-`optionalRolePermissions` only when it is explicitly safe to omit during
-rollout. Remove that optional entry once all installations have accepted.
+For the operator procedure — updating the App registration, deploying the mint,
+getting installation owners to accept, and removing the optional entry once the
+rollout is finished — see
+[Rolling out a GitHub App permission](app-permission-rollout.md).
 
 ### Mint Security Controls
 
