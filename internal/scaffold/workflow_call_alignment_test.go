@@ -3,6 +3,7 @@ package scaffold
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -638,34 +639,179 @@ func TestReviewRoutingSkips(t *testing.T) {
 	}
 }
 
-// TestReviewRoutingDocsSkip validates the documentation-prose skip step
-// (ADR 0096) in the per-repo reusable-dispatch.yml. Deliberately not
-// mirrored into the deprecated per-org scaffold/dispatch.yml (ADR 0044);
-// the ADR records that as follow-up.
+// docsSkipStepRun returns the `run:` body of the docs-lockfile-check step in
+// the per-repo reusable-dispatch.yml, parsed out of the YAML rather than
+// grepped, so the runtime test below executes exactly what ships.
+func docsSkipStepRun(t *testing.T) string {
+	t.Helper()
+	var doc struct {
+		Jobs struct {
+			Route struct {
+				Steps []struct {
+					ID  string `yaml:"id"`
+					If  string `yaml:"if"`
+					Run string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"route"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &doc))
+	for _, step := range doc.Jobs.Route.Steps {
+		if step.ID == "docs-lockfile-check" {
+			require.NotEmpty(t, step.Run, "docs-lockfile-check must have a run script")
+			return step.Run
+		}
+	}
+	t.Fatal("route job has no docs-lockfile-check step")
+	return ""
+}
+
+// TestReviewRoutingDocsSkip is the wiring half of the documentation-prose
+// skip (ADR 0096) in the per-repo reusable-dispatch.yml: that the step
+// exists, that its output gates the job's stage, and that it never runs for
+// an explicit /fs-review. What the step *decides* is not observable from the
+// YAML text — TestReviewRoutingDocsSkipRuntime executes it instead.
+//
+// Deliberately not mirrored into the deprecated per-org scaffold/dispatch.yml
+// (ADR 0044); the ADR records that as follow-up.
 func TestReviewRoutingDocsSkip(t *testing.T) {
 	s := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 
 	assert.Contains(t, s, "id: docs-lockfile-check")
 	assert.Contains(t, s, "steps.docs-lockfile-check.outputs.skipped != 'true'",
 		"job-level stage output must account for the docs skip")
-	assert.Contains(t, s, `if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true'`,
-		"docs-lockfile-check must only run for the review stage once role/agent gates pass")
-	assert.Contains(t, s, `gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" --paginate`,
-		"docs-lockfile-check step must fetch the full PR file list via gh api")
 
-	// `case` globs match `/`, so these patterns are the difference between
-	// skipping prose and silently skipping executable agent instructions,
-	// the normative event schema, or a dependency bump.
-	assert.Contains(t, s, "docs/ADRs/*) skippable=false; break ;;",
-		"ADRs must never be treated as skippable prose")
-	assert.Contains(t, s, "docs/*.md) ;;",
-		"only markdown under docs/ is skippable")
-	assert.NotContains(t, s, `*.md|docs/*`,
-		"a bare *.md swallows skills/*/SKILL.md and AGENTS.md; docs/* swallows docs/.vitepress TypeScript")
-	assert.NotContains(t, s, "package-lock.json|yarn.lock",
-		"lockfile-only diffs can repoint dependencies and must still be reviewed")
-	assert.Contains(t, s, `GITHUB_STEP_SUMMARY`,
-		"skip must be recorded in the job summary, not just the log")
+	// The issue_comment guard is what makes /fs-review a complete escape
+	// hatch: without it the docs skip would swallow an explicitly requested
+	// review, contradicting ADR 0096.
+	assert.Contains(t, s, `if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name != 'issue_comment'`,
+		"docs-lockfile-check must run only for automatic review dispatch — never for /fs-review (issue_comment)")
+}
+
+// TestReviewRoutingDocsSkipRuntime executes the docs-lockfile-check step's
+// embedded bash against a stubbed `gh` binary, so the skip decision is
+// verified by behaviour rather than by matching substrings (see #6587
+// review). The stub rejects a POST, which is how the endpoint responded to
+// the `-F per_page=100` form of the call.
+//
+// Only the file-list classification is observable here. The draft and label
+// skips live in the "Determine stage" step and are pinned by
+// TestReviewRoutingSkips; the /fs-review bypass is a step-level `if:` that
+// GitHub evaluates, asserted in TestReviewRoutingDocsSkip above.
+func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	script := docsSkipStepRun(t)
+
+	// run executes the step with a stub gh that prints filesJSON (or fails
+	// when it is empty), returning the step output plus whether the step set
+	// skipped=true.
+	run := func(t *testing.T, filesJSON string) (string, bool) {
+		t.Helper()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "files.json"), []byte(filesJSON), 0o600))
+		stub := "#!/usr/bin/env bash\n" +
+			"if [[ \"$1\" != api ]]; then echo \"unexpected gh call: $*\" >&2; exit 1; fi\n" +
+			"for arg in \"$@\"; do\n" +
+			"  case \"$arg\" in\n" +
+			"    -F|--field|-X|--method) echo 'gh stub: request would not be a GET (404)' >&2; exit 1 ;;\n" +
+			"  esac\n" +
+			"done\n" +
+			"[[ -s \"$GH_STUB_FILES\" ]] || { echo 'simulated api failure' >&2; exit 1; }\n" +
+			"jq -r \"${!#}\" < \"$GH_STUB_FILES\"\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+		scriptPath := filepath.Join(dir, "docs-check.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+		outputFile := filepath.Join(dir, "github_output")
+		require.NoError(t, os.WriteFile(outputFile, nil, 0o600))
+
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_STUB_FILES="+filepath.Join(dir, "files.json"),
+			"GH_TOKEN=stub",
+			"SOURCE_REPO=octo/repo",
+			"PR_NUMBER=1",
+			"GITHUB_OUTPUT="+outputFile,
+			"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "step_summary"),
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "step must exit 0 whatever it decides: %s", out)
+		got, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		return string(out), strings.Contains(string(got), "skipped=true")
+	}
+
+	// files builds a /pulls/{n}/files payload from filename/previous_filename
+	// pairs (an empty second element means the file was not renamed).
+	files := func(pairs ...[2]string) string {
+		entries := make([]string, 0, len(pairs))
+		for _, p := range pairs {
+			prev := ""
+			if p[1] != "" {
+				prev = fmt.Sprintf(`,"previous_filename":%q`, p[1])
+			}
+			entries = append(entries, fmt.Sprintf(`{"filename":%q%s}`, p[0], prev))
+		}
+		return "[" + strings.Join(entries, ",") + "]"
+	}
+
+	t.Run("prose only skips", func(t *testing.T) {
+		_, skipped := run(t, files(
+			[2]string{"docs/guides/user/bugfix-workflow.md", ""},
+			[2]string{"docs/agents/review.md", ""},
+		))
+		assert.True(t, skipped, "markdown prose under docs/ is what the skip exists for")
+	})
+
+	// Every protected directory ADR 0096 names: `case` globs match `/`, so
+	// docs/*.md alone reaches all of these.
+	for _, protected := range []string{
+		"docs/ADRs/0096-skip-provably-unnecessary-review-dispatch.md",
+		"docs/normative/normalized-event/v1/README.md",
+		"docs/contributing/workflow-contracts.md",
+		"docs/reference/harness-reference.md",
+		"docs/.vitepress/theme/README.md",
+	} {
+		t.Run("protected: "+protected, func(t *testing.T) {
+			_, skipped := run(t, files(
+				[2]string{"docs/guides/user/bugfix-workflow.md", ""},
+				[2]string{protected, ""},
+			))
+			assert.False(t, skipped, "%s is a contract, not prose — it must still be reviewed", protected)
+		})
+	}
+
+	// Markdown outside docs/ is executable agent instruction, and a
+	// lockfile-only diff can repoint a transitive dependency.
+	for _, notProse := range []string{"AGENTS.md", "CLAUDE.md", "skills/pr-review/SKILL.md", "package-lock.json", "internal/cli/run.go"} {
+		t.Run("not prose: "+notProse, func(t *testing.T) {
+			_, skipped := run(t, files([2]string{notProse, ""}))
+			assert.False(t, skipped, "%s must not be treated as skippable prose", notProse)
+		})
+	}
+
+	t.Run("rename into docs is classified on its old path", func(t *testing.T) {
+		_, skipped := run(t, files([2]string{"docs/notes.md", "internal/cli/run.go"}))
+		assert.False(t, skipped, "moving code under docs/ must not suppress review")
+	})
+
+	t.Run("truncated listing never skips", func(t *testing.T) {
+		pairs := make([][2]string, 3000)
+		for i := range pairs {
+			pairs[i] = [2]string{fmt.Sprintf("docs/guides/page-%d.md", i), ""}
+		}
+		out, skipped := run(t, files(pairs...))
+		assert.False(t, skipped, "the files endpoint caps at 3000 entries and stops paginating silently")
+		assert.Contains(t, out, "may be truncated")
+	})
+
+	t.Run("api failure does not skip", func(t *testing.T) {
+		out, skipped := run(t, "")
+		assert.False(t, skipped, "an unreadable file list must fail open into a review")
+		assert.Contains(t, out, "Failed to fetch changed files")
+	})
 }
 
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
