@@ -134,7 +134,9 @@ fullsend
 │       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │       ├── --number <int>                   #     Issue number
-│       └── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 ├── post-review                              # Post PR/MR review comments to GitHub or GitLab
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -143,7 +145,9 @@ fullsend
 │   ├── --result <path>                      #   Path to review result file, or '-' for stdin
 │   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN or $GITLAB_TOKEN)
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
-│   └── --dry-run                            #   Print what would be posted without API calls
+│   ├── --dry-run                            #   Print what would be posted without API calls
+│   ├── --keep-history                       #   Append previous content as collapsed history (default true)
+│   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
 │   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (or --output-dir)

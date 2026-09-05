@@ -105,7 +105,7 @@ func TestPostTrackerStickyComment_Create(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
 	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello world", cfg, printer)
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestPostTrackerStickyComment_Update(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	ctx := context.Background()
 
 	// First post creates the comment.
@@ -148,7 +148,7 @@ func TestPostTrackerStickyComment_EmptyBody(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
 	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "", cfg, printer)
 	assert.Error(t, err)
@@ -159,7 +159,7 @@ func TestPostTrackerStickyComment_EmptyMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: ""}
+	cfg := sticky.Config{Marker: "", KeepHistory: true}
 
 	_, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
 	assert.Error(t, err)
@@ -170,7 +170,7 @@ func TestPostTrackerStickyComment_DryRun_Create(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true}
+	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
 	url, err := postTrackerStickyComment(context.Background(), tc, "acme/widgets", 42, "hello", cfg, printer)
 	require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestPostTrackerStickyComment_DryRun_Update(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	ctx := context.Background()
 
 	// Create the initial comment (not dry run).
@@ -710,7 +710,7 @@ func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true}
+	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
 
 	url, err := postJiraStickyComment(context.Background(), tc, "PROJ", 42, "hello", cfg, printer)
 	require.NoError(t, err)
@@ -727,7 +727,7 @@ func TestPostJiraStickyComment_DryRun_Update(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	ctx := context.Background()
 
 	// Create the initial comment (not dry run).
@@ -750,7 +750,7 @@ func TestPostJiraStickyComment_EmptyBody(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 
 	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "   ", cfg, printer)
 	require.Error(t, err)
@@ -761,7 +761,7 @@ func TestPostJiraStickyComment_EmptyMarker(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
-	cfg := sticky.Config{Marker: "  "}
+	cfg := sticky.Config{Marker: "  ", KeepHistory: true}
 
 	_, err = postJiraStickyComment(context.Background(), tc, "PROJ", 42, "body", cfg, printer)
 	require.Error(t, err)
@@ -856,6 +856,56 @@ func TestResolveTracker_FullsendDirWithoutTrackerSet_Errors(t *testing.T) {
 	_, err := resolveTracker("", dir, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+// --- resolveKeepHistory tests ---
+//
+// Mirrors the resolveTracker test suite. resolveKeepHistory resolves
+// the keep_history setting from: (1) explicit flag, (2) config
+// reader, (3) fullsend-dir config.yaml, (4) default true.
+
+func TestResolveKeepHistory_FlagOverridesConfig(t *testing.T) {
+	reader, err := config.ParsePerRepoConfig([]byte("keep_history: true\n"))
+	require.NoError(t, err)
+
+	flagVal := false
+	got, err := resolveKeepHistory(&flagVal, "", reader)
+	require.NoError(t, err)
+	assert.False(t, got, "explicit flag=false should override config=true")
+}
+
+func TestResolveKeepHistory_FallsBackToConfigReader(t *testing.T) {
+	reader, err := config.ParsePerRepoConfig([]byte("keep_history: false\n"))
+	require.NoError(t, err)
+
+	got, err := resolveKeepHistory(nil, "", reader)
+	require.NoError(t, err)
+	assert.False(t, got, "nil flag should fall back to config reader value")
+}
+
+func TestResolveKeepHistory_FallsBackToFullsendDirConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("keep_history: false\n"), 0o644))
+
+	got, err := resolveKeepHistory(nil, dir, nil)
+	require.NoError(t, err)
+	assert.False(t, got, "nil flag + nil reader should fall back to fullsend-dir config")
+}
+
+func TestResolveKeepHistory_NilEverythingDefaultsTrue(t *testing.T) {
+	got, err := resolveKeepHistory(nil, "", nil)
+	require.NoError(t, err)
+	assert.True(t, got, "nil flag + no config + no fullsend-dir should default to true")
+}
+
+func TestResolveKeepHistory_ConfigLoadErrorReturnsTrueWithError(t *testing.T) {
+	// Point at a directory with an invalid config.yaml to trigger a load error.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(":\tinvalid yaml\n"), 0o644))
+
+	got, err := resolveKeepHistory(nil, dir, nil)
+	require.Error(t, err, "should propagate config load error")
+	assert.True(t, got, "should default to true on config load error")
 }
 
 // --- config-default --tracker integration tests ---

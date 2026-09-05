@@ -22,6 +22,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, "1", d.ConfigVersion())
 	assert.Equal(t, "claude", d.ConfigRuntime())
 	assert.False(t, d.IsKillSwitchActive())
+	assert.True(t, d.ConfigKeepHistory())
 	assert.Equal(t, PerRepoDefaultRoles(), d.ConfigRoles())
 	assert.Nil(t, d.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
@@ -46,6 +47,7 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 	assert.Equal(t, "1", cfg.ConfigVersion())
 	assert.Equal(t, "claude", cfg.ConfigRuntime())
 	assert.False(t, cfg.IsKillSwitchActive())
+	assert.True(t, cfg.ConfigKeepHistory())
 	assert.Equal(t, PerRepoDefaultRoles(), cfg.ConfigRoles())
 	assert.Nil(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
@@ -146,6 +148,39 @@ func TestPerRepoConfig_KillSwitch_PointerSemantics(t *testing.T) {
 			parent:     &perRepoDefaults{},
 		}
 		assert.True(t, cfg.IsKillSwitchActive())
+	})
+}
+
+// --- KeepHistory *bool pointer semantics ---
+
+func TestPerRepoConfig_KeepHistory_PointerSemantics(t *testing.T) {
+	t.Run("nil falls through to parent default true", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.True(t, cfg.ConfigKeepHistory())
+	})
+
+	t.Run("explicit false does not fall through", func(t *testing.T) {
+		// Parent has keep_history=true (default), overlay explicitly sets false.
+		f := false
+		overlay := &perRepoConfig{
+			KeepHistory: &f,
+			parent:      &perRepoDefaults{},
+		}
+		assert.False(t, overlay.ConfigKeepHistory())
+	})
+
+	t.Run("explicit true overrides parent false", func(t *testing.T) {
+		f := false
+		parentCfg := &perRepoConfig{
+			KeepHistory: &f,
+			parent:      &perRepoDefaults{},
+		}
+		tr := true
+		overlay := &perRepoConfig{
+			KeepHistory: &tr,
+			parent:      parentCfg,
+		}
+		assert.True(t, overlay.ConfigKeepHistory())
 	})
 }
 
@@ -463,6 +498,7 @@ func TestPerRepoConfig_MarshalOmitsInheritedValues(t *testing.T) {
 	assert.NotContains(t, output, "version:")
 	assert.NotContains(t, output, "runtime:")
 	assert.NotContains(t, output, "kill_switch:")
+	assert.NotContains(t, output, "keep_history:")
 	assert.NotContains(t, output, "roles:")
 	assert.NotContains(t, output, "agents:")
 	assert.NotContains(t, output, "allowed_remote_resources:")
@@ -502,6 +538,19 @@ func TestPerRepoConfig_MarshalExplicitFalseKillSwitch(t *testing.T) {
 	require.NoError(t, err)
 	// Explicit false should appear in output (distinguishable from unset).
 	assert.Contains(t, string(data), "kill_switch: false")
+}
+
+func TestPerRepoConfig_MarshalExplicitFalseKeepHistory(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{
+		Version:     "1",
+		KeepHistory: &f,
+		parent:      &perRepoDefaults{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	// Explicit false should appear in output (distinguishable from unset).
+	assert.Contains(t, string(data), "keep_history: false")
 }
 
 func TestPerRepoConfig_MarshalDenyAll(t *testing.T) {
@@ -760,5 +809,48 @@ roles:
 		// Verify it was not set.
 		prc := cfg.(*perRepoConfig)
 		assert.Nil(t, prc.KillSwitch)
+	})
+}
+
+// --- KeepHistory YAML round-trip ---
+
+func TestPerRepoConfig_KeepHistory_YAMLRoundTrip(t *testing.T) {
+	t.Run("keep_history false round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+keep_history: false
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.ConfigKeepHistory())
+		// Verify it was explicitly set (not inherited).
+		prc := cfg.(*perRepoConfig)
+		require.NotNil(t, prc.KeepHistory)
+		assert.False(t, *prc.KeepHistory)
+	})
+
+	t.Run("keep_history true round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+keep_history: true
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.ConfigKeepHistory())
+	})
+
+	t.Run("keep_history omitted falls through to default true", func(t *testing.T) {
+		yamlData := `version: "1"
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.ConfigKeepHistory())
+		// Verify it was not set.
+		prc := cfg.(*perRepoConfig)
+		assert.Nil(t, prc.KeepHistory)
 	})
 }

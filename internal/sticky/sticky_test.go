@@ -17,6 +17,7 @@ import (
 var testCfg = Config{
 	Marker:       "<!-- fullsend:test -->",
 	FooterMarker: "<!-- fullsend:test-footer -->",
+	KeepHistory:  true,
 }
 
 func TestFindMarkedComment(t *testing.T) {
@@ -73,7 +74,7 @@ func TestBuildUpdatedBody_CollapsesOldContent(t *testing.T) {
 }
 
 func TestBuildUpdatedBody_FlatHistory(t *testing.T) {
-	cfg := Config{Marker: "<!-- m -->"}
+	cfg := Config{Marker: "<!-- m -->", KeepHistory: true}
 
 	// Run 1 → Run 2
 	body1 := "<!-- m -->\nRun 1 content."
@@ -113,7 +114,7 @@ func TestBuildUpdatedBody_FlatHistory(t *testing.T) {
 }
 
 func TestBuildUpdatedBody_NestedDetailsInContent(t *testing.T) {
-	cfg := Config{Marker: "<!-- m -->"}
+	cfg := Config{Marker: "<!-- m -->", KeepHistory: true}
 
 	// Run 1 content contains a <details> block (common in GitHub review output).
 	body1 := "<!-- m -->\nReview findings:\n<details>\n<summary>Expanded diff</summary>\nsome diff content\n</details>\nEnd of review."
@@ -151,7 +152,7 @@ func TestBuildUpdatedBody_FooterStripping(t *testing.T) {
 }
 
 func TestBuildUpdatedBody_NoFooterMarker(t *testing.T) {
-	cfg := Config{Marker: "<!-- m -->"}
+	cfg := Config{Marker: "<!-- m -->", KeepHistory: true}
 	oldBody := "<!-- m -->\nOld content."
 	newBody := "<!-- m -->\nNew content."
 
@@ -159,6 +160,66 @@ func TestBuildUpdatedBody_NoFooterMarker(t *testing.T) {
 
 	assert.Contains(t, result, "New content.")
 	assert.Contains(t, result, "Old content.")
+}
+
+func TestBuildUpdatedBody_NoHistory(t *testing.T) {
+	cfg := Config{
+		Marker:      "<!-- test -->",
+		KeepHistory: false,
+	}
+	oldBody := "<!-- test -->\nold content"
+	newBody := "<!-- test -->\nnew content"
+
+	got := BuildUpdatedBody(oldBody, newBody, cfg)
+
+	if strings.Contains(got, "<details>") {
+		t.Error("expected no history block when KeepHistory is false")
+	}
+	if !strings.Contains(got, "new content") {
+		t.Error("expected new content in result")
+	}
+	if strings.Contains(got, "old content") {
+		t.Error("expected old content to be discarded when KeepHistory is false")
+	}
+}
+
+func TestBuildUpdatedBody_NoHistory_PreservesFooter(t *testing.T) {
+	cfg := Config{
+		Marker:       "<!-- fullsend:test -->",
+		FooterMarker: "<!-- fullsend:test-footer -->",
+		KeepHistory:  false,
+	}
+	oldBody := "<!-- fullsend:test -->\nOld review.\n\n<!-- fullsend:test-footer -->\n_some footer info_"
+	newBody := "<!-- fullsend:test -->\nNew review."
+
+	got := BuildUpdatedBody(oldBody, newBody, cfg)
+
+	assert.Contains(t, got, "New review.")
+	assert.NotContains(t, got, "Old review.")
+	assert.NotContains(t, got, "<details>")
+	assert.Contains(t, got, "<!-- fullsend:test-footer -->")
+	assert.Contains(t, got, "_some footer info_")
+}
+
+func TestBuildUpdatedBody_NoHistory_MultipleRuns(t *testing.T) {
+	cfg := Config{Marker: "<!-- m -->", KeepHistory: false}
+
+	body1 := "<!-- m -->\nRun 1 content."
+	body2 := "<!-- m -->\nRun 2 content."
+	result2 := BuildUpdatedBody(body1, body2, cfg)
+
+	// After update, only run 2 should be present.
+	assert.Contains(t, result2, "Run 2 content.")
+	assert.NotContains(t, result2, "Run 1 content.")
+	assert.NotContains(t, result2, "<details>")
+
+	// Run 2 → Run 3
+	body3 := "<!-- m -->\nRun 3 content."
+	result3 := BuildUpdatedBody(result2, body3, cfg)
+
+	assert.Contains(t, result3, "Run 3 content.")
+	assert.NotContains(t, result3, "Run 2 content.")
+	assert.NotContains(t, result3, "<details>")
 }
 
 func TestTruncateBody_UnderLimit(t *testing.T) {
@@ -174,7 +235,7 @@ func TestTruncateBody_OverLimit(t *testing.T) {
 }
 
 func TestBuildUpdatedBody_DropsOldestHistoryOnOverflow(t *testing.T) {
-	cfg := Config{Marker: "<!-- m -->", MaxSize: 500}
+	cfg := Config{Marker: "<!-- m -->", MaxSize: 500, KeepHistory: true}
 
 	body1 := "<!-- m -->\n" + strings.Repeat("A", 100)
 	body2 := "<!-- m -->\n" + strings.Repeat("B", 100)
@@ -229,7 +290,7 @@ func TestPost_UpdateExisting(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	cfg := Config{Marker: "<!-- test -->"}
+	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
 	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
 	require.NoError(t, err)
 	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-100", commentURL)
@@ -292,7 +353,7 @@ func TestPost_UpdateExisting_EmptyHTMLURL(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	cfg := Config{Marker: "<!-- test -->"}
+	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
 	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
 	require.NoError(t, err)
 	assert.Empty(t, commentURL, "should return empty URL when existing comment has no HTMLURL")
