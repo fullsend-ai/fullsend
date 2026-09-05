@@ -50,6 +50,7 @@ func (d *composedDriver) CreateRepo(ctx context.Context, hint string) (string, e
 	d.created[name] = true
 	d.mu.Unlock()
 	d.logf("[driver] created %s/%s", d.org, name)
+	d.logRateLimit("after CreateRepo")
 	return name, nil
 }
 
@@ -60,6 +61,8 @@ func (d *composedDriver) MarkDeleted(repoName string) {
 }
 
 func (d *composedDriver) Finalize(ctx context.Context) error {
+	d.logRateLimit("Finalize start")
+
 	if !KeepRepos() {
 		d.mu.Lock()
 		remaining := make([]string, 0, len(d.created))
@@ -76,6 +79,7 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 				}
 			}
 		}
+		d.logRateLimit("Finalize after cleanup")
 	}
 
 	if d.mint == nil {
@@ -89,6 +93,18 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 
 func (d *composedDriver) DefaultConcurrency() int {
 	return DefaultConcurrencyValue
+}
+
+func (d *composedDriver) logRateLimit(label string) {
+	r, ok := d.client.(forge.RateLimitReporter)
+	if !ok {
+		return
+	}
+	rl, seen := r.RateLimit()
+	if !seen {
+		return
+	}
+	d.logf("[rate-limit] %s: %s", label, rl.String())
 }
 
 var _ Driver = (*composedDriver)(nil)
