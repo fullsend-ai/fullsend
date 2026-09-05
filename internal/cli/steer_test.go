@@ -567,3 +567,69 @@ func TestSteerEligible_RequiresPreserveRuns(t *testing.T) {
 		assert.Empty(t, steerEligible(o), "%q should be eligible", v)
 	}
 }
+
+// A steered run is bounded by steerBudget, not the harness timeout, and the
+// two diverge once the harness timeout exceeds the token-life cap. Above
+// that point a run killed at the budget does not reach nine tenths of the
+// harness timeout, so measuring against the harness timeout reads it as
+// "finished early". With a validation loop that surfaces as "validation
+// failed"; without one the run returns nil and reports success having been
+// cut off mid-work, which is the outcome this guards.
+func TestSteerAwareTimeout_BudgetKilledRunReadsAsTimedOut(t *testing.T) {
+	// Above the divergence point: 90m harness timeout, 50m real budget.
+	const harnessTimeout = 90 * time.Minute
+	budget := steerBudget(harnessTimeout)
+	require.Equal(t, 50*time.Minute, budget, "the token-life cap bounds the run")
+	require.Less(t, budget, harnessTimeout, "this test is only meaningful past the divergence")
+
+	// The run is killed at its budget and exits non-zero.
+	const exitCode = 1
+
+	steered := iterationTimedOut(exitCode, budget, steerAwareTimeout(harnessTimeout, true))
+	assert.True(t, steered, "a steered run killed at its budget must read as timed out")
+
+	// And it must reach the timeout branch rather than the validation one.
+	err := runTerminalError(true, false, steered, 1, budget, steerAwareTimeout(harnessTimeout, true))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.NotContains(t, err.Error(), "validation failed")
+
+	// Without a validation loop the old behaviour returned nil — success for
+	// a truncated run.
+	err = runTerminalError(false, false, steered, 1, budget, steerAwareTimeout(harnessTimeout, true))
+	require.Error(t, err, "a truncated run must not report success")
+	assert.Contains(t, err.Error(), "timed out")
+}
+
+// The unsteered path must not move: Steerable is false everywhere today.
+func TestSteerAwareTimeout_UnsteeredPathUnchanged(t *testing.T) {
+	const harnessTimeout = 90 * time.Minute
+
+	assert.Equal(t, harnessTimeout, steerAwareTimeout(harnessTimeout, false),
+		"an unsteered run is measured against the harness timeout, unchanged")
+
+	// At the same 50m elapsed that a steered run is killed at, an unsteered
+	// run has not run out of clock and must still read as not-timed-out.
+	assert.False(t, iterationTimedOut(1, 50*time.Minute, steerAwareTimeout(harnessTimeout, false)),
+		"the unsteered path must be byte-for-byte today's behaviour")
+
+	// And it still reports a timeout when it genuinely exhausts the timeout.
+	assert.True(t, iterationTimedOut(1, harnessTimeout, steerAwareTimeout(harnessTimeout, false)))
+}
+
+func TestSteerBudget(t *testing.T) {
+	// Below the cap the agent's own budget stands.
+	assert.Equal(t, 20*time.Minute, steerBudget(20*time.Minute))
+	assert.Equal(t, 50*time.Minute, steerBudget(50*time.Minute))
+	// Above it, the forge token's remaining life bounds the run.
+	assert.Equal(t, 50*time.Minute, steerBudget(55*time.Minute))
+	assert.Equal(t, 50*time.Minute, steerBudget(6*time.Hour))
+
+	// steerDeadline must be exactly runStart plus that budget, so the
+	// instant the run stops at and the figure it is judged against cannot
+	// drift apart.
+	start := time.Now()
+	for _, timeout := range []time.Duration{20 * time.Minute, 90 * time.Minute} {
+		assert.Equal(t, start.Add(steerBudget(timeout)), steerDeadline(start, timeout))
+	}
+}
