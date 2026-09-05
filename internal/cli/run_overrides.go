@@ -7,6 +7,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // Runtime-neutral override environment variables. They are overrides of the
@@ -162,12 +163,36 @@ func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
 
 // effectiveStallTimeout disables the watchdog (returns 0) when it could never
 // fire: sandbox.ExecStreamReader wraps the command in the global run
-// timeout's context, so a stall timeout at or above it always loses the race
-// to the global deadline. Below it, the configured value stands unchanged —
-// no clamping or deriving, existing configs keep their behavior.
+// timeout's context, so a stall the global deadline reaches first is never
+// reported as one. The comparison is against the kill's worst case, not the
+// threshold — the watchdog polls, so a stall crossing the threshold right
+// after a tick is noticed one interval later (StallDetectionLatency), and a
+// value just under the run timeout would otherwise be reported as armed while
+// usually losing the race anyway. Clear of that, the configured value stands
+// unchanged — no clamping or deriving, existing configs keep their behavior.
 func effectiveStallTimeout(stall, run time.Duration) time.Duration {
-	if stall >= run {
+	if stall+agentruntime.StallDetectionLatency(stall) >= run {
 		return 0
+	}
+	return stall
+}
+
+// runStallTimeout is the whole stall-timeout decision for one run: resolve
+// FULLSEND_STALL_TIMEOUT, report a malformed value rather than silently
+// running without the watchdog it configured, and disarm — saying so — when
+// the run's own timeout would always win the race. Zero means no watchdog.
+func runStallTimeout(getenv func(string) string, run time.Duration, printer *ui.Printer) time.Duration {
+	stall, err := resolveStallTimeout(getenv)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", err, stall))
+	}
+	if effective := effectiveStallTimeout(stall, run); effective != stall {
+		// The watchdog could never fire — the global deadline always wins the
+		// race. Say so instead of arming one that silently protects nothing.
+		printer.StepInfo(fmt.Sprintf(
+			"Stall watchdog inactive: FULLSEND_STALL_TIMEOUT (%s) is not below the run timeout (timeout_minutes, %s) by more than the %s detection interval",
+			stall, run, agentruntime.StallDetectionLatency(stall)))
+		return effective
 	}
 	return stall
 }

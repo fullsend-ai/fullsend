@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func envMap(m map[string]string) func(string) string {
@@ -204,9 +208,10 @@ func TestResolveStallTimeout(t *testing.T) {
 }
 
 // TestEffectiveStallTimeout: the watchdog is disabled (0, the value
-// startStallWatchdog treats as "no watchdog") when the stall timeout is not
-// strictly below the run timeout — the global deadline would always fire
-// first — and passes through untouched when it is below.
+// startStallWatchdog treats as "no watchdog") when the global deadline would
+// reach the wedged run first — measured against the kill's worst case, one
+// poll interval past the threshold, not against the threshold itself — and
+// passes through untouched when it is clear of that.
 func TestEffectiveStallTimeout(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -219,12 +224,90 @@ func TestEffectiveStallTimeout(t *testing.T) {
 		{name: "above the run timeout is disabled", stall: 31 * time.Minute, run: 30 * time.Minute, want: 0},
 		{name: "explicitly disabled stays disabled", stall: 0, run: 30 * time.Minute, want: 0},
 		{name: "default vs default run timeout stays enabled", stall: defaultStallTimeout, run: 30 * time.Minute, want: defaultStallTimeout},
+		// The fleet's triage and prioritize harnesses run timeout_minutes: 10,
+		// under the default stall timeout: the watchdog can never fire there.
+		{name: "default vs a 10m harness is disabled", stall: defaultStallTimeout, run: 10 * time.Minute, want: 0},
+		// Detection latency, not the threshold, decides: 14m50s of silence is
+		// noticed up to 30s later, by which time the 15m deadline has won.
+		{name: "inside the detection interval is disabled", stall: 14*time.Minute + 50*time.Second, run: 15 * time.Minute, want: 0},
+		{name: "clear of the detection interval stays enabled", stall: 14 * time.Minute, run: 15 * time.Minute, want: 14 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, effectiveStallTimeout(tc.stall, tc.run))
 		})
 	}
+}
+
+// TestRunStallTimeout: the decision runAgent makes per run — resolve the env,
+// report a malformed value instead of silently running unguarded, and disarm
+// out loud when the run's own timeout would always win the race.
+func TestRunStallTimeout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		env      string
+		run      time.Duration
+		want     time.Duration
+		contains []string
+	}{
+		{name: "default under a long run timeout is armed silently",
+			run: 30 * time.Minute, want: defaultStallTimeout},
+		{name: "explicit value is armed silently",
+			env: "90s", run: 30 * time.Minute, want: 90 * time.Second},
+		{name: "zero disables without complaining",
+			env: "0", run: 30 * time.Minute, want: 0},
+		{name: "malformed value warns and falls back to the default",
+			env: "ten minutes", run: 30 * time.Minute, want: defaultStallTimeout,
+			contains: []string{"Stall watchdog:", envStallTimeout, "using 15m0s"}},
+		{name: "a run timeout the watchdog cannot beat disarms it and says so",
+			env: "20m", run: 10 * time.Minute, want: 0,
+			contains: []string{"Stall watchdog inactive", "20m0s", "10m0s", "30s detection interval"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			got := runStallTimeout(envMap(map[string]string{envStallTimeout: tc.env}), tc.run, ui.New(&out))
+			assert.Equal(t, tc.want, got)
+			if len(tc.contains) == 0 {
+				assert.NotContains(t, out.String(), "Stall watchdog")
+				return
+			}
+			for _, want := range tc.contains {
+				assert.Contains(t, out.String(), want)
+			}
+		})
+	}
+}
+
+// TestNoteStalledRun: a stall verdict has to reach both the console and
+// metrics.json, and nothing else may be mistaken for one — every failed
+// iteration passes through here, and a mislabelled failure would report a
+// merely broken agent as wedged.
+func TestNoteStalledRun(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a wrapped ErrStalled is recorded and announced", func(t *testing.T) {
+		var out strings.Builder
+		agg := aggregateMetrics{}
+		err := fmt.Errorf("running agent (iteration 1): %w", agentruntime.ErrStalled)
+
+		noteStalledRun(err, 15*time.Minute, &agg, ui.New(&out))
+
+		assert.True(t, agg.Stalled)
+		assert.Contains(t, out.String(), "no events for 15m0s")
+		assert.Contains(t, out.String(), envStallTimeout)
+	})
+
+	t.Run("any other failure is left alone", func(t *testing.T) {
+		var out strings.Builder
+		agg := aggregateMetrics{}
+
+		noteStalledRun(errors.New("exit status 1"), 15*time.Minute, &agg, ui.New(&out))
+
+		assert.False(t, agg.Stalled)
+		assert.NotContains(t, out.String(), "stalled")
+	})
 }
 
 func TestAggregateMetrics_StalledOmittedWhenFalse(t *testing.T) {
