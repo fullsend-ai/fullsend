@@ -1042,6 +1042,54 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestGetAppPermissions(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/app", r.URL.Path)
+		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"permissions": map[string]string{
+				"contents":          "write",
+				"issues":            "write",
+				"metadata":          "read",
+				"actions_variables": "read",
+			},
+		})
+	}))
+	defer mockGH.Close()
+
+	perms, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
+	require.NoError(t, err)
+	assert.Equal(t, "write", perms["contents"])
+	assert.Equal(t, "read", perms["actions_variables"])
+	assert.Equal(t, "read", perms["metadata"])
+}
+
+func TestGetAppPermissions_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	_, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 404")
+}
+
+func TestGetAppPermissions_IncludesUserAgent(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ua := r.Header.Get("User-Agent")
+		assert.NotEmpty(t, ua)
+		assert.Contains(t, ua, "fullsend-mint")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"permissions": map[string]string{"metadata": "read"},
+		})
+	}))
+	defer mockGH.Close()
+
+	_, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
+	require.NoError(t, err)
+}
+
 func TestGitHubUserAgent(t *testing.T) {
 	t.Run("without version", func(t *testing.T) {
 		origVersion := Version
