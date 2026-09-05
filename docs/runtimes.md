@@ -168,6 +168,28 @@ silently shadowed. Bump the workflow's fullsend pin to a version that carries pe
 *before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
 whereas a current CLI validates the settings on every run.
 
+### Trivial-diff routing for review
+
+The review agent routes provably trivial diffs to a cheaper model before the
+agent starts, so a one-line version bump does not cost what a refactor costs.
+A diff qualifies only when **every** changed file is a modified data/config
+file (`.json`, `.ya?ml`, `.toml`, `.txt`, `.md`, …) and the whole diff is under
+the line threshold. Added, removed and renamed files are structural rather than
+value edits; code, dependency lockfiles, and paths that execute or govern
+(anything under a dot directory, `scripts/`, `skills/`, `harness/`, `CODEOWNERS`,
+`Dockerfile`, …) never qualify, whatever their size.
+
+| Repository variable | Default | Meaning |
+|---|---|---|
+| `REVIEW_TRIVIAL_MODEL` | `sonnet` | Model for trivial diffs. `off` disables routing. |
+| `REVIEW_TRIVIAL_MAX_LINES` | `10` | Upper bound on additions + deletions. |
+
+An explicit `REVIEW_FULLSEND_MODEL` or `FULLSEND_MODEL` repository variable
+outranks this: routing runs first and the repo's own setting overwrites it.
+Every uncertain path — an unreadable file list, a malformed threshold, a
+truncated listing — leaves the harness model in place, so cost routing can
+never be the reason a review fails to run.
+
 Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi`. Repos on pi need a
 sandbox image that carries `PI_VERSION`; repos on codex need one that carries `CODEX_VERSION`.
 
