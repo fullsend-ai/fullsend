@@ -12,7 +12,7 @@ On this page:
 - [Adding a runtime: checklist](#adding-a-runtime-checklist)
 - [Security feature matrix](#security-feature-matrix) — what each runtime wires, and where
 - [Runtime interface contract](#runtime-interface-contract)
-- [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, Claude Code caveats
+- [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, the accepted shell dialect, Claude Code caveats
 - [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image)
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
@@ -276,11 +276,72 @@ Every rewrite attaches `hookSpecificOutput.additionalContext` so the agent knows
 | Component | On malformed / oversized input (> 10 × 1024 × 1024 characters, text-mode stdin) | On its own error |
 |-----------|-------------------------------------------|------------------|
 | Blocking scripts (all PreToolUse, standalone `canary_posttool.py`) | fail **closed** — block | block |
-| `tirith_check.py` | block | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
+| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
 | Sanitizing scripts / each `posttool_chain.py` sanitizer stage | fail **open** — pass through unchanged (exit 0; the unicode hook logs an `input_truncated` finding) | pass through; recorded in `findings.jsonl` as `<stage>_stage_error` |
 | `posttool_chain.py` canary stage | fails **closed** whenever `FULLSEND_CANARY_TOKEN` is set: input the driver cannot read blocks (`exit 1`, `continue: false`) instead of skipping detection; with no canary token configured it stays fail-open | a scan that raises is treated as a hit; a hit whose redaction cannot be verified clean withholds the output entirely; `exit 1` is unconditional |
 
 Also: empty/whitespace-only stdin is treated as "no tool call" and allowed by every script; a payload without `tool_name` blocks only in the allowlist hook; adapters must not treat a sanitizer's empty stdout as an error; detection and redaction share one case-insensitive matcher (`hook_io.canary_pattern`), so a token that is detected is always one that can be redacted.
+
+### Tirith: accepted shell dialect
+
+Tirith blocks any Bash command it cannot parse, reporting `analysis_incomplete` at HIGH. Write sandbox commands in the dialect below and they never reach that path.
+
+The finding is not a downgradeable false positive. Tirith emits the same `rule_id`, severity and title whether it failed to parse an ordinary POSIX idiom or a deliberately obfuscated payload such as `sh -c "$PAYLOAD"`. Nothing distinguishes them, so the hook blocks both and puts the rewrite in the reason instead.
+
+#### What a block looks like
+
+Run the time-check snippet the code and fix agents document straight through the hook:
+
+```console
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "if [ -n \"${TIMEOUT_SECONDS:-}\" ]; then echo yes; fi"}}' \
+    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Nested executable body could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: `test -n \"$X\"` instead of `[ -n \"$X\" ]` or `[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
+```
+
+The reply is one line with no trailing newline, which is why `exit=1` is glued to it. Apply the rewrite it asks for and the command passes:
+
+```console
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "if test -n \"${TIMEOUT_SECONDS:-}\"; then echo yes; fi"}}' \
+    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+exit=0
+```
+
+#### The rewrites
+
+| Blocked | Write instead | What tirith cannot resolve |
+|---------|---------------|----------------------------|
+| `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
+| `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
+| `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
+| `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
+
+The last row is **deliberately missing from the block message**, which carries only the syntax rewrites. That text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
+
+Two notes on that row. Tirith reports it as `analysis_incomplete` too, titled `Could not resolve wrapped command for sensitive upload analysis`, so the block still carries the syntax hint even though the config file is the fix. Write that file under `umask 077`.
+
+What tirith keys on is a variable it cannot resolve inside a **header, data or form argument** — `-H`, `-d`, `-F`, `--data-binary` — whether or not it holds a credential. `curl -H "X-Trace: $ID" …` blocks; `curl -o "$OUT" …`, `curl --user "$U" …` and `curl "$URL"` all pass. So `-K` works here only because it removes the inline `-H` altogether: leave a variable in a `-d` or `--data-binary` argument and the command still blocks with `-K` present.
+
+#### Checking a pin bump
+
+`TestRealTirithBinary` in `internal/security/hooks/tirith_check_test.py` asserts the blocked forms above, their rewrites, and that applying each rewrite to an attacker shape still blocks. It skips unless the installed tirith matches `ARG TIRITH_VERSION` in `images/sandbox/Containerfile`.
+
+Run it after a bump and before rebuilding the image — **nothing runs it for you.** No CI job executes `internal/security/hooks/*_test.py`; the repo's only pytest invocation is `Makefile:204`, for `gitlint_rules_test.py`.
+
+Two traps when reproducing by hand:
+
+- A stray `~/.config/tirith/policy.yaml` changes verdicts. The sandbox image ships none, so point `HOME` and `XDG_CONFIG_HOME` at an empty directory first.
+- `uv run` does not reliably see a `tirith` you put on `PATH`. Check `tirith --version` from inside it, or run pytest from a venv directly.
+
+#### Troubleshooting
+
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `analysis_incomplete: Nested executable body could not be resolved` | a bracket test, a late glob `case` arm, or `$( )` inside `$(( ))` | rewrite per the table above |
+| `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis`, from a `-H` header | a variable expanded inside a header argument | move the header into a `curl -K` config file, so no `-H` remains |
+| the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
+| `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
+| `Hook error (fail-closed): <ExceptionName>` | an error with no specific guard | the traceback is on the hook's stderr and a `hook_error` finding is in `findings.jsonl`; file both with the command |
+| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is on `PATH` inside the sandbox |
 
 ### Environment
 
