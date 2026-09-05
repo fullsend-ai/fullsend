@@ -215,6 +215,21 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
+// noteStalledRun records a stall verdict on an iteration that failed. A
+// wedged agent is killed on evidence of silence rather than billed for the
+// rest of the global timeout, so the failure is annotated both in the console
+// and in metrics.json — the cheap failure has to be a legible one, and it
+// otherwise looks like any other non-zero exit. Any other error is left
+// alone.
+func noteStalledRun(runErr error, stallTimeout time.Duration, agg *aggregateMetrics, printer *ui.Printer) {
+	if !errors.Is(runErr, agentruntime.ErrStalled) {
+		return
+	}
+	agg.Stalled = true
+	printer.StepFail(fmt.Sprintf(
+		"Agent produced no events for %s and was terminated as stalled (FULLSEND_STALL_TIMEOUT, 0 disables)", stallTimeout))
+}
+
 var (
 	errParsingConfigRuntime = errors.New("parsing config for runtime selection")
 	errResolvingRuntime     = errors.New("resolving runtime")
@@ -2079,17 +2094,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		timeout = 30 * time.Minute
 	}
 
-	stallTimeout, stallErr := resolveStallTimeout(os.Getenv)
-	if stallErr != nil {
-		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", stallErr, stallTimeout))
-	}
-	if d := effectiveStallTimeout(stallTimeout, timeout); d != stallTimeout {
-		// The watchdog could never fire — the global deadline always wins the
-		// race. Say so instead of arming one that silently protects nothing.
-		printer.StepInfo(fmt.Sprintf(
-			"Stall watchdog inactive: FULLSEND_STALL_TIMEOUT (%s) is not below the run timeout (timeout_minutes, %s)", stallTimeout, timeout))
-		stallTimeout = d
-	}
+	stallTimeout := runStallTimeout(os.Getenv, timeout, printer)
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -2256,14 +2261,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if runErr != nil {
 			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
-			if errors.Is(runErr, agentruntime.ErrStalled) {
-				// A wedged agent, killed on evidence of silence rather than
-				// billed for the rest of the global timeout. Recorded in
-				// metrics.json so the cheap failure is also a legible one.
-				aggMetrics.Stalled = true
-				printer.StepFail(fmt.Sprintf(
-					"Agent produced no events for %s and was terminated as stalled (FULLSEND_STALL_TIMEOUT, 0 disables)", stallTimeout))
-			}
+			noteStalledRun(runErr, stallTimeout, &aggMetrics, printer)
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
