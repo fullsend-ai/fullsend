@@ -3092,20 +3092,23 @@ agents:
 	cfg, err := LoadConfig(dir, LoadOpts{})
 	require.NoError(t, err)
 
-	// First call.
+	// Writing into a merged result must not reach the parent layer's own
+	// map. Comparing two merged results cannot detect that: the mutation
+	// writes exactly the value the second merge would compute anyway, so
+	// the guard has to mutate and then re-read.
 	entries1 := cfg.AgentEntries()
-	// Second call must return the same result — the merge must not
-	// mutate the parent layer's map.
-	entries2 := cfg.AgentEntries()
-
 	require.Len(t, entries1, 1)
+	require.NotNil(t, entries1[0].Subagents)
+	entries1[0].Subagents["default"] = strPtrCfg("mutated")
+
+	entries2 := cfg.AgentEntries()
 	require.Len(t, entries2, 1)
-	assert.Equal(t, entries1[0].Subagents, entries2[0].Subagents)
-	// "default" inherited from base.
-	assert.Equal(t, "haiku", *entries2[0].Subagents["default"])
-	// "correctness" overridden by overlay.
+	assert.Equal(t, "haiku", *entries2[0].Subagents["default"],
+		"the base layer's map was mutated through the merged result")
 	assert.Equal(t, "sonnet", *entries2[0].Subagents["correctness"])
 }
+
+func strPtrCfg(s string) *string { return &s }
 
 func TestSubagentsMerge_TombstonePreserved(t *testing.T) {
 	t.Parallel()

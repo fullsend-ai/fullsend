@@ -295,16 +295,17 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			}
 			// Subagents merge per key: overlay entries override or
 			// tombstone parent entries; unstated keys inherit.
-			// Copy the parent map first to avoid mutating it.
+			// `merged := pa` shares the map header, so clone before
+			// writing or the overlay leaks into the parent layer.
 			if oi.entry.Subagents != nil {
-				newSubs := make(map[string]*string, len(merged.Subagents)+len(oi.entry.Subagents))
+				cloned := make(map[string]*string, len(merged.Subagents)+len(oi.entry.Subagents))
 				for k, v := range merged.Subagents {
-					newSubs[k] = v
+					cloned[k] = v
 				}
 				for k, v := range oi.entry.Subagents {
-					newSubs[k] = v
+					cloned[k] = v
 				}
-				merged.Subagents = newSubs
+				merged.Subagents = cloned
 			}
 		}
 		result = append(result, merged)

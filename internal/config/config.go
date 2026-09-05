@@ -334,8 +334,13 @@ func ValidSubagentKey(key string) bool {
 	return len(key) <= 64 && (key == "default" || validSubagentKey.MatchString(key))
 }
 
-// reservedSubagentKeys are persona names that cannot be used because
-// they collide with built-in agent types or reserved identifiers.
+// reservedSubagentKeys are names a discovered persona may not take. Note
+// the asymmetry with ValidSubagentKey above: `default` is a legal config
+// *key* (it is the blanket entry) but never a legal persona *name*, so a
+// caller validating a persona name must apply both -- the shape check
+// admits "default" and this list is what refuses it. The rest of the
+// forbidden set (the run's own agent name, ValidAgentNames()) is only
+// knowable at Bootstrap and is checked there.
 var reservedSubagentKeys = []string{"default", "explore"}
 
 // ReservedSubagentKeys returns the persona names reserved by the
@@ -582,7 +587,8 @@ func (c *orgConfig) Validate() error {
 // urlutil.MatchingAllowedPrefixInList for consistency with runtime
 // resolution (case-insensitive scheme, percent-decoding, dot-segment
 // cleaning).
-// validateAgentSettings checks an entry's runtime/model/effort values.
+// validateAgentSettings checks an entry's runtime, model, effort and
+// subagents values.
 func validateAgentSettings(i int, entry AgentEntry) error {
 	label := entry.Name
 	if label == "" {
@@ -653,7 +659,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			// merge (the merged entry carries the parent's source), so by the
 			// time an entry reaches validation without one it must be built in.
 			if !entry.HasSettings() {
-				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model or effort)", i)
+				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model, effort or subagents)", i)
 			}
 			if entry.Name == "" {
 				return fmt.Errorf("agents[%d]: agent entry without a source must name the agent it tunes", i)

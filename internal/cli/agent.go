@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -225,18 +226,22 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 		effort = f.effort
 	}
 
-	// Parse --subagent k=v flags into the subagents map. Start from the
-	// current effective subagents so unset keys are preserved.
+	// Seed from the overlay's own entry: writing the merged map back
+	// would freeze the parent layer's entries into this config.
+	localSubagents, _ := config.AgentSettingsFor(localAgentEntries(cfg), agentName)
+
 	var subagents map[string]*string
-	if current.Subagents != nil {
-		subagents = make(map[string]*string, len(current.Subagents))
-		for k, v := range current.Subagents {
-			if v != nil {
-				cp := *v
-				subagents[k] = &cp
-			} else {
+	if localSubagents.Subagents != nil {
+		subagents = make(map[string]*string, len(localSubagents.Subagents))
+		for k, v := range localSubagents.Subagents {
+			// A nil value is a tombstone; carry it over rather than
+			// dereferencing it.
+			if v == nil {
 				subagents[k] = nil
+				continue
 			}
+			cp := *v
+			subagents[k] = &cp
 		}
 	}
 	if f.subagentSet {
@@ -244,7 +249,13 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 			subagents = make(map[string]*string)
 		}
 		for _, arg := range f.subagentArgs {
-			k, v, _ := strings.Cut(arg, "=")
+			k, v, found := strings.Cut(arg, "=")
+			if !found {
+				// Without the separator the intent is ambiguous: bare
+				// "correctness" would otherwise be indistinguishable from
+				// "correctness=" and silently tombstone the entry.
+				return fmt.Errorf("--subagent: %q must be key=value (use %q= to clear an inherited entry)", arg, arg)
+			}
 			k = strings.TrimSpace(k)
 			v = strings.TrimSpace(v)
 			if k == "" {
@@ -281,8 +292,35 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort))
+	msg := fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort)
+	if s := formatSubagents(subagents); s != "" {
+		msg += " subagents: " + s
+	}
+	printer.StepDone(msg)
 	return nil
+}
+
+// formatSubagents renders the subagents map for the `agent set` confirmation
+// line, sorted so the output is stable. A tombstone prints as "<key>=cleared"
+// so a caller can see that the entry was un-set rather than left untouched.
+func formatSubagents(subagents map[string]*string) string {
+	if len(subagents) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(subagents))
+	for k := range subagents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if v := subagents[k]; v == nil {
+			parts = append(parts, k+"=cleared")
+		} else {
+			parts = append(parts, k+"="+*v)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // localAgentEntries returns the entries the overlay itself declares (the
@@ -405,6 +443,9 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 			}
 			if a.Effort != "" {
 				settings = append(settings, "effort="+a.Effort)
+			}
+			if s := formatSubagents(a.Subagents); s != "" {
+				settings = append(settings, "subagents: "+s)
 			}
 			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}
