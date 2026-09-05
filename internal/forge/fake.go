@@ -500,10 +500,25 @@ func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, 
 
 	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
 
-	if f.ForkOwner != "" {
-		return f.ForkOwner, repo, nil
+	forkOwner := f.ForkOwner
+	if forkOwner == "" {
+		forkOwner = f.AuthenticatedUser
 	}
-	return f.AuthenticatedUser, repo, nil
+	if forkOwner == "" {
+		forkOwner = "fake-fork-owner"
+	}
+
+	// Auto-populate the fork in Repos so GetRepo (and therefore
+	// waitForFork) finds it immediately instead of hanging for the
+	// full timeout.
+	f.Repos = append(f.Repos, Repository{
+		FullName:      forkOwner + "/" + repo,
+		Name:          repo,
+		DefaultBranch: "main",
+		Fork:          true,
+	})
+
+	return forkOwner, repo, nil
 }
 
 func (f *FakeClient) CreateForkInOrg(_ context.Context, owner, repo, org, forkName string) (string, error) {
