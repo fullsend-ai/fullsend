@@ -73,7 +73,8 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
 
 # ── Timeouts ──────────────────────────────────────────────────
-timeout_minutes: 20
+timeout_minutes: 20                  # Per-iteration budget (default 30); exported to
+                                     # the sandbox as FULLSEND_TIMEOUT_MINUTES
 sandbox_timeout_seconds: 300         # 30-600
 
 # ── Remote resources ──────────────────────────────────────────
@@ -139,6 +140,10 @@ Most fields are self-explanatory from the inline comments above. This section ex
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
 
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+
+**`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and terminates the agent's processes in the sandbox when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES` and the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds) into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Both names are reserved: an `env.sandbox` entry with either name is dropped.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 

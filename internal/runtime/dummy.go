@@ -159,7 +159,7 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 // in the real sandbox, so it gets the same between-iteration hygiene as the
 // agent runtimes), then removes the previous iteration's output.
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr)
+	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
 	_, stderr, exitCode, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
 	if err != nil {

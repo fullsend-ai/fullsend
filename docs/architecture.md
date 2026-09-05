@@ -109,6 +109,11 @@ repo baseline and overrides)
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
   output is emitted
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
+  An iteration killed at `timeout_minutes` is not retried: the run ends with a
+  distinct timeout error unless an iteration's output already validated, and
+  the budget reaches the sandbox as `FULLSEND_TIMEOUT_MINUTES` plus a
+  per-iteration `FULLSEND_ITERATION_DEADLINE`
+  ([ADR 0105](ADRs/0105-timed-out-iteration-ends-the-run.md)).
 - Forge-portable harness schema: `role` and `slug` move into the harness
   YAML (eliminating the config.yaml `agents:` block dependency), and a
   `forge:` section separates platform-specific config from platform-neutral
@@ -702,6 +707,9 @@ event ──► DISPATCHER
           ║ Validation loop (if configured):                      ║
           ║   schema check on host                                ║
           ║   ├─ pass: continue                                   ║
+          ║   ├─ fail + agent killed at timeout: HARD FAILURE     ║
+          ║   │   (no retry; "agent timed out" error, unless an   ║
+          ║   │   earlier or this iteration's output validated)   ║
           ║   ├─ fail + retries remain: re-run agent w/ feedback  ║
           ║   └─ fail + retries exhausted: HARD FAILURE           ║
           ║     (no unvalidated output emitted)                   ║
