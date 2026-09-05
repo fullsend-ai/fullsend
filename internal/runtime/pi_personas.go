@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -29,14 +28,10 @@ type piPersonaManifestEntry struct {
 	BashAllowlist []string `json:"bashAllowlist,omitempty"`
 }
 
-// validPersonaName matches the persona naming rule: one or more segments
-// of lowercase alphanumeric characters joined by single hyphens, at most
-// 64 characters long.
-var validPersonaName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-// piReservedPersonaNames are persona names that cannot be used because
-// they collide with built-in dispatch types or runtime identifiers.
-var piReservedPersonaNames = []string{"default", "explore"}
+// Note: persona name validation reuses config.ValidSubagentKey (same
+// pattern: lowercase alphanumeric segments joined by hyphens, ≤64 chars)
+// and config.ReservedSubagentKeys (same list: "default", "explore")
+// to avoid duplicating the regex and reserved list.
 
 // discoverPersonas scans each skill directory for sub-agents/*.md files,
 // parses their frontmatter, validates naming, and returns the discovered
@@ -90,12 +85,12 @@ func discoverPersonas(skillDirs []string, agentName string) ([]piPersona, error)
 				return nil, fmt.Errorf("persona %s: frontmatter name %q must equal file basename %q", path, def.Name, basename)
 			}
 			name := def.Name
-			// Validation: name shape.
-			if len(name) > 64 || !validPersonaName.MatchString(name) {
+			// Validation: name shape (reuses config.ValidSubagentKey).
+			if !config.ValidSubagentKey(name) {
 				return nil, fmt.Errorf("persona %s: name %q must be lowercase alphanumeric segments joined by hyphens (max 64 chars)", path, name)
 			}
-			// Validation: reserved names.
-			if slices.Contains(piReservedPersonaNames, name) {
+			// Validation: reserved names (reuses config.ReservedSubagentKeys).
+			if slices.Contains(config.ReservedSubagentKeys(), name) {
 				return nil, fmt.Errorf("persona %s: name %q is reserved", path, name)
 			}
 			if strings.EqualFold(name, agentName) {

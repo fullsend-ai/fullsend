@@ -3071,6 +3071,73 @@ agents:
 	assert.Equal(t, "sonnet", *entries[0].Subagents["correctness"])
 }
 
+func TestSubagentsMerge_Idempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      correctness: sonnet
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	// First call.
+	entries1 := cfg.AgentEntries()
+	// Second call must return the same result — the merge must not
+	// mutate the parent layer's map.
+	entries2 := cfg.AgentEntries()
+
+	require.Len(t, entries1, 1)
+	require.Len(t, entries2, 1)
+	assert.Equal(t, entries1[0].Subagents, entries2[0].Subagents)
+	// "default" inherited from base.
+	assert.Equal(t, "haiku", *entries2[0].Subagents["default"])
+	// "correctness" overridden by overlay.
+	assert.Equal(t, "sonnet", *entries2[0].Subagents["correctness"])
+}
+
+func TestSubagentsMerge_TombstonePreserved(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      correctness: ~
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	entries := cfg.AgentEntries()
+	require.Len(t, entries, 1)
+	require.NotNil(t, entries[0].Subagents)
+	// "default" inherited from base.
+	assert.Equal(t, "haiku", *entries[0].Subagents["default"])
+	// "correctness" tombstoned by overlay (nil pointer).
+	val, exists := entries[0].Subagents["correctness"]
+	assert.True(t, exists, "tombstone key should be present")
+	assert.Nil(t, val, "tombstone value should be nil")
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {

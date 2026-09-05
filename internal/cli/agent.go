@@ -231,8 +231,12 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if current.Subagents != nil {
 		subagents = make(map[string]*string, len(current.Subagents))
 		for k, v := range current.Subagents {
-			cp := *v
-			subagents[k] = &cp
+			if v != nil {
+				cp := *v
+				subagents[k] = &cp
+			} else {
+				subagents[k] = nil
+			}
 		}
 	}
 	if f.subagentSet {
