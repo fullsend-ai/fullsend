@@ -152,10 +152,14 @@ When in doubt about whether something warrants a PR, start with an issue. Issues
 
 To find open issues for human contribution, use the [contributor issue search](https://github.com/fullsend-ai/fullsend/issues?q=is%3Aissue%20is%3Aopen%20-author%3Aapp%2Ffullsend-ai-fullsend%20-author%3Aapp%2Ffullsend-ai-triage%20-author%3Aapp%2Ffullsend-ai-review%20-author%3Aapp%2Ffullsend-ai-prioritize%20-author%3Aapp%2Ffullsend-ai-coder%20-author%3Aapp%2Ffullsend-ai-retro%20-label%3Aready-to-code). This search excludes issues reserved for agents.
 
-## Maintainers
+## Contributor ladder
 
-See [MAINTAINERS.md](MAINTAINERS.md) for the maintainer role, eligibility
-criteria, and the nomination process.
+This project defines four contributor roles — Vouched, Triage, Write,
+and Maintainer — each granting additional capabilities. See
+[LADDER.md](LADDER.md) for the full ladder and how to request each role.
+
+For the maintainer role specifically, see
+[MAINTAINERS.md](MAINTAINERS.md).
 
 ## License
 
