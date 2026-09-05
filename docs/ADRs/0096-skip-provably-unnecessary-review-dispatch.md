@@ -85,53 +85,64 @@ work rather than bundled into this routing-hygiene pass.
 
 When a review would otherwise be dispatched, a new `docs-lockfile-check` step
 fetches the PR's changed-file list (`gh api .../pulls/{number}/files
---paginate`) and skips the review — with a `::notice::` in the job log and an
-entry in `GITHUB_STEP_SUMMARY` — when every changed file matches
-`docs/*.md`, excluding `docs/ADRs/**`.
+--paginate`, both `filename` and `previous_filename`) and skips the review —
+with a `::notice::` in the job log and an entry in `GITHUB_STEP_SUMMARY` —
+when every path in that list matches `docs/*.md` and none matches a protected
+prefix.
 
-The pattern is deliberately narrow, because `case` globs match `/`:
+The protected prefixes are matched *before* `docs/*.md`, because `case` globs
+match `/`: a lone `docs/*.md` arm reaches every nested markdown file under
+`docs/`, contracts included. They are the directories whose prose is itself a
+contract — `docs/ADRs/` (a new ADR is among the things most worth reviewing),
+`docs/normative/` (the event and pre-script contracts other repos build
+payloads against, where the prose spec beside a JSON schema carries as much of
+the contract as the schema does), `docs/contributing/` (the rules agents and
+humans are held to, including `workflow-contracts.md`, which governs this very
+workflow), `docs/reference/` (the field-level interface reference), and
+`docs/.vitepress/` (site source — executable, and occasionally markdown).
 
-- `docs/*` would swallow the executable TypeScript under `docs/.vitepress/`
-  and `docs/normative/**`, which publishes a normative event schema other
-  repos build payloads against.
-- A bare `*.md` would swallow `skills/*/SKILL.md`, `AGENTS.md`, and
-  `CLAUDE.md` — markdown that is executable agent instruction, not prose.
-- ADRs are excluded because a new ADR is among the things most worth
-  reviewing.
-- **Lockfiles are not skippable.** npm resolves from `package-lock.json`, so
-  a lockfile-only diff can repoint a transitive dependency's `resolved` URL
-  and `integrity` hash without touching `package.json`. Skipping review there
-  would remove the only automated reader from a supply-chain-relevant
-  change. Renovate PRs therefore still get reviewed.
+Everything else falls to a catch-all that stops the skip, which is what keeps
+markdown outside `docs/` reviewed: `skills/*/SKILL.md`, `AGENTS.md`, and
+`CLAUDE.md` are executable agent instruction, not prose. **Lockfiles are not
+skippable** either — npm resolves from `package-lock.json`, so a lockfile-only
+diff can repoint a transitive dependency's `resolved` URL and `integrity` hash
+without touching `package.json`, and skipping review there would remove the
+only automated reader from a supply-chain-relevant change.
 
-A truncated file listing (GitHub caps `/pulls/{n}/files` at 3000 entries and
-stops paginating without erroring) never skips: a 3500-file PR whose first
-3000 files are prose would otherwise look docs-only.
+Two listing hazards are handled explicitly. A truncated listing never skips —
+GitHub caps `/pulls/{n}/files` at 3000 entries and stops paginating without
+erroring, so a 3500-file PR whose first 3000 files are prose would otherwise
+look docs-only — and renames are classified on both paths, since moving a Go
+file to `docs/notes.md` would otherwise present as prose.
+
+The listing costs one paginated `gh api` call, incurred only when a review
+would otherwise have run.
 
 This skip is per-repo only — see Consequences for why it is not mirrored
 into the per-org scaffold.
 
 ## Consequences
 
-- Fewer wasted review runs: drafts, `fullsend-no-review`-labeled PRs, and
-  documentation-prose-only PRs no longer trigger automatic review dispatch,
-  reducing inference cost with no loss of coverage — nothing that would have
-  been usefully reviewed is skipped.
-- `/fs-review` remains a complete escape hatch for all three skips. A
-  maintainer can always force a review on a draft, a no-review-labeled PR, or
-  a prose-only PR by commenting.
-- `fullsend-no-review` currently requires manual label creation and
-  application — there is no `/fs-review-stop` command yet, unlike
-  `/fs-fix-stop`. Tracked as follow-up work.
-- The documentation-prose skip is per-repo-only by design. The per-org
-  installation mode is deprecated ([ADR 0044](0044-deprecate-per-org-installation-mode.md)),
-  and `docs/contributing/workflow-contracts.md` scopes the cross-mode sync
-  requirement to jq payload construction, stage routing, and input/secret
-  threading — this step is none of those. Adding a new feature to a chain
-  scheduled for removal was judged not worth the duplicated maintenance. The draft skip and the `fullsend-no-review`
-  label check, being pure "Determine stage" routing logic (the part
-  `docs/contributing/workflow-contracts.md` requires to stay identical
-  across installation modes), are mirrored into the scaffold as usual.
-- Adds one paginated `gh api` call per review dispatch to fetch the
-  changed-file list — incurred only when a review would otherwise run, so it
-  never adds cost on top of a dispatch that was going to happen anyway.
+- Automatic review stops running on drafts, on `fullsend-no-review`-labeled
+  PRs, and on PRs whose every listed path — new and previous filenames alike —
+  is markdown under `docs/` outside the protected prefixes, so a diff that goes
+  unreviewed can now contain guide, agent-page, glossary or problem-doc prose,
+  and cannot contain code, lockfiles, ADRs, `docs/normative/`,
+  `docs/contributing/`, `docs/reference/`, `docs/.vitepress/`, or any markdown
+  outside `docs/`.
+- The prose skip is a judgement call rather than a free win: docs currency is
+  one of the review agent's own dimensions, `docs/contributing/design-decisions.md`
+  ranks external prompt injection as the top threat, and prose is where
+  instruction-like text that later agents read would land — a prose-only PR now
+  reaches human review with no automated reader having looked at it first.
+- That residual risk is bounded by what the check can see rather than by
+  trust: one non-prose path anywhere in the diff re-arms the review, an
+  unreadable or truncated file listing never skips, and `/fs-review` forces a
+  review on a draft, a labeled PR, or a prose-only PR at any time.
+- `fullsend-no-review` must be created and applied by hand until an
+  `/fs-review-stop` command exists, unlike `/fs-fix-stop`.
+- The prose skip is per-repo only because the per-org mode is deprecated
+  ([ADR 0044](0044-deprecate-per-org-installation-mode.md)) and
+  `docs/contributing/workflow-contracts.md` scopes cross-mode sync to payload
+  construction, stage routing, and secret threading — the draft and label
+  checks, being stage routing, are mirrored into the scaffold as usual.
