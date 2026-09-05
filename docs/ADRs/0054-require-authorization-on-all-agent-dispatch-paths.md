@@ -27,6 +27,12 @@ Related: [#877](https://github.com/fullsend-ai/fullsend/issues/877)
 (agents must not model their own authority limitations — this ADR
 implements the platform-level enforcement that principle requires).
 
+Living contract:
+[Authorization Contract v1](../normative/authorization/v1/)
+consolidates the normative rules from this ADR and subsequent
+implementation changes into a single reference for dispatch
+implementations, forge adapters, and harness authors.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)

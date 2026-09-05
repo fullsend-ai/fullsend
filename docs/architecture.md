@@ -301,7 +301,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
   map source-system roles to dispatch authorization roles (`read`, `write`,
   `admin`) using source-native role resolution; the resolved role feeds the
   same authorization gate with no cross-system identity verification
-  ([ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+  ([Authorization Contract v1](normative/authorization/v1/);
+  [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 
 **Open questions:**
 
