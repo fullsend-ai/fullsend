@@ -252,6 +252,56 @@ boundary.
 Each load site constructs the appropriate accessor and passes it to
 `NewHandler`. Tests can pass any `PEMAccessor` implementation.
 
+## Adding a permission to a role
+
+A role's GitHub App permissions are declared in three places that must change
+together in one PR:
+
+| Declaration | File | Note |
+|-------------|------|------|
+| Mint role map | `canonicalRolePermissions` in `internal/mintcore/github.go` | What the mint requests when minting a token |
+| GCF embed copy | `internal/dispatch/gcf/mintsrc/mintcore/github.go.embed` | Byte-identical copy; `hack/lint-mint-embed-sync` enforces it |
+| App manifest | `AgentAppConfig` in `internal/forge/github/types.go` | What `fullsend github setup` asks GitHub to create the App with |
+
+The parity tests in `internal/forge/github/types_test.go`
+(`TestAgentAppConfig_CoderMatchesMintcorePermissions` and its siblings — today
+`e2e`, `scribe`, `coder` and `fix` have one) fail if the manifest and the mint
+role map disagree, so the edits land together or CI is red. If the role you are
+changing has no parity test yet, add one in the same PR.
+
+### The backward-compatibility rule
+
+A permission that existing installations have not granted **must** be added to
+`optionalRolePermissions` in the same PR. GitHub rejects the entire
+installation-token request with `422` when any requested permission is
+ungranted — there is no partial downscope — so without the optional entry every
+mint for that role fails on the day the mint deploys, for every installation
+that has not accepted the App update yet.
+
+`effectiveInstallationPermissions` applies the distinction just before the token
+POST: it compares the requested map with the installation's granted map, drops
+ungranted permissions listed in `optionalRolePermissions` (logging
+`installation permissions not granted: … dropped=…`), and returns
+`ErrRequiredPermissionsMissing` for any other ungranted permission, which the
+handler surfaces as `422`. When the installation lookup carries no `permissions`
+map at all (or an empty one), the full requested set is sent and GitHub validates it.
+
+The optional entry is **temporary**. Once the mint logs stop showing drops for
+the permission, remove it in a follow-up PR; the permission then behaves like
+every other one in the role's map. The entry stays keyed by role — today
+`optionalRolePermissions` has entries for `coder` and `fix`, both for
+`packages`.
+
+### Commit conventions
+
+Adding a permission is a `BREAKING CHANGE` for users: App owners must update the
+App registration before installations can grant it. The commit subject and PR
+title carry the `!` suffix (see `COMMITS.md` at the repository root).
+
+The operator side of the change — updating the App registration, deploying the
+mint, chasing installation owners to accept — is
+[Rolling out a GitHub App permission](../guides/infrastructure/app-permission-rollout.md).
+
 ## Interfaces vs accessors
 
 Mintcore uses two patterns for dependency injection:

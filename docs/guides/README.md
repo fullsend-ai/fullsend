@@ -24,6 +24,7 @@ Guides for organization owners and repository administrators who manage fullsend
 Advanced guides for platform operators who deploy and manage the GCP-side infrastructure (token mint, WIF, secrets).
 
 - [Mint service administration](infrastructure/mint-administration.md) — Deploying and managing the token mint (GCP or Cloudflare)
+- [Rolling out a GitHub App permission](infrastructure/app-permission-rollout.md) — Adding a permission to a mint role without breaking installations that have not accepted it yet
 - [Standalone mint](infrastructure/standalone-mint.md) — Running the token mint as a standalone HTTP server without GCP
 - [Infrastructure reference](infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [Enabling fullsend on private repositories](infrastructure/private-repositories.md) — Additional guardrails and configuration for private repos
