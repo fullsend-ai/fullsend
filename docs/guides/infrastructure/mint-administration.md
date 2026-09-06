@@ -133,7 +133,7 @@ Redeploying or upgrading an existing mint must use the same mode: `--public` for
 | `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`); required to redeploy an existing public mint |
 | `--source-dir` | | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (only update WIF/config) |
-| `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group` |
+| `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group`. **Note:** Cloudflare Access auth is not a `--status-auth` mode — it is always compiled in and activates when both `StatusCFAccessAud` and `StatusCFAccessTeam` are stamped at deploy time |
 | `--status-github-group` | | `ORG/TEAM` slug for GitHub status auth (required when `github` mode enabled). Example: `--status-github-group=acme/platform-team` |
 | `--dry-run` | `false` | Preview changes without making them |
 

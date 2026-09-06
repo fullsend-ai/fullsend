@@ -129,6 +129,10 @@ type Config struct {
 	// StatusGitHub holds the GitHub status auth config stamped into
 	// the WASM binary via ldflags (same mechanism as Version/Commit).
 	StatusGitHub StatusGitHubAuth
+
+	// StatusCFAccess holds the Cloudflare Access status auth config
+	// stamped into the WASM binary via ldflags.
+	StatusCFAccess StatusCFAccessAuth
 }
 
 // StatusGitHubAuth bundles the GitHub status auth configuration
@@ -136,6 +140,16 @@ type Config struct {
 type StatusGitHubAuth struct {
 	// Group is the ORG/TEAM slug for the GitHub status validator.
 	Group string
+}
+
+// StatusCFAccessAuth bundles the Cloudflare Access status auth
+// configuration passed through provisioner and build functions.
+type StatusCFAccessAuth struct {
+	// Aud is the Cloudflare Access application AUD (JWT audience).
+	Aud string
+	// Team is the Cloudflare Zero Trust team subdomain
+	// (e.g. "acme" for acme.cloudflareaccess.com).
+	Team string
 }
 
 // WranglerRunner abstracts wrangler CLI operations for testing.
@@ -237,7 +251,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	// (no manual `make wasm-stage` required). When both files are
 	// already present (e.g. from a prior `make wasm-stage`), this
 	// is a no-op.
-	if err := ensureWASMArtifacts(sourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub); err != nil {
+	if err := ensureWASMArtifacts(sourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub, p.cfg.StatusCFAccess); err != nil {
 		return nil, fmt.Errorf("staging WASM artifacts: %w", err)
 	}
 
@@ -497,7 +511,7 @@ var execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
 // them so that `mint deploy --platform=cloudflare` is self-contained.
 // When both are already present (e.g. from `make wasm-stage`), this
 // is a no-op.
-func ensureWASMArtifacts(dir, version, commit string, statusGitHub StatusGitHubAuth) error {
+func ensureWASMArtifacts(dir, version, commit string, statusGitHub StatusGitHubAuth, statusCFAccess StatusCFAccessAuth) error {
 	wasmPath := filepath.Join(dir, "mintcore.wasm")
 	execPath := filepath.Join(dir, "wasm_exec.js")
 
@@ -508,7 +522,7 @@ func ensureWASMArtifacts(dir, version, commit string, statusGitHub StatusGitHubA
 	}
 
 	if !wasmOK {
-		if err := BuildWASMFn(wasmPath, version, commit, statusGitHub); err != nil {
+		if err := BuildWASMFn(wasmPath, version, commit, statusGitHub, statusCFAccess); err != nil {
 			return fmt.Errorf("auto-building mintcore.wasm: %w", err)
 		}
 	}
@@ -523,7 +537,7 @@ func ensureWASMArtifacts(dir, version, commit string, statusGitHub StatusGitHubA
 // wasmLDFlags returns the -ldflags value for compiling the mintcore WASM
 // binary. Includes -s -w to strip debug info (reduces gzip size by ~30%)
 // and -X flags to stamp version metadata into the binary.
-func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth) string {
+func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth, statusCFAccess StatusCFAccessAuth) string {
 	flags := fmt.Sprintf(
 		"-s -w "+
 			"-X github.com/fullsend-ai/fullsend/internal/mintcore.Version=%s "+
@@ -531,6 +545,12 @@ func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth) string {
 		version, commit)
 	if statusGitHub.Group != "" {
 		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=%s", statusGitHub.Group)
+	}
+	if statusCFAccess.Aud != "" {
+		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessAud=%s", statusCFAccess.Aud)
+	}
+	if statusCFAccess.Team != "" {
+		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessTeam=%s", statusCFAccess.Team)
 	}
 	return flags
 }
@@ -540,12 +560,12 @@ func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth) string {
 // into the binary via -ldflags (mintcore.Version and mintcore.Commit),
 // matching the GCF approach of compiling version data into the source.
 // Debug info is stripped (-s -w) to reduce the gzip size.
-func buildWASM(outPath, version, commit string, statusGitHub StatusGitHubAuth) error {
+func buildWASM(outPath, version, commit string, statusGitHub StatusGitHubAuth, statusCFAccess StatusCFAccessAuth) error {
 	args := []string{"build"}
 	if statusGitHub.Group != "" {
 		args = append(args, "-tags", "github")
 	}
-	args = append(args, "-ldflags", wasmLDFlags(version, commit, statusGitHub), "-o", outPath, ".")
+	args = append(args, "-ldflags", wasmLDFlags(version, commit, statusGitHub, statusCFAccess), "-o", outPath, ".")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = filepath.Join(findRepoRoot(), "cmd", "mint-wasm")
 	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")

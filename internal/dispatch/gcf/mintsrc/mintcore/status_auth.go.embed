@@ -32,10 +32,12 @@ type statusAuthResult struct {
 //  1. OIDC (always first, always compiled in).
 //  2. validateStatusGitHub — compile-time selected via build tags:
 //     real validator (github tag) or stub returning errStatusAuthSkip.
-//  3. If everything fails → error.
+//  3. validateStatusCFAccess — Cloudflare Access Managed OAuth.
+//  4. If everything fails → error.
 //
-// Non-skip errors from validateStatusGitHub produce an immediate 401
-// with no fall-through — the validator positively rejected the request.
+// Non-skip errors from validateStatusGitHub or validateStatusCFAccess
+// produce an immediate 401 with no fall-through — the validator
+// positively rejected the request.
 func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*statusAuthResult, error) {
 	// --- OIDC (always tried first) ---
 	claims, _, oidcErr := h.verifyOIDCRequest(ctx, r)
@@ -58,6 +60,18 @@ func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*sta
 	if !errors.Is(ghErr, errStatusAuthSkip) {
 		// Real rejection — 401 immediately, no fall-through.
 		log.Printf("GitHub status validator rejected request: %v", ghErr)
+		return nil, errors.New("authentication failed")
+	}
+
+	// --- Cloudflare Access validator ---
+	cfErr := validateStatusCFAccess(ctx, r)
+	if cfErr == nil {
+		return &statusAuthResult{}, nil
+	}
+	if !errors.Is(cfErr, errStatusAuthSkip) {
+		// Real rejection — 401 immediately, no fall-through.
+		log.Printf("CF Access status validator rejected request: %v", cfErr)
+		return nil, errors.New("authentication failed")
 	}
 
 	return nil, errors.New("authentication failed")

@@ -383,7 +383,7 @@ func TestProvisioner_Provision_ExistingFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -425,7 +425,7 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 
 func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -561,7 +561,7 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -1314,7 +1314,7 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
+	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no deployable source files")
 }
@@ -1327,7 +1327,7 @@ func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
+	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing go.mod")
 }
@@ -1343,7 +1343,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	data, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
+	data, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1360,7 +1360,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 }
 
 func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("", "", "", StatusGitHubAuth{})
+	data, err := bundleFunctionSource("", "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1378,7 +1378,7 @@ func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("/nonexistent/path/to/mint", "", "", StatusGitHubAuth{})
+	data, err := bundleFunctionSource("/nonexistent/path/to/mint", "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1395,7 +1395,7 @@ func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleEmbeddedMintSource(t *testing.T) {
-	data, err := bundleEmbeddedMintSource("", "", StatusGitHubAuth{})
+	data, err := bundleEmbeddedMintSource("", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1429,13 +1429,14 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/mintconsts/mintconsts.go")
 	assert.Contains(t, names, "mintcore/oidc_verify.go")
 	assert.Contains(t, names, "mintcore/status_auth.go")
+	assert.Contains(t, names, "mintcore/status_cfaccess.go")
 	assert.Contains(t, names, "mintcore/status_consts.go")
 	assert.Contains(t, names, "mintcore/status_github_stub.go")
-	assert.Len(t, names, 25)
+	assert.Len(t, names, 26)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
-	data, err := bundleEmbeddedMintSource("1.2.3", "deadbeef", StatusGitHubAuth{})
+	data, err := bundleEmbeddedMintSource("1.2.3", "deadbeef", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1461,7 +1462,7 @@ func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
 
 func TestBundleFunctionSource_StampsVersion(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "0.99.0", "cafebabe", StatusGitHubAuth{})
+	data, err := bundleFunctionSource(srcDir, "0.99.0", "cafebabe", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1490,7 +1491,7 @@ func TestBundleFunctionSource_SkipsOnDiskVersionGo(t *testing.T) {
 	// Version = "disk". bundleFunctionSource should skip it and generate
 	// its own version.go with the provided version and commit values.
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "2.0.0", "aabbcc", StatusGitHubAuth{})
+	data, err := bundleFunctionSource(srcDir, "2.0.0", "aabbcc", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1541,7 +1542,7 @@ func TestWriteVersionGoToZip(t *testing.T) {
 func TestWriteStatusConstsGoToZip(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
-	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "acme/team")
+	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "acme/team", "cf-aud-123", "myteam")
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
@@ -1558,12 +1559,14 @@ func TestWriteStatusConstsGoToZip(t *testing.T) {
 	src := string(content)
 	assert.Contains(t, src, "package mintcore")
 	assert.Contains(t, src, `StatusGitHubGroup = "acme/team"`)
+	assert.Contains(t, src, `StatusCFAccessAud = "cf-aud-123"`)
+	assert.Contains(t, src, `StatusCFAccessTeam = "myteam"`)
 }
 
 func TestWriteStatusConstsGoToZip_Empty(t *testing.T) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
-	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "")
+	err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", "", "", "")
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
@@ -1578,6 +1581,8 @@ func TestWriteStatusConstsGoToZip_Empty(t *testing.T) {
 
 	src := string(content)
 	assert.Contains(t, src, `StatusGitHubGroup = ""`)
+	assert.Contains(t, src, `StatusCFAccessAud = ""`)
+	assert.Contains(t, src, `StatusCFAccessTeam = ""`)
 }
 
 func TestWriteStatusGitHubFileToZip_StripsBuildConstraint(t *testing.T) {
@@ -1604,7 +1609,7 @@ func TestWriteStatusGitHubFileToZip_StripsBuildConstraint(t *testing.T) {
 }
 
 func TestBundleEmbeddedMintSource_GitHubMode(t *testing.T) {
-	data, err := bundleEmbeddedMintSource("1.0.0", "abc123", StatusGitHubAuth{Group: "acme/team"})
+	data, err := bundleEmbeddedMintSource("1.0.0", "abc123", StatusGitHubAuth{Group: "acme/team"}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1638,7 +1643,7 @@ func TestBundleEmbeddedMintSource_GitHubMode(t *testing.T) {
 
 func TestBundleFunctionSource_GitHubMode(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/devs"})
+	data, err := bundleFunctionSource(srcDir, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/devs"}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1667,7 +1672,7 @@ func TestBundleFunctionSource_GitHubMode(t *testing.T) {
 
 func TestBundleFunctionSource_StampsStatusConsts(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	data, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{Group: "org/team"})
+	data, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{Group: "org/team"}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -2452,7 +2457,7 @@ func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
 
 func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -2549,7 +2554,7 @@ func TestProvisioner_Provision_TightIntoPublicMintRejected(t *testing.T) {
 
 func TestProvisioner_Provision_TightPlaceholderRedeployAllowed(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{}, StatusCFAccessAuth{})
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
