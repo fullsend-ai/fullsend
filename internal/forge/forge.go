@@ -226,7 +226,20 @@ type PullRequestInfo struct {
 	IsFork   bool
 }
 
+// ReferencedWorkflow is one reusable workflow a run called, pinned by ref
+// and resolved sha. Comparing two runs' sets is how a caller establishes
+// that both came through the same dispatch chain without knowing which
+// version that chain is on (ADR 0101).
+type ReferencedWorkflow struct {
+	Path string // "owner/repo/.github/workflows/file.yml@ref"
+	Ref  string // "refs/heads/main"
+	SHA  string
+}
+
 // WorkflowRun represents a CI/CD workflow execution.
+//
+// The fields below CreatedAt are populated only by callers that need run
+// provenance; the older listing methods leave them zero.
 type WorkflowRun struct {
 	ID         int
 	Name       string
@@ -235,6 +248,22 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+
+	// Path is the workflow file the run came from, relative to the
+	// repository root.
+	Path string
+	// DisplayTitle is the run's rendered title — the workflow's `run-name`
+	// when it declares one, otherwise a platform default.
+	DisplayTitle string
+	// Actor is the login the run is attributed to; TriggeringActor is the
+	// login whose action caused it. They differ on re-runs.
+	Actor           string
+	TriggeringActor string
+	// PullRequestNumbers are the pull requests the run is associated with.
+	// Empty for events that carry no association, such as issue_comment.
+	PullRequestNumbers []int
+	// ReferencedWorkflows are the reusable workflows this run called.
+	ReferencedWorkflows []ReferencedWorkflow
 }
 
 // WorkflowJob represents a job within a workflow run.
@@ -285,12 +314,19 @@ type Issue struct {
 
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
-	ID        int
-	NodeID    string
-	HTMLURL   string
-	Body      string
-	Author    string
+	ID      int
+	NodeID  string
+	HTMLURL string
+	Body    string
+	Author  string
+	// CreatedAt is when the comment was written. UpdatedAt is when its
+	// body last changed, and equals CreatedAt for a comment never edited.
+	// The two differ for an edited comment, and the difference matters
+	// wherever a decision was made about the text: an authorization the
+	// original wording earned does not extend to a replacement.
+	// UpdatedAt is empty on forges that do not report it.
 	CreatedAt string
+	UpdatedAt string
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,

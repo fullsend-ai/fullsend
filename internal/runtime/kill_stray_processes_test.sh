@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # kill_stray_processes_test.sh — real-shell test for the stray-process sweep
 # that runtime.ClearIterationArtifacts runs inside the sandbox between
-# iterations (internal/runtime/stray_processes.go). It executes the golden
-# file testdata/kill_stray_processes.sh, which TestKillStrayProcessesScript_Golden
-# pins to the production bytes.
+# iterations, and that codexSteerQueue.interrupt runs to stop a codex turn
+# it means to resume (internal/runtime/stray_processes.go). It executes a
+# golden file — testdata/kill_stray_processes.sh by default, or the path
+# given as $1 — and TestKillStrayProcessesScript_Golden and
+# TestKillStrayProcessesScript_InterruptGolden pin both renderings to the
+# production bytes.
 #
 # The snippet kills every process of the current user it can see, so it is
 # never run against the real process table here: a fake `ps` on PATH
@@ -16,7 +19,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SNIPPET="${SCRIPT_DIR}/testdata/kill_stray_processes.sh"
+# Which rendering to exercise. Defaults to the 2s ClearIterationArtifacts
+# snippet; pass the interrupt golden to exercise the 10s codex-steer
+# rendering (the TERM-ignoring fixture then takes its full grace, so that
+# run is ~10s slower):
+#   bash internal/runtime/kill_stray_processes_test.sh \
+#     internal/runtime/testdata/kill_stray_processes_interrupt.sh
+SNIPPET="${1:-${SCRIPT_DIR}/testdata/kill_stray_processes.sh}"
+if [ ! -f "${SNIPPET}" ]; then
+  echo "no such snippet: ${SNIPPET}" >&2
+  exit 2
+fi
+echo "snippet under test: ${SNIPPET}"
 REAL_PS="$(command -v ps)"
 FAILURES=0
 

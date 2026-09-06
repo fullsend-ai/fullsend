@@ -670,6 +670,14 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Security == nil {
 		child.Security = base.Security
 	}
+	// Steer: child inherits base's block if nil, and replaces it entirely
+	// when set. Whole-block replacement rather than field-by-field is the
+	// safe direction here: a child that writes `steer: {enabled: true}`
+	// means "steer with the defaults", not "steer with whatever cap the
+	// base happened to set".
+	if child.Steer == nil {
+		child.Steer = base.Steer
+	}
 
 	// Forge: key-by-key merge
 	if base.Forge != nil {

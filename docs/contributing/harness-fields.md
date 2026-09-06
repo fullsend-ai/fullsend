@@ -61,6 +61,7 @@ per-overlay:
 | `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
+| `steer`            | Follow-up run watcher settings are operational, not forge-specific (ADR-0101) |
 
 ## Merge and inheritance rules
 
@@ -81,6 +82,7 @@ field type follows specific merge semantics. The same rules apply during
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
+| `steer`          | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit; a child setting `steer:` gets the defaults for any key it omits, not the base's values |
 | `overlays`       | Concatenated (base + child); all matching entries merged at resolution with later precedence (ADR-0088) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct
