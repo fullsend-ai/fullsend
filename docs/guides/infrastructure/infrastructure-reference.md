@@ -166,7 +166,7 @@ Recommended operator order for adding **`packages:read`** to `coder` (code / fix
    (hosted: `https://github.com/organizations/fullsend-ai/settings/apps/<app-slug>/permissions`).
    Optionally include a short note to users explaining why.
 2. Update the App used by the pool installations as well, and have each
-   `halfsend-01` … `halfsend-12` installation owner Accept its pending update.
+   `halfsend-01` … `halfsend-12` and `halfsend` installation owner Accept its pending update.
    For the test-app setup, that is `fullsend-test-coder`; for pools using the
    shared hosted App, update `fullsend-ai-coder`. Neither app set should be
    left permanently on permission-drop warnings.

@@ -249,6 +249,8 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
 
+When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
+
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
 
 ### Test actor account permission scope
@@ -260,9 +262,9 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | fullsend-ai org member | No | No | No |
 | Permission on `fullsend-ai/fullsend` | Read | Read | Read |
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
-| Write access | Pool-org `test-repo-NN` repos only | Pool-org `test-repo-NN` repos only | None (outsider) |
+| Write access | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the pool org, which is ephemeral and rebuilt each CI run.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs (ephemeral, rebuilt each CI run) and the `halfsend` STAGE org (durable repos reused across runs). No write access extends beyond these test-only organisations.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 
