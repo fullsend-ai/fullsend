@@ -16,7 +16,7 @@ On this page:
 - [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image)
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
-- [pi runtime internals (#6464)](#pi-runtime-internals-6464) — verification provenance for the pi backend
+- [pi runtime internals (#6464)](#pi-runtime-internals-6464) — verification provenance for the pi backend, including the [provider-qualification invariant](#provider-qualification-invariant-for-model-alias-values) for model alias values
 - [codex runtime internals (#6920)](#codex-runtime-internals-6920) — verification provenance for the codex backend
 
 ## Adding a runtime: checklist
@@ -644,6 +644,59 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 | `description` | header line | |
 
 `metrics.json`/`InitEvent` carry the provider-stripped model id (`claude-opus-4-6`), as for Claude Code; the provider is `gen_ai.system`'s job. For a provider whose ids are publisher-qualified this keeps that segment (`xai/grok-4.6`), since it is the wire id. Everything `Run` and the hook extension need is in `fullsend-manifest.json` because `Bootstrap` and `Run` are separate calls with no shared process state.
+
+### Provider-qualification invariant for model alias values
+
+Model alias values — both the defaults in `piModelAliases` and per-repo
+overrides from `models.aliases` — can appear in three formats, and **any code
+that transforms or prefixes them must handle all three**. Blindly prepending a
+provider prefix produces invalid model specs (e.g.
+`anthropic-vertex/google-vertex/gemini-3.7-flash`); leaving an `xai/` spec
+short lands on pi's built-in `xai` provider, which requires `XAI_API_KEY` and
+ignores the Vertex credential path.
+
+**The three formats:**
+
+| Format | Example | Correct handling |
+|---|---|---|
+| **Bare model id** — no `/` | `claude-sonnet-5` | Prepend the default provider: `anthropic-vertex/claude-sonnet-5` |
+| **Provider-qualified id** — contains `/`, provider is not `xai` or `xai-vertex` | `google-vertex/gemini-3.7-flash` | Pass through unchanged — the provider segment is already present |
+| **xai-vertex spec** — `xai/<id>`, `xai-vertex/xai/<id>`, or bare id with `FULLSEND_PI_PROVIDER=xai-vertex` | `xai/grok-4.6` | Normalize to the canonical three-segment form: `xai-vertex/xai/grok-4.6` |
+
+**Canonical implementations** (in `pi_run.go`):
+
+- `translatePiModel` — the parent's resolver. Resolves aliases first,
+  then applies the three-way dispatch: `normalizeXaiVertexModel` for the
+  xai-vertex case, pass-through for any value containing `/`, and
+  provider-prefix for bare ids.
+- `normalizeXaiVertexModel` — renders the three-segment `xai-vertex/xai/<id>`
+  spec from any of the three input forms that reach the xai-vertex provider
+  (short `xai/...`, already-qualified `xai-vertex/xai/...`, and bare id
+  under `FULLSEND_PI_PROVIDER=xai-vertex`). Matching is case-insensitive
+  throughout, because pi resolves provider prefixes case-insensitively.
+
+**Applying the invariant** (in `pi_bootstrap.go`):
+
+The alias resolution loop in `piAgentModels` applies the same three-way
+dispatch independently — it cannot reuse `translatePiModel` for alias
+entries because that reads `FULLSEND_PI_PROVIDER`, which would re-provider
+the Claude aliases under an xai-vertex parent. #7028 demonstrated the
+failure mode: the original implementation prepended `anthropic-vertex/`
+unconditionally, producing double-prefixed specs for provider-qualified
+values and wrong two-segment specs for xai values.
+
+**When writing or modifying code that transforms alias values:**
+
+1. Always resolve aliases *before* inspecting the value for a provider
+   prefix — an alias may map to a `provider/id` spec, and checking the
+   alias name instead of its resolved value skips the pass-through branch.
+2. Check for the xai-vertex case first (`normalizeXaiVertexModel`).
+3. Then check whether the value already contains `/` — if so, pass through.
+4. Only then prepend the default provider prefix.
+5. **Tests must cover all three formats.** A test that only exercises bare
+   ids (e.g. "config aliases reach the sub-agent model table") will not
+   catch a double-prefixing bug on provider-qualified values or a
+   missing normalization on xai specs.
 
 ### Hook adapter contract
 
