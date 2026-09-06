@@ -136,7 +136,7 @@ func TestPostStaleHeadNotice(t *testing.T) {
 	fc.PullRequestHeadSHA = "new_sha_456"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	err := postStaleHeadNotice(context.Background(), fc, "o", "r", 1, "old_sha_123", "new_sha_456", cfg, printer)
 	require.Error(t, err, "should return an error indicating staleness")
 	assert.Contains(t, err.Error(), "stale")
@@ -164,7 +164,7 @@ func TestPostFailureNotice_WithBody(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Body: "Custom failure message", Reason: "tool-failure"}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestPostFailureNotice_WithoutBody(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Reason: "token-limit"}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -195,7 +195,7 @@ func TestPostFailureNotice_EmptyReason(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Reason: ""}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -1806,4 +1806,20 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		body := buildFallbackReviewBody("", nil)
 		assert.Equal(t, "", body)
 	})
+}
+
+func TestNewPostReviewCmd_FullsendDirDefaultsToEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "/path/to/.fullsend")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "/path/to/.fullsend", f.DefValue, "fullsend-dir should default to $FULLSEND_DIR")
+}
+
+func TestNewPostReviewCmd_FullsendDirDefaultsEmptyWithoutEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "", f.DefValue, "fullsend-dir should default to empty when $FULLSEND_DIR is unset")
 }
