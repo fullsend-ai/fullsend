@@ -95,7 +95,7 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 	}
 
 	if err := e.awaitGitReady(ctx, org, repoName, target); err != nil {
-		return "", err
+		return repoName, err
 	}
 
 	// Create a warmup issue BEFORE installing fullsend. No workflow
@@ -107,28 +107,28 @@ func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string,
 	if e.eventDelivery != nil {
 		issue, err := e.client.CreateIssue(ctx, org, repoName, "warmup", "event delivery probe")
 		if err != nil {
-			return "", fmt.Errorf("creating warmup issue on %s: %w", target, err)
+			return repoName, fmt.Errorf("creating warmup issue on %s: %w", target, err)
 		}
 		warmupIssueNumber = issue.Number
 	}
 
-	if err := e.installFullsend(org, repoName, target); err != nil {
-		return "", err
+	if err := e.installFullsend(org, repoName); err != nil {
+		return repoName, err
 	}
 
 	if err := ValidatePostInstall(ctx, e.client, org, repoName); err != nil {
-		return "", fmt.Errorf("post-install validation for %s: %w", target, err)
+		return repoName, fmt.Errorf("post-install validation for %s: %w", target, err)
 	}
 
 	if e.settle != nil {
 		if err := e.settle(ctx, e.client, org, repoName, TriageWorkflow, e.logf); err != nil {
-			return "", fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
+			return repoName, fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
 		}
 	}
 
 	if e.eventDelivery != nil {
 		if err := e.eventDelivery(ctx, e.client, org, repoName, warmupIssueNumber, TriageWorkflow, e.logf); err != nil {
-			return "", fmt.Errorf("verifying event delivery on %s: %w", target, err)
+			return repoName, fmt.Errorf("verifying event delivery on %s: %w", target, err)
 		}
 	}
 
@@ -161,7 +161,7 @@ func (e *repoEnsurer) awaitGitReady(ctx context.Context, org, repoName, target s
 	return fmt.Errorf("git layer on %s not ready after %d attempts", target, gitReadyMaxAttempts)
 }
 
-func (e *repoEnsurer) installFullsend(org, repoName, target string) error {
+func (e *repoEnsurer) installFullsend(org, repoName string) error {
 	fullTarget := org + "/" + repoName
 	return common.RunReposInstall(
 		e.binary, e.token, fullTarget,

@@ -96,6 +96,78 @@ func TestListOrgRepos_IncludePrivate(t *testing.T) {
 	assert.True(t, repos[1].Private)
 }
 
+func TestListAllOrgRepos(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Contains(t, r.URL.Path, "/orgs/org/repos")
+		assert.Equal(t, "all", r.URL.Query().Get("type"))
+
+		page++
+		if page == 1 {
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "repo1", "full_name": "org/repo1", "default_branch": "main", "private": false, "archived": false, "fork": false},
+				{"name": "archived-repo", "full_name": "org/archived-repo", "default_branch": "main", "private": false, "archived": true, "fork": false},
+				{"name": "forked-repo", "full_name": "org/forked-repo", "default_branch": "main", "private": false, "archived": false, "fork": true},
+				{"name": "private-repo", "full_name": "org/private-repo", "default_branch": "main", "private": true, "archived": false, "fork": false},
+			})
+		} else {
+			json.NewEncoder(w).Encode([]map[string]any{})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	repos, err := client.ListAllOrgRepos(context.Background(), "org")
+	require.NoError(t, err)
+	require.Len(t, repos, 4, "ListAllOrgRepos should not filter forks, archived, or private repos")
+	assert.Equal(t, "repo1", repos[0].Name)
+	assert.Equal(t, "archived-repo", repos[1].Name)
+	assert.True(t, repos[1].Archived)
+	assert.Equal(t, "forked-repo", repos[2].Name)
+	assert.True(t, repos[2].Fork)
+	assert.Equal(t, "private-repo", repos[3].Name)
+	assert.True(t, repos[3].Private)
+}
+
+func TestListAllOrgRepos_Pagination(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		page++
+		repos := make([]map[string]any, 0, 100)
+		if page <= 2 {
+			for i := range 100 {
+				repos = append(repos, map[string]any{
+					"name":           fmt.Sprintf("repo-p%d-%d", page, i),
+					"full_name":      fmt.Sprintf("org/repo-p%d-%d", page, i),
+					"default_branch": "main",
+				})
+			}
+		}
+		json.NewEncoder(w).Encode(repos)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	repos, err := client.ListAllOrgRepos(context.Background(), "org")
+	require.NoError(t, err)
+	assert.Len(t, repos, 200, "should paginate through all pages")
+	assert.Equal(t, 3, page, "should have made 3 requests (2 full + 1 empty)")
+}
+
+func TestListAllOrgRepos_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message": "server error"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListAllOrgRepos(context.Background(), "org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list all org repos")
+}
+
 func TestCreateRepo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
