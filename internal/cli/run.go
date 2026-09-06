@@ -1207,6 +1207,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// session, which is what makes the run's real budget steerBudget rather
 	// than the harness timeout.
 	var steerActive bool
+	// terminalElapsed and terminalBudget are the pair the timeout detection
+	// compared, kept so the terminal error reports the same figures rather
+	// than recomputing them against a clock that has moved on. The budget is
+	// seeded from the harness timeout once it is known, so a run that never
+	// reaches the loop cannot read as timed out on a zero budget.
+	var terminalElapsed, terminalBudget time.Duration
 	// steerSeen and steerBaseline carry the judged follow-up run ids and the
 	// delta window across validation loop iterations, so a retry neither
 	// re-examines them nor re-sends content already delivered.
@@ -2142,6 +2148,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
+	terminalBudget = timeout
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -2419,11 +2426,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
-		// Measured against the budget that actually bounded the run: a
-		// steered one stops at steerBudget, which can be shorter than the
-		// harness timeout. See steerAwareTimeout.
-		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed,
-			steerAwareTimeout(timeout, steerActive))
+		// Measured against the budget that actually bounded the run, on the
+		// clock that bound would have used: a steered run is killed at a
+		// whole-run deadline anchored at runStartedAt, so a per-iteration
+		// elapsed would be compared against the wrong clock. See
+		// steerAwareBudget.
+		terminalElapsed, terminalBudget = steerAwareBudget(
+			steerActive, runStartedAt, time.Now(), lastIterElapsed, timeout)
+		lastIterTimedOut = iterationTimedOut(lastExitCode, terminalElapsed, terminalBudget)
 		if lastIterTimedOut {
 			// The exec ended at the budget but the agent's processes did
 			// not (OpenShell has no per-exec kill). Terminate them before
@@ -2671,10 +2681,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	// The same budget the detection used, so the reported figure is the one
-	// the run was actually held to rather than a limit it never reached.
+	// The same pair the detection used, so the reported figures are the ones
+	// the run was actually judged on rather than a limit it never reached or
+	// a clock that has moved on since.
 	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount,
-		lastIterElapsed, steerAwareTimeout(timeout, steerActive))
+		terminalElapsed, terminalBudget)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {

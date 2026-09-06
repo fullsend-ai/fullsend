@@ -187,6 +187,28 @@ func steerBudget(timeout time.Duration) time.Duration {
 	return timeout
 }
 
+// steerAwareBudget returns the pair the timeout detection must compare: how
+// long the run had been going, and the budget that would have killed it.
+//
+// The two are returned together because they have to share a clock. A
+// steered run is killed at steerDeadline(runStartedAt, timeout) — anchored
+// at the START OF THE RUN, because the bound comes from the forge token's
+// life and kills the whole run rather than an iteration. Measuring a
+// per-iteration elapsed against that whole-run budget compares two different
+// clocks: with a 90 minute timeout, a 50 minute budget and 10 minutes of
+// setup, the agent is killed having itself run only 40 minutes, 40 does not
+// reach nine tenths of 50, and the run reports success with the work
+// unfinished. Later iterations are worse, their anchor being later still.
+//
+// The unsteered pair is per-iteration elapsed against the harness timeout,
+// unchanged: that is every run in production.
+func steerAwareBudget(steered bool, runStartedAt, now time.Time, iterElapsed, timeout time.Duration) (elapsed, budget time.Duration) {
+	if !steered {
+		return iterElapsed, timeout
+	}
+	return now.Sub(runStartedAt), steerBudget(timeout)
+}
+
 // steerAwareTimeout returns the budget a finished run was bounded by, which
 // is what "did it run out of clock" has to be measured against.
 //

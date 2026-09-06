@@ -575,6 +575,68 @@ func TestSteerEligible_RequiresPreserveRuns(t *testing.T) {
 // "finished early". With a validation loop that surfaces as "validation
 // failed"; without one the run returns nil and reports success having been
 // cut off mid-work, which is the outcome this guards.
+// The anchor test. A steered run is killed at a WHOLE-RUN deadline anchored
+// at runStartedAt, so setup time counts against the budget even though the
+// agent never sees it. Measuring the agent's own per-iteration elapsed
+// against that budget compares two clocks, and the gap between them is
+// exactly the setup — which is why an earlier fix that got the threshold
+// right still let the run report success.
+//
+// This drives the scenario rather than the arithmetic: 90 minute harness
+// timeout, 50 minute real budget, 10 minutes of setup, so the agent has run
+// 40 minutes when the deadline kills it.
+func TestSteerAwareBudget_MeasuresFromRunStartNotIterationStart(t *testing.T) {
+	const (
+		harnessTimeout = 90 * time.Minute
+		setup          = 10 * time.Minute
+	)
+	runStartedAt := time.Now()
+	budget := steerBudget(harnessTimeout)
+	require.Equal(t, 50*time.Minute, budget)
+
+	// The run context is cancelled here, which is what kills the agent.
+	killedAt := steerDeadline(runStartedAt, harnessTimeout)
+	require.Equal(t, runStartedAt.Add(budget), killedAt)
+
+	// The agent itself started after setup, so its own elapsed is shorter.
+	agentElapsed := killedAt.Sub(runStartedAt.Add(setup))
+	require.Equal(t, 40*time.Minute, agentElapsed)
+
+	elapsed, measuredAgainst := steerAwareBudget(true, runStartedAt, killedAt, agentElapsed, harnessTimeout)
+	assert.Equal(t, budget, elapsed, "a steered run's elapsed is measured from the run's start")
+	assert.Equal(t, budget, measuredAgainst)
+
+	const exitCode = 1
+	assert.True(t, iterationTimedOut(exitCode, elapsed, measuredAgainst),
+		"a run killed at its whole-run deadline must read as timed out")
+
+	// And it must not report success. This is the outcome the fix exists for.
+	err := runTerminalError(false, false, true, 1, elapsed, measuredAgainst)
+	require.Error(t, err, "a truncated run must not report success")
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Contains(t, err.Error(), "50m0s", "the message states the budget the run was held to")
+
+	err = runTerminalError(true, false, true, 1, elapsed, measuredAgainst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.NotContains(t, err.Error(), "validation failed")
+}
+
+// The unsteered pair is the per-iteration one, unchanged. Setup time must
+// not count against an unsteered run, whose deadline is per-iteration.
+func TestSteerAwareBudget_UnsteeredKeepsTheIterationAnchor(t *testing.T) {
+	const harnessTimeout = 90 * time.Minute
+	runStartedAt := time.Now()
+
+	elapsed, measuredAgainst := steerAwareBudget(false, runStartedAt,
+		runStartedAt.Add(50*time.Minute), 40*time.Minute, harnessTimeout)
+
+	assert.Equal(t, 40*time.Minute, elapsed, "the agent's own elapsed, not the run's")
+	assert.Equal(t, harnessTimeout, measuredAgainst, "the harness timeout, not the steer budget")
+	assert.False(t, iterationTimedOut(1, elapsed, measuredAgainst),
+		"an unsteered run at 40 of 90 minutes has not run out of clock")
+}
+
 func TestSteerAwareTimeout_BudgetKilledRunReadsAsTimedOut(t *testing.T) {
 	// Above the divergence point: 90m harness timeout, 50m real budget.
 	const harnessTimeout = 90 * time.Minute
