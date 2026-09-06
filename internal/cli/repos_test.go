@@ -1161,6 +1161,44 @@ func TestReposInstallCmd_VendorFlag(t *testing.T) {
 	assert.Equal(t, "false", f.DefValue)
 }
 
+func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+
+	binaryFlag := cmd.Flags().Lookup("fullsend-binary")
+	require.NotNil(t, binaryFlag, "expected --fullsend-binary flag")
+	assert.Equal(t, "", binaryFlag.DefValue)
+
+	sourceFlag := cmd.Flags().Lookup("fullsend-source")
+	require.NotNil(t, sourceFlag, "expected --fullsend-source flag")
+	assert.Equal(t, "", sourceFlag.DefValue)
+}
+
+func TestReposInstallCmd_VendorFlagValidation(t *testing.T) {
+	t.Run("fullsend-binary without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-binary", "/tmp/fullsend",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-binary requires --vendor")
+	})
+
+	t.Run("fullsend-source without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-source", "/tmp/src",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-source requires --vendor")
+	})
+}
+
 func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
 	for _, name := range []string{"inference-region", "inference-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
