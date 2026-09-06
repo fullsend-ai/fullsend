@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
@@ -79,7 +78,12 @@ func RunReposInstall(
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
-	manifest := filepath.Join(os.TempDir(), fmt.Sprintf("repos-%d.yaml", time.Now().UnixNano()))
+	f, err := os.CreateTemp("", "repos-*.yaml")
+	if err != nil {
+		return fmt.Errorf("creating temp manifest: %w", err)
+	}
+	manifest := f.Name()
+	f.Close()
 	defer os.Remove(manifest)
 
 	args := []string{
