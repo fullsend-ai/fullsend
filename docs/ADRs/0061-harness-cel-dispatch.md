@@ -21,9 +21,10 @@ Accepted (partially supersedes static stage routing from
 [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md); preserves its
 synchronous `workflow_call` execution model)
 
-The event-only CEL context is superseded by
-[ADR 0099](0099-entity-first-harness-evaluation.md), which retains one harness
-predicate but evaluates it against a resolved entity and optional event.
+Only the event-only CEL context is superseded by
+[ADR 0106](0106-entity-first-harness-evaluation.md), which retains one harness
+predicate but evaluates it against a resolved entity and optional event. The
+remaining decisions in this ADR remain accepted.
 
 ## Context
 

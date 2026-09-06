@@ -1,5 +1,5 @@
 ---
-title: "99. Evaluate harnesses against entities with optional event context"
+title: "106. Evaluate harnesses against entities with optional event context"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -12,7 +12,7 @@ topics:
   - polling
 ---
 
-# 99. Evaluate harnesses against entities with optional event context
+# 106. Evaluate harnesses against entities with optional event context
 
 Date: 2026-09-03
 
@@ -20,9 +20,10 @@ Date: 2026-09-03
 
 Accepted
 
-Supersedes [ADR 0063](0063-polling-based-work-discovery.md). It preserves the
-poll-command and driver architecture where compatible, but replaces its
-requirement that polling reconstruct changes as `NormalizedEvent` values.
+Partially supersedes [ADR 0063](0063-polling-based-work-discovery.md): polling
+no longer has to reconstruct changes as `NormalizedEvent` values. ADR 0063's
+poll command, driver architecture, per-repo scope, and coordination decisions
+remain current.
 
 ## Context
 
@@ -64,7 +65,8 @@ Adopt one harness CEL predicate evaluated with a required forge-neutral
 Event-driven dispatch resolves the event's entity and supplies both values;
 scheduled discovery supplies the entity with `event` set to null. Events are a
 low-latency source of candidates, not the authoritative representation of
-whether an entity still needs work.
+whether an entity still needs work. CEL expressions MUST test `event != null`
+before accessing event fields.
 
 Harnesses declare entity sources that can enumerate candidate entity identities
 and resolve one identity to its current normalized representation. Fullsend MAY
@@ -79,26 +81,29 @@ to ask whether qualifying activity exists and has not been handled, rather than
 whether that activity is the current event. The field-level contract and query
 planning protocol belong in a versioned normative specification.
 
-Platform authorization remains mandatory before execution. Activity capable of
-making a predicate match MUST retain source actor and authorization provenance;
-unauthorized historical activity MUST NOT independently authorize a run. The
-platform, not harness CEL, enforces the applicable authorization policy as
-required by [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md).
+Recurring evaluation MAY be initiated by a platform/default clock or constrained
+by scheduling metadata in the harness. The clock is scheduling machinery, not
+an authorization principal. Harness enablement and platform policy determine
+whether scheduled evaluation is permitted; every resulting run uses the
+harness's configured agent identity and permissions.
 
-Runs use the harness plus stable entity identity as their coordination subject,
-aligning scheduled and event-driven evaluation with the serialized follow-up
-model proposed in [#6909](https://github.com/fullsend-ai/fullsend/pull/6909).
-Singleton scheduled runs without a natural entity are outside this decision.
+A state-derived match such as staleness need not identify a historical event.
+[ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) continues
+to authorize event-triggered dispatch from the event actor. Entity history
+remains untrusted input: trusted input-selection layers, including harness
+pre-scripts, determine which actor-originated instructions are authorized and
+actionable before they control agent behavior. Neither entity content nor a
+historical actor can alter the run's configured identity or permissions.
 
 ## Consequences
 
 - Harness authors maintain one predicate across event and polling contexts, but
-  must guard event access when `event` is null.
+  must guard event access with `event != null`.
 - Poll drivers can discover current actionable state without reconstructing a
   complete synthetic event stream.
 - Entity providers must expose sufficient history and per-harness receipts,
   increasing schema, storage, query-planning, and rate-limit complexity.
 - Event actors and historical activity remain usable in CEL without weakening
   the centralized authorization boundary.
-- ADR 0061's event-only CEL context and ADR 0063's event-reconstruction polling
-  require compatibility and migration paths for existing harnesses and drivers.
+- ADR 0061's event-only CEL context and ADR 0063's event-reconstruction path
+  require compatibility and migration plans for existing harnesses and drivers.

@@ -1,6 +1,6 @@
 ---
 title: "63. Polling-based work discovery via dispatch drivers"
-status: Superseded
+status: Accepted
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -20,11 +20,12 @@ Date: 2026-06-18
 
 ## Status
 
-Superseded by
-[ADR 0099](0099-entity-first-harness-evaluation.md), which preserves compatible
-poll-command and driver machinery but evaluates one harness predicate against a
-resolved entity and optional event instead of requiring pollers to reconstruct
-changes as events.
+Accepted
+
+The requirement for poll drivers to reconstruct changes as events is
+superseded by [ADR 0106](0106-entity-first-harness-evaluation.md). The poll
+command, driver architecture, per-repo scope, and coordination decisions remain
+current.
 
 ## Context
 
