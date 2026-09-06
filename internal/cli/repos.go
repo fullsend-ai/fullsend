@@ -473,7 +473,6 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 			if opts.gitlabBotToken == "" {
 				opts.gitlabBotToken = os.Getenv(forge.VarGitLabBotToken)
 			}
-			applyDeprecatedVendorBinaryFlag(cmd, &opts.vendor)
 			if err := validateVendorFlags(opts.vendor, opts.fullsendBinary, opts.fullsendSource); err != nil {
 				return err
 			}
