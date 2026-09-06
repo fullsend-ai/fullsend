@@ -10,7 +10,10 @@
 // agent's Bash allowlist.
 //
 // Contract with the scripts (v1 and v2 — fullsend#6357):
-//   stdin  {"tool_name", "tool_input", "tool_result", "tool_response"}
+//   stdin  {"tool_name", "tool_input", "tool_result", "tool_response", "cwd"}
+//          ("cwd" = this process's working directory, the checkout pi was
+//          started in and child shells cannot move; the redact stage scopes
+//          its bare-JWT skip to paths under it)
 //   stdout PreToolUse: exit != 0 or {"decision":"block","reason"} blocks.
 //          PostToolUse: {"hookSpecificOutput":{"updatedToolOutput": <text>}}
 //          (v2) or {"tool_result": <text>} (v1) replaces the result text;
@@ -289,6 +292,9 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
           tool_input: claudeToolInput(piName, event?.input ?? {}),
           tool_result: text,
           tool_response: text,
+          // The checkout: pi is started in it and its tools run in child
+          // shells, so this cannot be moved by the agent.
+          cwd: process.cwd(),
         };
         const verdict = runScript(manifest, script, payload, spawn);
         const updated = verdict.output?.hookSpecificOutput?.updatedToolOutput ?? verdict.output?.tool_result;

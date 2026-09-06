@@ -1,5 +1,5 @@
 // Unit tests for the fullsend pi hook extension. Run with:
-//   node --test internal/runtime/pi_extension/
+//   node --test internal/runtime/pi_extension/fullsend-hooks.test.mjs
 // The hook scripts are faked through the injectable spawn so the tests need
 // no python; one test exercises a real python3 script when available.
 import assert from "node:assert/strict";
@@ -205,6 +205,23 @@ test("tool_result: chains sanitizers, feeding each the previous output (v1 and v
   assert.equal(calls[1].payload.tool_result, "token ghp_SECRET", "second script sees the first one's output");
   assert.equal(calls[1].payload.tool_response, "token ghp_SECRET");
   assert.equal(calls[2].payload.tool_result, "token ghp_...");
+});
+
+test("tool_result: every PostToolUse payload carries the process cwd as the checkout", () => {
+  // pi is started with `cd <repo>` and its tools run in child shells, so
+  // process.cwd() is the checkout and cannot be moved by the agent; the
+  // redact stage scopes its bare-JWT skip to paths under it.
+  const { spawn, calls } = fakeSpawn({});
+  const { onToolResult } = createHooks(manifest, { spawn, ...quiet });
+  onToolResult({ toolName: "read", input: { path: "/x" }, content: [{ type: "text", text: "eyJ" }] });
+  const afterFirst = calls.length;
+  assert.ok(afterFirst >= 1, "at least one PostToolUse script ran");
+  // Every event on the same instance, not only the first.
+  onToolResult({ toolName: "read", input: { path: "/y" }, content: [{ type: "text", text: "eyJ" }] });
+  assert.ok(calls.length > afterFirst, "the second event ran PostToolUse scripts too");
+  for (const c of calls) {
+    assert.equal(c.payload.cwd, process.cwd(), `${c.script} must receive cwd`);
+  }
 });
 
 test("tool_result: a PostToolUseFailure group in the plan is ignored (pi's tool_result already covers failed calls)", () => {

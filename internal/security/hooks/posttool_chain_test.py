@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,6 +20,18 @@ SECRET_HOOK = str(HOOKS_DIR / "secret_redact_posttool.py")
 CHAIN_HOOK = str(HOOKS_DIR / "posttool_chain.py")
 
 PLAIN_PAT = "ghp_FAKEtesttoken000000000000000000000000"
+# Segments concatenated so the fixture does not trip gitleaks.
+JWT = (
+    "eyJhbGciOiJSUzI1NiJ9"
+    + "."
+    + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+    + "."
+    + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+)
+
+
+# Extra argv for every chain subprocess; checkout() names the boundary here.
+CHAIN_ARGS: list[str] = []
 
 
 def obfuscate_with_char(text: str, char: str) -> str:
@@ -43,14 +57,17 @@ def run_hook(
     env_extra: dict[str, str] | None = None,
     tool_name: str = "Read",
     tool_input: dict | None = None,
+    cwd: str | None = None,
 ) -> tuple[int, str, str]:
     body: dict = {"tool_name": tool_name, key: payload}
     if tool_input is not None:
         body["tool_input"] = tool_input
+    if cwd is not None:
+        body["cwd"] = cwd
     env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
     env.update(env_extra or {})
     proc = subprocess.run(
-        [sys.executable, script],
+        [sys.executable, script, *CHAIN_ARGS],
         input=json.dumps(body),
         capture_output=True,
         text=True,
@@ -276,7 +293,7 @@ class TestPostToolChain(unittest.TestCase):
             mod = real_load(token)
             if token == "redact" and mod is not None:
 
-                def boom(_text: str):
+                def boom(_text: str, **_kw):
                     raise RuntimeError("boom")
 
                 mod.redact_text = boom
@@ -478,7 +495,7 @@ class TestChainFailsClosedOnUnreadableInput(unittest.TestCase):
         if armed:
             env["FULLSEND_CANARY_TOKEN"] = CANARY
         proc = subprocess.run(
-            [sys.executable, CHAIN_HOOK],
+            [sys.executable, CHAIN_HOOK, *CHAIN_ARGS],
             input=raw,
             capture_output=True,
             text=True,
@@ -546,7 +563,7 @@ def run_raw(body: dict, env_extra: dict[str, str] | None = None) -> tuple[int, s
     env = {k: v for k, v in os.environ.items() if k != "FULLSEND_CANARY_TOKEN"}
     env.update(env_extra or {})
     proc = subprocess.run(
-        [sys.executable, CHAIN_HOOK],
+        [sys.executable, CHAIN_HOOK, *CHAIN_ARGS],
         input=json.dumps(body),
         capture_output=True,
         text=True,
@@ -567,6 +584,24 @@ def read_payload(content: str) -> dict:
             "totalLines": 1,
         },
     }
+
+
+@contextlib.contextmanager
+def checkout():
+    """A checkout (with .git) beside a runner token file, as the sandbox
+    lays them out; yields (repo, token_path)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = os.path.realpath(tmp)
+        repo = os.path.join(ws, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        # The tempdir stands in for the sandbox workspace; the hook takes the
+        # boundary only from its own command line, so the subprocess gets it
+        # there.
+        CHAIN_ARGS.append("--sandbox-workspace=" + ws)
+        try:
+            yield repo, os.path.join(ws, ".gcp-oidc-token")
+        finally:
+            CHAIN_ARGS.clear()
 
 
 class TestContentPreservedAndRewriteNotes(unittest.TestCase):
@@ -592,6 +627,55 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("updatedToolOutput", stdout)
+
+    def test_jwt_fixture_in_read_not_rewritten(self):
+        with checkout() as (repo, _):
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f'\t{{name: "valid", input: "{JWT}"}},\n'),
+                key="tool_response",
+                tool_input={"file_path": f"{repo}/x_test.go"},
+                cwd=repo,
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_jwt_in_runner_token_file_read_still_masked(self):
+        # The runner's OIDC token file sits beside the checkout, not in it.
+        with checkout() as (repo, token):
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f"{JWT}\n"),
+                key="tool_response",
+                tool_input={"file_path": token},
+                cwd=repo,
+            )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn(JWT, json.dumps(out["hookSpecificOutput"]["updatedToolOutput"]))
+        self.assertIn("masked", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_boundary_is_not_read_from_the_environment(self):
+        # A checkout's .claude/settings.json env block reaches hook processes
+        # under Claude Code, so the chain takes the boundary only from its own
+        # command line: with the environment alone naming this workspace, the
+        # checkout is not below the real boundary and the JWT masks.
+        with checkout() as (repo, _token):
+            fixture = os.path.join(repo, "x_test.go")
+            with open(fixture, "w", encoding="utf-8") as f:
+                f.write("x")
+            CHAIN_ARGS.clear()
+            rc, stdout, _ = run_hook(
+                CHAIN_HOOK,
+                read_payload(f"{JWT}\n"),
+                key="tool_response",
+                tool_input={"file_path": fixture},
+                cwd=repo,
+                env_extra={"FULLSEND_SANDBOX_WORKSPACE": os.path.dirname(repo)},
+            )
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertNotIn(JWT, json.dumps(out["hookSpecificOutput"]["updatedToolOutput"]))
 
     def test_redaction_adds_additional_context(self):
         rc, stdout, _ = run_hook(
@@ -692,6 +776,22 @@ class TestPostToolUseFailure(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("updatedToolOutput", stdout)
         self.assertNotIn("tool_result", stdout)
+
+    def test_jwt_in_failed_read_not_flagged(self):
+        body = self._body(f'parse error near: tok := "{JWT}"')
+        body["tool_name"] = "Read"
+        with checkout() as (repo, _):
+            body["tool_input"] = {"file_path": f"{repo}/f"}
+            body["cwd"] = repo
+            rc, stdout, _ = run_raw(body)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+
+    def test_jwt_in_failed_bash_call_is_flagged(self):
+        rc, stdout, _ = run_raw(self._body(f"Exit code 1\nexchange with {JWT} failed"))
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertIn("credential-like", out["hookSpecificOutput"]["additionalContext"])
 
     def test_credential_in_a_failed_call_is_detected_and_flagged(self):
         aws = "AKIA" + "IOSFODNN7EXAMPLE"
