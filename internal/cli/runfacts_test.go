@@ -44,9 +44,33 @@ func TestBuildRunFactsEnvLines(t *testing.T) {
 }
 
 func TestRunHeadSHA(t *testing.T) {
-	t.Run("gitlab reads the merge request source sha", func(t *testing.T) {
+	// The source-branch SHA is set only in merged results pipelines, so all
+	// three shapes matter: it wins when present, CI_COMMIT_SHA covers the
+	// ordinary merge request pipeline where it is empty, and a pipeline that
+	// is not a merge request has no head to report.
+	t.Run("gitlab prefers the merge request source sha", func(t *testing.T) {
 		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "gl123")
+		// Present too, and must lose: in a merged results pipeline this is
+		// the merge-result commit, not the source head.
+		t.Setenv("CI_COMMIT_SHA", "merge-result-sha")
+		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
 		assert.Equal(t, "gl123", runHeadSHA("gitlab"))
+	})
+
+	t.Run("gitlab falls back on an ordinary merge request pipeline", func(t *testing.T) {
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
+		t.Setenv("CI_COMMIT_SHA", "gl456")
+		assert.Equal(t, "gl456", runHeadSHA("gitlab"),
+			"an empty source-branch SHA must not be reported as no head at all")
+	})
+
+	t.Run("gitlab reports no head off a merge request", func(t *testing.T) {
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_PIPELINE_SOURCE", "push")
+		t.Setenv("CI_COMMIT_SHA", "branch-sha")
+		assert.Empty(t, runHeadSHA("gitlab"),
+			"a branch pipeline has no merge request head, and its commit sha is not one")
 	})
 
 	t.Run("github prefers the explicit PR_HEAD_SHA", func(t *testing.T) {
@@ -87,11 +111,21 @@ func TestRunFactsKeysAreReserved(t *testing.T) {
 	assert.True(t, reservedSandboxKeys["FULLSEND_RUN_STARTED_AT"])
 }
 
-// The run facts must be exported after .env.d is sourced, or a harness
-// host_files env file would overwrite them. reservedSandboxKeys stops an
-// env.sandbox entry shadowing them but says nothing about .env.d, so
-// position in the generated script is what actually protects them.
-func TestRunFactsAreExportedAfterEnvDSourcing(t *testing.T) {
+// The order of .env is behaviour, not formatting: later entries win, so what
+// a value outranks is decided by where it sits.
+//
+// Two runner-owned groups depend on that. The run facts must follow .env.d
+// and env.sandbox, because reservedSandboxKeys stops an env.sandbox entry
+// shadowing them but says nothing about a harness host_files file landing in
+// .env.d. The iteration source line must be genuinely last, because the file
+// it reads is rewritten before every iteration and carries the budget and
+// deadline; anything emitted after it would be stale by an iteration.
+//
+// The whole order is asserted rather than the individual pairs: a change
+// that moved iteration sourcing above .env.d would satisfy every pairwise
+// claim about the run facts while silently letting a harness env file
+// overwrite the budget.
+func TestEnvScriptOrderIsPinned(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",
 		Env:   &harness.EnvConfig{Sandbox: map[string]string{"SOME_VAR": "x"}},
@@ -114,8 +148,18 @@ func TestRunFactsAreExportedAfterEnvDSourcing(t *testing.T) {
 	sandboxVar := idx("export SOME_VAR=")
 	headSHA := idx("export FULLSEND_RUN_HEAD_SHA=")
 	startedAt := idx("export FULLSEND_RUN_STARTED_AT=")
+	iterSource := idx(iterationEnvFile)
 
-	assert.Greater(t, headSHA, envD, "FULLSEND_RUN_HEAD_SHA must be exported after .env.d is sourced")
-	assert.Greater(t, startedAt, envD, "FULLSEND_RUN_STARTED_AT must be exported after .env.d is sourced")
-	assert.Greater(t, headSHA, sandboxVar, "the run facts must also outrank env.sandbox")
+	// .env.d → env.sandbox → both run facts → iteration source.
+	assert.Greater(t, sandboxVar, envD, "env.sandbox must override a shared host_files .env")
+	assert.Greater(t, headSHA, sandboxVar, "FULLSEND_RUN_HEAD_SHA must outrank env.sandbox and .env.d")
+	assert.Greater(t, startedAt, sandboxVar, "FULLSEND_RUN_STARTED_AT must outrank env.sandbox and .env.d")
+	assert.Greater(t, iterSource, headSHA, "the iteration file is sourced after the run facts")
+	assert.Greater(t, iterSource, startedAt, "the iteration file is sourced after the run facts")
+
+	// Last outright, not merely after the entries checked above: the file is
+	// rewritten per iteration, so anything emitted later would be stale.
+	require.NotEmpty(t, lines)
+	assert.Equal(t, iterationEnvSourceLine(), lines[len(lines)-1],
+		"the iteration source line must be the final entry in .env")
 }
