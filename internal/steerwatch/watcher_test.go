@@ -54,7 +54,12 @@ func TestPollAndSteer_DeliversAndConsumes(t *testing.T) {
 	require.Len(t, msgs, 1)
 	assert.Equal(t, int64(101), msgs[0].FollowUpRunID)
 	assert.Equal(t, "pull_request_target", msgs[0].Event)
-	assert.Equal(t, "reviewer", msgs[0].Actor)
+	// A push confers no amendment authority, and the envelope renders
+	// Actor as an authorization claim, so this must stay empty — the route
+	// job checked the PR author, not whoever pushed. Asserting "reviewer"
+	// here is what let the header keep laundering authority after the body
+	// stopped. Provenance is still carried by Event and FollowUpRunID.
+	assert.Empty(t, msgs[0].Actor)
 	assert.Equal(t, "bbb222", msgs[0].HeadSHA)
 	assert.Contains(t, msgs[0].Text, "re-check the migration")
 
@@ -418,4 +423,49 @@ func TestPollAndSteer_UnlistedStageJobIsReconsidered(t *testing.T) {
 
 	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
 	assert.True(t, w.pollAndSteer(context.Background()))
+}
+
+// TestPollAndSteer_NonAmendmentEventNamesNoAuthorizedActor is finding 7.
+// The envelope renders SteerMessage.Actor as an authorization claim —
+// "activity by X, whose authorization the route job verified". For a
+// pull_request_target the route job checks the PR author while the run
+// reports whoever pushed, so on a fork PR naming the run's actor would
+// assert an authorization that was never checked for that person. This is
+// the same laundering the amendment split already removed from the body;
+// it survived in the header because the header reads a different field.
+func TestPollAndSteer_NonAmendmentEventNamesNoAuthorizedActor(t *testing.T) {
+	api := newFakeAPI()
+	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
+	push := runJSON(runOpts{id: 101, event: "pull_request_target", prNumbers: []int{7}})
+	push["triggering_actor"] = map[string]any{"login": "fork-collaborator"}
+	api.listed = [][]map[string]any{{push}}
+
+	rec := &recorder{}
+	w := newWatcher(t, api, prItems(), rec, nil)
+	require.True(t, w.pollAndSteer(context.Background()))
+
+	delivered := rec.delivered()
+	require.Len(t, delivered, 1)
+	assert.Empty(t, delivered[0].Actor,
+		"a push confers no authorization, so the envelope must not name its actor as authorized")
+	assert.Equal(t, "pull_request_target", delivered[0].Event, "provenance is still carried")
+}
+
+// TestPollAndSteer_IssueCommentStillNamesItsActor is the other side: on an
+// issue_comment the run's actor is the login the route arm checked, so the
+// claim is true and the envelope should still make it.
+func TestPollAndSteer_IssueCommentStillNamesItsActor(t *testing.T) {
+	api := newFakeAPI()
+	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
+	comment := runJSON(runOpts{id: 101, event: "issue_comment", prNumbers: []int{7}})
+	comment["triggering_actor"] = map[string]any{"login": "maintainer"}
+	api.listed = [][]map[string]any{{comment}}
+
+	rec := &recorder{}
+	w := newWatcher(t, api, prItems(), rec, nil)
+	require.True(t, w.pollAndSteer(context.Background()))
+
+	delivered := rec.delivered()
+	require.Len(t, delivered, 1)
+	assert.Equal(t, "maintainer", delivered[0].Actor)
 }

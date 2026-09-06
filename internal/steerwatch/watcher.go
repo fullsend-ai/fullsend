@@ -526,10 +526,24 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 	if len(included) > 0 {
 		newest = included[len(included)-1]
 	}
+	// Actor is only set when the run's actor IS the principal the route job
+	// checked, which is the amendmentEvents rule. The envelope turns this
+	// field into an authorization claim ("activity by X, whose
+	// authorization the route job verified"), and on a
+	// pull_request_target the route job checks the PR AUTHOR while the run
+	// reports whoever pushed — so on a fork PR that claim would name
+	// someone with no permission on this repository at all. Left empty,
+	// the envelope falls back to asserting only that the update came
+	// through an authorized follow-up run, which is true for every accepted
+	// event. The Source line still carries the run id and the event.
+	actor := ""
+	if amendmentEvents[newest.Event] {
+		actor = actorLogin(newest)
+	}
 	msg := agentruntime.SteerMessage{
 		FollowUpRunID: int64(newest.ID),
 		Event:         newest.Event,
-		Actor:         actorLogin(newest),
+		Actor:         actor,
 		CreatedAt:     runCreatedAt(newest),
 		HeadSHA:       d.newHead,
 		Text:          text,
