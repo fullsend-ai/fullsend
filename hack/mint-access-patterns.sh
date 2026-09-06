@@ -175,8 +175,14 @@ if [[ -z "$GH_API_TOKEN" ]]; then
   GH_API_TOKEN="$(gh auth token 2>/dev/null || true)"
 fi
 [[ -n "$GH_API_TOKEN" ]] || die "set GH_TOKEN or run gh auth login (needed for HTTPS git)"
-# Credential helper for HTTPS remotes (same pattern as eval/scripts/setup-fixture.sh).
-GH_CRED_HELPER="!f(){ echo \"password=${GH_API_TOKEN}\"; };f"
+export GH_API_TOKEN
+# Expand the token only inside the credential-helper process, keeping it out of
+# Git command arguments and repository configuration.
+GH_CRED_HELPER='!f(){ echo "username=x-access-token"; echo "password=${GH_API_TOKEN}"; };f'
+
+git_auth() {
+  git -c "credential.helper=${GH_CRED_HELPER}" "$@"
+}
 
 TMPROOT=$(mktemp -d)
 REUSABLE_BRANCH="mint-ap-reusable-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
@@ -458,10 +464,8 @@ ensure_fullsend_reusable() {
   register_branch "$full_repo" "$REUSABLE_BRANCH"
   (
     set -euo pipefail
-    git -c "credential.helper=${GH_CRED_HELPER}" \
-      clone --depth 1 --quiet "https://x-access-token@github.com/${full_repo}.git" "${work}/repo"
+    git_auth clone --depth 1 --quiet "https://github.com/${full_repo}.git" "${work}/repo"
     cd "${work}/repo"
-    git config credential.helper "${GH_CRED_HELPER}"
     git config user.email "mint-ap@localhost"
     git config user.name "mint-access-patterns"
     git config commit.gpgsign false
@@ -522,7 +526,7 @@ FTR
     } >.github/workflows/mint-ap-reusable.yml
     git add .github/workflows/mint-ap-reusable.yml
     git commit --allow-empty -m "mint-ap: disposable reusable workflow" --quiet
-    git push origin "HEAD:${REUSABLE_BRANCH}" --quiet
+    git_auth push origin "HEAD:${REUSABLE_BRANCH}" --quiet
     echo "setup: pushed reusable workflow to ${full_repo}@${REUSABLE_BRANCH}" >&2
   ) 2>"${tmp}" || {
     echo "ERROR: failed to ensure reusable on ${full_repo}: $(tr '\n' ' ' <"${tmp}" | head -c 300)" >&2
@@ -718,7 +722,7 @@ mtest() {
   local host_style="${8:-shim}"
   local label="${id}/${role}"
   local full_repo="${ORG}/${caller_repo}"
-  local branch work tmp_err head_sha run_json run_id run_url conclusion actual result_json scope_rest
+  local branch work tmp_err head_sha run_json run_id run_url conclusion actual result_json scope_rest detail
   local expected_scope_full=""
   local target_org_arg=""
 
@@ -748,10 +752,8 @@ mtest() {
 
   if ! (
     set -euo pipefail
-    git -c "credential.helper=${GH_CRED_HELPER}" \
-      clone --depth 1 --quiet "https://x-access-token@github.com/${full_repo}.git" "${work}/repo"
+    git_auth clone --depth 1 --quiet "https://github.com/${full_repo}.git" "${work}/repo"
     cd "${work}/repo"
-    git config credential.helper "${GH_CRED_HELPER}"
     git checkout -b "${branch}" >/dev/null
     git config user.email "mint-ap@localhost"
     git config user.name "mint-access-patterns"
@@ -770,7 +772,7 @@ mtest() {
     esac
     git add .github/workflows/mint-ap.yml
     git commit -m "mint-ap: ${id} ${role} ${host_style}" --quiet
-    git push -u origin "HEAD:${branch}" --quiet
+    git_auth push -u origin "HEAD:${branch}" --quiet
   ) 2>"${tmp_err}"; then
     print_case_line ERROR "$label" "push failed: $(tr '\n' ' ' <"${tmp_err}" | head -c 200)"
     COUNT_ERROR=$((COUNT_ERROR + 1))
@@ -784,7 +786,7 @@ mtest() {
   if ! run_json=$(wait_for_run "${full_repo}" "${branch}" "$head_sha" 2>"${work}/wait.err"); then
     print_case_line ERROR "$label" "$(tr '\n' ' ' <"${work}/wait.err" | head -c 200)"
     COUNT_ERROR=$((COUNT_ERROR + 1))
-    git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    git_auth -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
     unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
@@ -797,7 +799,7 @@ mtest() {
   if [[ "$conclusion" != "success" ]]; then
     print_case_line ERROR "$label" "workflow conclusion=${conclusion:-unknown}  ${run_url}"
     COUNT_ERROR=$((COUNT_ERROR + 1))
-    git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    git_auth -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
     unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
@@ -808,7 +810,7 @@ mtest() {
   if [[ "$actual" == "error" ]]; then
     print_case_line ERROR "$label" "mint workflow error=$(jq -r '.error // "unknown"' <<<"$result_json")  ${run_url}"
     COUNT_ERROR=$((COUNT_ERROR + 1))
-    git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    git_auth -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
     unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
@@ -816,7 +818,7 @@ mtest() {
   if [[ "$actual" != "minted" && "$actual" != "denied" ]]; then
     print_case_line ERROR "$label" "missing or invalid mint-ap-result artifact  ${run_url}"
     COUNT_ERROR=$((COUNT_ERROR + 1))
-    git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    git_auth -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
     unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
@@ -829,7 +831,7 @@ mtest() {
     fi
   fi
 
-  git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+  git_auth -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
   unregister_branch "$full_repo" "$branch"
   rm -rf "${work}"
 
@@ -841,7 +843,7 @@ mtest() {
     fi
     COUNT_OK=$((COUNT_OK + 1))
   else
-    local detail="expect=${expect} actual=${actual}"
+    detail="expect=${expect} actual=${actual}"
     [[ -n "$scope_rest" ]] && detail+="  ${scope_rest}"
     detail+="  ${run_url}"
     print_case_line FAIL "$label" "$detail"
