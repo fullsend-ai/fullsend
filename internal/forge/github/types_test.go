@@ -185,7 +185,8 @@ func appPermissionsAsMap(p AppPermissions) map[string]string {
 }
 
 func TestAgentAppConfig_E2eMatchesMintcorePermissions(t *testing.T) {
-	canonical := mintcore.RolePermissionsFor("e2e")
+	canonical, err := mintcore.RolePermissionsForLevel("e2e", mintcore.LevelWrite)
+	require.NoError(t, err)
 	require.NotNil(t, canonical)
 
 	manifest := appPermissionsAsMap(AgentAppConfig("myorg", "e2e", "fullsend-ai").Permissions)
@@ -202,7 +203,8 @@ func TestAgentAppConfig_E2eMatchesMintcorePermissions(t *testing.T) {
 }
 
 func TestAgentAppConfig_ScribeMatchesMintcorePermissions(t *testing.T) {
-	canonical := mintcore.RolePermissionsFor("scribe")
+	canonical, err := mintcore.RolePermissionsForLevel("scribe", mintcore.LevelWrite)
+	require.NoError(t, err)
 	require.NotNil(t, canonical)
 
 	manifest := appPermissionsAsMap(AgentAppConfig("myorg", "scribe", "fullsend-ai").Permissions)

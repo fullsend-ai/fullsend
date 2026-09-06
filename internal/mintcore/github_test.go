@@ -197,7 +197,7 @@ func TestCreateInstallationToken_Unscoped(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, granted, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", nil)
+	token, expiresAt, granted, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelWrite, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_test_token", token)
 	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
@@ -238,14 +238,14 @@ func TestCreateInstallationToken(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", []string{"my-repo"})
+	token, expiresAt, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelWrite, []string{"my-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_test_token", token)
 	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
 }
 
 func TestCreateInstallationToken_UnknownRole(t *testing.T) {
-	_, _, _, err := CreateInstallationToken(t.Context(), "http://unused", "fake-jwt", 42, "test-org", "nonexistent", []string{"repo"})
+	_, _, _, err := CreateInstallationToken(t.Context(), "http://unused", "fake-jwt", 42, "test-org", "nonexistent", LevelWrite, []string{"repo"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no permissions defined")
 }
@@ -273,7 +273,7 @@ func TestCreateInstallationTokenWithGrantedPermissions_DownscopesWithoutRetry(t 
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", []string{"repo"}, map[string]string{
+	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, []string{"repo"}, map[string]string{
 		"contents":      "write",
 		"issues":        "write",
 		"pull_requests": "write",
@@ -296,7 +296,7 @@ func TestCreateInstallationTokenWithGrantedPermissions_MissingRequiredFailsBefor
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", nil, map[string]string{
+	_, _, _, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, nil, map[string]string{
 		"packages": "read",
 	})
 	require.Error(t, err)
@@ -313,7 +313,7 @@ func TestCreateInstallationTokenWithGrantedPermissions_NonOptionalPermissionFail
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", nil, map[string]string{
+	_, _, _, err := CreateInstallationTokenWithGrantedPermissions(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, nil, map[string]string{
 		"contents": "write",
 		"packages": "read",
 		"metadata": "read",
@@ -337,7 +337,7 @@ func TestCreateInstallationToken_422UnrelatedBodyDoesNotFallback(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Equal(t, 1, calls, "unrelated 422 must not trigger packages fallback")
 	assert.Contains(t, err.Error(), "status 422")
@@ -353,7 +353,7 @@ func TestCreateInstallationToken_Non422DoesNotFallback(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Equal(t, 1, calls, "non-422 must not trigger packages fallback")
 	assert.Contains(t, err.Error(), "status 403")
@@ -371,7 +371,7 @@ func TestCreateInstallationToken_5xxDoesNotRetry(t *testing.T) {
 			}))
 			defer mockGH.Close()
 
-			_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", nil)
+			_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "coder", LevelWrite, nil)
 			require.Error(t, err)
 			assert.Equal(t, 1, calls, "%d must not trigger retry", code)
 			assert.Contains(t, err.Error(), fmt.Sprintf("status %d", code))
@@ -532,7 +532,7 @@ func TestCreateInstallationToken_LargeSuccessBody(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, _, granted, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", []string{"repo"})
+	token, _, granted, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelWrite, []string{"repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_large", token)
 	require.NotNil(t, granted)
@@ -548,7 +548,7 @@ func TestCreateInstallationToken_422ReturnsError(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "triage", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 99, "test-org", "triage", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Equal(t, 1, calls)
 	assert.Contains(t, err.Error(), "status 422")
@@ -564,7 +564,7 @@ func TestCreateInstallationToken_EmptyToken(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty installation token")
 }
@@ -576,7 +576,7 @@ func TestCreateInstallationToken_InvalidJSON(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding token response")
 }
@@ -585,7 +585,7 @@ func TestCreateInstallationToken_HTTPError(t *testing.T) {
 	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
 		return nil, errors.New("boom")
 	})
-	_, _, _, err := CreateInstallationToken(t.Context(), "http://example.invalid", "fake-jwt", 42, "test-org", "coder", nil)
+	_, _, _, err := CreateInstallationToken(t.Context(), "http://example.invalid", "fake-jwt", 42, "test-org", "coder", LevelWrite, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating installation token")
 }
@@ -607,21 +607,24 @@ func TestTruncateForLog(t *testing.T) {
 	assert.Equal(t, "日本語…", truncateForLog("日本語テスト", 3))
 }
 
-func TestRolePermissions_AllRolesPresent(t *testing.T) {
+func TestRolePermissionsForLevel_AllRolesPresent(t *testing.T) {
 	expectedRoles := []string{"triage", "scribe", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
-	allPerms := RolePermissions()
 	for _, role := range expectedRoles {
-		perms, ok := allPerms[role]
-		assert.True(t, ok, "missing permissions for role %q", role)
-		assert.NotEmpty(t, perms, "empty permissions for role %q", role)
-		_, hasMetadata := perms["metadata"]
+		writePerms, err := RolePermissionsForLevel(role, LevelWrite)
+		require.NoError(t, err, "write level missing for role %q", role)
+		assert.NotEmpty(t, writePerms, "empty write permissions for role %q", role)
+		_, hasMetadata := writePerms["metadata"]
 		assert.True(t, hasMetadata, "role %q should have metadata permission", role)
+
+		readPerms, err := RolePermissionsForLevel(role, LevelRead)
+		require.NoError(t, err, "read level missing for role %q", role)
+		assert.NotEmpty(t, readPerms, "empty read permissions for role %q", role)
 	}
 }
 
-func TestRolePermissions_Scribe(t *testing.T) {
-	perms := RolePermissionsFor("scribe")
-	require.NotNil(t, perms)
+func TestRolePermissionsForLevel_Scribe(t *testing.T) {
+	perms, err := RolePermissionsForLevel("scribe", LevelWrite)
+	require.NoError(t, err)
 	assert.Equal(t, "read", perms["contents"])
 	assert.Equal(t, "write", perms["issues"])
 	assert.Equal(t, "read", perms["metadata"])
@@ -629,9 +632,9 @@ func TestRolePermissions_Scribe(t *testing.T) {
 	assert.Empty(t, perms["pull_requests"])
 }
 
-func TestRolePermissions_E2e(t *testing.T) {
-	perms := RolePermissionsFor("e2e")
-	require.NotNil(t, perms)
+func TestRolePermissionsForLevel_E2e(t *testing.T) {
+	perms, err := RolePermissionsForLevel("e2e", LevelWrite)
+	require.NoError(t, err)
 	assert.Equal(t, "write", perms["actions"])
 	assert.Equal(t, "write", perms["actions_variables"])
 	assert.Equal(t, "write", perms["organization_actions_variables"])
@@ -646,9 +649,9 @@ func TestRolePermissions_E2e(t *testing.T) {
 	assert.Equal(t, "write", perms["workflows"])
 }
 
-func TestRolePermissions_Retro(t *testing.T) {
-	perms := RolePermissionsFor("retro")
-	require.NotNil(t, perms)
+func TestRolePermissionsForLevel_Retro(t *testing.T) {
+	perms, err := RolePermissionsForLevel("retro", LevelWrite)
+	require.NoError(t, err)
 	assert.Equal(t, "read", perms["actions"])
 	assert.Equal(t, "read", perms["contents"])
 	assert.Equal(t, "write", perms["pull_requests"])
@@ -657,9 +660,9 @@ func TestRolePermissions_Retro(t *testing.T) {
 	assert.Len(t, perms, 5, "retro role should have exactly 5 permissions")
 }
 
-func TestRolePermissions_Prioritize(t *testing.T) {
-	perms := RolePermissionsFor("prioritize")
-	require.NotNil(t, perms)
+func TestRolePermissionsForLevel_Prioritize(t *testing.T) {
+	perms, err := RolePermissionsForLevel("prioritize", LevelWrite)
+	require.NoError(t, err)
 	assert.Equal(t, "read", perms["contents"])
 	assert.Equal(t, "write", perms["issues"])
 	assert.Equal(t, "write", perms["organization_projects"])
@@ -678,25 +681,40 @@ func TestRolePermissions_CoderAndFixIncludePackagesRead(t *testing.T) {
 	assert.Len(t, RolePermissionsFor("fix"), 5, "fix role should have exactly 5 permissions")
 }
 
-func TestRolePermissions_ReturnsCopy(t *testing.T) {
+func TestRolePermissionsForLevel_ReturnsCopy(t *testing.T) {
 	// Mutating the returned map must not affect the canonical definitions.
-	perms := RolePermissions()
-	perms["triage"]["contents"] = "write"
-	fresh := RolePermissions()
-	assert.Equal(t, "read", fresh["triage"]["contents"], "RolePermissions should return a fresh copy")
+	perms, err := RolePermissionsForLevel("triage", LevelWrite)
+	require.NoError(t, err)
+	perms["contents"] = "write"
+	fresh, err := RolePermissionsForLevel("triage", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, "read", fresh["contents"], "RolePermissionsForLevel should return a fresh copy")
 }
 
-func TestRolePermissionsFor(t *testing.T) {
-	perms := RolePermissionsFor("coder")
-	require.NotNil(t, perms)
+func TestRolePermissionsForLevel_CoderWrite(t *testing.T) {
+	perms, err := RolePermissionsForLevel("coder", LevelWrite)
+	require.NoError(t, err)
 	assert.Equal(t, "write", perms["contents"])
 
-	assert.Nil(t, RolePermissionsFor("nonexistent"))
+	_, err = RolePermissionsForLevel("nonexistent", LevelWrite)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no permissions defined")
 }
 
 func TestHasRole(t *testing.T) {
 	assert.True(t, HasRole("coder"))
 	assert.False(t, HasRole("nonexistent"))
+}
+
+func TestValidateLevelName(t *testing.T) {
+	// Valid level names.
+	for _, name := range []string{"", "read", "write", "admin", "deploy-ro", "a", "abcdefghijklmnopqrstuvwxyz012345"} {
+		assert.NoError(t, ValidateLevelName(name), "expected valid: %q", name)
+	}
+	// Invalid level names.
+	for _, name := range []string{"Write", "READ", "1read", "-read", "re ad", "re.ad", "abcdefghijklmnopqrstuvwxyz0123456", "UPPER"} {
+		assert.Error(t, ValidateLevelName(name), "expected invalid: %q", name)
+	}
 }
 
 func TestBuiltInRoles_IncludesScribe(t *testing.T) {
@@ -716,27 +734,25 @@ func TestCustomRolePermissions(t *testing.T) {
 	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
 
 	assert.False(t, HasRole("scanner"))
-	assert.Nil(t, RolePermissionsFor("scanner"))
+	_, err := RolePermissionsForLevel("scanner", LevelWrite)
+	assert.Error(t, err)
 
 	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
 		"scanner": {"contents": "read", "security_events": "write"},
 	}))
 
 	assert.True(t, HasRole("scanner"))
-	perms := RolePermissionsFor("scanner")
+	perms, err := RolePermissionsForLevel("scanner", LevelWrite)
+	require.NoError(t, err)
 	require.NotNil(t, perms)
 	assert.Equal(t, "read", perms["contents"])
 	assert.Equal(t, "write", perms["security_events"])
 
 	// Built-in roles still work
 	assert.True(t, HasRole("coder"))
-	assert.NotNil(t, RolePermissionsFor("coder"))
-
-	// RolePermissions() includes custom roles
-	allPerms := RolePermissions()
-	assert.Contains(t, allPerms, "scanner", "RolePermissions should include custom roles")
-	assert.Contains(t, allPerms, "coder", "RolePermissions should still include built-in roles")
-	assert.Equal(t, "write", allPerms["scanner"]["security_events"])
+	coderPerms, err := RolePermissionsForLevel("coder", LevelWrite)
+	require.NoError(t, err)
+	assert.NotNil(t, coderPerms)
 }
 
 func TestCustomRolePermissions_RejectsBuiltinCollision(t *testing.T) {
@@ -790,7 +806,8 @@ func TestCustomRolePermissions_DeepCopiesInput(t *testing.T) {
 	require.NoError(t, RegisterCustomRolePermissions(input))
 
 	input["scanner"]["contents"] = "write"
-	perms := RolePermissionsFor("scanner")
+	perms, err := RolePermissionsForLevel("scanner", LevelRead)
+	require.NoError(t, err)
 	assert.Equal(t, "read", perms["contents"], "stored permissions should not be affected by caller mutation")
 }
 
@@ -801,9 +818,11 @@ func TestCustomRolePermissions_ReturnsCopy(t *testing.T) {
 		"scanner": {"contents": "read"},
 	}))
 
-	perms := RolePermissionsFor("scanner")
+	perms, err := RolePermissionsForLevel("scanner", LevelRead)
+	require.NoError(t, err)
 	perms["contents"] = "write"
-	fresh := RolePermissionsFor("scanner")
+	fresh, err := RolePermissionsForLevel("scanner", LevelRead)
+	require.NoError(t, err)
 	assert.Equal(t, "read", fresh["contents"], "should return a copy")
 }
 
@@ -840,7 +859,7 @@ func TestCreateInstallationToken_CustomRole(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "scanner", []string{"my-repo"})
+	token, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "scanner", LevelRead, []string{"my-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_custom_token", token)
 }
@@ -1042,54 +1061,6 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestGetAppPermissions(t *testing.T) {
-	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/app", r.URL.Path)
-		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"permissions": map[string]string{
-				"contents":          "write",
-				"issues":            "write",
-				"metadata":          "read",
-				"actions_variables": "read",
-			},
-		})
-	}))
-	defer mockGH.Close()
-
-	perms, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
-	require.NoError(t, err)
-	assert.Equal(t, "write", perms["contents"])
-	assert.Equal(t, "read", perms["actions_variables"])
-	assert.Equal(t, "read", perms["metadata"])
-}
-
-func TestGetAppPermissions_NotFound(t *testing.T) {
-	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer mockGH.Close()
-
-	_, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "status 404")
-}
-
-func TestGetAppPermissions_IncludesUserAgent(t *testing.T) {
-	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ua := r.Header.Get("User-Agent")
-		assert.NotEmpty(t, ua)
-		assert.Contains(t, ua, "fullsend-mint")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"permissions": map[string]string{"metadata": "read"},
-		})
-	}))
-	defer mockGH.Close()
-
-	_, err := GetAppPermissions(t.Context(), mockGH.URL, "fake-jwt")
-	require.NoError(t, err)
-}
-
 func TestGitHubUserAgent(t *testing.T) {
 	t.Run("without version", func(t *testing.T) {
 		origVersion := Version
@@ -1179,7 +1150,359 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "jwt", 1, "test-org", "coder", nil)
+		_, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "jwt", 1, "test-org", "coder", LevelWrite, nil)
 		require.NoError(t, err)
 	})
+}
+
+func TestRolePermissionsForLevel_BuiltInExtraLevelErrors(t *testing.T) {
+	// Built-in roles only define read and write. An unknown level
+	// on a known built-in role must return a descriptive error.
+	_, err := RolePermissionsForLevel("coder", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `role "coder" has no level "admin"`)
+}
+
+func TestRolePermissionsForLevel_BuiltIn(t *testing.T) {
+	// Write level returns canonical permissions unchanged.
+	writePerms, err := RolePermissionsForLevel("coder", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, "write", writePerms["contents"])
+	assert.Equal(t, "write", writePerms["pull_requests"])
+	assert.Equal(t, "read", writePerms["metadata"])
+
+	// Read level returns statically defined read permissions (table lookup,
+	// not derived from write at runtime).
+	readPerms, err := RolePermissionsForLevel("coder", LevelRead)
+	require.NoError(t, err)
+	assert.Equal(t, "read", readPerms["contents"])
+	assert.Equal(t, "read", readPerms["pull_requests"])
+	assert.Equal(t, "read", readPerms["issues"])
+	assert.Equal(t, "read", readPerms["metadata"])
+}
+
+func TestRolePermissionsForLevel_AllBuiltInRoles(t *testing.T) {
+	for _, role := range BuiltInRoles() {
+		t.Run(role, func(t *testing.T) {
+			writePerms, err := RolePermissionsForLevel(role, LevelWrite)
+			require.NoError(t, err)
+			assert.NotEmpty(t, writePerms)
+
+			readPerms, err := RolePermissionsForLevel(role, LevelRead)
+			require.NoError(t, err)
+			assert.NotEmpty(t, readPerms)
+
+			// Every read-level key must also exist in write (read is a
+			// subset of write keys). Some GitHub permissions (e.g.
+			// "workflows") only support "write" and have no "read" variant,
+			// so the read level may have fewer keys than write.
+			for k, rVal := range readPerms {
+				assert.Equal(t, "read", rVal, "permission %s: read level should have value \"read\"", k)
+				_, ok := writePerms[k]
+				assert.True(t, ok, "permission %s in read level missing from write level", k)
+			}
+			assert.LessOrEqual(t, len(readPerms), len(writePerms),
+				"read level should not have more permissions than write level")
+		})
+	}
+}
+
+func TestRolePermissionsForLevel_UnknownLevel(t *testing.T) {
+	_, err := RolePermissionsForLevel("coder", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no level")
+}
+
+func TestRolePermissionsForLevel_UnknownRole(t *testing.T) {
+	_, err := RolePermissionsForLevel("nonexistent", LevelRead)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no permissions defined")
+}
+
+func TestRolePermissionsForLevel_CustomFlat(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRolePermissions(nil) })
+
+	require.NoError(t, RegisterCustomRolePermissions(map[string]map[string]string{
+		"scanner": {"contents": "read", "security_events": "write"},
+	}))
+
+	// Both read and write return the same stored permission map.
+	readPerms, err := RolePermissionsForLevel("scanner", LevelRead)
+	require.NoError(t, err)
+	assert.Equal(t, "read", readPerms["contents"])
+	assert.Equal(t, "write", readPerms["security_events"])
+
+	writePerms, err := RolePermissionsForLevel("scanner", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, readPerms, writePerms, "flat custom role: read and write should return the same map")
+}
+
+func TestRolePermissionsForLevel_CustomMultiLevel(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	require.NoError(t, RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer": {
+			LevelRead:  {"contents": "read", "metadata": "read"},
+			LevelWrite: {"contents": "write", "metadata": "read", "deployments": "write"},
+		},
+	}))
+
+	readPerms, err := RolePermissionsForLevel("deployer", LevelRead)
+	require.NoError(t, err)
+	assert.Equal(t, "read", readPerms["contents"])
+	assert.Empty(t, readPerms["deployments"])
+
+	writePerms, err := RolePermissionsForLevel("deployer", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, "write", writePerms["contents"])
+	assert.Equal(t, "write", writePerms["deployments"])
+}
+
+func TestRegisterCustomRoleLevels_MissingMandatoryLevel(t *testing.T) {
+	// A custom role missing the mandatory read or write level is rejected.
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Missing read.
+	err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer-wo": {
+			LevelWrite: {"contents": "write", "metadata": "read"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing mandatory level")
+	assert.Contains(t, err.Error(), "read")
+
+	// Missing write.
+	err = RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer-ro": {
+			LevelRead: {"contents": "read", "metadata": "read"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing mandatory level")
+	assert.Contains(t, err.Error(), "write")
+}
+
+func TestParseCustomRolePermissions_FlatFormat(t *testing.T) {
+	raw := `{"my-role": {"contents": "read", "issues": "write"}}`
+	levels, err := ParseCustomRolePermissions(raw)
+	require.NoError(t, err)
+
+	roleLevels, ok := levels["my-role"]
+	require.True(t, ok)
+
+	// Flat format is stored under both read and write.
+	readPerms, hasRead := roleLevels[LevelRead]
+	require.True(t, hasRead, "flat format should have read level")
+	assert.Equal(t, "read", readPerms["contents"])
+	assert.Equal(t, "write", readPerms["issues"])
+
+	writePerms, hasWrite := roleLevels[LevelWrite]
+	require.True(t, hasWrite, "flat format should have write level")
+	assert.Equal(t, readPerms, writePerms, "flat format: read and write should be equal")
+}
+
+func TestParseCustomRolePermissions_MultiLevel(t *testing.T) {
+	raw := `{"my-role": {"levels": {"read": {"contents": "read"}, "write": {"contents": "read", "issues": "write"}}}}`
+	levels, err := ParseCustomRolePermissions(raw)
+	require.NoError(t, err)
+
+	roleLevels, ok := levels["my-role"]
+	require.True(t, ok)
+	assert.Equal(t, "read", roleLevels[LevelRead]["contents"])
+	assert.Equal(t, "write", roleLevels[LevelWrite]["issues"])
+}
+
+func TestParseCustomRolePermissions_Mixed(t *testing.T) {
+	raw := `{
+		"flat-role": {"contents": "read"},
+		"leveled-role": {"levels": {"read": {"contents": "read"}, "write": {"contents": "write"}}}
+	}`
+	levels, err := ParseCustomRolePermissions(raw)
+	require.NoError(t, err)
+
+	// Flat role has both read and write (same map).
+	assert.Contains(t, levels["flat-role"], LevelRead)
+	assert.Contains(t, levels["flat-role"], LevelWrite)
+	assert.Equal(t, levels["flat-role"][LevelRead], levels["flat-role"][LevelWrite])
+
+	// Leveled role has both.
+	assert.Contains(t, levels["leveled-role"], LevelRead)
+	assert.Contains(t, levels["leveled-role"], LevelWrite)
+}
+
+func TestParseCustomRolePermissions_InvalidJSON(t *testing.T) {
+	_, err := ParseCustomRolePermissions("not-json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid JSON")
+}
+
+func TestParseCustomRolePermissions_MultiLevelInvalidValue(t *testing.T) {
+	raw := `{"my-role": {"levels": {"read": {"contents": "superadmin"}}}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "custom role")
+	assert.Contains(t, err.Error(), "my-role")
+	assert.Contains(t, err.Error(), "contents")
+}
+
+func TestParseCustomRolePermissions_FlatFormatInvalidValue(t *testing.T) {
+	raw := `{"my-role": {"contents": "superadmin"}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "custom role")
+	assert.Contains(t, err.Error(), "my-role")
+	assert.Contains(t, err.Error(), "contents")
+}
+
+func TestParseCustomRolePermissions_FlatFormatInvalidValueThroughRegister(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Parse a flat-format role with an invalid permission value, then
+	// confirm it is rejected at parse time — not deferred to register.
+	raw := `{"bad-flat": {"contents": "superadmin", "issues": "write"}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "bad-flat")
+}
+
+func TestRegisterCustomRoleLevels_ExtraLevelsAllowed(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Custom role with read, write, and an extra "admin" level.
+	err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer": {
+			LevelRead:  {"contents": "read", "metadata": "read"},
+			LevelWrite: {"contents": "write", "metadata": "read", "deployments": "write"},
+			"admin":    {"contents": "write", "metadata": "write", "deployments": "write", "environments": "write"},
+		},
+	})
+	require.NoError(t, err)
+
+	// All three levels are accessible.
+	readPerms, err := RolePermissionsForLevel("deployer", LevelRead)
+	require.NoError(t, err)
+	assert.Equal(t, "read", readPerms["contents"])
+
+	writePerms, err := RolePermissionsForLevel("deployer", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, "write", writePerms["contents"])
+
+	adminPerms, err := RolePermissionsForLevel("deployer", "admin")
+	require.NoError(t, err)
+	assert.Equal(t, "write", adminPerms["environments"])
+
+	// An undefined level on this custom role errors.
+	_, err = RolePermissionsForLevel("deployer", "superadmin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no level")
+}
+
+func TestRegisterCustomRoleLevels_NoSupersetEnforcement(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Write-superset-of-read is NOT enforced. This is valid even
+	// though read has a permission missing from write.
+	err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"asymmetric": {
+			LevelRead:  {"contents": "read", "extra": "read"},
+			LevelWrite: {"contents": "write"},
+		},
+	})
+	require.NoError(t, err)
+}
+
+func TestRegisterCustomRoleLevels_ReservedLevelName(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// "levels" is reserved as the JSON discriminator key.
+	err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"bad-role": {
+			LevelRead:  {"contents": "read"},
+			LevelWrite: {"contents": "write"},
+			"levels":   {"contents": "read"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved key")
+}
+
+func TestRegisterCustomRoleLevels_InvalidLevelName(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	cases := []struct {
+		name  string
+		level string
+	}{
+		{"uppercase", "Write"},
+		{"starts-with-digit", "1read"},
+		{"starts-with-dash", "-read"},
+		{"too-long", "abcdefghijklmnopqrstuvwxyz0123456"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+				"testrole": {
+					LevelRead:  {"contents": "read"},
+					LevelWrite: {"contents": "write"},
+					tc.level:   {"contents": "read"},
+				},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid level name")
+		})
+	}
+}
+
+func TestParseCustomRolePermissions_InvalidLevelName(t *testing.T) {
+	// Multi-level format with an invalid level name should fail at parse time.
+	raw := `{"my-role": {"levels": {"read": {"contents": "read"}, "write": {"contents": "write"}, "Write": {"contents": "write"}}}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid level name")
+}
+
+func TestCreateInstallationToken_ReadLevel(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		perms := body["permissions"].(map[string]interface{})
+		// Read level should downgrade all write→read.
+		assert.Equal(t, "read", perms["contents"], "read level should downgrade contents:write to contents:read")
+		assert.Equal(t, "read", perms["pull_requests"], "read level should downgrade pull_requests:write to read")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(installationTokenResponse{
+			Token:     "ghs_read_token",
+			ExpiresAt: "2099-01-01T00:00:00Z",
+		})
+	}))
+	defer mockGH.Close()
+
+	token, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", LevelRead, []string{"my-repo"})
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_read_token", token)
+}
+
+func TestCreateInstallationToken_DefaultsToRead(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		perms := body["permissions"].(map[string]interface{})
+		// Empty level defaults to read → all permissions should be read.
+		assert.Equal(t, "read", perms["contents"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(installationTokenResponse{
+			Token:     "ghs_default_token",
+			ExpiresAt: "2099-01-01T00:00:00Z",
+		})
+	}))
+	defer mockGH.Close()
+
+	token, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "coder", "", []string{"my-repo"})
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_default_token", token)
 }

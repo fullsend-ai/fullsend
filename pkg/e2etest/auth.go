@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 // resolveLocalToken returns a user token from env or gh auth.
@@ -106,6 +107,7 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 	result, err := mintclient.MintToken(ctx, mintclient.MintRequest{
 		MintURL:   mintURL,
 		Role:      "e2e",
+		Level:     mintcore.LevelWrite,
 		Repos:     []string{"*"},
 		TargetOrg: targetOrg,
 	})
