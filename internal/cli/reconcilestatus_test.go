@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +17,7 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
 
 // gitlabNoteServer returns an httptest.Server that handles GitLab note API calls
@@ -322,6 +325,7 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	t.Helper()
 	origMint := reconcileMintToken
 	origForge := reconcileNewForgeClient
+	origTracker := reconcileNewTrackerClient
 	origReconcile := reconcileOrphaned
 
 	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
@@ -335,13 +339,17 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 		t.Cleanup(srv.Close)
 		return gh.New(token).WithBaseURL(srv.URL)
 	}
-	reconcileOrphaned = func(_ context.Context, _ forge.Client, _, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
+		return tracker.NewForgeClient(fc)
+	}
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
 		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
 	t.Cleanup(func() {
 		reconcileMintToken = origMint
 		reconcileNewForgeClient = origForge
+		reconcileNewTrackerClient = origTracker
 		reconcileOrphaned = origReconcile
 	})
 }
@@ -555,4 +563,174 @@ func TestNewReconcileStatusCmd_AgentDescription_DerivedFromRole(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 	assert.Equal(t, "Code Review", gotDescription)
+}
+
+// writeJiraDispatchEvent writes a dispatch/event-payload.json containing a
+// Jira normalized event with the given entity key (e.g. "PROJ-123") under dir.
+func writeJiraDispatchEvent(t *testing.T, dir, entityKey string) {
+	t.Helper()
+	dispatchDir := filepath.Join(dir, "dispatch")
+	require.NoError(t, os.MkdirAll(dispatchDir, 0o755))
+	payload := fmt.Sprintf(`{
+  "_normalized_event": {
+    "repo": "org/repo",
+    "entity": {"kind": "work_item", "id": 1, "url": "https://jira.example.com/browse/%s", "key": "%s"},
+    "transition": {"kind": "updated"},
+    "actor": {"id": "bot", "kind": "bot", "role": "write"},
+    "state": {"labels": []},
+    "source": {"system": "jira", "raw_type": "jira:issue_updated"}
+  }
+}`, entityKey, entityKey)
+	require.NoError(t, os.WriteFile(filepath.Join(dispatchDir, "event-payload.json"), []byte(payload), 0o644))
+}
+
+func TestNewReconcileStatusCmd_Jira(t *testing.T) {
+	// Verify that a Jira normalized event in the dispatch payload routes
+	// to a Jira tracker client with project and number derived from
+	// entity.key.
+	var gotProject string
+	var gotNumber int
+	origReconcile := reconcileOrphaned
+	origJira := reconcileNewJiraTrackerClient
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
+		gotProject = project
+		gotNumber = number
+		return nil
+	}
+	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+		return tracker.NewForgeClient(gh.New("fake")), nil // stub; type doesn't matter for this test
+	}
+	t.Cleanup(func() {
+		reconcileOrphaned = origReconcile
+		reconcileNewJiraTrackerClient = origJira
+	})
+
+	dir := t.TempDir()
+	writeJiraDispatchEvent(t, dir, "PROJ-123")
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--run-id", "run-1",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ", gotProject)
+	assert.Equal(t, 123, gotNumber)
+}
+
+func TestNewReconcileStatusCmd_Jira_NoBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	writeJiraDispatchEvent(t, dir, "PROJ-123")
+
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_TOKEN", "test-token")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--run-id", "run-1",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+}
+
+func TestNewReconcileStatusCmd_Jira_NoToken(t *testing.T) {
+	dir := t.TempDir()
+	writeJiraDispatchEvent(t, dir, "PROJ-123")
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--number", "1",
+		"--run-id", "run-1",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+}
+
+func TestNewReconcileStatusCmd_NoTrackerFlags(t *testing.T) {
+	// --tracker-source and --tracker-project were removed in favor of
+	// reading the normalized event from the dispatch payload.
+	cmd := newReconcileStatusCmd()
+
+	for _, name := range []string{"tracker-source", "tracker-project"} {
+		f := cmd.Flags().Lookup(name)
+		assert.Nil(t, f, "flag %q should no longer exist", name)
+	}
+}
+
+func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
+	// Verify the GITHUB_EVENT_PATH fallback: when --fullsend-dir is not
+	// set, the command reads the normalized event from GITHUB_EVENT_PATH.
+	var gotProject string
+	var gotNumber int
+	origReconcile := reconcileOrphaned
+	origJira := reconcileNewJiraTrackerClient
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
+		gotProject = project
+		gotNumber = number
+		return nil
+	}
+	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+		return tracker.NewForgeClient(gh.New("fake")), nil
+	}
+	t.Cleanup(func() {
+		reconcileOrphaned = origReconcile
+		reconcileNewJiraTrackerClient = origJira
+	})
+
+	// Write a workflow_dispatch event file with inputs.event_payload
+	// containing a Jira normalized event.
+	eventFile := filepath.Join(t.TempDir(), "event.json")
+	innerPayload := `{"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":1,"url":"https://jira.example.com/browse/TEAM-42","key":"TEAM-42"},"transition":{"kind":"updated"},"actor":{"id":"bot","kind":"bot","role":"write"},"state":{"labels":[]},"source":{"system":"jira","raw_type":"jira:issue_updated"}}}`
+	eventContent := fmt.Sprintf(`{"inputs":{"event_payload":%s}}`, strconv.Quote(innerPayload))
+	require.NoError(t, os.WriteFile(eventFile, []byte(eventContent), 0o644))
+
+	t.Setenv("GITHUB_EVENT_PATH", eventFile)
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--number", "1",
+		"--run-id", "run-1",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "TEAM", gotProject)
+	assert.Equal(t, 42, gotNumber)
+}
+
+func TestNewReconcileStatusCmd_NoEvent_FallsBackToForge(t *testing.T) {
+	// When no normalized event is found, the command falls back to the
+	// forge path using --repo, verifying backward compatibility.
+	stubReconcileVars(t, func(_, _ string, _ bool, _ string) {})
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("GITHUB_EVENT_PATH", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
 }

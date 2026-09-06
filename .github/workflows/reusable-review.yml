@@ -166,6 +166,9 @@ jobs:
           REVIEW_TARGET_REPO_DIR: target-repo
           REVIEW_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           REVIEW_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, REVIEW_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent

@@ -100,7 +100,7 @@ env:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's.
+- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
 
@@ -134,6 +134,14 @@ When using `base:` composition, the base harness can declare its own providers a
 
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
+
+If the `profiles/` directory next to the harness also contains a file with the same `id` as a profile the harness already resolves, `fullsend run` warns:
+
+```text
+  ! Profile "fullsend-vertex-ai" is defined both in /work/.fullsend/profiles and by the harness (/work/.fullsend/.fullsend-cache/resources/sha256/fe4f748d…/content); whichever copy was imported most recently is live — delete the directory copy or keep it in sync
+```
+
+Delete the directory copy unless you mean to override the harness's. A stale copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 

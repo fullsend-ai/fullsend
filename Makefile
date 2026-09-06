@@ -192,6 +192,7 @@ script-test:
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
+	$(call run-timed,bash scripts/verify-release-tag-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
@@ -219,6 +220,10 @@ e2e-test:
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
 # that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
+# runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
+# for the same reason, and codex has no Vertex path — so unlike pi it has no
+# default behaviour coverage at all until that organization exists:
+# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-openai
 BEHAVIOUR_CAPABILITIES ?= runtime-pi
 
 behaviour-test:

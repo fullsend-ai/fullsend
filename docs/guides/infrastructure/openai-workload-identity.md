@@ -1,6 +1,7 @@
 # OpenAI Workload Identity
 
-Run GPT models on the [pi runtime](../../runtimes/pi.md) without storing an OpenAI API key
+Run GPT models on the [pi](../../runtimes/pi.md) or [codex](../../runtimes/codex.md) runtime
+without storing an OpenAI API key
 anywhere. Your GitHub Actions job proves who it is with its OIDC token, OpenAI hands back a
 short-lived token (minutes — it never outlives the GitHub token it came from, and an hour at most),
 fullsend renews it for as long as the run lasts, and the agent sandbox never sees any of it — it only
@@ -25,7 +26,8 @@ They are not secrets: on their own they grant nothing.
 
 You also need an OpenAI **project** to bill the runs to (ideally a dedicated one with a budget
 alert), and the repository must be enrolled per-repo on a fullsend release that includes this
-feature (one that includes fullsend PR #6695; check the release notes).
+feature — PR #6695 for pi, or the release that carries the codex runtime and `CODEX_VERSION`
+(#6920) if you are putting an agent on codex; check the release notes.
 
 ## Which route are you on?
 
@@ -305,16 +307,22 @@ workflows pass them to every agent run, and when any of them is set they replace
 
 ## 5. Pick a GPT model for an agent
 
-In `.fullsend/config.yaml`, put the agent on pi with an OpenAI model — or run
-`fullsend agent set code --fullsend-dir .fullsend --runtime pi --model openai/gpt-5.6-luna`, which
-writes the same entry after validating it:
+In `.fullsend/config.yaml`, put the agent on a runtime that serves OpenAI models — `pi` or
+`codex` — with an OpenAI model, or run
+`fullsend agent set code --fullsend-dir .fullsend --runtime pi --model openai/gpt-5.6-luna`
+(swap in `--runtime codex` for codex), which writes the same entry after validating it:
 
 ```yaml
 agents:
   - name: code
-    runtime: pi
+    runtime: pi # or codex
     model: openai/gpt-5.6-luna
 ```
+
+The credential path below is identical either way: the same run-scoped provider carries the token,
+and only how the agent process reads it differs. On codex the model must be an OpenAI id — the
+Claude aliases are refused — and a repo-wide default can be set once with `FULLSEND_CODEX_MODEL`
+([Codex › Models](../../runtimes/codex.md#models)).
 
 The agent's harness must also declare the provider:
 
@@ -323,12 +331,17 @@ providers:
   - openai
 ```
 
+Declaring it costs nothing on runs that do not use it: the run-scoped provider is created only
+when the selected runtime will actually call OpenAI (codex, or pi on an `openai/` model), so the
+same harness can carry the provider for every runtime — a Vertex run notes that the declared
+provider was skipped and needs no OpenAI credential.
+
 A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents gain
 it with the GPT pilot in the fullsend-ai/agents repository. `providers/openai.yaml` arrives with
 the other upstream defaults when a run prepares its workspace, and both it and the matching profile
 are built into fullsend — a local run needs nothing on disk, and you commit neither. The profile lets the sandbox reach `api.openai.com` for the Responses API and
-nothing else. Use a model id from pi's OpenAI catalog
-(`pi --list-models openai` in the sandbox image prints it); `gpt-5.6-luna` is the inexpensive
+nothing else. Use a model id from OpenAI's catalog — on pi, `pi --list-models openai` in the sandbox image
+prints the ones it knows; `gpt-5.6-luna` is the inexpensive
 reasoning model and `gpt-5.6-sol` the capable one, and a model the mapping's project cannot use is
 refused at the first call, not at setup. A sensible starting point is to put GPT on the agents that
 execute work (for example `code`, `fix` or `triage`) and keep the stages that decide what happens
@@ -354,11 +367,13 @@ fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
   --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
 
+`--runtime codex` takes the same key and the same harness requirements.
+
 The key still goes through the gateway placeholder, so the sandbox does not see it, and the
 provider it lands in expires an hour after the run ends at the latest. A committed `inference.openai`
 block (step 4) is not used on your machine while `OPENAI_API_KEY` is set — there is no GitHub OIDC
 endpoint to exchange with — so the same checkout works in CI and locally. See
-[Running agents locally](../user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-only).
+[Running agents locally](../user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex).
 
 The fleet's agents already declare a sandbox policy. If you run a **custom harness**, give it one
 too — `policy: policies/base.yaml`, the fleet's base policy from the agents repository (it sets
@@ -409,6 +424,7 @@ agent starts and names the rule.
 ## Related
 
 - [pi runtime](../../runtimes/pi.md) — models, providers and behaviour differences
+- [codex runtime](../../runtimes/codex.md) — the other runtime that serves OpenAI models
 - [Running agents locally](../user/running-agents-locally.md)
 - [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md) — design and accepted risks
 - [OpenAI: Workload identity federation for GitHub Actions](https://developers.openai.com/api/docs/guides/workload-identity-federation/github-actions)

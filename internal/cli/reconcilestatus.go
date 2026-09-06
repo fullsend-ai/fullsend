@@ -13,6 +13,7 @@ import (
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
 
 var reconcileMintToken = mintclient.MintToken
@@ -20,6 +21,16 @@ var reconcileNewForgeClient = func(token string) forge.Client {
 	return gh.New(token)
 }
 var reconcileOrphaned = statuscomment.ReconcileOrphaned
+
+// reconcileNewTrackerClient wraps a forge.Client in a tracker.ForgeClient
+// for use by ReconcileOrphaned.
+var reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
+	return tracker.NewForgeClient(fc)
+}
+
+// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira.
+// Extracted as a package-level var so tests can replace it.
+var reconcileNewJiraTrackerClient = newJiraTrackerClientFromEnv
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
@@ -50,34 +61,74 @@ terminal tag (<!-- fullsend:status:terminal -->). If found, updates it
 to an "Interrupted" state and adds the terminal tag. If already
 finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var tc tracker.Client
+			var project string
+
+			// Event-source routing (ADR 0093): read the normalized
+			// event from the same sources as fullsend run—the on-disk
+			// dispatch payload or GITHUB_EVENT_PATH—to determine the
+			// tracker destination. When the event originated from
+			// Jira, construct a Jira tracker client instead of
+			// wrapping a forge client. This runs before --number
+			// validation so Jira callers can omit --number (the
+			// number is derived from entity.key).
+			var trackerSource string
+			eventMap := extractNormalizedEventFromDispatch(fullsendDir)
+			if eventMap != nil {
+				trackerSource = extractMapString(eventMap, "source", "system")
+				if trackerSource == "jira" {
+					key := extractMapString(eventMap, "entity", "key")
+					if key == "" {
+						return fmt.Errorf("Jira event detected but entity.key is missing in normalized event")
+					}
+					proj, num, ok := parseJiraKey(key)
+					if !ok {
+						return fmt.Errorf("Jira event has unparseable entity.key %q in normalized event", key)
+					}
+					project = proj
+					number = num
+				}
+			}
+
 			if number <= 0 {
 				return fmt.Errorf("--number must be a positive integer, got %d", number)
 			}
 
-			parts := strings.SplitN(repo, "/", 2)
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
-			}
-			owner, repoName := parts[0], parts[1]
-
-			forgePlatform, err := detectForgePlatform(forgeFlag, nil)
-			if err != nil {
-				return err
-			}
-
-			var client forge.Client
-			if forgePlatform == "gitlab" {
-				var gitlabErr error
-				client, gitlabErr = newGitLabClientFromEnv("status reconciliation")
-				if gitlabErr != nil {
-					return gitlabErr
+			if trackerSource == "jira" {
+				var jErr error
+				tc, jErr = reconcileNewJiraTrackerClient()
+				if jErr != nil {
+					return fmt.Errorf("creating Jira tracker client: %w", jErr)
 				}
 			} else {
-				var githubErr error
-				client, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
-				if githubErr != nil {
-					return githubErr
+				parts := strings.SplitN(repo, "/", 2)
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					return fmt.Errorf("--repo must be in owner/repo format, got %q", repo)
 				}
+				owner, repoName := parts[0], parts[1]
+
+				forgePlatform, err := detectForgePlatform(forgeFlag, nil)
+				if err != nil {
+					return err
+				}
+
+				var forgeClient forge.Client
+				if forgePlatform == "gitlab" {
+					var gitlabErr error
+					forgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
+					if gitlabErr != nil {
+						return gitlabErr
+					}
+				} else {
+					var githubErr error
+					forgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
+					if githubErr != nil {
+						return githubErr
+					}
+				}
+
+				tc = reconcileNewTrackerClient(forgeClient)
+				project = owner + "/" + repoName
 			}
 
 			var termReason statuscomment.TerminationReason
@@ -110,12 +161,12 @@ finalized, this is a no-op.`,
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
 
-			return reconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
 		},
 	}
 
-	cmd.Flags().StringVar(&repo, "repo", "", "repository in owner/repo format (required)")
-	cmd.Flags().IntVar(&number, "number", 0, "issue or pull request number (required)")
+	cmd.Flags().StringVar(&repo, "repo", "", "repository in owner/repo format (required for GitHub/GitLab)")
+	cmd.Flags().IntVar(&number, "number", 0, "issue or pull request number (required for GitHub/GitLab; derived from entity.key for Jira)")
 	cmd.Flags().StringVar(&runID, "run-id", "", "workflow run ID used in the status comment marker (required)")
 	cmd.Flags().StringVar(&runURL, "run-url", "", "URL to the workflow run (optional)")
 	cmd.Flags().StringVar(&sha, "sha", "", "commit SHA (optional, shown as short hash)")
@@ -123,11 +174,9 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
-	_ = cmd.MarkFlagRequired("repo")
-	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd

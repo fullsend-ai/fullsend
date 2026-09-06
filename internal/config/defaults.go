@@ -83,3 +83,7 @@ func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }
 // set by `fullsend github setup --openai-*` or the FULLSEND_OPENAI_*
 // runner variables).
 func (d *perRepoDefaults) ConfigInferenceOpenAI() OpenAIWIFConfig { return OpenAIWIFConfig{} }
+
+// ConfigModelAliases returns the default model aliases (none — fleet
+// defaults are compiled into the runtimes).
+func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }

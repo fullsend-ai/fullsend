@@ -32,26 +32,31 @@ Verify the release is not marked as a draft.
 
 ## B2. Verify agents validation and tag
 
-The release workflow gates the agents tag on functional test
-validation. After GoReleaser completes, `validate-agents` runs
-agents' functional tests against the release tag. Only if those
-tests pass does `tag-agents` push the tag to agents. If either
-job fails, a Slack notification is sent automatically.
+The release workflow gates **publication itself** on functional test
+validation. `resolve-agents` verifies the tag and checks the gate
+secrets, `validate-agents` runs agents' functional tests against the
+release tag, and only then does `release` run GoReleaser. `tag-agents`
+pushes the version tag to agents last. Every failure path sends a Slack
+notification.
 
-First, verify the `validate-agents` and `tag-agents` jobs succeeded
-in the release workflow run:
+Verify the four jobs succeeded in the release workflow run:
 
 ```
 gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
-  --jq '.jobs[] | select(.name | test("validate-agents|tag-agents")) | {name, conclusion}'
+  --jq '.jobs[] | select(.name | test("resolve-agents|validate-agents|release|tag-agents")) | {name, conclusion}'
 ```
 
-If `validate-agents` failed, the agents functional tests did not
-pass against the new binary — investigate before proceeding. The
-fullsend release shipped, but agents was not tagged. A Slack
-notification should have been sent.
+If `resolve-agents` or `validate-agents` failed, the release was
+blocked before publishing: no binaries, no GitHub Release, no moved
+`v0` tag, and no agents tag. Step B above will show nothing to verify.
+Investigate the failure, then use "Re-run failed jobs" on the existing
+run rather than re-tagging — the tag is already correct and must not be
+moved (re-verification would fail the release if it were).
 
-If both jobs succeeded, verify the tag and release exist on agents:
+If only `tag-agents` failed, the fullsend release shipped but agents
+was not tagged; fix that job's cause and re-run it.
+
+If all jobs succeeded, verify the tag and release exist on agents:
 
 ```
 gh release view <tag> --repo fullsend-ai/agents

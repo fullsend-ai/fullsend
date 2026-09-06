@@ -30,6 +30,11 @@ func TestResolve(t *testing.T) {
 	_, isOC := oc.Transcripts.(OpenCodeRuntime)
 	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
 
+	cx, err := Resolve("codex")
+	require.NoError(t, err)
+	assert.Equal(t, "codex", cx.Runtime.Name())
+	assert.IsType(t, CodexRuntime{}, cx.Transcripts)
+
 	pb, err := Resolve("pi")
 	require.NoError(t, err)
 	assert.Equal(t, "pi", pb.Runtime.Name())
@@ -80,6 +85,15 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "pi", piBackend.Runtime.Name())
 
+	// codex is user-selectable too (#6920), and resolves its own backend
+	// rather than falling back to the default.
+	codexCfg := config.NewPerRepoConfig(nil, "")
+	codexCfg.SetRuntime("codex")
+	codexBackend, err := ResolveFromPerRepoConfig(codexCfg)
+	require.NoError(t, err)
+	assert.Equal(t, "codex", codexBackend.Runtime.Name())
+	assert.IsType(t, CodexRuntime{}, codexBackend.Transcripts)
+
 	invalidCfg := config.NewPerRepoConfig(nil, "")
 	invalidCfg.SetRuntime("invalid")
 	_, err = ResolveFromPerRepoConfig(invalidCfg)
@@ -100,9 +114,11 @@ func TestResolveFromPerRepoConfig_RejectsStubRuntimes(t *testing.T) {
 	}
 
 	// Direct Resolve() still works for dev/testing.
-	rt, err := Resolve("opencode")
-	require.NoError(t, err)
-	assert.Equal(t, "opencode", rt.Runtime.Name())
+	for _, name := range []string{"opencode"} {
+		rt, err := Resolve(name)
+		require.NoError(t, err)
+		assert.Equal(t, name, rt.Runtime.Name())
+	}
 }
 
 func TestResolveFromConfig_RejectsStubRuntimes(t *testing.T) {
@@ -178,6 +194,15 @@ func TestResolveForAgent_RejectsStubRuntimes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "pi", backend.Runtime.Name(), "other agents unaffected")
 	}
-	_, _, err := ResolveForAgent(nil, "opencode", "code")
-	require.Error(t, err, "repo-wide stub runtime is rejected too")
+	for _, name := range []string{"opencode"} {
+		_, _, err := ResolveForAgent(nil, name, "code")
+		require.Error(t, err, "repo-wide stub runtime %q is rejected too", name)
+	}
+
+	// codex is selectable now (#6920), per-agent as well as repo-wide.
+	agents := []config.AgentEntry{{Name: "code", Runtime: "codex"}}
+	backend, perAgent, err := ResolveForAgent(agents, "pi", "code")
+	require.NoError(t, err)
+	assert.Equal(t, "codex", backend.Runtime.Name())
+	assert.True(t, perAgent)
 }

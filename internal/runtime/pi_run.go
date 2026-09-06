@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -15,13 +16,21 @@ import (
 )
 
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
-// (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
-// harness or agents: entry may also give `provider/id` directly. The
-// ids are pi 0.84.2's Anthropic catalog
+// (opus, sonnet, ...), mapped onto pi's `provider/id` form here; a harness
+// or agents: entry may also give `provider/id` directly, and both the
+// provider and the final model string can be overridden from the runner
+// environment.
+//
+// The ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
-// anthropic-vertex extension registers verbatim; whether Vertex accepts each
-// id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
-// final model string can be overridden from the runner environment.
+// anthropic-vertex extension re-points at Vertex: ids and pricing are
+// preserved, while the routing fields and the compat allowlist differ (the
+// provider swap also flips pi's supportsToolReferences default off). The
+// extension registers the catalog of the *running* pi, so this table tracks
+// PI_VERSION — re-check it against the pinned pi's anthropic.json on a
+// bump, as "fable" needed when 0.85.0 added claude-fable-5-1 (#6882).
+// Whether Vertex then accepts an id is a lifecycle-test item
+// (docs/runtimes.md).
 const (
 	piDefaultProvider = "anthropic-vertex"
 	piDefaultModel    = "opus"
@@ -44,6 +53,23 @@ const (
 	piRuntimeEnv = "FULLSEND_RUNTIME"
 )
 
+// piModelAliases maps the Claude aliases to the catalog ids this runtime
+// defaults to. A default must be an id the running pi's catalog carries
+// (see above) and one that is conservative enough to work out of the box:
+// which models a Vertex project serves is that project's own Model Garden
+// choice, so a deployment whose project enables a newer generation points
+// the alias at it with models.aliases in .fullsend/config.yaml (#6882)
+// rather than editing this table.
+//
+// Preference order for the defaults, most preferred first:
+//
+//	sonnet: claude-sonnet-5 → claude-sonnet-4-6
+//	opus:   claude-opus-5   → claude-opus-4-8 → claude-opus-4-6
+//	fable:  claude-fable-5-1 → claude-fable-5
+//	haiku:  claude-haiku-4-5
+//
+// The arrows are what to raise a default to, not a history. An id the
+// project does not serve fails the run rather than degrading (#7026).
 var piModelAliases = map[string]string{
 	"opus":   "claude-opus-4-6",
 	"sonnet": "claude-sonnet-4-6",
@@ -59,10 +85,11 @@ var piModelAliases = map[string]string{
 var piDocumentedAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
 
 // validatePiModel returns an error if model is a documented alias that has
-// no entry in piModelAliases. Bare ids and provider/id specs pass through
-// without validation — only known aliases are checked, because those are the
-// names that cannot resolve as bare ids on pi.
-func validatePiModel(model string) error {
+// no entry in the merged alias table (piModelAliases + configAliases).
+// Bare ids and provider/id specs pass through without validation — only
+// known aliases are checked, because those are the names that cannot
+// resolve as bare ids on pi.
+func validatePiModel(model string, configAliases map[string]string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = piDefaultModel
@@ -71,17 +98,65 @@ func validatePiModel(model string) error {
 		return nil
 	}
 	if piDocumentedAliases[model] {
-		if _, ok := piModelAliases[model]; !ok {
-			return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project", model)
+		aliases := mergedPiModelAliases(configAliases)
+		if _, ok := aliases[model]; !ok {
+			return fmt.Errorf("model alias %q is documented but has no pi mapping; add it to piModelAliases with a catalog id enabled in the fleet's Vertex project, or map it for this repo under models.aliases in .fullsend/config.yaml", model)
 		}
 	}
 	return nil
+}
+
+// claudeModelIDPrefix is what makes a resolved alias value same-vendor. The
+// four alias keys all name Claude families, so an alias stays "inside its
+// family" when it resolves to any Claude id — `sonnet: claude-sonnet-5`
+// picks a generation, and `sonnet: claude-opus-4-6` deliberately routes one
+// alias at another Claude model, which is a repo's business. What the rule
+// forbids is an alias that resolves to another *vendor*, because then every
+// log line, cost line and status comment that prints "sonnet" names a model
+// from a different family (#7031).
+const claudeModelIDPrefix = "claude-"
+
+// warnCrossVendorAliases emits a deprecation warning to stderr for every
+// config alias whose value resolves to a non-Claude model. Cross-vendor
+// aliases are accepted for now but will become a validation error in a
+// future release; a repo that wants a child on another vendor should name
+// it under agents[].subagents instead (#7031).
+func warnCrossVendorAliases(configAliases map[string]string) {
+	for key, val := range configAliases {
+		if _, ok := piModelAliases[key]; !ok {
+			continue
+		}
+		// Extract the bare id: strip the provider prefix if present.
+		id := val
+		if i := strings.LastIndex(val, "/"); i >= 0 {
+			id = val[i+1:]
+		}
+		if strings.HasPrefix(strings.ToLower(id), claudeModelIDPrefix) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Warning: models.aliases.%s=%q resolves to a model outside the Claude family; "+
+			"cross-vendor aliases are deprecated and will become a validation error in a future release — "+
+			"put the model on the agent's model: or on agents[].subagents instead\n", key, val)
+	}
+}
+
+// mergedPiModelAliases returns a copy of piModelAliases with per-key
+// overrides from configAliases applied. Always a fresh map, so a caller
+// can never mutate the package-level table through it.
+func mergedPiModelAliases(configAliases map[string]string) map[string]string {
+	merged := maps.Clone(piModelAliases)
+	maps.Copy(merged, configAliases)
+	return merged
 }
 
 // translatePiModel resolves the harness/agent model (already overridden by
 // the CLI when --model/FULLSEND_MODEL/FULLSEND_PI_MODEL apply) into pi's
 // --model value: aliases map to catalog ids, bare ids get the provider
 // prefix, provider/id passes through.
+//
+// configAliases, when non-nil, overrides piModelAliases per key — a repo
+// can remap "sonnet" to a different generation without restating "opus"
+// (#6882, models.aliases in .fullsend/config.yaml).
 //
 // Special case: the xai-vertex extension's model ids carry a publisher
 // segment ("xai/grok-4.6") because pi sends Model.id on the wire verbatim
@@ -96,7 +171,7 @@ func validatePiModel(model string) error {
 // strings.EqualFold for the same reason: pi resolves provider prefixes
 // case-insensitively, so "XAI/grok-4.6" must not slip past normalization
 // and reach the built-in provider with XAI_API_KEY still set.
-func translatePiModel(model string) string {
+func translatePiModel(model string, configAliases map[string]string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
 	if provider == "" {
 		provider = piDefaultProvider
@@ -105,16 +180,35 @@ func translatePiModel(model string) string {
 	if model == "" {
 		model = piDefaultModel
 	}
+	// Resolve the alias first, then normalise the *resolved* value: an
+	// alias may map to a provider/id spec (config.ValidateModelAliases
+	// accepts it), and running the xai normalisation and the "/" passthrough on
+	// the alias name instead would re-prefix the spec
+	// ("anthropic-vertex/anthropic-vertex/…") and skip the xai-vertex
+	// gate in buildPiRunCommand. The alias table is consulted once: a
+	// value that is itself an alias key is rejected at config validation.
+	if id, ok := mergedPiModelAliases(configAliases)[model]; ok {
+		model = id
+	}
 	if spec, ok := normalizeXaiVertexModel(provider, model); ok {
 		return spec
 	}
 	if strings.Contains(model, "/") {
 		return model
 	}
-	if id, ok := piModelAliases[model]; ok {
-		model = id
-	}
 	return provider + "/" + model
+}
+
+// piModelProvider is the lowercase provider prefix of the pi model spec that
+// model resolves to — the value the gates in buildPiRunCommand and
+// NeedsOpenAIProvider branch on. pi matches provider prefixes
+// case-insensitively, so the prefix is folded here once: otherwise
+// "Anthropic-Vertex/..." would run on Vertex with the ANTHROPIC_* unset
+// skipped, and "OpenAI/..." would not be recognised as needing the OpenAI
+// run-scoped provider.
+func piModelProvider(model string, configAliases map[string]string) string {
+	provider, _, _ := strings.Cut(translatePiModel(model, configAliases), "/")
+	return strings.ToLower(provider)
 }
 
 // normalizeXaiVertexModel renders the canonical three-segment spec for the
@@ -193,6 +287,18 @@ func piThinkingFor(effort string) (string, bool) {
 // extension would give a hookless iteration that looks healthy.
 const piHooksMissingExit = 97
 
+// piAgentTamperedExit is the exit code of the Agent extension's integrity
+// guard. Distinct from piHooksMissingExit so Run can name the artifact that
+// actually failed: both guards can be in the command line at once, and one
+// code for two of them made the message a list of three things to go and
+// check ("hook adapter, Agent extension or manifest").
+const piAgentTamperedExit = 94
+
+// piManifestTamperedExit is the exit code of the manifest integrity guard:
+// the manifest is not byte-identical to the one Bootstrap wrote. Distinct
+// from piHooksMissingExit so Run can name the actual cause.
+const piManifestTamperedExit = 95
+
 // piConfigTamperedExit is the exit code of the config-dir integrity guard
 // for the openai provider (auth.json or models.json present). Distinct from
 // piHooksMissingExit so Run can name the actual cause instead of reporting a
@@ -207,25 +313,39 @@ const piConfigTamperedExit = 98
 // runner's own signal (params.HooksSettingsPath, set when the harness
 // enables security — the same signal ClaudeRuntime uses for --settings),
 // never from the agent-writable manifest, and the command fails closed if
-// the adapter or manifest file is missing.
-func buildPiRunCommand(params RunParams, m *piManifest) string {
+// the adapter or manifest file is missing. exts are the declared harness
+// extensions resolved from the host by Run (piResolveRunPlugins): their
+// preflight hash, -e entries and env exports come from there, not from m.
+// manifestSum is the digest Bootstrap recorded for the manifest; when it is
+// non-empty the command refuses to start pi on a manifest that no longer
+// matches it.
+func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension, manifestSum string) string {
 	r := PiRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
 	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
+	// The Agent tool is decided from the manifest Bootstrap wrote for this
+	// agent definition. Both the extension's code and the manifest it reads
+	// are hash-checked below: the manifest names the binary children run,
+	// the -e list they load, their tool allowlists and where their usage is
+	// recorded, and the config dir is agent-writable between iterations —
+	// so an unchecked manifest would let an agent with Write but no Bash
+	// (which cannot start pi itself) launch children of its own choosing.
+	agentEnabled := m.Agent != nil && m.Agent.Enabled
+	agentExt := r.ConfigDir() + "/" + piAgentExtensionFile
 
-	model := params.Model
-	if model == "" {
-		model = m.Model
-	}
-	modelSpec := translatePiModel(model)
-	// pi matches the provider prefix case-insensitively, so the gates must
-	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
-	// skipped.
-	provider, _, _ := strings.Cut(modelSpec, "/")
-	vertex := strings.EqualFold(provider, piDefaultProvider)
-	xaiVertex := strings.EqualFold(provider, piXaiVertexProvider)
-	openai := strings.EqualFold(provider, piOpenAIProvider)
+	// The agent definition's model is the fallback when the runner resolved
+	// none; EffectiveModel is shared with NeedsOpenAIProvider so the launch
+	// and the provider decision cannot disagree (#6920).
+	model := EffectiveModel(params.Model, m.Model)
+	modelSpec := translatePiModel(model, params.ModelAliases)
+	// piModelProvider folds the provider prefix case-insensitively (pi
+	// matches it the same way), so it is the single source of truth for
+	// this gate and for NeedsOpenAIProvider.
+	provider := piModelProvider(model, params.ModelAliases)
+	vertex := provider == piDefaultProvider
+	xaiVertex := provider == piXaiVertexProvider
+	openai := provider == piOpenAIProvider
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	// Resolve the pi binary before the agent-writable .env is sourced and
@@ -239,6 +359,23 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// shadow the guard's tools with functions or a PATH entry.
 		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
+	if agentEnabled {
+		// Same block: the Agent extension must be byte-identical to the
+		// embedded copy before .env can shadow the tools that check it.
+		parts = append(parts, "&& "+piAgentGuard(agentExt))
+	}
+	if manifestSum != "" {
+		// Same block, same reason. The hooks guard above only checks that
+		// the manifest exists; this checks that it is the one Bootstrap
+		// wrote, and it runs whether or not hooks are enabled.
+		parts = append(parts, "&& "+piManifestGuard(r.piManifestPath(), manifestSum))
+	}
+	if guard := piExtensionsGuard(exts); guard != "" {
+		// Same block, same reason: the extension trees are checked against
+		// the host hashes before .env can shadow find/sort/sha256sum, and
+		// regardless of whether hooks are enabled.
+		parts = append(parts, "&& "+guard)
+	}
 	if openai {
 		// Same reason: check the config dir before .env can shadow `test`,
 		// then seed pi's auth.json with the placeholder the environment
@@ -248,9 +385,16 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
+		// First thing after the agent-writable .env, on every provider
+		// path: clear the variables that steer the module loaders pi runs
+		// under. JITI_ALIAS alone swaps the file behind an `-e` path
+		// without touching the source the extension preflight and the hook
+		// adapter's checksum hash (see piLoaderEnvNames).
+		"&& "+piLoaderEnvUnset(),
 		// .env is agent-writable; re-pin the runner-owned locations and the
 		// offline switches after it so a rewritten .env cannot move pi's
-		// config dir out from under the guards below.
+		// config dir out from under the guards below. JITI_FS_CACHE=false
+		// lands here, after the unset above.
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& export "+piManifestEnv+"="+shellQuote(r.piManifestPath()),
 		"&& export "+piRuntimeEnv+"=pi",
@@ -262,10 +406,13 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 	)
 	if vertex {
-		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
-		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
-		// ANTHROPIC_VERTEX_BASE_URL as the endpoint; AUTH_TOKEN and BASE_URL
-		// are cleared for hygiene. The project is pinned to the variable
+		// Claude-on-Vertex: the vendored extension reads none of these -- it
+		// builds its endpoint from the region and takes its credential from
+		// ADC -- but pi's built-in anthropic provider is loaded in the same
+		// process and discovers ANTHROPIC_AUTH_TOKEN and the API-key
+		// variables from the environment, so a stray value in the
+		// agent-writable .env would authenticate a direct-to-Anthropic path
+		// that never reaches Vertex. The project is pinned to the variable
 		// Claude Code on Vertex is driven by, so both runtimes hit the same
 		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
 		// extension reads that one first).
@@ -303,10 +450,9 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// so a stray .env cannot redirect traffic or inject a different
 		// credential, and clear OPENAI_API_KEY itself so pi's resolution
 		// cannot fall through to a value .env planted in the environment.
-		// NODE_OPTIONS/NODE_PATH would let .env load code into pi before
-		// it starts; with the credential endpoint-bound at the gateway that
-		// code could only sabotage this run, but there is no reason to
-		// allow it.
+		// NODE_OPTIONS/NODE_PATH are repeated from piLoaderEnvUnset, which
+		// already cleared them for every provider: redundant, kept so this
+		// path's credential hygiene reads as one complete list.
 		parts = append(parts, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY NODE_OPTIONS NODE_PATH")
 		// Config-dir integrity guard, second pass: .env itself could have
 		// written auth.json or models.json just now. `unset -f` is a special
@@ -316,6 +462,37 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// openai provider even when hooks are disabled, because the threat is
 		// credential leak, not tool misuse.
 		parts = append(parts, "&& unset -f test command grep tr sed printf pi", "&& "+piOpenAIConfigGuard(r.ConfigDir()))
+	}
+	if manifestSum != "" {
+		// Second pass, the way piOpenAIConfigGuard has one: .env is
+		// agent-writable and could have rewritten the manifest just now,
+		// after the first check. `unset -f` is a special builtin, so a
+		// function sourced from .env cannot shadow it or survive it.
+		//
+		// `[` is in the unset list because the guard uses it. Under bash 4.x
+		// `unset -f [` is a syntax error, but the sandbox's `sh` is dash
+		// (which accepts it) and this line is only ever run through `sh -c`.
+		parts = append(parts,
+			"&& unset -f test [ command sha256sum cut",
+			"&& "+piManifestGuard(r.piManifestPath(), manifestSum),
+			// Exported after .env so .env cannot set it (or clear it) and
+			// after the guard above so it can only ever carry the digest the
+			// guard just matched. The hook adapter checks the manifest
+			// against it when it loads — which for a sub-agent is minutes
+			// into the iteration, long after this guard ran: without it a
+			// parent with `write` could empty hooks.groups mid-iteration and
+			// dispatch children whose adapter loads a hookless plan.
+			"&& export "+piManifestSumEnv+"="+shellQuote(manifestSum),
+		)
+	}
+	// Declared extensions' env goes last, which protects nothing on its
+	// own: it is exported after the runtime's pins and the provider
+	// hygiene, and pi hands its whole environment to every hook script it
+	// spawns. The deny-list in internal/harness/plugin_spec.go
+	// (reservedPluginEnvKey) is what keeps those names out of an
+	// extension's reach; the order just keeps the rendering simple.
+	for _, export := range piExtensionEnvExports(exts) {
+		parts = append(parts, "&& "+export)
 	}
 	parts = append(parts,
 		`&& "$`+piBinaryVar+`"`,
@@ -341,6 +518,16 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
 	}
+	if agentEnabled {
+		// After the adapter, so its PreToolUse hooks see Agent calls
+		// (Claude Code runs the same hooks on its Agent tool). Children
+		// get their own -e list from the manifest, never this file.
+		parts = append(parts, "-e "+shellQuote(agentExt))
+	}
+	// Declared extensions come after the hook adapter: pi runs tool_call
+	// handlers in -e order and the first block wins, so the adapter's
+	// PreToolUse hooks see every call before any declared extension does.
+	parts = append(parts, piExtensionArgs(exts)...)
 	if m.Tools != nil {
 		tools := m.Tools
 		if len(tools) == 0 {
@@ -381,9 +568,55 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 // piManifestEnv tells the hook extension where the manifest is.
 const piManifestEnv = "FULLSEND_PI_MANIFEST"
 
+// piManifestSumEnv carries the digest of the manifest Bootstrap wrote to
+// every process that loads fullsend-hooks.js — the parent and, through the
+// environment the Agent extension hands its children, each sub-agent. The
+// shell guard only fires once, before pi starts; a child reads the manifest
+// at its own start, so this is what keeps a mid-iteration rewrite from
+// producing a hookless sub-agent.
+const piManifestSumEnv = "FULLSEND_PI_MANIFEST_SHA256"
+
 // piBinaryVar holds the absolute path of the pi binary, resolved before
 // .env is sourced and marked read-only.
 const piBinaryVar = "FULLSEND_PI_BIN"
+
+// piLoaderEnvNames are the environment variables that steer the module
+// loaders pi starts under, cleared right after the agent-writable .env is
+// sourced on every provider path.
+//
+// NODE_OPTIONS and NODE_PATH run code inside the node process before pi's
+// own entry point does. The JITI_* family is jiti's, the loader pi imports
+// every `-e` module through: pi's bundled cli.js reaches createJiti on the
+// isBundledNode branch, which passes `virtualModules` and `tryNative` but
+// no `alias`, so jiti resolves alias from JITI_ALIAS — a map from module
+// specifier to replacement file. A .env exporting
+// JITI_ALIAS='{"<ext path>":"<evil>"}' therefore makes pi import a
+// different file while the extension source, its tree hash
+// (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
+// stay clean, because none of them can see the substitution. Verified on
+// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both; the shell half is
+// internal/runtime/testdata/pi/jiti-cache-check.sh.
+//
+// The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except
+// JITI_FS_CACHE, which PiRuntime.EnvExports pins to false immediately
+// after this unset. Re-verify it on a PI_VERSION bump.
+var piLoaderEnvNames = []string{
+	"NODE_OPTIONS", "NODE_PATH",
+	"JITI_ALIAS", "JITI_CACHE", "JITI_REBUILD_FS_CACHE", "JITI_TSCONFIG_PATHS",
+	"JITI_EXTENSIONS", "JITI_NATIVE_MODULES", "JITI_TRANSFORM_MODULES",
+	"JITI_TRY_NATIVE", "JITI_ESM_EVAL_TEMP_FILE", "JITI_MODULE_CACHE",
+	"JITI_REQUIRE_CACHE", "JITI_INTEROP_DEFAULT", "JITI_JSX",
+	"JITI_SOURCE_MAPS", "JITI_DEBUG", "JITI_RESPECT_TMPDIR_ENV",
+}
+
+// piLoaderEnvUnset is the POSIX sh fragment that clears piLoaderEnvNames.
+// It is emitted immediately after `. .env`, next to the other post-.env
+// hygiene: `unset` is a special builtin, so a function a sourced file
+// defined cannot stand in for it, and clearing the names before the
+// runtime's own exports means JITI_FS_CACHE=false is the last word.
+func piLoaderEnvUnset() string {
+	return "unset " + strings.Join(piLoaderEnvNames, " ")
+}
 
 // piBinaryPin is the POSIX sh fragment that records where pi is. `command
 // -v` is a builtin; `readonly` is a special builtin, so a later assignment
@@ -441,6 +674,17 @@ func PiOpenAIAuthSeed(configDir string) string {
 		` && command -p mv -f ` + tmp + ` ` + final
 }
 
+// OpenAIAuthSeed implements OpenAICredentialSeeder: the fragment that seeds
+// pi's auth.json with the sandbox's current OPENAI_API_KEY placeholder. The
+// runner runs it through `sandbox exec` after every credential refresh; Run
+// emits the same fragment at iteration start.
+func (r PiRuntime) OpenAIAuthSeed() string { return PiOpenAIAuthSeed(r.ConfigDir()) }
+
+// OpenAIAuthFile implements OpenAICredentialSeeder: pi's auth.json inside
+// the sandbox, which the runner greps for the new placeholder to confirm a
+// re-seed landed.
+func (r PiRuntime) OpenAIAuthFile() string { return r.ConfigDir() + "/" + piOpenAIAuthFile }
+
 // piOpenAIConfigGuard is the POSIX sh fragment that fails closed when the
 // pi config directory carries models.json, or an auth.json that is anything
 // but pi's own empty `{}` or the runner-seeded openai placeholder entry
@@ -483,6 +727,30 @@ func piHooksGuard(hooksExt, manifestPath string) string {
 		shellQuote(hooksExt), shellQuote(manifestPath), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), piHooksMissingExit)
 }
 
+// piAgentGuard is the Agent extension's counterpart of piHooksGuard: the
+// file must exist and match the embedded copy, else piAgentTamperedExit —
+// its own code, so Run names this extension instead of listing every
+// runner-owned artifact the iteration carries.
+func piAgentGuard(agentExt string) string {
+	sum := sha256.Sum256(piAgentExtensionJS)
+	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi Agent extension missing or modified; refusing to run' >&2; exit %d; }; }`,
+		shellQuote(agentExt), shellQuote(agentExt), shellQuote(hex.EncodeToString(sum[:])), piAgentTamperedExit)
+}
+
+// piManifestGuard is the POSIX sh fragment that refuses to start pi when
+// fullsend-manifest.json is not byte-identical to the one Bootstrap wrote.
+// The manifest is the extensions' whole configuration — the hook plan the
+// adapter enforces and, when the Agent tool is on, the binary, -e list and
+// tool allowlists of every child — and the config dir is writable by the
+// agent between iterations, so it gets the same treatment as the extension
+// code itself.
+func piManifestGuard(manifestPath, sum string) string {
+	// `command -p` bypasses shell functions and uses the system default
+	// PATH; test, [ and echo are builtins.
+	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi manifest missing or modified since Bootstrap wrote it; refusing to run' >&2; exit %d; }; }`,
+		shellQuote(manifestPath), shellQuote(manifestPath), shellQuote(sum), piManifestTamperedExit)
+}
+
 // Run executes one agent iteration and normalizes pi's --mode json stream
 // into AgentEvents. pi exits 0 on model error in json mode, so the stream's
 // verdict overrides the exit code (#2786/#5361).
@@ -505,16 +773,17 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// tracked on #6527. Say so rather than silently dropping the list.
 		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on pi yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
-	{
-		model := params.Model
-		if model == "" {
-			model = m.Model
-		}
-		if err := validatePiModel(model); err != nil {
-			return -1, err
-		}
+	if err := validatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases); err != nil {
+		return -1, err
 	}
-	cmd := buildPiRunCommand(params, m)
+	// The extension preflight hashes come from the host directories, not
+	// from the manifest just read: that file sits in the agent-writable
+	// config dir and could be rewritten together with an extension.
+	exts, err := piResolveRunPlugins(params.Plugins)
+	if err != nil {
+		return -1, err
+	}
+	cmd := buildPiRunCommand(params, m, exts, piManifestHash(params.SandboxName))
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -539,11 +808,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		handler = renderer.Handle
 	}
 
-	model := params.Model
-	if model == "" {
-		model = m.Model
-	}
-	modelSpec := translatePiModel(model)
+	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases)
 	// Telemetry and the renderer get the bare model id, as they do for
 	// Claude Code, so runs group by model across runtimes; the provider is
 	// gen_ai.system's job and stays visible on the command line.
@@ -591,8 +856,38 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
 		return exitCode, fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
+	if exitCode == piAgentTamperedExit && m.Agent != nil && m.Agent.Enabled {
+		return exitCode, fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piManifestTamperedExit {
+		return exitCode, fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())
+	}
 	if exitCode == piConfigTamperedExit {
 		return exitCode, fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())
+	}
+	if exitCode == piExtensionTamperedExit && len(exts) > 0 {
+		return exitCode, fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())
+	}
+
+	if m.Agent != nil && m.Agent.Enabled {
+		// Children are separate pi processes, so none of their tokens
+		// reached the stream just parsed; the extension's usage file is the
+		// only record of what they spent. A read failure is not fatal —
+		// losing the breakdown must not fail an iteration that succeeded.
+		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
+			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+		} else {
+			// Unconditional: the parent's own entry belongs in the
+			// breakdown even when this iteration dispatched nothing, or
+			// per_model_usage stops summing to the totals across a retry.
+			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
+			if n > 0 {
+				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
+			}
+			if skipped > 0 {
+				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
+			}
+		}
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
@@ -608,11 +903,15 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 // ClearIterationArtifacts terminates processes the previous iteration left
 // running (see killStrayProcesses), then removes its outputs and sessions
-// so transcripts and output files are per-iteration.
+// so transcripts and output files are per-iteration. The sessions glob also
+// takes the sub-agent session dirs (sessions/agent-<seq>/); the Agent
+// extension's usage file lives outside them and is named explicitly, or a
+// retry would re-count the first iteration's children.
 func (r PiRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
-	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s",
-		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile))
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
+	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s %s %s",
+		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile),
+		shellQuote(r.piAgentUsagePath()), shellQuote(r.piAgentUsagePath()+piSubagentUsageReadSuffix))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
 }

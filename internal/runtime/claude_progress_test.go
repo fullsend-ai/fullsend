@@ -942,10 +942,10 @@ func TestParseClaudeStreamTokensEvent(t *testing.T) {
 	}
 }
 
-func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
+func TestParseClaudeStreamTokensEventWithReasoningTokens(t *testing.T) {
 	lines := []string{
-		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000}}}}`,
-		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":200}}}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":300}}}}`,
 	}
 	events := collectEvents(t, strings.Join(lines, "\n"))
 
@@ -955,7 +955,115 @@ func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
 			tokens = append(tokens, te)
 		}
 	}
-	// Total = 4200, below 5k threshold
+	// Total = 4000 + 1000 + 300 + 500 + 200 = 6000, crosses 5k threshold
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 tokens event, got %d", len(tokens))
+	}
+	if tokens[0].ReasoningTokens != 300 {
+		t.Errorf("expected 300 reasoning tokens, got %d", tokens[0].ReasoningTokens)
+	}
+	if tokens[0].OutputTokens != 1000 {
+		t.Errorf("expected 1000 output tokens, got %d", tokens[0].OutputTokens)
+	}
+}
+
+func TestParseClaudeStreamResultEventAccumulatesReasoningTokens(t *testing.T) {
+	lines := []string{
+		// First message turn with 200 thinking tokens.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":200}}}}`,
+		// Second message turn with 150 thinking tokens.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":6000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":800,"output_tokens_details":{"thinking_tokens":150}}}}`,
+		// Result event.
+		`{"type":"result","num_turns":2,"total_cost_usd":0.50,"usage":{"input_tokens":10000,"output_tokens":1800,"cache_creation_input_tokens":400,"cache_read_input_tokens":1000}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var results []ResultEvent
+	for _, e := range events {
+		if re, ok := e.(ResultEvent); ok {
+			results = append(results, re)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result event, got %d", len(results))
+	}
+	// Accumulated: 200 + 150 = 350.
+	if results[0].ReasoningTokens != 350 {
+		t.Errorf("expected 350 accumulated reasoning tokens, got %d", results[0].ReasoningTokens)
+	}
+}
+
+func TestParseClaudeStreamNoThinkingTokensBackwardCompat(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}`,
+		`{"type":"result","num_turns":1,"total_cost_usd":0.10,"usage":{"input_tokens":4000,"output_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":500}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	var results []ResultEvent
+	for _, e := range events {
+		switch ev := e.(type) {
+		case TokensEvent:
+			tokens = append(tokens, ev)
+		case ResultEvent:
+			results = append(results, ev)
+		}
+	}
+	// TokensEvent: reasoning should be 0 when no thinking tokens present.
+	if len(tokens) == 1 && tokens[0].ReasoningTokens != 0 {
+		t.Errorf("expected 0 reasoning tokens when absent, got %d", tokens[0].ReasoningTokens)
+	}
+	// ResultEvent: reasoning should be 0.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result event, got %d", len(results))
+	}
+	if results[0].ReasoningTokens != 0 {
+		t.Errorf("expected 0 reasoning tokens in result when absent, got %d", results[0].ReasoningTokens)
+	}
+}
+
+func TestProgressParserCapturesReasoningTokensInMetrics(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":250}}}}`,
+		`{"type":"result","num_turns":1,"total_cost_usd":0.10,"usage":{"input_tokens":4000,"output_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":500}}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.ReasoningTokens != 250 {
+		t.Errorf("expected 250 reasoning tokens in metrics, got %d", metrics.ReasoningTokens)
+	}
+}
+
+func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":200}}}`,
+		// ResultEvent prevents the deferred EOF emission so this test
+		// isolates the in-stream throttle behavior.
+		`{"type":"result","num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":4000,"output_tokens":200}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4200, below 5k threshold — no in-stream TokensEvent emitted.
 	if len(tokens) != 0 {
 		t.Fatalf("expected 0 tokens events (below threshold), got %d", len(tokens))
 	}
@@ -972,5 +1080,193 @@ func TestParseClaudeStreamAssistantSuppressedWhenStreaming(t *testing.T) {
 		if _, ok := e.(ToolUseEvent); ok {
 			t.Error("assistant message should not emit ToolUseEvent when stream_events are active")
 		}
+	}
+}
+
+// TestProgressParserCancelledRunCapturesTokens verifies that cancelled runs
+// (stream with TokensEvents but no ResultEvent) produce non-zero token
+// metrics. This is the core regression test for #6905.
+func TestProgressParserCancelledRunCapturesTokens(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		// Two tool calls (already works before fix)
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"Bash"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`,
+		// One API call with token usage that crosses the threshold
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		// No result event — simulates SIGTERM cancellation.
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	// Tool calls are already tracked incrementally (not affected by this bug).
+	if got := metrics.ToolCalls.Load(); got != 2 {
+		t.Errorf("expected 2 tool calls, got %d", got)
+	}
+
+	// Token metrics must be non-zero — this was the #6905 regression.
+	if metrics.InputTokens == 0 {
+		t.Error("expected non-zero InputTokens on cancelled run")
+	}
+	if metrics.OutputTokens == 0 {
+		t.Error("expected non-zero OutputTokens on cancelled run")
+	}
+	if metrics.InputTokens != 4000 {
+		t.Errorf("expected 4000 input tokens, got %d", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 2000 {
+		t.Errorf("expected 2000 output tokens, got %d", metrics.OutputTokens)
+	}
+	if metrics.CacheReadInputTokens != 500 {
+		t.Errorf("expected 500 cache read tokens, got %d", metrics.CacheReadInputTokens)
+	}
+	if metrics.CacheCreationInputTokens != 200 {
+		t.Errorf("expected 200 cache creation tokens, got %d", metrics.CacheCreationInputTokens)
+	}
+}
+
+// TestProgressParserResultOverwritesIncrementalTokens verifies that when a
+// ResultEvent is present (successful run), its authoritative totals overwrite
+// the incremental TokensEvent snapshot.
+func TestProgressParserResultOverwritesIncrementalTokens(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		// ResultEvent with authoritative totals (different from stream values).
+		`{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	// ResultEvent values must win over the incremental TokensEvent snapshot.
+	if metrics.InputTokens != 12000 {
+		t.Errorf("expected 12000 input tokens from ResultEvent, got %d", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 3400 {
+		t.Errorf("expected 3400 output tokens from ResultEvent, got %d", metrics.OutputTokens)
+	}
+	if metrics.TotalCostUSD != 0.42 {
+		t.Errorf("expected cost 0.42 from ResultEvent, got %f", metrics.TotalCostUSD)
+	}
+	if metrics.NumTurns != 8 {
+		t.Errorf("expected 8 turns from ResultEvent, got %d", metrics.NumTurns)
+	}
+}
+
+// TestParseClaudeStreamCumulativeTokensAcrossMessages verifies that
+// TokensEvent carries cumulative token counts across multiple API calls,
+// not just the current message's counts.
+func TestParseClaudeStreamCumulativeTokensAcrossMessages(t *testing.T) {
+	lines := []string{
+		// First API call: input=3000, output=2000, cache_r=500, cache_w=200
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":3000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		// Second API call: input=4000, output=3000, cache_r=600, cache_w=100
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":600,"cache_creation_input_tokens":100}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":3000}}}`,
+		// No result event — cancelled.
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var lastTokens TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			lastTokens = te
+		}
+	}
+
+	// The final TokensEvent (emitted at EOF for cancelled runs) should
+	// contain cumulative totals: input=3000+4000=7000, output=2000+3000=5000,
+	// cache_r=500+600=1100, cache_w=200+100=300.
+	if lastTokens.InputTokens != 7000 {
+		t.Errorf("expected cumulative input 7000, got %d", lastTokens.InputTokens)
+	}
+	if lastTokens.OutputTokens != 5000 {
+		t.Errorf("expected cumulative output 5000, got %d", lastTokens.OutputTokens)
+	}
+	if lastTokens.CacheRead != 1100 {
+		t.Errorf("expected cumulative cache read 1100, got %d", lastTokens.CacheRead)
+	}
+	if lastTokens.CacheWrite != 300 {
+		t.Errorf("expected cumulative cache write 300, got %d", lastTokens.CacheWrite)
+	}
+}
+
+// TestParseClaudeStreamNoFinalTokensEventAfterResult verifies that when
+// a ResultEvent is present, no extra TokensEvent is emitted at EOF — the
+// authoritative ResultEvent data must not be overwritten.
+func TestParseClaudeStreamNoFinalTokensEventAfterResult(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
+		`{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}}`,
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	// Find the ResultEvent and check no TokensEvent comes after it.
+	seenResult := false
+	for _, e := range events {
+		switch e.(type) {
+		case ResultEvent:
+			seenResult = true
+		case TokensEvent:
+			if seenResult {
+				t.Error("TokensEvent must not be emitted after ResultEvent")
+			}
+		}
+	}
+	if !seenResult {
+		t.Error("expected ResultEvent in the stream")
+	}
+}
+
+// TestParseClaudeStreamFinalTokensEventOnCancel verifies that a deferred
+// TokensEvent is emitted at EOF when the stream ends without a ResultEvent,
+// even when the per-message total is below the throttle threshold.
+func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
+	// Total per-message tokens: 2000+500+100+50 = 2650, below the 5000 threshold.
+	// Without the deferred emission, no TokensEvent would be emitted at all.
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":2000,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":500}}}`,
+		// No result event — cancelled.
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 deferred TokensEvent at EOF, got %d", len(tokens))
+	}
+	if tokens[0].InputTokens != 2000 {
+		t.Errorf("expected 2000 input tokens, got %d", tokens[0].InputTokens)
+	}
+	if tokens[0].OutputTokens != 500 {
+		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
 	}
 }

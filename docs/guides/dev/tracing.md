@@ -105,7 +105,7 @@ Created by `resolveTraceIdentity()`. When an inbound `TRACEPARENT` env var
 is present, the W3C propagator extracts a remote span context and the root
 span is `SpanKindConsumer`. Otherwise it is `SpanKindInternal`.
 
-Start attributes: `fullsend.agent`, `fullsend.work_item_id`,
+Start attributes include: `fullsend.agent`, `fullsend.work_item_id`,
 `gen_ai.operation.name`, `gen_ai.agent.name`.
 
 End attributes (set in a deferred cleanup): `exit_code`,

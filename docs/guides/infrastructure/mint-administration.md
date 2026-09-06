@@ -230,7 +230,7 @@ Opens the GitHub App manifest flow in your browser, stores the PEM in Secret Man
 | `--force` | `false` | Overwrite existing `ROLE_APP_IDS` entry for this role |
 | `--dry-run` | `false` | Preview changes without making them |
 
-The `fix` and `code` roles reuse the `coder` app — add role `coder` instead.
+The `fix` and `code` dispatch stages both mint the `coder` role and reuse the `coder` app — add role `coder` instead; there is no separate `fix` app or mint role to add.
 
 ### Removing a role
 

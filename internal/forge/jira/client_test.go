@@ -517,6 +517,40 @@ func TestCreateCommentWithProperties(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DeleteComment
+// ---------------------------------------------------------------------------
+
+func TestDeleteComment(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/50001", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteComment(ctx, "PROJ-1", "50001")
+	require.NoError(t, err)
+}
+
+func TestDeleteComment_NotFound(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment/99999", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"Comment does not exist."},
+		})
+	})
+
+	err := client.DeleteComment(ctx, "PROJ-1", "99999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete comment")
+}
+
+// ---------------------------------------------------------------------------
 // DeleteEntityProperty
 // ---------------------------------------------------------------------------
 

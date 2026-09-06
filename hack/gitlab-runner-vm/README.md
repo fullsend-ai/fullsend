@@ -30,7 +30,14 @@ See also:
 > `python3`, and a local `ssh` binary (virtctl wraps it via ProxyCommand).
 
 ```bash
-# 1. Create and provision a VM (auto-numbers):
+# 1. Create and provision a VM — group-scoped runner (recommended):
+GL_TOKEN=glpat-xxx GROUP_ID=12345 \
+  GITLAB_URL=https://gitlab.example.com \
+  NAMESPACE=my-namespace \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-openshift-vm.sh
+
+# Or project-scoped runner (for single-project deployments):
 GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
   GITLAB_URL=https://gitlab.example.com \
   NAMESPACE=my-namespace \
@@ -58,7 +65,14 @@ NAMESPACE=my-namespace ./delete-openshift-vm.sh --list
 > Set `GCP_USE_IAP=false` to create the VM with an external IP and SSH directly.
 
 ```bash
-# 1. Create and provision a VM (auto-numbers):
+# 1. Create and provision a VM — group-scoped runner (recommended):
+GL_TOKEN=glpat-xxx GROUP_ID=12345 \
+  GITLAB_URL=https://gitlab.example.com \
+  GCP_PROJECT=my-gcp-project \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-gcp-vm.sh
+
+# Or project-scoped runner (for single-project deployments):
 GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
   GITLAB_URL=https://gitlab.example.com \
   GCP_PROJECT=my-gcp-project \
@@ -81,15 +95,18 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GL_TOKEN` | yes | — | GitLab PAT (Owner role, scopes: `create_runner` + `manage_runner` + `api`) |
-| `PROJECT_ID` | yes (create) | — | GitLab project ID |
+| `GL_TOKEN` | yes | — | GitLab PAT (Owner role on the target group or project, scopes: `create_runner` + `manage_runner` + `api`) |
+| `PROJECT_ID` | yes (create)¹ | — | GitLab project ID — registers a project-scoped runner (`locked=true`) |
+| `GROUP_ID` | yes (create)¹ | — | GitLab group ID — registers a group-scoped runner (`locked=false`). Recommended for platform-service deployments |
 | `GITLAB_URL` | yes | — | GitLab instance URL |
 | `RUNNER_IMAGE` | yes (create) | — | Image pre-pulled as a warm cache; jobs must still set `image:` in `.gitlab-ci.yml` |
 | `RUNNER_TAG` | no | `fullsend-gitlab-runner` | Runner tag for job matching |
-| `RUNNER_ACCESS_LEVEL` | no | `not_protected` | `ref_protected` restricts the runner to protected branches and tags, so merge-request pipelines on unprotected source refs never match and sit `pending`. Note the trade-off: with `not_protected`, any job on any branch of the project runs on this VM and can read the mounted gateway credentials (see Security below) — set `ref_protected` if the runner only needs to serve protected refs |
+| `RUNNER_ACCESS_LEVEL` | no | `not_protected` | `ref_protected` restricts the runner to protected branches and tags, so merge-request pipelines on unprotected source refs never match and sit `pending`. In project mode, `not_protected` means any job on any branch of the project can run; in group mode, any tag-matched job on any branch of any project invited into the group tree runs on this VM (see Security below) |
 | `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version (Renovate-tracked) |
 | `GITLAB_RUNNER_VERSION` | no | `19.2.1` | gitlab-runner version |
 | `REGISTRATION_TOKEN` | setup only | — | GitLab runner registration token |
+
+¹ Exactly one of `PROJECT_ID` or `GROUP_ID` must be set (mutually exclusive).
 
 ### OpenShift-specific
 
@@ -146,9 +163,20 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
   `host.containers.internal`). mTLS protects the endpoint.
 - Job containers receive read-only access to the runner's gateway mTLS
   credentials (`~/.config/openshell`). This is required for the fullsend
-  agent inside job containers to authenticate to the gateway. The runner is
-  scoped to one project by `runner_type=project_type` and `locked=true`, so
-  only jobs from that project can access these credentials; `run_untagged=false`
-  narrows this further to tag-matched jobs. If job-scoped credential minting
+  agent inside job containers to authenticate to the gateway. Credential
+  exposure depends on the runner scope:
+  - **Project mode** (`PROJECT_ID`): the runner is scoped to one project by
+    `runner_type=project_type` and `locked=true`, so only jobs from that
+    project can access these credentials.
+  - **Group mode** (`GROUP_ID`): the runner is scoped to the group by
+    `runner_type=group_type`, so any project invited into the group tree can
+    run tag-matched jobs on this VM and access the mounted gateway credentials.
+    **This is a wider trust boundary than project mode** — credential access
+    extends from a single project to every project in the group tree. For
+    group-scoped runners, consider setting `RUNNER_ACCESS_LEVEL=ref_protected`
+    as a compensating control to restrict jobs to protected branches and tags.
+  In both modes, access is narrowed by `run_untagged=false` (only jobs tagged
+  with the runner's tag are matched) and optionally by `ref_protected`
+  (restricting to protected branches/tags). If job-scoped credential minting
   is added to the gateway, this mount should be replaced with short-lived
   per-job tokens.

@@ -669,6 +669,64 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 	}
 }
 
+// TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
+// filters issue_comment events with both a /fs- prefix check and a bot-type
+// guard, preserving defense-in-depth while short-circuiting non-slash-command
+// comments at the workflow level (#6738).
+func TestShimPerRepoSlashCommandFilter(t *testing.T) {
+	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
+// TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
+// workflow does not route on the removed /fullsend alias (#6738).
+func TestShimPerRepoNoFullsendAlias(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+	cases := []workflowCase{
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+	}
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+			assert.NotContains(t, s, `/fullsend)`,
+				"%s must not route on the /fullsend alias (removed in #6738)", wc.name)
+			assert.NotContains(t, s, `SECOND_WORD`,
+				"%s must not parse SECOND_WORD for the removed /fullsend alias", wc.name)
+		})
+	}
+}
+
+// TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
+// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+func TestLiveShimSlashCommandFilter(t *testing.T) {
+	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "fullsend.yaml must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive

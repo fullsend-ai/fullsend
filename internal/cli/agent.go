@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -145,30 +146,40 @@ func newAgentRemoveCmd() *cobra.Command {
 
 func newAgentSetCmd() *cobra.Command {
 	var fullsendDir, runtimeName, model, effort string
+	var subagentFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "set <name>",
-		Short: "Set an agent's runtime, model or effort in config (per-repo)",
-		Long: `Sets runtime, model and/or effort for one agent in .fullsend/config.yaml.
-The agent is a built-in one (triage, code, review, fix, retro, prioritize)
-or a custom agents: entry by name. For a built-in agent without an entry a
-name-only entry is added. Only the flags given change; pass an empty value
-(--model "") to clear a setting. Per-repo configs only.`,
+		Short: "Set an agent's runtime, model, effort or subagent models in config (per-repo)",
+		Long: `Sets runtime, model, effort and/or subagent models for one agent in
+.fullsend/config.yaml. The agent is a built-in one (triage, code, review,
+fix, retro, prioritize) or a custom agents: entry by name. For a built-in
+agent without an entry a name-only entry is added. Only the flags given
+change; pass an empty value (--model "") to clear a setting. Per-repo
+configs only.
+
+The --subagent flag maps a persona name to a model (repeatable):
+
+  fullsend agent set review --subagent correctness=opus --subagent default=haiku
+  fullsend agent set review --subagent style-conventions=  # clears (tombstones)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 			return runAgentSet(fullsendDir, args[0], agentSetFlags{
 				runtime: runtimeName, model: model, effort: effort,
-				runtimeSet: cmd.Flags().Changed("runtime"),
-				modelSet:   cmd.Flags().Changed("model"),
-				effortSet:  cmd.Flags().Changed("effort"),
+				runtimeSet:   cmd.Flags().Changed("runtime"),
+				modelSet:     cmd.Flags().Changed("model"),
+				effortSet:    cmd.Flags().Changed("effort"),
+				subagentSet:  cmd.Flags().Changed("subagent"),
+				subagentArgs: subagentFlags,
 			}, printer)
 		},
 	}
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude or pi); \"\" clears it")
-	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi); \"\" clears it")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
+	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
+	cmd.Flags().StringArrayVar(&subagentFlags, "subagent", nil, "persona=model mapping for sub-agents (repeatable; persona= clears)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
@@ -177,13 +188,16 @@ name-only entry is added. Only the flags given change; pass an empty value
 type agentSetFlags struct {
 	runtime, model, effort          string
 	runtimeSet, modelSet, effortSet bool
+	subagentSet                     bool
+	subagentArgs                    []string
 }
 
-// runAgentSet upserts runtime/model/effort for one agent on the overlay
-// config.yaml and validates the result the way `fullsend run` will.
+// runAgentSet upserts runtime/model/effort/subagents for one agent on
+// the overlay config.yaml and validates the result the way `fullsend
+// run` will.
 func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Printer) error {
-	if !f.runtimeSet && !f.modelSet && !f.effortSet {
-		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort")
+	if !f.runtimeSet && !f.modelSet && !f.effortSet && !f.subagentSet {
+		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort, --subagent")
 	}
 	absDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
@@ -211,9 +225,61 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if f.effortSet {
 		effort = f.effort
 	}
+
+	// Seed from the overlay's own entry: writing the merged map back
+	// would freeze the parent layer's entries into this config.
+	localSubagents, _ := config.AgentSettingsFor(localAgentEntries(cfg), agentName)
+
+	var subagents map[string]*string
+	if localSubagents.Subagents != nil {
+		subagents = make(map[string]*string, len(localSubagents.Subagents))
+		for k, v := range localSubagents.Subagents {
+			// A nil value is a tombstone; carry it over rather than
+			// dereferencing it.
+			if v == nil {
+				subagents[k] = nil
+				continue
+			}
+			cp := *v
+			subagents[k] = &cp
+		}
+	}
+	if f.subagentSet {
+		if subagents == nil {
+			subagents = make(map[string]*string)
+		}
+		for _, arg := range f.subagentArgs {
+			k, v, found := strings.Cut(arg, "=")
+			if !found {
+				// Without the separator the intent is ambiguous: bare
+				// "correctness" would otherwise be indistinguishable from
+				// "correctness=" and silently tombstone the entry.
+				return fmt.Errorf("--subagent: %q must be key=value (use %q= to clear an inherited entry)", arg, arg)
+			}
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" {
+				return fmt.Errorf("--subagent: empty key in %q", arg)
+			}
+			if !config.ValidSubagentKey(k) {
+				return fmt.Errorf("--subagent: invalid key %q: must be lowercase alphanumeric segments joined by hyphens (max 64 chars), or \"default\"", k)
+			}
+			if v == "" {
+				// Empty value = tombstone (nil pointer clears an inherited entry).
+				subagents[k] = nil
+			} else {
+				subagents[k] = &v
+			}
+		}
+		// Drop empty map so it does not serialize as `subagents: {}`.
+		if len(subagents) == 0 {
+			subagents = nil
+		}
+	}
+
 	// Only the overlay's own entries are written; an agent registered in
 	// config.base.yaml gets an overlay entry that merges onto it by name.
-	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort)
+	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort, subagents)
 	w.SetAgents(local)
 
 	if err := cfg.Validate(); err != nil {
@@ -226,8 +292,35 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort))
+	msg := fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort)
+	if s := formatSubagents(subagents); s != "" {
+		msg += " subagents: " + s
+	}
+	printer.StepDone(msg)
 	return nil
+}
+
+// formatSubagents renders the subagents map for the `agent set` confirmation
+// line, sorted so the output is stable. A tombstone prints as "<key>=cleared"
+// so a caller can see that the entry was un-set rather than left untouched.
+func formatSubagents(subagents map[string]*string) string {
+	if len(subagents) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(subagents))
+	for k := range subagents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if v := subagents[k]; v == nil {
+			parts = append(parts, k+"=cleared")
+		} else {
+			parts = append(parts, k+"="+*v)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // localAgentEntries returns the entries the overlay itself declares (the
@@ -350,6 +443,9 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 			}
 			if a.Effort != "" {
 				settings = append(settings, "effort="+a.Effort)
+			}
+			if s := formatSubagents(a.Subagents); s != "" {
+				settings = append(settings, "subagents: "+s)
 			}
 			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}

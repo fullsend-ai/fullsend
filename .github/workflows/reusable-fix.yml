@@ -356,6 +356,9 @@ jobs:
           FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           FIX_REPO_FULL_NAME: ${{ inputs.source_repo }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, FIX_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent

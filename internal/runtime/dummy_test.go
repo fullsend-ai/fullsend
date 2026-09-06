@@ -234,11 +234,14 @@ type stubBootstrapInput struct {
 	sandboxName string
 }
 
-func (s stubBootstrapInput) SandboxName() string  { return s.sandboxName }
-func (s stubBootstrapInput) AgentPath() string    { return "" }
-func (s stubBootstrapInput) AgentName() string    { return "test" }
-func (s stubBootstrapInput) SkillDirs() []string  { return nil }
-func (s stubBootstrapInput) PluginDirs() []string { return nil }
+func (s stubBootstrapInput) SandboxName() string                { return s.sandboxName }
+func (s stubBootstrapInput) AgentPath() string                  { return "" }
+func (s stubBootstrapInput) AgentName() string                  { return "test" }
+func (s stubBootstrapInput) SkillDirs() []string                { return nil }
+func (s stubBootstrapInput) Plugins() []PluginInput             { return nil }
+func (s stubBootstrapInput) ModelAliases() map[string]string    { return nil }
+func (s stubBootstrapInput) AgentSubagents() map[string]*string { return nil }
+func (s stubBootstrapInput) ParentModel() string                { return "" }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
 	t.Parallel()
@@ -246,6 +249,17 @@ func TestDummyRuntime_Bootstrap(t *testing.T) {
 	rt := DummyRuntime{}
 	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent-sandbox"})
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_Bootstrap_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "sandbox not found", 1, nil
+	}}
+	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 func TestDummyRuntime_RunMissingScript(t *testing.T) {
@@ -268,6 +282,21 @@ func TestDummyRuntime_ClearIterationArtifacts(t *testing.T) {
 	rt := DummyRuntime{}
 	err := rt.ClearIterationArtifacts("nonexistent-sandbox")
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_ClearIterationArtifacts_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "rm -rf") {
+			return "", "sandbox not found", 1, nil
+		}
+		// clearStrayProcesses call succeeds
+		return "stray processes killed: 0\n", "", 0, nil
+	}}
+	err := rt.ClearIterationArtifacts("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 func TestExecuteBehaviourOp_ReadFileExecFailure(t *testing.T) {

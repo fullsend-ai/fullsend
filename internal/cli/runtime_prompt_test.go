@@ -25,6 +25,7 @@ func TestPromptRuntime(t *testing.T) {
 		{name: "EOF keeps the default", input: "", interactive: true, want: ""},
 		{name: "pi", input: " PI \n", interactive: true, want: "pi"},
 		{name: "claude is written explicitly when chosen", input: "claude\n", interactive: true, want: "claude"},
+		{name: "codex", input: " CODEX \n", interactive: true, want: "codex"},
 		{name: "invalid then valid", input: "opencode\npi\n", interactive: true, want: "pi", warns: true},
 		{name: "invalid then EOF keeps the default", input: "opencode\n", interactive: true, want: "", warns: true},
 		{name: "dummy is not a human choice", input: "dummy\npi\n", interactive: true, want: "pi", warns: true},
@@ -38,12 +39,18 @@ func TestPromptRuntime(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 			if tc.interactive {
 				assert.Contains(t, out.String(), "Agent Runtime")
+				// Every runtime the prompt accepts must also be offered: a
+				// choice that validates but is not listed is invisible.
+				for _, name := range userRuntimeChoices() {
+					assert.Contains(t, out.String(), "["+name+"]",
+						"runtime %q is accepted but not listed in the menu", name)
+				}
 			} else {
 				assert.Empty(t, out.String(), "non-interactive must print nothing")
 			}
 			if tc.warns {
 				assert.Contains(t, out.String(), "Invalid runtime")
-				assert.Contains(t, out.String(), "(expected one of claude, pi)", "dummy is not offered to people")
+				assert.Contains(t, out.String(), "(expected one of claude, pi, codex)", "dummy is not offered to people")
 			}
 		})
 	}

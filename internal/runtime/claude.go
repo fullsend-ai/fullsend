@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/skill"
@@ -91,11 +92,19 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
+	// Mirror of the pi runtime's skip: a pi extension is code with no
+	// Claude Code equivalent, so it is named and skipped rather than
+	// silently dropped.
 	var pluginDirs []string
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			pluginDirs = append(pluginDirs, p)
+	for _, e := range input.Plugins() {
+		if e.Path == "" {
+			continue
 		}
+		if e.Kind != pluginformat.KindClaude {
+			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)\n", e.SandboxName())
+			continue
+		}
+		pluginDirs = append(pluginDirs, e.Path)
 	}
 	if len(pluginDirs) > 0 {
 		if err := duplicateDestinationNameError("plugin", pluginDirs, reservedPluginDestNames...); err != nil {
@@ -145,7 +154,16 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 			if metrics.Model == "" {
 				metrics.Model = e.Model
 			}
+		case TokensEvent:
+			// Capture cumulative token usage from the stream so cancelled
+			// runs (no ResultEvent) retain non-zero telemetry (#6905).
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.CacheReadInputTokens = e.CacheRead
+			metrics.CacheCreationInputTokens = e.CacheWrite
 		case ResultEvent:
+			// Authoritative totals from the terminal result event overwrite
+			// the incremental snapshot.
 			metrics.NumTurns = e.NumTurns
 			metrics.TotalCostUSD = e.TotalCostUSD
 			metrics.InputTokens = e.InputTokens
@@ -182,7 +200,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 // running (see killStrayProcesses), then removes its outputs and transcripts
 // so artifacts are per-iteration.
 func (r ClaudeRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/*.jsonl", r.WorkspaceDir(), r.ConfigDir())
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
@@ -317,6 +335,16 @@ func resolveSkillDisplayName(skillPath string) string {
 	return meta.Name
 }
 
+// remapModel returns the models.aliases target for name when the repo
+// configured one, name otherwise (#6882). Shared by --model and
+// --fallback-model so the two cannot drift.
+func remapModel(name string, aliases map[string]string) string {
+	if id, ok := aliases[name]; ok {
+		return id
+	}
+	return name
+}
+
 func buildRunCommand(params RunParams) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
@@ -340,7 +368,11 @@ func buildRunCommand(params RunParams) string {
 	}
 
 	if params.Model != "" {
-		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(params.Model, "'", "'\\''")))
+		// When the repo configures models.aliases and the model is an
+		// alias key with an entry, pass the id to --model so the run uses
+		// the repo's chosen generation (#6882).
+		model := remapModel(params.Model, params.ModelAliases)
+		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(model, "'", "'\\''")))
 	}
 
 	if params.Effort != "" {
@@ -348,6 +380,15 @@ func buildRunCommand(params RunParams) string {
 	}
 
 	if len(params.FallbackModels) > 0 {
+		// Same remap as --model, so an *aliased* fallback entry follows the
+		// repo's retarget. A literal id in the chain is passed as written.
+		if len(params.ModelAliases) > 0 {
+			remapped := make([]string, len(params.FallbackModels))
+			for i, fb := range params.FallbackModels {
+				remapped[i] = remapModel(fb, params.ModelAliases)
+			}
+			params.FallbackModels = remapped
+		}
 		// Claude Code accepts a comma-separated chain tried in order when the
 		// primary model is overloaded or retired.
 		parts = append(parts, fmt.Sprintf("--fallback-model '%s'", strings.ReplaceAll(strings.Join(params.FallbackModels, ","), "'", "'\\''")))

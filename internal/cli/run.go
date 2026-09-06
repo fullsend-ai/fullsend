@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -50,6 +52,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -145,6 +148,17 @@ type statusOpts struct {
 	statusNum     int
 	statusComment int
 	mintURL       string
+
+	// trackerSource is the event source system ("github", "gitlab",
+	// "jira"), extracted from the normalized event's source.system field.
+	// When set to "jira", status notifications route to Jira instead of
+	// the code-hosting forge (ADR 0093). Empty means unset (falls back to
+	// forgePlatform).
+	trackerSource string
+	// trackerProject is the Jira project key (e.g. "PROJ"), extracted
+	// from the normalized event's entity.key. Only meaningful when
+	// trackerSource is "jira".
+	trackerProject string
 }
 
 // aggregateMetrics holds accumulated behavioral metrics across retry iterations.
@@ -161,8 +175,8 @@ type aggregateMetrics struct {
 	Iterations int    `json:"iterations"`
 	ToolCalls  int    `json:"tool_calls"`
 	Model      string `json:"model,omitempty"`
-	// Runtime is the backend that ran the iterations (claude, pi, dummy,
-	// dummy-playback), so artifacts record which runtime a per-repo
+	// Runtime is the backend that ran the iterations (claude, pi, codex,
+	// dummy, dummy-playback), so artifacts record which runtime a per-repo
 	// `runtime:` selected.
 	Runtime string `json:"runtime,omitempty"`
 	// RequestedRuntime is the runtime selected for the run (config file or a
@@ -172,13 +186,21 @@ type aggregateMetrics struct {
 	// "FULLSEND_RUNTIME", the config file path, or "default (config not found)".
 	RuntimeSource string `json:"runtime_source,omitempty"`
 	// RequestedModel is the model handed to the runtime after the per-run
-	// overrides (--model, FULLSEND_MODEL, FULLSEND_PI_MODEL on pi) were
-	// applied; Model is what the provider reported.
+	// overrides (--model, FULLSEND_MODEL, and the runtime-scoped
+	// FULLSEND_PI_MODEL / FULLSEND_CODEX_MODEL) were applied; Model is what
+	// the provider reported.
 	RequestedModel string `json:"requested_model,omitempty"`
 	// OverrideSource records where RequestedModel came from ("--model flag",
-	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "harness", "default") so a
-	// silent override is visible after the fact.
+	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL",
+	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
+	// PerModelUsage attributes the totals above to the model specs that
+	// spent them. Only runtimes that dispatch sub-agents fill it (pi's
+	// Agent tool), and then on every iteration of such a run — including
+	// one that dispatched nothing, whose parent entry is what keeps the
+	// breakdown summing to the totals across a retry. A run on a runtime
+	// without sub-agents keeps metrics.json as it was.
+	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -457,8 +479,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
-	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi; also $FULLSEND_MODEL)")
+	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
+	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi and codex — codex takes OpenAI ids only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
@@ -545,6 +567,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if mapErr != nil {
 			return fmt.Errorf("converting event to map: %w", mapErr)
 		}
+
+		// Extract tracker provenance for status routing (ADR 0093).
+		// When the event originated from Jira, status notifications
+		// should be posted to Jira, not to the code-hosting forge.
+		sOpts.trackerSource = string(ev.Source.System)
+		if ev.Source.System == normevent.SystemJira {
+			if ev.Entity.Key == "" {
+				return fmt.Errorf("Jira event from --event-file is missing entity.key")
+			}
+			proj, num, ok := parseJiraKey(ev.Entity.Key)
+			if !ok {
+				return fmt.Errorf("Jira event from --event-file has unparseable entity.key %q", ev.Entity.Key)
+			}
+			sOpts.trackerProject = proj
+			sOpts.statusNum = num
+		}
 	}
 	// Fallback: extract _normalized_event from the dispatch event-payload
 	// channel when --event-file is not provided. The Go dispatch path
@@ -554,6 +592,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// workflow_call path where event_payload is nested in inputs).
 	if eventMap == nil {
 		eventMap = extractNormalizedEventFromDispatch(absFullsendDir)
+	}
+
+	// For the fallback path, also extract tracker provenance from the
+	// event map if not already set from --event-file.
+	if sOpts.trackerSource == "" && eventMap != nil {
+		sOpts.trackerSource = extractMapString(eventMap, "source", "system")
+		if sOpts.trackerSource == "jira" {
+			key := extractMapString(eventMap, "entity", "key")
+			if key == "" {
+				return fmt.Errorf("Jira event from dispatch payload is missing entity.key")
+			}
+			proj, num, ok := parseJiraKey(key)
+			if !ok {
+				return fmt.Errorf("Jira event from dispatch payload has unparseable entity.key %q", key)
+			}
+			sOpts.trackerProject = proj
+			sOpts.statusNum = num
+		}
 	}
 
 	composeOpts := harness.ComposeOpts{
@@ -929,7 +985,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	// The config file is loaded once here and serves runtime selection, the
-	// FULLSEND_PI_MODEL gate and the agents: settings application below.
+	// runtime-scoped model gate and the agents: settings application below.
 	runCfg, runCfgErr := loadRunConfig(orgConfigPath)
 	if runCfgErr != nil {
 		if errors.Is(runCfgErr, errParsingConfigRuntime) {
@@ -940,9 +996,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return runCfgErr
 	}
 	if overrides.runtime == "" {
-		// The pi-only FULLSEND_PI_MODEL alias depends on which runtime the
-		// config selects; resolve the config runtime first (including
-		// the agents: entry's runtime), then re-run.
+		// The runtime-scoped model aliases (FULLSEND_PI_MODEL,
+		// FULLSEND_CODEX_MODEL) depend on which runtime the config
+		// selects; resolve the config runtime first (including the
+		// agents: entry's runtime), then re-run.
 		if b, _, e := runCfg.backend(agentName); e == nil {
 			overrides, err = resolveRunOverrides(oFlags, os.Getenv, b.Runtime.Name())
 			if err != nil {
@@ -982,11 +1039,37 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if overrides.model != "" {
 		h.Model = overrides.model
 	}
+
+	// Resolve per-repo model aliases from config (#6882). The alias map
+	// is passed to RunParams so each runtime can merge it into its own
+	// alias table; the echo here shows the mapping for visibility.
+	var configModelAliases map[string]string
+	if runCfg.perRepo != nil {
+		configModelAliases = runCfg.perRepo.ConfigModelAliases()
+	}
+	// The load path does not run Validate (only the write paths do, and
+	// nothing writes this block through the CLI), so check the effective
+	// map here: an unknown key must fail before the sandbox exists, not
+	// become a working alias.
+	if err := config.ValidateModelAliases(configModelAliases); err != nil {
+		printer.StepFail(err.Error())
+		return fmt.Errorf("%s: %w", runCfg.source, err)
+	}
+	// resolvedModel is the alias-table target when models.aliases remaps
+	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
+	// warning look at; pi still prefixes a bare id with its provider.
+	resolvedModel, modelRemapped := h.Model, false
+	if id, ok := configModelAliases[h.Model]; ok {
+		resolvedModel, modelRemapped = id, true
+	}
+
 	// provider/id is pi's model form; Claude Code takes an alias or an
 	// Anthropic model id. The syntax is accepted for every runtime (ids are
 	// not a closed set), so flag the likely mismatch instead of rejecting it.
-	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(h.Model, "/") {
-		printer.StepWarn(fmt.Sprintf("model %q has a provider/id form, which is pi's; Claude Code expects an alias (opus, sonnet, ...) or an Anthropic model id", h.Model))
+	// Check the resolved value: an alias whose entry is a provider/id spec
+	// reaches Claude Code as that spec.
+	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(resolvedModel, "/") {
+		printer.StepWarn(fmt.Sprintf("model %q has a provider/id form, which is pi's; Claude Code expects an alias (opus, sonnet, ...) or an Anthropic model id", resolvedModel))
 	}
 	if overrides.effort != "" {
 		if !config.ValidEffort(overrides.effort) {
@@ -1009,13 +1092,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.KeyValue("Policy", h.Policy)
 	}
 	if h.Model != "" {
-		printer.KeyValue("Model", withSource(h.Model, overrides.modelSource))
+		modelDisplay := withSource(h.Model, overrides.modelSource)
+		if modelRemapped {
+			// Keep the alias's own source (e.g. "--model flag") and add
+			// the remap, so neither decision is hidden.
+			modelDisplay = fmt.Sprintf("%s → %s (from %s models.aliases)", modelDisplay, resolvedModel, runCfg.source)
+		}
+		printer.KeyValue("Model", modelDisplay)
 	}
 	if h.Effort != "" {
 		printer.KeyValue("Effort", withSource(h.Effort, overrides.effortSource))
 	}
 	if len(overrides.fallbackModels) > 0 {
-		printer.KeyValue("Fallback models", withSource(strings.Join(overrides.fallbackModels, ", "), overrides.fallbackSource))
+		// Aliased entries are remapped by models.aliases at Run (claude.go),
+		// so show each one as "alias → id"; literal ids print as written.
+		fallbacks := make([]string, len(overrides.fallbackModels))
+		for i, fb := range overrides.fallbackModels {
+			if id, ok := configModelAliases[fb]; ok {
+				fb = fb + " → " + id
+			}
+			fallbacks[i] = fb
+		}
+		printer.KeyValue("Fallback models", withSource(strings.Join(fallbacks, ", "), overrides.fallbackSource))
 	}
 	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
 	if h.Image != "" {
@@ -1028,7 +1126,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.KeyValue("Skills", strings.Join(harness.SkillSources(h.Skills), ", "))
 	}
 	if len(h.Plugins) > 0 {
-		printer.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
+		printer.KeyValue("Plugins", strings.Join(describePlugins(h.Plugins), ", "))
 	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)
@@ -1045,6 +1143,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if h.TimeoutMinutes > 0 {
 		printer.KeyValue("Timeout", fmt.Sprintf("%d minutes", h.TimeoutMinutes))
+	} else {
+		printer.KeyValue("Timeout", fmt.Sprintf("%d minutes (default)", defaultTimeoutMinutes))
 	}
 	printer.Blank()
 
@@ -1162,6 +1262,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// GitLab instance (#6615). Prepended so that a user-defined profile
 	// with the same ID wins via last-wins dedup. Inserted before the
 	// integrity check so providers referencing this ID are valid.
+	// generatedProfileIDs records profiles the runner synthesized itself;
+	// a profiles/ directory copy overriding one of these is the documented
+	// path, not a shadowing worth warning about.
+	generatedProfileIDs := map[string]bool{}
 	if forgePlatform == "gitlab" {
 		if profilePath, cleanupProfile, err := generateGitLabForgeProfile(); err != nil {
 			printer.StepWarn("Failed to auto-generate GitLab forge profile: " + err.Error())
@@ -1171,6 +1275,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				ID:        "fullsend-gitlab-forge",
 				LocalPath: profilePath,
 			}}, result.Profiles...)
+			generatedProfileIDs["fullsend-gitlab-forge"] = true
 		}
 	}
 
@@ -1200,6 +1305,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// runScopedProviders maps a harness provider name to the run-scoped
 	// instance created for it; sandbox creation attaches the latter.
 	runScopedProviders := map[string]string{}
+	// The agent definition's frontmatter `model:` is the runtime's fallback
+	// when nothing else names a model (pi launches on it), so the decision
+	// below has to see it too — reading it here keeps it to one read for
+	// every provider entry.
+	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
+	// skippedProviders are harness-declared providers the selected runtime
+	// does not need (an openai entry on a Vertex run, see
+	// runtime.NeedsOpenAIProvider): nothing is created for them and their
+	// name must not reach `sandbox create`, or the gateway would attach a
+	// profile whose egress rules the run never uses.
+	skippedProviders := map[string]struct{}{}
 	var openAIHandles []openAIProviderHandle
 	allProviderNames := append([]string{}, h.Providers...)
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
@@ -1223,8 +1339,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Import provider profiles (if profiles/ directory exists).
+		// Warn when a profiles/ directory copy and a harness-resolved profile
+		// share an id. The directory import below runs after the harness
+		// import, but each has its own hash cache, so either copy can end up
+		// live on the gateway; a stale directory copy can silently undo a fix
+		// the harness already carries (#6971). Per-repo customization relies
+		// on the override, so this only makes it visible.
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
+		for _, sp := range shadowedProfiles(dirProfileIDs, result.Profiles, profilesDir, generatedProfileIDs) {
+			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); whichever copy was imported most recently is live — delete the directory copy or keep it in sync", sp.ID, profilesDir, sp.LocalPath))
+		}
+
+		// Import provider profiles (if profiles/ directory exists).
 		dirProfileStart := time.Now()
 		printer.StepStart("Importing provider profiles")
 		if err := sandbox.ImportProfiles(profilesDir); err != nil {
@@ -1281,14 +1407,38 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// The profile is the security policy for the exchanged token and
 			// only the copy embedded in this binary is trusted: a repository
 			// or URL-resolved profile with the same id would be imported
-			// earlier in this function and could stand in for it.
+			// earlier in this function and could stand in for it. This runs
+			// before the skip decision below on purpose — skipping first
+			// would leave a repo-controlled profile with the reserved id
+			// live on the gateway for the next run to pick up.
 			if err := rejectReservedProfileID(openAIProviderType, result.Profiles, dirProfileIDs); err != nil {
 				return err
+			}
+			// The OpenAI provider is materialized only for a run that will
+			// actually call OpenAI. A harness can then declare it next to
+			// the Vertex provider without making every run resolve an
+			// OpenAI credential (#6920); the profile is not imported and
+			// the instance is not created or attached.
+			if !agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases) {
+				skippedProviders[pd.Name] = struct{}{}
+				// Counts as handled, so the "declared but no definition
+				// found" warning below does not also fire for it.
+				created[pd.Name] = struct{}{}
+				model := agentruntime.EffectiveModel(h.Model, agentDefModel)
+				if model == "" {
+					model = "(the runtime default)"
+				}
+				// Informational, not a warning: declaring the provider on a
+				// harness that several runtimes share is the documented way
+				// to write a portable harness, so this line is a happy path
+				// and must not bury the real warnings around it.
+				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Runtime.Name(), model))
+				continue
 			}
 			if err := ensureOpenAIProfile(ctx, pd.Type, printer); err != nil {
 				return err
 			}
-			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), printer)
+			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
 			if err != nil {
 				return err
 			}
@@ -1347,7 +1497,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		allProviderNames = applyRunScopedProviderNames(sandboxProviderNames(h.Providers, result.Providers), runScopedProviders)
+		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
 	}
 
 	workItemID := resolveWorkItemID()
@@ -1381,6 +1531,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	traceparent := tid.Traceparent
 	securityTraceID := security.GenerateTraceID()
 	rootSpan.SetAttributes(stringAttr("fullsend.security_trace_id", securityTraceID))
+
+	if attrs := harnessIdentityAttrs(harnessPath, composeOpts.SourceURL); len(attrs) > 0 {
+		rootSpan.SetAttributes(attrs...)
+	}
 
 	// validationPassed is declared before both defer closures that guard on
 	// it: the telemetry defer keys the root span's status on it (validation,
@@ -1486,7 +1640,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Sandbox policy cannot deliver the OpenAI credential")
 			return err
 		}
-		// From here a refresh must also re-seed the running pi.
+		// From here a refresh must also re-seed the running agent's
+		// credential file (when its runtime has one).
 		for _, h := range openAIHandles {
 			h.sandboxUp.Store(true)
 		}
@@ -1507,10 +1662,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the correct iteration's output rather than blindly taking the last.
 	var validatedIterNum int
 
-	// lastIterElapsed records the wall-clock duration of the most recent
-	// agent iteration. Used after the loop to detect timeout exhaustion
-	// for agents without a validation loop. See #5075.
+	// lastIterElapsed is the wall-clock duration of the most recent agent
+	// iteration; lastIterTimedOut records whether that iteration spent its
+	// budget (agentTimedOut) and exited non-zero. See #5075, #7042.
 	var lastIterElapsed time.Duration
+	var lastIterTimedOut bool
 
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
@@ -1650,12 +1806,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if overrides.modelSource != "" {
 		fmt.Fprintf(os.Stderr, "model: requested %q from %s\n", h.Model, overrides.modelSource)
 	}
+	if modelRemapped {
+		fmt.Fprintf(os.Stderr, "model: alias %q remapped to %q from %s models.aliases\n", h.Model, resolvedModel, runCfg.source)
+	}
 	rt := backend.Runtime
 	aggMetrics.Runtime = rt.Name()
 	aggMetrics.RequestedRuntime = rt.Name()
 	aggMetrics.RuntimeSource = configSource
 	aggMetrics.RequestedModel = h.Model
-	aggMetrics.OverrideSource = modelOverrideSource(overrides, h.Model)
+	aggMetrics.OverrideSource = aliasOverrideSource(modelOverrideSource(overrides, h.Model), modelRemapped, runCfg.source)
 	tx := backend.Transcripts
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
@@ -1699,7 +1858,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			forgeEgressEntry = host + ":" + port
 		}
 	}
-	boot := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry)
+	// Thread the agent's subagents config into BootstrapInput so the pi
+	// runtime can resolve each persona's model (#7031).
+	var agentSubagents map[string]*string
+	if entryFound {
+		agentSubagents = entry.Subagents
+	}
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel)
+	if err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return err
+	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
@@ -1894,15 +2063,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 9c. Run agent with validation loop.
 	agentBaseName := agentName
+	// Sandbox paths for Claude Code's --plugin-dir. Only Claude-format
+	// entries land under <config>/plugins/; a pi extension is uploaded
+	// elsewhere and named on pi's command line instead.
 	var pluginDirs []string
-	for _, p := range h.Plugins {
-		pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", rt.ConfigDir(), filepath.Base(p)))
+	for _, p := range boot.Plugins() {
+		if p.Kind == pluginformat.KindClaude {
+			pluginDirs = append(pluginDirs, fmt.Sprintf("%s/plugins/%s", rt.ConfigDir(), p.SandboxName()))
+		}
 	}
 
-	timeout := time.Duration(h.TimeoutMinutes) * time.Minute
-	if timeout == 0 {
-		timeout = 30 * time.Minute
-	}
+	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -1961,6 +2132,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
 
+	// Per-iteration sandbox writes follow the run's cancellation.
+	execCtx := func(name, command string, timeout time.Duration) (string, string, int, error) {
+		return sandbox.ExecContext(ctx, name, command, timeout)
+	}
+
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
 		transcriptErrorOverride = false
@@ -2013,6 +2189,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.Blank()
 
 		agentStart := time.Now()
+		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+			// The deadline is advisory; a stale one from the previous
+			// iteration is the only harmful state, so clear it and go on.
+			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
+			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
+				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
+					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
+				}
+				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
+			}
+		}
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
@@ -2035,12 +2222,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			RepoDir:           remoteRepositoryDir,
 			FullsendDir:       absFullsendDir,
 			PluginDirs:        pluginDirs,
+			Plugins:           boot.Plugins(),
 			Debug:             debug,
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
+			ModelAliases:      configModelAliases,
 			OnEvent:           contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
@@ -2121,6 +2310,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
+		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed, timeout)
+		if lastIterTimedOut {
+			// The exec ended at the budget but the agent's processes did
+			// not (OpenShell has no per-exec kill). Terminate them before
+			// extraction so the output below is final and no inference is
+			// spent past the budget (#7042).
+			printer.StepInfo("Agent exceeded its budget; terminating its processes in the sandbox")
+			if lockErr := withSandboxLock(ctx, func(waited time.Duration) {
+				printer.StepInfo(fmt.Sprintf(
+					"Waiting %s for a credential refresh to finish before terminating agent processes", waited))
+			}, func() error {
+				agentruntime.TerminateStrayProcesses(sandboxName, os.Stderr)
+				return nil
+			}); lockErr != nil {
+				printer.StepWarn("Could not terminate agent processes: " + lockErr.Error())
+			}
+		}
 
 		// 9b. Extract output files.
 		extractStart := time.Now()
@@ -2180,6 +2386,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if h.ValidationLoop != nil {
 				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
 				repoExtractedOK = false
+				if lastIterTimedOut {
+					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+					break
+				}
 				continue
 			}
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
@@ -2203,6 +2413,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				if lastIterTimedOut {
+					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+					break
+				}
 				continue
 			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
@@ -2246,6 +2460,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			validationFeedback = feedback
 		}
 
+		// A killed iteration is not retried: the next one would replay the
+		// same run with the same budget; the sweep still checks its output (#7042).
+		if lastIterTimedOut {
+			if iteration < maxIterations {
+				printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+			}
+			break
+		}
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
@@ -2336,25 +2558,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	if h.ValidationLoop != nil && !validationPassed {
-		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
-	}
-
-	// Detect timeout exhaustion for agents without a validation loop
-	// (e.g., the code agent). When the agent used >= 90% of its time
-	// budget and exited non-zero, it was almost certainly killed by the
-	// timeout rather than finishing deliberately. Report as a failure so
-	// the post-script does not treat "no branch" as intentional success.
-	//
-	// Agents with a validation loop already fail via the check above when
-	// no iteration passes validation, so this is scoped to the no-loop
-	// path. See #5075.
-	if h.ValidationLoop == nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
-		return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
-			lastIterElapsed.Round(time.Second), timeout)
-	}
-
-	return nil
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -2556,21 +2760,23 @@ var oidcDenyKeys = map[string]bool{
 // are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
-	"PATH":                     true,
-	"HOME":                     true,
-	"SHELL":                    true,
-	"LD_PRELOAD":               true,
-	"LD_LIBRARY_PATH":          true,
-	"BASH_ENV":                 true,
-	"ENV":                      true,
-	"FULLSEND_FETCH_URL":       true,
-	"FULLSEND_FETCH_TOKEN":     true,
-	"FULLSEND_OUTPUT_DIR":      true,
-	"FULLSEND_OUTPUT_SCHEMA":   true,
-	"FULLSEND_OUTPUT_FILE":     true,
-	"FULLSEND_TARGET_REPO_DIR": true,
-	"FULLSEND_ROLE":            true,
-	"FULLSEND_SLUG":            true,
+	"PATH":                        true,
+	"HOME":                        true,
+	"SHELL":                       true,
+	"LD_PRELOAD":                  true,
+	"LD_LIBRARY_PATH":             true,
+	"BASH_ENV":                    true,
+	"ENV":                         true,
+	"FULLSEND_FETCH_URL":          true,
+	"FULLSEND_FETCH_TOKEN":        true,
+	"FULLSEND_OUTPUT_DIR":         true,
+	"FULLSEND_OUTPUT_SCHEMA":      true,
+	"FULLSEND_OUTPUT_FILE":        true,
+	"FULLSEND_TARGET_REPO_DIR":    true,
+	"FULLSEND_ROLE":               true,
+	"FULLSEND_SLUG":               true,
+	"FULLSEND_TIMEOUT_MINUTES":    true,
+	"FULLSEND_ITERATION_DEADLINE": true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 }
 
@@ -2636,6 +2842,94 @@ func buildRoleSlugEnvLines(h *harness.Harness) []string {
 		lines = append(lines, fmt.Sprintf("export FULLSEND_SLUG='%s'", strings.ReplaceAll(h.Slug, "'", "'\\''")))
 	}
 	return lines
+}
+
+// defaultTimeoutMinutes applies when a harness sets no timeout_minutes.
+const defaultTimeoutMinutes = 30
+
+// effectiveTimeoutMinutes is the per-iteration budget the runner enforces
+// and exports as FULLSEND_TIMEOUT_MINUTES.
+func effectiveTimeoutMinutes(h *harness.Harness) int {
+	if h.TimeoutMinutes > 0 {
+		return h.TimeoutMinutes
+	}
+	return defaultTimeoutMinutes
+}
+
+// iterationTimedOut is #5075's test applied to every path: a failed
+// iteration (non-zero exit, or exit 0 with a transcript-reported error) that
+// spent 90 % or more of its budget. pi and codex fold the transcript case
+// into their exit code before the runner sees it, so the runner's
+// lastExitCode is the one input that means the same on all runtimes.
+func iterationTimedOut(exitCode int, elapsed, timeout time.Duration) bool {
+	return exitCode != 0 && agentTimedOut(elapsed, timeout)
+}
+
+// iterationEnvFile is the runner-owned file .env sources after every
+// harness-controlled entry; it holds the budget and the deadline (#7042).
+const (
+	iterationEnvDir  = sandbox.SandboxWorkspace + "/.fullsend"
+	iterationEnvFile = iterationEnvDir + "/iteration.env"
+)
+
+// iterationEnvSourceLine is the last line bootstrapEnv writes to .env. The
+// `if` keeps .env's exit status 0 while the file is absent.
+func iterationEnvSourceLine() string {
+	return fmt.Sprintf("if [ -f %s ]; then . %s; fi", iterationEnvFile, iterationEnvFile)
+}
+
+// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
+// and the Unix time at which the running iteration is killed.
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+}
+
+// runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
+// returns err only when openshell itself fails to start or times out.
+func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) error {
+	_, stderr, exitCode, err := exec(sandboxName, command, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("exit %d: %s", exitCode, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
+// writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+}
+
+// clearIterationEnv removes a previous iteration's file so a stale deadline
+// cannot outlive the iteration it described.
+func clearIterationEnv(exec sandboxExecFunc, sandboxName string) error {
+	return runIterationEnvCommand(exec, sandboxName, "rm -f "+iterationEnvFile)
+}
+
+// timeoutNoRetryMessage is the console line printed when a killed iteration
+// forgoes a retry it was configured for.
+func timeoutNoRetryMessage(elapsed, timeout time.Duration) string {
+	return fmt.Sprintf("Agent timed out (used %s of %s budget) — not retrying", elapsed.Round(time.Second), timeout)
+}
+
+// runTerminalError decides how the run ends after the post-loop steps. A
+// valid result wins; the timeout error replaces "validation failed" only when
+// nothing validated (#7042). Without a loop the timeout alone fails the run
+// (#5075).
+func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, elapsed, timeout time.Duration) error {
+	timeoutErr := fmt.Errorf("agent timed out after %s without completing (timeout: %s)", elapsed.Round(time.Second), timeout)
+	switch {
+	case hasLoop && !validationPassed && timedOut:
+		return timeoutErr
+	case hasLoop && !validationPassed:
+		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
+	case !hasLoop && timedOut:
+		return timeoutErr
+	}
+	return nil
 }
 
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
@@ -2704,6 +2998,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// env.sandbox takes precedence on collision — the common use case is
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
+
+	// Runner-owned budget and deadline come after every harness-controlled
+	// entry so none of them can shadow the values (#7042).
+	lines = append(lines, iterationEnvSourceLine())
 
 	content := strings.Join(lines, "\n") + "\n"
 
@@ -3169,6 +3467,16 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	if m.Model != "" {
 		agg.Model = m.Model
 	}
+	// Iterations are retries of the same task, so the per-model entries add
+	// up the same way the totals do.
+	for spec, u := range m.PerModelUsage {
+		if agg.PerModelUsage == nil {
+			agg.PerModelUsage = make(map[string]agentruntime.ModelUsage, len(m.PerModelUsage))
+		}
+		entry := agg.PerModelUsage[spec]
+		entry.Add(u)
+		agg.PerModelUsage[spec] = entry
+	}
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work
@@ -3214,6 +3522,24 @@ func resolveWorkItemID() string {
 		return v
 	}
 	return evalmeasure.UnknownSentinel
+}
+
+// harnessIdentityAttrs returns root-span attributes identifying the harness
+// that produced the run: source URL, local path, and SHA-256 of the file on
+// disk. Empty fields are omitted (absent, not empty string). Content SHA is
+// best-effort: if the file cannot be read the attribute is absent (#6842, #2368).
+func harnessIdentityAttrs(harnessPath, sourceURL string) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if sourceURL != "" {
+		attrs = append(attrs, boundedStringAttr("fullsend.harness.url", sourceURL))
+	}
+	if harnessPath != "" {
+		attrs = append(attrs, boundedStringAttr("fullsend.harness.path", harnessPath))
+		if harnessData, hashErr := os.ReadFile(harnessPath); hashErr == nil {
+			attrs = append(attrs, stringAttr("fullsend.harness.content_sha", fetch.ComputeSHA256(harnessData)))
+		}
+	}
+	return attrs
 }
 
 // telemetryExitCode maps the run's final state to the exit code recorded on
@@ -4371,13 +4697,11 @@ func titleCase(s string) string {
 //     CI_PIPELINE_ID, constructs a GitLab client
 //   - default (including "github" and ""): uses mint URL, reads
 //     GITHUB_SHA and GITHUB_RUN_ID, constructs a GitHub client
+//
+// When sOpts.trackerSource is "jira" (set from the normalized event's
+// source.system), status notifications route to Jira instead of the
+// code-hosting forge (ADR 0093).
 func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
-	}
-	owner, repo := parts[0], parts[1]
-
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
 	if fsCfg := tryLoadFullsendConfig(orgConfigPath, printer); fsCfg != nil {
@@ -4387,6 +4711,20 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 			notifyCfg = *sn
 		}
 	}
+
+	// Event-source routing (ADR 0093): when the normalized event
+	// identifies Jira as the source, route status notifications to Jira
+	// instead of the code-hosting forge. This check comes before the
+	// owner/repo parsing because Jira uses project-key addressing.
+	if sOpts.trackerSource == "jira" {
+		return setupStatusNotifierJira(notifyCfg, sOpts, printer)
+	}
+
+	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
+	}
+	owner, repo := parts[0], parts[1]
 
 	if forgePlatform == "gitlab" {
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
@@ -4420,16 +4758,17 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	n := statuscomment.New(nil, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	project := owner + "/" + repo
+	n := statuscomment.New(nil, notifyCfg, project, sOpts.statusNum, sOpts.runURL, sha, runID)
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 	if sOpts.statusComment != 0 {
-		n.SetTriggerCommentID(sOpts.statusComment)
+		n.SetTriggerCommentID(strconv.Itoa(sOpts.statusComment))
 	}
 
 	canonRole := resolveRole(role)
-	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
 		result, err := statusMintToken(ctx, mintclient.MintRequest{
 			MintURL: mintURL,
 			Role:    canonRole,
@@ -4444,7 +4783,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
 		}
-		return gh.New(result.Token), nil
+		return tracker.NewForgeClient(gh.New(result.Token)), nil
 	})
 
 	return n, nil
@@ -4474,12 +4813,78 @@ func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner,
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	n := statuscomment.New(client, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	project := owner + "/" + repo
+	n := statuscomment.New(tracker.NewForgeClient(client), notifyCfg, project, sOpts.statusNum, sOpts.runURL, sha, runID)
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
 	return n, nil
+}
+
+// setupStatusNotifierJira creates a status notifier for Jira. Unlike the
+// GitHub/GitLab paths, Jira has no commit SHA or CI run ID equivalents, so a
+// synthetic run ID is generated from the current time when no CI run ID is
+// available.
+func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	tc, err := newJiraTrackerClientFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer the CI run ID when available (e.g. GITHUB_RUN_ID) so the
+	// status-comment marker matches the value passed to reconcile-status
+	// --run-id, enabling orphan reconciliation to find the comment.
+	// Fall back to a synthetic timestamp when no CI run ID is set.
+	runID := os.Getenv("GITHUB_RUN_ID")
+	if runID == "" {
+		runID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
+	n := statuscomment.New(tc, notifyCfg, sOpts.trackerProject, sOpts.statusNum, sOpts.runURL, "", runID)
+	n.SetWarnFunc(func(format string, args ...any) {
+		printer.StepWarn(fmt.Sprintf(format, args...))
+	})
+
+	return n, nil
+}
+
+// parseJiraKey splits a Jira issue key like "PROJ-123" into the project
+// key ("PROJ") and issue number (123). Returns false if the key is not
+// in the expected format.
+func parseJiraKey(key string) (string, int, bool) {
+	i := strings.LastIndex(key, "-")
+	if i < 1 || i >= len(key)-1 {
+		return "", 0, false
+	}
+	num, err := strconv.Atoi(key[i+1:])
+	if err != nil || num <= 0 {
+		return "", 0, false
+	}
+	return key[:i], num, true
+}
+
+// extractMapString extracts a nested string value from a map[string]any.
+// For example, extractMapString(m, "source", "system") returns
+// m["source"].(map[string]any)["system"].(string).
+func extractMapString(m map[string]any, keys ...string) string {
+	var current any = m
+	for i, k := range keys {
+		mm, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		v, exists := mm[k]
+		if !exists {
+			return ""
+		}
+		if i == len(keys)-1 {
+			s, _ := v.(string)
+			return s
+		}
+		current = v
+	}
+	return ""
 }
 
 // prHeadSHAFromEventPath extracts pull_request.head.sha from the event
@@ -5094,6 +5499,34 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 		}
 	}
 	return deduped
+}
+
+// shadowedProfiles returns, sorted by ID, the harness-resolved profiles
+// whose ID also appears in profilesDir. ImportProfiles(profilesDir) runs
+// after the harness-resolved imports, but the two imports keep independent
+// hash caches, so the copy imported most recently is the live one. A
+// resolved profile that already lives in profilesDir (a local-path entry,
+// ADR 0075) is the same file, not a shadow, and runner-generated profiles
+// (generatedIDs) are meant to be overridden, so both are skipped. Duplicate
+// IDs in the directory are reported once.
+func shadowedProfiles(dirIDs []string, resolved []resolve.ResolvedProfile, profilesDir string, generatedIDs map[string]bool) []resolve.ResolvedProfile {
+	byID := make(map[string]resolve.ResolvedProfile, len(resolved))
+	for _, rp := range resolved {
+		if generatedIDs[rp.ID] || (!rp.FromURL && filepath.Dir(rp.LocalPath) == profilesDir) {
+			continue
+		}
+		byID[rp.ID] = rp
+	}
+	seen := make(map[string]bool, len(dirIDs))
+	var shadowed []resolve.ResolvedProfile
+	for _, id := range dirIDs {
+		if rp, ok := byID[id]; ok && !seen[id] {
+			seen[id] = true
+			shadowed = append(shadowed, rp)
+		}
+	}
+	sort.Slice(shadowed, func(i, j int) bool { return shadowed[i].ID < shadowed[j].ID })
+	return shadowed
 }
 
 // mergeProviderDefs merges local and URL-resolved provider definitions.

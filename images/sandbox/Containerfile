@@ -7,6 +7,9 @@
 #   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
 #     #6464) + the pi-anthropic-vertex extension
 #     (tag + SHA256 pinned under /usr/local/share/pi-extensions)
+#   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
+#     the OpenShell base image ships, with the same shadow-proof symlink
+#     and build-time assertion as Claude Code — stub runtime, see #6920)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -53,7 +56,7 @@ RUN apt-get update \
 #
 # To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
 # a customManagers regex entry in renovate.json.
-ARG CLAUDE_CODE_VERSION=2.1.258
+ARG CLAUDE_CODE_VERSION=2.1.260
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude
@@ -77,21 +80,25 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # ---------------------------------------------------------------------------
 # Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
 # as Claude Code above. --ignore-scripts is the upstream-recommended install
-# (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
+# (the package ships an npm-shrinkwrap.json; nothing on the bin path needs a
+# postinstall -- 0.85.0 adds @earendil-works/chord -> esbuild, which declares
+# one, but both are reachable only from dist/experimental/, not from
+# dist/bundle/cli.js). Stub
 # runtime for now — see #6464; the runtime is not user-selectable until
 # implemented, but the binary ships now so the Bootstrap/Run work and any
 # in-sandbox fixture capture run against a pinned, reviewed version
 # (internal/runtime/testdata/pi/regen.sh reads the pin from this file).
 #
-# 0.84.4 is the floor for Gemini on Vertex: 0.84.3 bundles https-proxy-agent
-# without its named export, so every google-vertex request fails with
-# "HttpsProxyAgent is not a constructor" whenever HTTPS_PROXY is set — which
-# the OpenShell sandbox always does (earendil-works/pi#8610, fixed in 0.84.4).
+# 0.84.4 is the FLOOR for Gemini on Vertex (the pin is above it): 0.84.3
+# bundles https-proxy-agent without its named export, so every google-vertex
+# request fails with "HttpsProxyAgent is not a constructor" whenever
+# HTTPS_PROXY is set — which the OpenShell sandbox always does
+# (earendil-works/pi#8610, fixed in 0.84.4).
 # To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
-ARG PI_VERSION=0.84.4
+ARG PI_VERSION=0.85.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -112,46 +119,40 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
     PI_TELEMETRY="0"
 
 # ---------------------------------------------------------------------------
-# pi-anthropic-vertex — interim Claude-on-Vertex provider for pi
-# (github.com/twoGiants/pi-anthropic-vertex, MIT; a ~300-line entry point
-# plus ~220 lines mirrored from pi's streamSimple helpers: registers an
-# "anthropic-vertex" provider that delegates streaming to pi's built-in
-# Anthropic provider through an AnthropicVertex client). pi's own
-# google-vertex provider is Gemini-only and the upstream anthropic-vertex
-# provider (earendil-works/pi#5262) is still open; swap to it once it ships
-# in a pinned pi release. Reviewed at v0.1.13 (#6464).
+# pi-anthropic-vertex — Claude-on-Vertex provider for pi
+# (github.com/fullsend-ai/pi-anthropic-vertex, MIT). pi's own google-vertex
+# provider is Gemini-only and upstream's anthropic-vertex provider
+# (earendil-works/pi#5262) is still an open PR; swap to it once it ships in
+# a pinned pi release. Registers provider "anthropic-vertex": pi's own
+# Claude catalog and Anthropic transport behind a request-rewriting fetch,
+# no @anthropic-ai/* dependency, no mirrored pi internals. Reviewed at
+# v0.1.0 (#7019).
 #
-# Pinned by git tag + SHA256 of the GitHub tag tarball (tag v0.1.13 is commit
-# d3c9d10d). Installed under PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir),
-# root-owned and outside PI_CODING_AGENT_DIR, so pi never auto-loads it —
-# PiRuntime.Run passes it explicitly with -e. Dependencies come from the
-# vendored package-lock.json: --omit=peer mirrors pi's own package installer,
-# because the extension's peer deps are pi itself, which the extension loader
-# resolves to the running pi through module aliases (a local copy would be
-# the wrong version); --ignore-scripts as for the pi install above (no
-# install scripts in the pruned tree).
+# Pinned by git tag + SHA256 of the GitHub tag tarball. Installed under
+# PI_EXTENSIONS_DIR, root-owned and outside PI_CODING_AGENT_DIR, so pi never
+# auto-loads it — PiRuntime.Run passes it with -e. --omit=peer because the
+# extension's peers are pi itself, which the loader resolves to the running
+# pi; --ignore-scripts as for the pi install above.
 #
-# To update (also re-run on every PI_VERSION bump): pick a tag from
-# https://github.com/twoGiants/pi-anthropic-vertex/tags, check its pi
-# compatibility (sync/compat.json upstream; v0.1.13 was synced against pi
-# 0.81.1 and its mirrored thinking/max-tokens mapping can lag the pinned
-# PI_VERSION), confirm the extension's package.json "overrides" pin of
-# @anthropic-ai/sdk matches the version in pi's packages/ai/package.json
-# (the Vertex client is cast to pi's Anthropic client type), then set
-# PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
-#   sha256sum <(curl -fsSL https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.13
-ARG PI_ANTHROPIC_VERTEX_SHA256=6b465c374734b0ae98e7c48d58f935bcfb12760c509475df2c82785a463c7249
+# To update: pick a tag from
+# https://github.com/fullsend-ai/pi-anthropic-vertex/releases (the notes
+# carry the tarball SHA256) and set the two ARGs below. The extension's CI
+# matrix (pinned PI_VERSION + latest pi) is the compatibility check; on a
+# PI_VERSION bump move that matrix to the new pin first. Compat flags
+# reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
+#   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.0
+ARG PI_ANTHROPIC_VERTEX_SHA256=83e21c22f68717612a693baa25fe632f2b49eb449a7665d06bcd04ede6343d57
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
-      "https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
+      "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-anthropic-vertex.tar.gz \
     && echo "${PI_ANTHROPIC_VERTEX_SHA256}  /tmp/pi-anthropic-vertex.tar.gz" | sha256sum -c - \
     && mkdir -p "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
     && tar xzf /tmp/pi-anthropic-vertex.tar.gz -C "${PI_EXTENSIONS_DIR}/anthropic-vertex" --strip-components=1 \
     && rm /tmp/pi-anthropic-vertex.tar.gz \
     && cd "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
-    && rm -rf .github .pi .vscode sync PLAN.md AGENTS.md \
+    && rm -rf .github AGENTS.md CLAUDE.md CONTRIBUTING.md \
     && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
     && find node_modules -type d -empty -delete \
     && npm cache clean --force \
@@ -162,7 +163,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # (github.com/fullsend-ai/pi-xai-vertex, MIT). Grok on Vertex speaks the
 # OpenAI-completions protocol; neither pi's built-in xai provider (requires
 # XAI_API_KEY for xAI's native API) nor google-vertex (Gemini-only) covers
-# it. Registers provider "xai-vertex". Unlike the Anthropic extension it
+# it. Registers provider "xai-vertex". Like the Anthropic extension it
 # mirrors no pi internals, so it cannot drift against a pi release and needs
 # no sync tracking. Auth is ADC via google-auth-library — the same path
 # the anthropic-vertex extension uses (#6571).
@@ -180,8 +181,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # would re-walk earlier extensions on every rebuild), so the last install also
 # locks the parent directory itself, non-recursively -- its mode is then
 # explicit rather than inherited from the build umask.
-ARG PI_XAI_VERTEX_VERSION=0.2.0
-ARG PI_XAI_VERTEX_SHA256=b00c67a2a9c0b51df40718c761b405546ebc8f1d849656f6858869fe7058c0ca
+ARG PI_XAI_VERTEX_VERSION=0.2.1
+ARG PI_XAI_VERTEX_SHA256=2d910e500c1052f5a8b10d0f9a39149629fd1fff93e5cac71ae963211a71ee30
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-xai-vertex.tar.gz \
@@ -196,6 +197,92 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm cache clean --force \
     && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex" \
     && chmod a+rX,a-w "${PI_EXTENSIONS_DIR}"
+
+# ---------------------------------------------------------------------------
+# Install Codex (openai/codex) — pinned version, same supply chain rationale
+# as Claude Code and pi above. The OpenShell base image already installs
+# @openai/codex under the same npm prefix (/usr, binary /usr/bin/codex) —
+# 0.117.0 on the base pinned above — so this install replaces it in place
+# rather than adding a second copy. Stub runtime for now — see #6920; the
+# runtime is not user-selectable until implemented, but the binary ships
+# now so the Bootstrap/Run work and any in-sandbox fixture capture run
+# against a pinned, reviewed version.
+#
+# --ignore-scripts as for the pi install above: neither the launcher nor its
+# per-platform variant declares install scripts today (`npm view
+# @openai/codex@<ver> scripts` and `@openai/codex@<ver>-linux-arm64` are both
+# empty), so this changes nothing now and keeps a future Renovate bump from
+# introducing one unreviewed.
+#
+# The native binary is a *version* of the same package —
+# `@openai/codex@${CODEX_VERSION}-linux-<arch>`, aliased as the
+# optionalDependency `@openai/codex-linux-<arch>` — and the launcher
+# bin/codex.js spawns that musl-static executable directly. So it is
+# `codex`, not `node`, that makes the model calls, and an egress profile
+# serving codex must name `**/codex` in its `binaries:` rules. That wiring
+# lands with the OpenAI credential work, not here.
+#
+# To update: bump CODEX_VERSION; renovate tracks this ARG via a
+# customManagers regex entry in renovate.json.
+ARG CODEX_VERSION=0.152.1
+RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
+    && npm cache clean --force
+
+# Point /usr/local/bin/codex at the pinned install and prove at build time
+# that `codex` on PATH reports CODEX_VERSION (the output format is
+# `codex-cli <version>`). /usr/local/bin precedes npm's global bin
+# (/usr/bin) on the sandbox PATH, so a base image that ever drops its own
+# codex there would outrank the pin silently — exactly the trap the base
+# image's Claude Code sprang in #6612. No such shadow exists today; the
+# symlink and the assertion make sure one cannot appear unnoticed.
+RUN NPM_CODEX="$(npm prefix -g)/bin/codex" \
+    && test -x "${NPM_CODEX}" \
+    && rm -f /usr/local/bin/codex \
+    && ln -s "${NPM_CODEX}" /usr/local/bin/codex \
+    && GOT="$(codex --version)" \
+    && if [ "${GOT}" != "codex-cli ${CODEX_VERSION}" ]; then \
+         echo "codex on PATH reports '${GOT}', expected 'codex-cli ${CODEX_VERSION}'" >&2; \
+         exit 1; \
+       fi
+
+# codex refuses to start when CODEX_HOME does not exist, so create it here
+# owned by the sandbox user (uid 998) — an ad-hoc `codex` invocation from
+# Bash then works even while the runtime is a stub. CodexRuntime.Bootstrap
+# will create it at run time as well, the way pi's does (#6920).
+# CODEX_HOME is baked as an image default for the same reason pi's config
+# paths are: an agent invoking the binary directly would otherwise get none
+# of CodexRuntime.EnvExports()'s values. It is a hygiene default (a
+# runner-owned path), not a security boundary — a process can override its
+# own environment; the sandbox egress policy and credential placeholders
+# are the boundary. Codex keeps its remaining hygiene settings (update
+# check, analytics, telemetry) in config.toml rather than the environment,
+# so there is nothing else to bake here.
+# CODEX_HOME must match sandbox.SandboxCodexConfig
+# (internal/sandbox/sandbox.go; guarded by TestSandboxImageCodexDefaults).
+RUN install -d -o sandbox -g sandbox -m 0755 /sandbox/codex-config
+ENV CODEX_HOME="/sandbox/codex-config"
+
+# codex has no environment switches for the hygiene defaults pi gets from
+# PI_OFFLINE/PI_TELEMETRY/PI_SKIP_VERSION_CHECK — they are config keys. Its
+# lowest-precedence layer is the managed System config at
+# /etc/codex/config.toml, which applies whatever CODEX_HOME points at, so an
+# ad-hoc `codex` from Bash starts no update check and reports no analytics
+# either. Root-owned and 0644: the sandbox user can read it but not rewrite
+# it. This is hygiene, not a boundary — every one of these keys can be
+# overridden by a higher layer or a flag; the sandbox egress policy is the
+# boundary. The runner-written $CODEX_HOME/config.toml (CodexRuntime.
+# Bootstrap, #6920) layers on top of this file, not under it.
+RUN mkdir -p /etc/codex \
+    && printf '%s\n' \
+      'check_for_update_on_startup = false' \
+      '' \
+      '[analytics]' \
+      'enabled = false' \
+      '' \
+      '[feedback]' \
+      'enabled = false' \
+      > /etc/codex/config.toml \
+    && chmod 0644 /etc/codex/config.toml
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
