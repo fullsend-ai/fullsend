@@ -2252,6 +2252,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
+		// Short-circuit on context cancellation: persist partial metrics
+		// and finalize the agent span immediately, before extraction and
+		// validation that would be pointless on a dead sandbox. GitHub
+		// Actions cancellation (SIGTERM) terminates the process shortly
+		// after — writing metrics here ensures the artifact upload step
+		// (if: always()) captures the partial usage data (#6936).
+		if ctx.Err() != nil {
+			cancelErr := ctx.Err()
+			if runErr == nil {
+				runErr = cancelErr
+			}
+			attachIterationContent("error")
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
+			lastExitCode = exitCode
+			printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
+			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
+			}
+			return fmt.Errorf("run cancelled (iteration %d): %w", iteration, runErr)
+		}
+
 		if runErr != nil {
 			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
