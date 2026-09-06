@@ -292,6 +292,12 @@ func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, targe
 // newly created repo is visible via the API. GitHub's eventual
 // consistency means operations on a just-created repo can return 404
 // until propagation completes.
+//
+// NOTE: This function confirms repo visibility only — not dispatch-side
+// permission readiness. Do not add GetCollaboratorPermission polling
+// here; it will not work. See the package doc comment in doc.go for the
+// credential context separation that makes suite-side permission
+// probing unreliable.
 func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target string) error {
 	e.logf("[ensure] waiting for %s creation to propagate", target)
 	delay := resetRetryDelay
