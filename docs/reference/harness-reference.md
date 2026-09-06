@@ -76,6 +76,10 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
 timeout_minutes: 20                  # Per-iteration budget (default 30); exported to
                                      # the sandbox as FULLSEND_TIMEOUT_MINUTES
 sandbox_timeout_seconds: 300         # 30-600
+max_cost_usd: 5.00                   # Hard cost cap in USD, checked against aggregated
+                                     # total_cost_usd across validation_loop retries;
+                                     # no further iteration starts once the cap is
+                                     # reached (default: 0 = unlimited)
 
 # ── Remote resources ──────────────────────────────────────────
 allowed_remote_resources:
@@ -178,6 +182,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
+**`max_cost_usd`** — Hard cost cap in USD, checked against the run's aggregated `total_cost_usd` (summed across `validation_loop` retries). `0` (default) means unlimited; the value must be finite and non-negative. Two unrelated fields share this name: this one is the **harness `max_cost_usd`**, a mid-run hard stop that keeps a run from starting another iteration; the [eval-case `max_cost_usd` threshold](../testing/functional-tests.md#behavioral-thresholds) is a post-run judge that reads the finished run's `metrics.json` and fails the case, stopping nothing. They can be set independently, and neither reads the other. The cap is enforced between iterations — the runtime-agnostic boundary, since cost arrives as a runtime-reported aggregate (Claude Code reports it once, in the final result event of a completed iteration) and not every runtime has an in-flight budget control — so an iteration already in progress is not interrupted; Claude Code's native per-invocation `--max-budget-usd` flag is not used today. Enforcement relies on runtime-reported cost: an iteration that reports no cost is warned about but cannot be counted, and on codex — which reports no cost at all ([runtimes.md](../runtimes.md)) — the cap never trips. In `base:` composition the field is presence-aware: an absent field inherits the base's cap, while an explicit `0` in a child overrides an inherited cap with unlimited. `metrics.json` records `over_budget: true` only when the cap actually suppressed a retry, distinguishing "halted at budget" from a run that stopped for its own reasons or crashed. Decision record: [ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md); field contract: [harness budget v1](../normative/harness-budget/v1/README.md).
+
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
 
 ## Deprecated fields
@@ -215,7 +221,14 @@ More-specific entries go last so they override broader defaults.
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |
+| `max_cost_usd` | Child wins if **present**, not if non-empty: an explicit `0` overrides an inherited cap with unlimited; only an absent field inherits |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own) |
+
+`max_cost_usd` is the one scalar the first row does not cover: `0` is a real
+value there, not an empty one, so a child that means "unlimited" must say `0`
+and a child that means "inherit" must omit the field. Details in
+[`max_cost_usd`](#field-details) above and in the normative
+[harness budget v1](../normative/harness-budget/v1/README.md) contract.
 
 ## Referencing resources: local vs. remote
 

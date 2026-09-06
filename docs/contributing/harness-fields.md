@@ -48,6 +48,7 @@ per-overlay:
 | `plugins`          | Plugin directories are forge-agnostic; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `plugins:` key there is ignored, not an error) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
+| `max_cost_usd`     | Cost budgets are operational, not forge-specific (ADR-0097) |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
 | `security`         | Security scanning is forge-agnostic                |
 | `allowed_remote_resources` | URL allowlist for resource fetching (ADR 0038) |
@@ -71,6 +72,7 @@ field type follows specific merge semantics. The same rules apply during
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
+| `max_cost_usd`   | Presence-aware scalar (`*float64`): child value overrides base, including an explicit `0` (= unlimited), so a child can disable an inherited cap (ADR-0097) | Absent (nil) = inherit from base; explicit `0` = override with unlimited |
 | `skills`         | Merged with deduplication by basename (forge/child overrides top-level/base) | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge/child value replaces top-level/base value entirely | Absent (nil) = inherit from top level / base; explicit empty struct = intended to mean "no validation" (see ADR-0045 open questions) |
