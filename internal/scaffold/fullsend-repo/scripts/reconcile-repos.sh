@@ -233,6 +233,39 @@ validate_repo_name() {
   fi
 }
 
+# delete_branch removes the given branch ref if it exists. A branch that is
+# already gone (404) is an idempotent success; other lookup or deletion errors
+# are reported. Returns 0 on delete/absent, 1 otherwise. The 404 detection uses
+# the same numeric-status idiom as check_per_repo_guard, since the JSON error
+# envelope's .status field is a stable interface (unlike --include header text).
+delete_branch() {
+  local repo="$1"
+  local branch="$2"
+  local ref_get_endpoint="repos/$ORG/$repo/git/ref/heads/$branch"
+  local ref_delete_endpoint="repos/$ORG/$repo/git/refs/heads/$branch"
+  local resp
+
+  # Confirm the branch exists. A 404 means it is already gone — nothing to do.
+  if ! resp=$(gh api "$ref_get_endpoint" 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to check branch $branch for $repo"
+    return 1
+  fi
+
+  # Delete it. A 404 here (branch raced away by a concurrent reconcile run or a
+  # --delete-branch PR close) is idempotent success alongside the normal 204.
+  if ! resp=$(gh api "$ref_delete_endpoint" --method DELETE 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to delete branch $branch for $repo"
+    return 1
+  fi
+  echo "  Deleted branch $branch for $repo"
+}
+
 # close_pr_on_branch closes an open PR on the given branch and deletes the branch.
 close_pr_on_branch() {
   local repo="$1"
@@ -245,32 +278,20 @@ close_pr_on_branch() {
     return 1
   fi
   if [ -n "$pr_url" ]; then
-    if ! gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null; then
-      echo "::warning::Failed to close PR on $branch for $repo"
-      return 1
+    if gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null; then
+      echo "  Closed PR on $branch: $pr_url"
+      return 0
     fi
-    echo "  Closed PR on $branch: $pr_url"
-    return 0
+    # PR close failed (already closed, rejected comment, branch protection, or a
+    # transient error). Fall through to an explicit branch delete so a partial
+    # failure does not leave the stale branch behind — deleting the head branch
+    # also closes the PR on GitHub.
+    echo "::warning::Failed to close PR on $branch for $repo; attempting direct branch cleanup"
   fi
 
-  # Delete an orphaned branch even if no PR exists. A missing branch is the
-  # expected idempotent case; other inspection and deletion failures matter.
-  local ref_get_endpoint="repos/$ORG/$repo/git/ref/heads/$branch"
-  local ref_delete_endpoint="repos/$ORG/$repo/git/refs/heads/$branch"
-  local ref_response
-  if ! ref_response=$(gh api "$ref_get_endpoint" --include --silent 2>&1); then
-    local status_line="${ref_response%%$'\n'*}"
-    case "$status_line" in
-      HTTP/*" 404 "*) return 0 ;;
-    esac
-    echo "::warning::Failed to check branch $branch for $repo"
-    return 1
-  fi
-  if ! gh api "$ref_delete_endpoint" --method DELETE --silent 2>/dev/null; then
-    echo "::warning::Failed to delete branch $branch for $repo"
-    return 1
-  fi
-  echo "  Deleted branch $branch for $repo"
+  # Delete an orphaned branch, or one left behind by a failed PR close. A
+  # missing branch is the expected idempotent case.
+  delete_branch "$repo" "$branch"
 }
 
 # load_default_branch fetches the default branch name and current SHA for a

@@ -450,12 +450,15 @@ case "\$endpoint" in
     ;;
   repos/test-org/test-repo/git/ref/heads/fullsend/onboard)
     if [[ -f "${TMPDIR}/branch-absent" ]]; then
-      printf 'HTTP/2.0 404 Not Found\n'
+      json='{"status":"404","message":"Not Found"}'
       rc=1
     fi
     ;;
   repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
-    if [[ "\$method" != "DELETE" || -f "${TMPDIR}/branch-delete-fails" ]]; then
+    if [[ "\$method" == "DELETE" && -f "${TMPDIR}/branch-delete-404" ]]; then
+      json='{"status":"404","message":"Not Found"}'
+      rc=1
+    elif [[ "\$method" != "DELETE" || -f "${TMPDIR}/branch-delete-fails" ]]; then
       rc=1
     fi
     ;;
@@ -559,42 +562,74 @@ fi
 
 echo "PASS: missing onboard branch cleanup is idempotent"
 
-# A failed stale PR cleanup must count as a reconciliation failure rather than
-# reporting the repo as successfully skipped.
-rm -f "${TMPDIR}/branch-absent"
+# A failed PR close now falls through to an explicit branch delete. When the
+# branch is deletable, the repo still reconciles: the branch is removed (which
+# closes the PR on GitHub) rather than being left behind on a partial failure.
+rm -f "${TMPDIR}/branch-absent" "${TMPDIR}/branch-delete-fails" "${TMPDIR}/branch-delete-404"
 touch "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails"
 rm -f "${GH_LOG}"
 
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-close-fallback.log" 2>&1; then
+  echo "FAIL: PR close failure with a deletable branch did not reconcile"
+  cat "${TMPDIR}/stdout2-close-fallback.log"
+  exit 1
+fi
+
+if ! grep -q "::warning::Failed to close PR on fullsend/onboard for test-repo; attempting direct branch cleanup" "${TMPDIR}/stdout2-close-fallback.log"; then
+  echo "FAIL: PR close failure did not warn and fall through to branch cleanup"
+  cat "${TMPDIR}/stdout2-close-fallback.log"
+  exit 1
+fi
+
+if ! grep -q "Deleted branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-close-fallback.log"; then
+  echo "FAIL: PR close fallback did not delete the leftover branch"
+  cat "${TMPDIR}/stdout2-close-fallback.log"
+  exit 1
+fi
+
+if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-close-fallback.log"; then
+  echo "FAIL: PR close fallback did not count the repo as reconciled"
+  cat "${TMPDIR}/stdout2-close-fallback.log"
+  exit 1
+fi
+
+echo "PASS: PR close failure falls through to branch cleanup"
+
+# When both the PR close and the fallback branch delete fail, the repo is a
+# genuine reconciliation failure rather than a successful skip.
+touch "${TMPDIR}/branch-delete-fails"
+rm -f "${GH_LOG}"
+
 if bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-failed-cleanup.log" 2>&1; then
-  echo "FAIL: failed stale onboard PR cleanup returned success"
+  echo "FAIL: PR close and fallback branch delete both failing returned success"
   cat "${TMPDIR}/stdout2-failed-cleanup.log"
   exit 1
 fi
 
 if ! grep -q "Failed: 1" "${TMPDIR}/stdout2-failed-cleanup.log"; then
-  echo "FAIL: failed stale onboard PR cleanup was not counted as failed"
+  echo "FAIL: unrecoverable stale onboard PR cleanup was not counted as failed"
   cat "${TMPDIR}/stdout2-failed-cleanup.log"
   exit 1
 fi
 
 if grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-failed-cleanup.log"; then
-  echo "FAIL: repo with failed stale PR cleanup was counted as skipped"
+  echo "FAIL: repo with unrecoverable cleanup was counted as skipped"
   cat "${TMPDIR}/stdout2-failed-cleanup.log"
   exit 1
 fi
 
-if ! grep -q "::warning::Failed to close PR on fullsend/onboard for test-repo" "${TMPDIR}/stdout2-failed-cleanup.log"; then
-  echo "FAIL: failed stale onboard PR cleanup did not emit a warning"
+if ! grep -q "::warning::Failed to delete branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-failed-cleanup.log"; then
+  echo "FAIL: unrecoverable stale onboard PR cleanup did not warn about branch deletion"
   cat "${TMPDIR}/stdout2-failed-cleanup.log"
   exit 1
 fi
 
-echo "PASS: stale onboard PR cleanup failure is reported"
+echo "PASS: unrecoverable stale onboard PR cleanup failure is reported"
 
 # Failure to delete an orphaned onboard branch is also a reconciliation
 # failure, even when there is no PR to close.
 rm -f "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails" "${GH_LOG}"
-touch "${TMPDIR}/branch-delete-fails"
+# branch-delete-fails remains set from the previous case.
 
 if bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-failed-delete.log" 2>&1; then
   echo "FAIL: failed orphaned onboard branch cleanup returned success"
@@ -615,6 +650,40 @@ if ! grep -q "Failed: 1" "${TMPDIR}/stdout2-failed-delete.log"; then
 fi
 
 echo "PASS: orphaned onboard branch cleanup failure is reported"
+
+# A branch that races away between the existence check and the DELETE (404 on
+# DELETE) is idempotent success, not a failure — matching the missing-branch
+# GET case.
+rm -f "${TMPDIR}/branch-delete-fails" "${GH_LOG}"
+touch "${TMPDIR}/branch-delete-404"
+
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-delete-404.log" 2>&1; then
+  echo "FAIL: orphaned branch DELETE returning 404 was treated as an error"
+  cat "${TMPDIR}/stdout2-delete-404.log"
+  exit 1
+fi
+
+if ! grep -q 'repos/test-org/test-repo/git/refs/heads/fullsend/onboard --method DELETE' "${GH_LOG}"; then
+  echo "FAIL: branch DELETE was not attempted before the 404"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+if grep -q "::warning::Failed to delete branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-delete-404.log"; then
+  echo "FAIL: branch DELETE 404 emitted a failure warning"
+  cat "${TMPDIR}/stdout2-delete-404.log"
+  exit 1
+fi
+
+if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-delete-404.log"; then
+  echo "FAIL: branch DELETE 404 did not count the repo as reconciled"
+  cat "${TMPDIR}/stdout2-delete-404.log"
+  exit 1
+fi
+
+echo "PASS: orphaned branch DELETE 404 is idempotent success"
+
+rm -f "${TMPDIR}/branch-delete-404"
 
 # ===========================
 # Test 3: pre-sentinel shim migration does not duplicate content
