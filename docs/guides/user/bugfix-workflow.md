@@ -64,12 +64,15 @@ You can control the pipeline from issue or PR comments:
 | `/fs-fix` | PR comment | Triggers the [fix agent](../../agents/fix.md) on the PR; accepts optional free-text instruction |
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
+| `/fs-steer` | Issue or PR comment | Sends an update to the agent run already in flight on the item, instead of cancelling and restarting it; takes an optional `review:`, `fix:` or `triage:` prefix to pick the stage |
 
 Authorization is verified via the collaborator permission API and is
-stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
-permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
+stage-dependent: `/fs-triage`, `/fs-review`, and `/fs-steer` accept
+triage-level permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
 `/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+maintain, or write). `/fs-steer` is floored by the stage it targets rather
+than by the command, so `/fs-steer fix:` needs write-level permission like
+`/fs-fix` itself. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
