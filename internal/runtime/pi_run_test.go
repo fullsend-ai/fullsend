@@ -1011,3 +1011,89 @@ func TestBuildPiRunCommand_LoaderEnvHygiene(t *testing.T) {
 	// stand in for it — but it still has to be spelled as one word.
 	assert.True(t, strings.HasPrefix(unset, "unset "), "the fragment is a bare `unset` invocation: %q", unset)
 }
+
+// --- Vertex fallback tests (#7026) ---
+
+func TestIsVertexModelUnavailable(t *testing.T) {
+	t.Parallel()
+	// 404: Publisher model not found.
+	assert.True(t, isVertexModelUnavailable(
+		`Publisher model `+"`"+`projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5`+"`"+` not found`))
+	// 403: Data sharing not enabled.
+	assert.True(t, isVertexModelUnavailable(
+		"Access to this model requires data sharing to be enabled for publisher 'anthropic'"))
+	// Case-insensitive.
+	assert.True(t, isVertexModelUnavailable(
+		"PUBLISHER MODEL ... NOT FOUND"))
+	assert.True(t, isVertexModelUnavailable(
+		"DATA SHARING ... ENABLED FOR PUBLISHER"))
+	// Non-model errors: must not match.
+	assert.False(t, isVertexModelUnavailable("rate limit exceeded"))
+	assert.False(t, isVertexModelUnavailable("authentication failed"))
+	assert.False(t, isVertexModelUnavailable("internal server error"))
+	assert.False(t, isVertexModelUnavailable(""))
+}
+
+func TestIsPiAliasedModel(t *testing.T) {
+	t.Parallel()
+	// Documented aliases.
+	for alias := range piDocumentedAliases {
+		assert.True(t, isPiAliasedModel(alias, nil), "documented alias %q", alias)
+	}
+	// Empty model defaults to the default alias.
+	assert.True(t, isPiAliasedModel("", nil))
+	// Bare catalog ids are not aliases.
+	assert.False(t, isPiAliasedModel("claude-opus-4-6", nil))
+	assert.False(t, isPiAliasedModel("claude-sonnet-4-6", nil))
+	// Provider/id specs are not aliases.
+	assert.False(t, isPiAliasedModel("anthropic-vertex/claude-opus-4-6", nil))
+	assert.False(t, isPiAliasedModel("xai/grok-4.6", nil))
+	// Config aliases extend the set.
+	assert.True(t, isPiAliasedModel("sonnet", map[string]string{"sonnet": "claude-sonnet-5"}))
+}
+
+func TestPiFallbackChain(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	// Alias with fallbacks: chain includes primary + translated fallbacks.
+	chain := piFallbackChain("opus", []string{"sonnet", "haiku"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+		"anthropic-vertex/claude-haiku-4-5",
+	}, chain)
+
+	// Pinned id: single-element chain, no fallback.
+	chain = piFallbackChain("claude-opus-4-6", []string{"sonnet", "haiku"}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain,
+		"pinned id must not fall back")
+
+	// Provider/id: single-element chain.
+	chain = piFallbackChain("anthropic-vertex/claude-opus-5", []string{"sonnet"}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-5"}, chain,
+		"provider/id must not fall back")
+
+	// Alias with no fallbacks: single-element chain.
+	chain = piFallbackChain("opus", nil, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	chain = piFallbackChain("opus", []string{}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+
+	// Deduplication: a fallback that resolves to the same spec is skipped.
+	chain = piFallbackChain("opus", []string{"opus", "sonnet"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+	}, chain, "duplicate fallback is skipped")
+
+	// Config aliases are honoured.
+	chain = piFallbackChain("sonnet", []string{"haiku"},
+		map[string]string{"sonnet": "claude-sonnet-5"})
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", chain[0],
+		"config alias overrides the primary")
+	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", chain[1])
+
+	// Empty model defaults to piDefaultModel alias.
+	chain = piFallbackChain("", []string{"sonnet"}, nil)
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", chain[0])
+	assert.Len(t, chain, 2)
+}
