@@ -69,6 +69,10 @@ var allowedEvents = map[string]bool{
 type rejection struct {
 	check  string
 	detail string
+	// pending marks a verdict of "not yet" rather than "no" — the Route job
+	// is still running, or the stage job is not in the listing yet. The
+	// caller leaves such a run unseen so a later poll can judge it.
+	pending bool
 }
 
 func (r rejection) String() string { return r.check + ": " + r.detail }
@@ -135,17 +139,27 @@ func jobSelected(jobs []forge.WorkflowJob, stageJob string) (bool, bool) {
 	return false, false
 }
 
-// routeSucceeded reports whether the candidate's Route job concluded
-// success. The run's own conclusion is deliberately ignored: under
-// `queue: single` a later event cancels the earlier pending stage job and
-// the run concludes `cancelled` while its authorization stands.
-func routeSucceeded(jobs []forge.WorkflowJob) bool {
+// routeVerdict reports whether the candidate's Route job concluded success,
+// and whether the answer is still pending. The run's own conclusion is
+// deliberately ignored: under `queue: single` a later event cancels the
+// earlier pending stage job and the run concludes `cancelled` while its
+// authorization stands.
+//
+// An empty conclusion means the job is queued or running, and a listing
+// with no Route job at all means the API has not caught up. Both are "not
+// yet": treating them as refusals would reject a legitimate update for
+// having been polled a moment early, which on a busy item is the common
+// case rather than the rare one.
+func routeVerdict(jobs []forge.WorkflowJob) (ok, pending bool) {
 	for _, j := range jobs {
 		if routeJobName(j.Name) {
-			return j.Conclusion == "success"
+			if j.Conclusion == "" {
+				return false, true
+			}
+			return j.Conclusion == "success", false
 		}
 	}
-	return false
+	return false, true
 }
 
 // boundToItem reports whether the candidate run concerns the work item this
@@ -190,25 +204,25 @@ func (w *Watcher) isFollowUp(run forge.WorkflowRun) bool {
 // Check 1 (same repository) is implicit in the API path.
 func (w *Watcher) candidateChecks(run forge.WorkflowRun) *rejection {
 	if int64(run.ID) == w.cfg.RunID {
-		return &rejection{"self", "my own run"}
+		return &rejection{check: "self", detail: "my own run"}
 	}
 	if w.seen[int64(run.ID)] {
-		return &rejection{"once", "already judged"}
+		return &rejection{check: "once", detail: "already judged"}
 	}
 	if run.Path != w.myRun.Path {
-		return &rejection{"shim", fmt.Sprintf("path %q is not the shim %q", run.Path, w.myRun.Path)}
+		return &rejection{check: "shim", detail: fmt.Sprintf("path %q is not the shim %q", run.Path, w.myRun.Path)}
 	}
 	if !allowedEvents[run.Event] {
-		return &rejection{"event", fmt.Sprintf("event %q is not a work-item update", run.Event)}
+		return &rejection{check: "event", detail: fmt.Sprintf("event %q is not a work-item update", run.Event)}
 	}
 	if !w.isFollowUp(run) {
-		return &rejection{"fresh", "not created after my own run"}
+		return &rejection{check: "fresh", detail: "not created after my own run"}
 	}
 	if !sameDispatchChain(w.myRun.ReferencedWorkflows, run.ReferencedWorkflows) {
-		return &rejection{"chain", "referenced_workflows differ from mine"}
+		return &rejection{check: "chain", detail: "referenced_workflows differ from mine"}
 	}
 	if !boundToItem(run, w.cfg.RunName, w.cfg.Item.Number) {
-		return &rejection{"item", "not bound to my work item"}
+		return &rejection{check: "item", detail: "not bound to my work item"}
 	}
 	return nil
 }
@@ -224,15 +238,23 @@ func (w *Watcher) jobChecks(ctx context.Context, run forge.WorkflowRun) (*reject
 	if err != nil {
 		return nil, err
 	}
-	if !routeSucceeded(jobs) {
-		return &rejection{"route", "Route job did not conclude success"}, nil
+	routeOK, routePending := routeVerdict(jobs)
+	if routePending {
+		return &rejection{check: "route", detail: "Route job has not concluded yet", pending: true}, nil
+	}
+	if !routeOK {
+		return &rejection{check: "route", detail: "Route job did not conclude success"}, nil
 	}
 	selected, found := jobSelected(jobs, w.stageJob)
 	if !found {
-		return &rejection{"stage", fmt.Sprintf("no job named %q in the candidate run", w.stageJob)}, nil
+		return &rejection{
+			check:   "stage",
+			detail:  fmt.Sprintf("no job named %q in the candidate run yet", w.stageJob),
+			pending: true,
+		}, nil
 	}
 	if !selected {
-		return &rejection{"stage", "my stage was skipped by the route job"}, nil
+		return &rejection{check: "stage", detail: "my stage was skipped by the route job"}, nil
 	}
 	return nil, nil
 }
