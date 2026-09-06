@@ -76,13 +76,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Node 22 matches repo engines / other CI jobs. npm cache is omitted:
-      # workersrc has no lockfile (Makefile uses `npm install`), and setup-node
-      # requires package-lock.json / npm-shrinkwrap.json to enable caching.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         if: steps.changes.outputs.relevant != 'false'
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: internal/dispatch/cf/workersrc/package-lock.json
 
       - name: Run CF mint Worker bridge smoke tests
         if: steps.changes.outputs.relevant != 'false'
