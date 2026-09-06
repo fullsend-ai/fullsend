@@ -105,6 +105,25 @@ func isBot(login string) bool {
 	return strings.HasSuffix(strings.ToLower(login), "[bot]")
 }
 
+// commentBindingTime is the instant an authorization must cover for this
+// comment's CURRENT text: its last edit, or its creation when it has never
+// been edited or the forge reports no update time. Taking the later of the
+// two means an unedited comment behaves exactly as before, since GitHub
+// reports updated_at equal to created_at for one.
+//
+// The baseline filter deliberately still uses CreatedAt. That decides
+// whether the comment is new to this run, which an edit does not change —
+// keying it here too would pull an old comment into the delta the moment
+// somebody fixed a typo in it.
+func commentBindingTime(c forge.IssueComment) time.Time {
+	created := parseForgeTime(c.CreatedAt)
+	updated := parseForgeTime(c.UpdatedAt)
+	if updated.After(created) {
+		return updated
+	}
+	return created
+}
+
 // parseForgeTime parses the RFC 3339 timestamps the forge returns. An
 // unparseable timestamp yields the zero time, which sorts before every
 // baseline and therefore drops the item from the delta — the safe direction:
@@ -249,7 +268,15 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 		if isBot(c.Author) || !parseForgeTime(c.CreatedAt).After(baseline) {
 			continue
 		}
-		place(deltaItem{Author: c.Author, Kind: "comment", Body: c.Body, At: parseForgeTime(c.CreatedAt)})
+		// The binding time is when the TEXT last changed, not when the
+		// comment appeared. An authorization is a verdict on what the
+		// route job saw; an edit replaces that text, so the edited body
+		// must earn its own authorization rather than inherit one. Without
+		// this an actor could comment while authorized, lose permission,
+		// edit the comment before the next poll, and have the replacement
+		// delivered as an amendment — presented to the agent as an
+		// instruction from someone the route job verified.
+		place(deltaItem{Author: c.Author, Kind: "comment", Body: c.Body, At: commentBindingTime(c)})
 	}
 
 	if w.cfg.Item.IsPullRequest {
