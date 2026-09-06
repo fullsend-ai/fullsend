@@ -47,9 +47,10 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 	return nil, lastErr
 }
 
-// ValidatePerRepoPostInstall checks that a per-repo install left the
-// expected files and configuration in the target repo.
-func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, repo string) error {
+// validateShimAndConfig checks that a per-repo install left the expected
+// workflow shim and config with a "dummy" runtime. Shared by both
+// vendored and non-vendored validation.
+func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo string) error {
 	shimPath := ".github/workflows/fullsend.yaml"
 	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
@@ -71,6 +72,15 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	if cfg.ConfigRuntime() != "dummy" {
 		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
 	}
+	return nil
+}
+
+// ValidatePerRepoPostInstall checks that a per-repo install left the
+// expected files and configuration in the target repo.
+func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, repo string) error {
+	if err := validateShimAndConfig(ctx, client, org, repo); err != nil {
+		return err
+	}
 
 	markerPath := scaffold.VendoredMarkerPath()
 	if _, err := getFileWithRetry(ctx, client, org, repo, markerPath); err != nil {
@@ -80,4 +90,13 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 		return fmt.Errorf("post-install: missing vendored binary at %s: %w", layers.VendoredBinaryPathPerRepo, err)
 	}
 	return nil
+}
+
+// ValidatePerRepoPostInstallNonVendored checks that a non-vendored
+// per-repo install left the expected workflow shim and config. Unlike
+// ValidatePerRepoPostInstall it does not require vendored assets
+// (marker file and binary) because non-vendored installs reference a
+// remote fullsend-ref instead.
+func ValidatePerRepoPostInstallNonVendored(ctx context.Context, client forge.Client, org, repo string) error {
+	return validateShimAndConfig(ctx, client, org, repo)
 }

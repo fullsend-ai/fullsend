@@ -18,6 +18,7 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/ci/githubactions/`
 - `pkg/behaviourtest/drivers/ci/gitlabci/`
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
+- `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
 
 ## Runner configuration
@@ -35,9 +36,16 @@ The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a po
 
 ### Install driver (unified)
 
-The suite uses a single unified `install.Driver` constructed via `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews` or `install.NewRepoPoolExternalMint`). Each concrete driver owns the full lifecycle:
+The suite uses a single unified `install.Driver` constructed via `install.Factory`. The suite selects the factory based on `ENVIRONMENT`:
 
-1. Deploys the mint (RepoPoolCFMintPreviews: CF Worker preview; RepoPoolExternalMint: pre-configured URL).
+| Environment | Factory | Mint | Org | Install mode |
+|-------------|---------|------|-----|-------------|
+| `dev` (default) | `NewRepoPoolCFMintPreviews` | CF Worker preview (ephemeral per run) | Pool org (`halfsend-NN`) | Vendored binary |
+| `stage` | `NewRepoPoolCFMintStage` | Durable CF Worker at `stage-mint.fullsend.sh` | `halfsend` | Non-vendored, `--fullsend-ref=main` |
+
+Each concrete driver owns the full lifecycle:
+
+1. Deploys the mint (RepoPoolCFMintPreviews: CF Worker preview; RepoPoolCFMintStage: durable Worker with custom domain; RepoPoolExternalMint: pre-configured URL).
 2. Manages an internal channel-based pool of repo names (`test-repo-01` … `test-repo-12`).
 3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
 4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
@@ -46,7 +54,7 @@ The Factory takes the allocated org name plus runtime dependencies (forge client
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-`Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolExternalMint driver's teardown is a no-op.
+`Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs). The RepoPoolExternalMint driver's teardown is a no-op.
 
 ## Adding an SCM driver
 
