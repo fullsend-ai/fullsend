@@ -47,10 +47,12 @@ func TestSplitRepo(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	assert.Equal(t, "abc", truncate("abc", 10))
+	got, clipped := truncate("abc", 10)
+	assert.Equal(t, "abc", got)
+	assert.False(t, clipped)
 	// A multi-byte rune must not be split in half: the truncated text goes
 	// straight into an agent prompt.
-	out := truncate("aaa\u00e9", 4)
+	out, _ := truncate("aaa\u00e9", 4)
 	assert.Contains(t, out, "[truncated]")
 	assert.NotContains(t, out, "\ufffd")
 }
@@ -490,11 +492,15 @@ func TestBuildText_OneHugeAmendmentIsClippedNotDropped(t *testing.T) {
 	}}
 	text, _, excluded := w.buildText([]forge.WorkflowRun{{ID: 101}}, d)
 
-	// Clipping inside an amendment keeps it attributed and delivered, where
-	// dropping it whole would cost its run's receipt.
-	assert.Empty(t, excluded)
+	// Clipping keeps the amendment attributed and delivered — dropping it
+	// whole would send nothing — but it still costs the run its receipt.
+	// This assertion used to require the opposite, which is how a clipped
+	// instruction came to earn a complete receipt: the agent acts on the
+	// part that arrived, and the queued run must still cover the part that
+	// did not.
 	assert.Contains(t, text, "Comment from @reviewer:")
 	assert.Contains(t, text, "[truncated]")
+	assert.True(t, excluded[101], "a clipped amendment was delivered incomplete, so its run is not receipted")
 }
 
 func TestBuildText_ContextIsTruncatedBeforeAmendments(t *testing.T) {
@@ -752,11 +758,17 @@ func TestSteerInstruction_BlankFirstLineDoesNotPanic(t *testing.T) {
 func TestTruncate_NonPositiveBudget(t *testing.T) {
 	for _, max := range []int{-1, -4096, 0} {
 		assert.NotPanics(t, func() { truncate("some context body", max) }, "max=%d", max)
-		assert.Empty(t, truncate("some context body", max), "max=%d must yield nothing", max)
+		out, clipped := truncate("some context body", max)
+		assert.Empty(t, out, "max=%d must yield nothing", max)
+		assert.True(t, clipped, "max=%d drops a non-empty body, which is a clip", max)
 	}
 	// The ordinary paths are unchanged.
-	assert.Equal(t, "short", truncate("short", 32))
-	assert.Contains(t, truncate(strings.Repeat("a", 100), 10), "[truncated]")
+	short, shortClipped := truncate("short", 32)
+	assert.Equal(t, "short", short)
+	assert.False(t, shortClipped)
+	long, longClipped := truncate(strings.Repeat("a", 100), 10)
+	assert.Contains(t, long, "[truncated]")
+	assert.True(t, longClipped)
 }
 
 // TestBuildDelta_EditedCommentLosesItsAuthorization is the narrow window
@@ -809,4 +821,40 @@ func TestBuildDelta_UneditedCommentIsUnaffected(t *testing.T) {
 			assert.Len(t, d.amendments, 1, "an unedited comment must still be an amendment")
 		})
 	}
+}
+
+// TestBuildText_ClippedInstructionIsNotReceipted is finding 4: an
+// instruction longer than maxAmendmentBytes reaches the agent without its
+// tail, which may be the sentence that asked for something. Receipting it
+// tells the queued run the work is done, so the request is lost — the same
+// class as receipting a steer the agent never consumed.
+func TestBuildText_ClippedInstructionIsNotReceipted(t *testing.T) {
+	w := newWatcher(t, newFakeAPI(), &stubItems{}, &recorder{}, nil)
+
+	long := strings.Repeat("context that pushes the ask past the cap. ", 200) +
+		"AND FINALLY: revert the migration."
+	d := delta{amendments: []deltaItem{
+		{Author: "maintainer", Kind: "comment", Instruction: long, RunIDs: []int64{202}},
+	}}
+	text, _, excluded := w.buildText([]forge.WorkflowRun{{ID: 202}}, d)
+
+	require.Greater(t, len(long), maxAmendmentBytes, "the fixture must actually exceed the cap")
+	assert.Contains(t, text, "Instruction from @maintainer:")
+	assert.NotContains(t, text, "revert the migration", "the tail is cut; that is the premise")
+	assert.True(t, excluded[202], "a clipped instruction must not earn a receipt")
+}
+
+// TestBuildText_WholeInstructionIsReceipted is the other side: an
+// instruction that fits is delivered complete and does earn its receipt,
+// so the fix does not simply stop receipting everything.
+func TestBuildText_WholeInstructionIsReceipted(t *testing.T) {
+	w := newWatcher(t, newFakeAPI(), &stubItems{}, &recorder{}, nil)
+
+	d := delta{amendments: []deltaItem{
+		{Author: "maintainer", Kind: "comment", Instruction: "cover the error path", RunIDs: []int64{203}},
+	}}
+	text, _, excluded := w.buildText([]forge.WorkflowRun{{ID: 203}}, d)
+
+	assert.Contains(t, text, "cover the error path")
+	assert.Empty(t, excluded, "a complete amendment earns its receipt")
 }
