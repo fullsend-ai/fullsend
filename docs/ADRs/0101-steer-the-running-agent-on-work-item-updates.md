@@ -35,8 +35,8 @@ group, `cancel-in-progress: false`, and the default single-pending queue.
 That ADR is open and under review, and it was written in parallel with this work,
 against the same user feedback rather than against each other. This ADR does not claim
 to implement it: the two reach for the same first move — a run in flight should not be
-thrown away — from different starting points, and where they overlap they should be
-reconciled before either merges.
+thrown away — from different starting points, and where they overlap maintainers should
+reconcile them.
 
 Preserve-and-coalesce stops discarding work, but on its own it leaves two costs
 standing. The run in flight finishes on the state it started with and posts output
