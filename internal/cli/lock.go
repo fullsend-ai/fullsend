@@ -331,6 +331,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			WorkspaceRoot: absFullsendDir,
 			FetchPolicy:   policy,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+			OrgAllowlist:  orgAllowlist,
 			MaxDepth:      rFlags.maxDepth,
 			MaxResources:  rFlags.maxResources,
 			TreeFetcher:   rFlags.treeFetcher,
@@ -727,7 +728,7 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 // Mutations are collected first and applied only after all dependencies are
 // confirmed present in cache, so a partial failure leaves the harness unchanged
 // and the caller can safely fall back to network-based resolution.
-func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, printer *ui.Printer) (resolve.ResolveResult, error) {
+func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
 		localPath string
@@ -741,8 +742,10 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	for _, lockDep := range entry.Dependencies {
 		// Agent source URLs are validated against the org-level allowlist
 		// during lock creation, not the harness's own AllowedRemoteResources.
-		// Skip the harness-level allowlist check for these entries.
-		if lockDep.Field != "agent_source" && h.MatchingAllowedPrefix(lockDep.URL) == "" {
+		// Skip the allowlist check for these entries.
+		if lockDep.Field != "agent_source" &&
+			h.MatchingAllowedPrefix(lockDep.URL) == "" &&
+			harness.MatchingAllowedPrefixInList(lockDep.URL, orgAllowlist) == "" {
 			return resolve.ResolveResult{}, fmt.Errorf(
 				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
 				lockDep.Field, lockDep.URL)
