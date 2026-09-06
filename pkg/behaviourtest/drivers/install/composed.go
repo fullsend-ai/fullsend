@@ -26,6 +26,9 @@ type composedDriver struct {
 	created map[string]bool
 }
 
+// newComposedDriver returns a Driver. mint may be nil when no preview
+// mint is needed (e.g. pre-existing mint). client is used both for repo
+// CRUD and optional rate-limit reporting via type assertion.
 func newComposedDriver(
 	org string,
 	mint mintDriver,
@@ -144,7 +147,7 @@ func (d *composedDriver) pruneOldRuns(ctx context.Context) {
 }
 
 func (d *composedDriver) DefaultConcurrency() int {
-	return DefaultConcurrencyValue
+	return DefaultConcurrency
 }
 
 func (d *composedDriver) logRateLimit(label string) {

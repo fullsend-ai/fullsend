@@ -54,7 +54,7 @@ func TestNewComposedDriver_ReturnsDriver(t *testing.T) {
 
 	d := newComposedDriver("org", mint, e, client, t.Logf)
 	require.NotNil(t, d)
-	assert.Equal(t, DefaultConcurrencyValue, d.DefaultConcurrency())
+	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
 }
 
 func TestComposedDriver_CreateRepo(t *testing.T) {
@@ -114,7 +114,7 @@ func TestComposedDriver_Finalize_PrunesOldRuns(t *testing.T) {
 	}
 
 	// Simulate 14 runs × 16 repos = 224 repos, over the 200 threshold.
-	// Oldest 2 runs should be pruned (224 - 16 = 208 ≥ 200, 208 - 16 = 192 < 200).
+	// Oldest run should be pruned (224 - 16 = 208 ≥ 200, 208 - 16 = 192 < 200).
 	var repos []forge.Repository
 	for i := 1; i <= 14; i++ {
 		ts := fmt.Sprintf("20260905T%02d0000", i)

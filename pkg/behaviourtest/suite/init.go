@@ -41,9 +41,9 @@ func beforeScenario(ctx context.Context, scenario *godog.Scenario, tags []string
 	return ctx, nil
 }
 
-// afterScenario runs scenario cleanup: deletes all repos created during
-// the scenario (main, fork, URL harness). Cleanup errors are logged but
-// never fail the test — only step failures should drive the test result.
+// afterScenario runs scenario cleanup: releases per-scenario resources
+// (e.g. Jira mock servers, temp dirs). Repos are retained for rate-limit
+// scaling. Cleanup errors are logged but never fail the test.
 func afterScenario(ctx context.Context, scenarioErr error) (context.Context, error) {
 	w := world.FromContext(ctx)
 	if w == nil {

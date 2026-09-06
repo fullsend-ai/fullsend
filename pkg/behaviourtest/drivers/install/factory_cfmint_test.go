@@ -331,7 +331,7 @@ func TestBuildCFMintDriver_HappyPath(t *testing.T) {
 	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	assert.Equal(t, DefaultConcurrencyValue, d.DefaultConcurrency())
+	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
 }
 
 func TestBuildCFMintDriver_InstallFails(t *testing.T) {
@@ -353,7 +353,7 @@ func TestBuildCFMintDriver_EmptyMintURL(t *testing.T) {
 	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	assert.Equal(t, DefaultConcurrencyValue, d.DefaultConcurrency())
+	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
 }
 
 func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
