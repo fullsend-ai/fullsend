@@ -295,6 +295,9 @@ var cfmintPEMRoleEnvVars = map[string]string{
 	"prioritize": "TEST_PRIORITIZE_PEM",
 }
 
+// setupCFMintPEMDir materializes PEM files from env vars into a temp
+// directory. Returns ("", nil) when no PEM env vars are set. The caller
+// must os.RemoveAll the returned dir after use.
 func setupCFMintPEMDir() (string, error) {
 	var found bool
 	for _, envVar := range cfmintPEMRoleEnvVars {

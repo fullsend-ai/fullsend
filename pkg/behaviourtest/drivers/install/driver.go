@@ -48,7 +48,7 @@ type Factory func(
 // scenarios (GODOG_CONCURRENCY > 1).
 type Driver interface {
 	// CreateRepo creates a fresh ephemeral repo for a scenario. The hint
-	// (typically the scenario name) is incorporated into the repo name
+	// (typically the scenario name) is used in the repo description
 	// for traceability. Returns the repo name only (org is fixed for the
 	// driver / World).
 	CreateRepo(ctx context.Context, hint string) (repoName string, err error)
@@ -57,8 +57,8 @@ type Driver interface {
 	// it has been successfully deleted by CleanupScenario.
 	MarkDeleted(repoName string)
 
-	// Finalize deletes any repos still on the tracking list (handles
-	// cancelled runs), then tears down suite-scoped resources (e.g.
+	// Finalize prunes old runs when the ephemeral repo count exceeds
+	// the keep threshold, then tears down suite-scoped resources (e.g.
 	// preview mint). Respects E2E_KEEP_REPOS.
 	Finalize(ctx context.Context) error
 
@@ -82,9 +82,9 @@ const (
 	// AgentArtifact is the upload-artifact name for triage output.
 	AgentArtifact = "fullsend-triage"
 
-	// DefaultConcurrencyValue is the default number of concurrent
+	// DefaultConcurrency is the default number of concurrent
 	// scenarios when GODOG_CONCURRENCY is not set.
-	DefaultConcurrencyValue = 20
+	DefaultConcurrency = 20
 )
 
 // KeepRepos reports whether test repos should be preserved after runs.

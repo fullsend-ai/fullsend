@@ -292,7 +292,7 @@ Fork dispatch scenarios test `pull_request_target` harness triggering from cross
 
 ### Logical fork name → ephemeral base
 
-Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has an ephemeral base (for example `bt-a1b2c3d4-my-scenario` → actual fork repo `bt-a1b2c3d4-my-scenario-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code ephemeral names in Gherkin.
+Gherkin keeps a stable logical name (for example `"fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-{forkName}`** when the scenario has an ephemeral base (for example `bt-20260906T020406-a1b2c3d4` → actual fork repo `bt-20260906T020406-a1b2c3d4-fork`). Feature files should use `"fork"` as the logical fork name; do not hard-code ephemeral names in Gherkin.
 
 ### Test-org prerequisites
 
@@ -361,7 +361,7 @@ Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensur
 
 ### Fork name derivation depends on `World.RepoName`
 
-The `Given a fork` step resolves the fork repo name by appending `-fork` to `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with an ephemeral base `bt-a1b2c3d4-my-scenario` resolves to `bt-a1b2c3d4-my-scenario-fork`.
+The `Given a fork` step resolves the fork repo name by appending `-{forkName}` to `World.RepoName`. For example, the logical Gherkin name `"fork"` with an ephemeral base `bt-20260906T020406-a1b2c3d4` resolves to `bt-20260906T020406-a1b2c3d4-fork`.
 
 When modifying repo naming or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because naming logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
 
@@ -469,9 +469,9 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**Concrete driver:** `NewCFMintFactory` is the sole factory. It deploys a preview mint and creates ephemeral `bt-{randHex}-{hint}` repos on demand. Concrete implementations live in the `install` package. `install.Factory` takes `(org string, client forge.Client, token, binary, gcpProjectID string, logf func(string, ...any))`; driver-specific config (PEMs, mint URL) is read from env or computed internally. External code should only reference `install.Factory` and `install.Driver`.
+**Concrete driver:** `NewCFMintFactory` is the sole factory. It deploys a preview mint and creates ephemeral `bt-{timestamp}-{uuid8}` repos on demand. Concrete implementations live in the `install` package. `install.Factory` takes `(org string, client forge.Client, token, binary, gcpProjectID string, logf func(string, ...any))`; driver-specific config (PEMs, mint URL) is read from env or computed internally. External code should only reference `install.Factory` and `install.Driver`.
 
-**`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the created repo name) and per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) instead of config indirection through `State`.
+**`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the created repo name) and per-repo constants from the `install` package (`TriageWorkflow`, `AgentWorkflow`, `AgentArtifact`) instead of config indirection through `State`.
 
 **`world.World.Ensurer` replaced with `world.World.Driver`:** The `Ensurer` field on `World` is replaced by `Driver install.Driver` (the unified driver). External code that set `w.Ensurer` must set `w.Driver` instead — the driver handles repo creation/deletion and ensure internally.
 
