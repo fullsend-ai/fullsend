@@ -289,14 +289,23 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Harness routing uses one CEL predicate over a required normalized entity and
+  an optional prompting event. Webhooks provide low-latency candidates;
+  `fullsend poll` and its input drivers enumerate and resolve scheduled
+  candidates without reconstructing a complete event stream. Entity activity
+  retains actor and authorization provenance, while durable per-harness
+  processing receipts distinguish handled work
+  ([ADR 0106](ADRs/0106-entity-first-harness-evaluation.md), partially
+  superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
-  dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
-  express threading on `transition.comment.id` / `parent_id` (`parent_id` always
-  names the thread root), reuse CEL harness triggers and ADR 0054 authorization,
-  and write back through host/post-script or host-side API servers via
-  `conversation.Client` — not a separate always-on chat bot and not an
-  extension of `forge.Client`
+  dispatch as resolved entities with `entity.kind: conversation`; when a
+  prompting event is available, it expresses threading on
+  `transition.comment.id` / `parent_id` (`parent_id` always names the thread
+  root). They reuse CEL harness triggers and ADR 0054 authorization, and write
+  back through host/post-script or host-side API servers via
+  `conversation.Client` — not a separate always-on chat bot and not an extension
+  of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
 - Dispatch authorization gate: all agent dispatch paths — slash commands
   and automatic event triggers — require authorization before dispatching.
@@ -310,10 +319,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 **Open questions:**
 
-- Is GitHub's event system sufficient for forge-native duplicate protection, or
-  do we need additional coordination beyond label/state conventions and agent
-  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh.)
+- What normative entity-history, query-planning, and processing-receipt contract
+  can support entity-first harness evaluation without unbounded provider reads
+  ([ADR 0106](ADRs/0106-entity-first-harness-evaluation.md))?
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?

@@ -22,6 +22,11 @@ Date: 2026-06-18
 
 Accepted
 
+The requirement for poll drivers to reconstruct changes as events is
+superseded by [ADR 0106](0106-entity-first-harness-evaluation.md). The poll
+command, driver architecture, per-repo scope, and coordination decisions remain
+current.
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized

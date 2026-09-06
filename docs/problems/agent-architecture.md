@@ -145,11 +145,15 @@ The repository's existing infrastructure provides all the coordination needed:
 - **Branch protection rules** define what's required before merge (status checks, approvals)
 - **CODEOWNERS** defines who (human or bot account) must approve changes to which paths
 - **Required status checks** ensure all review sub-agents have posted their findings
-- **GitHub events** (PR opened, comment posted, status check completed) trigger agent actions
+- **Forge events and scheduled entity discovery** identify entities whose
+  harness predicates should be evaluated. Each predicate can inspect the
+  resolved entity and an optional prompting event
+  ([ADR 0106](../ADRs/0106-entity-first-harness-evaluation.md)).
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
-1. A PR is opened → review sub-agents are triggered (by webhook/GitHub event)
+1. A PR is opened → its entity is resolved and review sub-agent predicates are
+   evaluated with the GitHub event as context
 2. Each review sub-agent independently evaluates the PR and posts its findings (as status checks or structured comments)
 3. If a review sub-agent requests changes → the code agent sees the comment and responds (treating it as untrusted input, but recognizing blocking authority if the reviewer has approval rights)
 4. The merge decision is a **deterministic function of state**: all required status checks pass, all required CODEOWNERS approvals present, no blocking reviews outstanding
