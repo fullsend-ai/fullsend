@@ -38,6 +38,10 @@ Deprecates the per-org installation mode established in
 Per-repo installation mode ([ADR 0033](0033-per-repo-installation-mode.md))
 becomes the sole supported installation model.
 
+> **Note (2026-09-03):** The "no centralized policy" and "per-repo setup
+> overhead" costs listed below are decided in recorded presets and
+> `fullsend update` ([ADR 0103](0103-shared-config-presets-converged-by-fullsend-update.md)).
+
 ## Context
 
 Fullsend's original installation model is per-org: `fullsend admin install <org>`

@@ -29,7 +29,7 @@ Agent configuration is itself a security-critical attack surface. If someone can
 
 **Open design questions:**
 - Where does agent policy live? In the repos it governs (as CLAUDE.md, agent config files)? In a separate policy repo? In a central configuration system?
-- If policy lives in a separate repo, how does it get applied to target repos? Push-based (policy repo pushes to targets) or pull-based (agents read from policy repo at runtime)?
+- If policy lives in a separate repo, how does it get applied to target repos? Push-based (policy repo pushes to targets) or pull-based (agents read from policy repo at runtime)? (Push-based as Renovate pull requests, from a preset hosted in any repo — decided in [ADR 0103](../ADRs/0103-shared-config-presets-converged-by-fullsend-update.md); agents still read the merged layers at runtime, and enforcing a policy floor remains open.)
 - How do we audit changes to agent configuration? Git history helps if policy is in git, but we also need to detect unauthorized runtime changes.
 - How do we handle the bootstrap problem — who sets up the initial agent configuration for a new repo, and how is that initial setup secured? (Preset-based install and `config.base.yaml` / `config.yaml` layering decided in [ADR 0069](../ADRs/0069-ready-made-configuration-presets.md); workflow pinning and backend policy remain open.)
 
