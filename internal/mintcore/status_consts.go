@@ -9,3 +9,17 @@ package mintcore
 // member of this team. When the tag is absent (stub), the value is
 // unused.
 var StatusGitHubGroup string
+
+// StatusCFAccessAud is the Cloudflare Access application AUD (JWT
+// audience). Stamped into the deployed binary at build/deploy time.
+// When non-empty together with StatusCFAccessTeam, the Cloudflare
+// Access status validator is active and validates JWTs from the
+// Cf-Access-Jwt-Assertion header against the configured application.
+var StatusCFAccessAud string
+
+// StatusCFAccessTeam is the Cloudflare Zero Trust team subdomain
+// (e.g. "acme" for acme.cloudflareaccess.com). Stamped into the
+// deployed binary at build/deploy time. Together with StatusCFAccessAud,
+// this determines the issuer and JWKS endpoint for CF Access JWT
+// validation.
+var StatusCFAccessTeam string
