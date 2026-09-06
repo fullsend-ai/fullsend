@@ -65,7 +65,7 @@ func CrossCompileCLIBinary(t *testing.T) string {
 		"./cmd/fullsend/",
 	)
 	cmd.Dir = modRoot
-	cmd.Env = append(cmd.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	cmd.Env = append(cmd.Environ(), "GOTOOLCHAIN=auto", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("cross-compiling fullsend for linux/amd64: %s\n%s", err, out)
