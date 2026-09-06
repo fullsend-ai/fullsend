@@ -233,6 +233,39 @@ validate_repo_name() {
   fi
 }
 
+# delete_branch removes the given branch ref if it exists. A branch that is
+# already gone (404) is an idempotent success; other lookup or deletion errors
+# are reported. Returns 0 on delete/absent, 1 otherwise. The 404 detection uses
+# the same numeric-status idiom as check_per_repo_guard, since the JSON error
+# envelope's .status field is a stable interface (unlike --include header text).
+delete_branch() {
+  local repo="$1"
+  local branch="$2"
+  local ref_get_endpoint="repos/$ORG/$repo/git/ref/heads/$branch"
+  local ref_delete_endpoint="repos/$ORG/$repo/git/refs/heads/$branch"
+  local resp
+
+  # Confirm the branch exists. A 404 means it is already gone — nothing to do.
+  if ! resp=$(gh api "$ref_get_endpoint" 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to check branch $branch for $repo"
+    return 1
+  fi
+
+  # Delete it. A 404 here (branch raced away by a concurrent reconcile run or a
+  # --delete-branch PR close) is idempotent success alongside the normal 204.
+  if ! resp=$(gh api "$ref_delete_endpoint" --method DELETE 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "::warning::Failed to delete branch $branch for $repo"
+    return 1
+  fi
+  echo "  Deleted branch $branch for $repo"
+}
+
 # close_pr_on_branch closes an open PR on the given branch and deletes the branch.
 close_pr_on_branch() {
   local repo="$1"
@@ -240,14 +273,25 @@ close_pr_on_branch() {
   local reason="$3"
 
   local pr_url
-  pr_url=$(gh pr list --repo "$ORG/$repo" --head "$branch" --json url --jq '.[0].url // empty' 2>/dev/null || true)
-  if [ -n "$pr_url" ]; then
-    gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null || true
-    echo "  Closed PR on $branch: $pr_url"
-  else
-    # Delete branch even if no PR exists.
-    gh api "repos/$ORG/$repo/git/refs/heads/$branch" --method DELETE --silent 2>/dev/null || true
+  if ! pr_url=$(gh pr list --repo "$ORG/$repo" --head "$branch" --json url --jq '.[0].url // empty' 2>/dev/null); then
+    echo "::warning::Failed to check for an open PR on $branch for $repo"
+    return 1
   fi
+  if [ -n "$pr_url" ]; then
+    if gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null; then
+      echo "  Closed PR on $branch: $pr_url"
+      return 0
+    fi
+    # PR close failed (already closed, rejected comment, branch protection, or a
+    # transient error). Fall through to an explicit branch delete so a partial
+    # failure does not leave the stale branch behind — deleting the head branch
+    # also closes the PR on GitHub.
+    echo "::warning::Failed to close PR on $branch for $repo; attempting direct branch cleanup"
+  fi
+
+  # Delete an orphaned branch, or one left behind by a failed PR close. A
+  # missing branch is the expected idempotent case.
+  delete_branch "$repo" "$branch"
 }
 
 # load_default_branch fetches the default branch name and current SHA for a
@@ -405,7 +449,10 @@ if [ -n "$ENABLED_REPOS" ]; then
     fi
 
     # Clean up any stale removal PR from a previous disable cycle (even for per-repo repos).
-    close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"
+    if ! close_pr_on_branch "$REPO" "$UNENROLL_BRANCH" "Repo re-enabled in config.yaml"; then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
 
     # Skip repos with per-repo installation — they manage their own WIF and shim.
     if check_per_repo_guard "$REPO" "enrollment"; then
@@ -425,6 +472,10 @@ if [ -n "$ENABLED_REPOS" ]; then
       REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
       EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
+        if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Shim already matches the current template"; then
+          FAILED=$((FAILED + 1))
+          continue
+        fi
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
@@ -528,7 +579,10 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Close any stale enrollment PR.
-    close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"
+    if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Repo disabled in config.yaml"; then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
 
     # Skip repos with per-repo installation — unenrollment would break their shim.
     if check_per_repo_guard "$REPO" "unenrollment"; then
