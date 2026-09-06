@@ -2187,6 +2187,31 @@ func (c *LiveClient) IsInstallationToken(ctx context.Context) (bool, error) {
 	return ProbeInstallationToken(ctx, c.http, c.baseURL, c.token)
 }
 
+// LatestCommitAuthorLogin returns the GitHub login attributed as author
+// of the newest commit on the repository's default branch, or "" when
+// the commit has no linked account. Commits made through the API with a
+// GitHub App installation token are attributed to the app's bot user
+// ("<slug>[bot]"), which lets a caller learn the identity its own token
+// acts as without an app slug in configuration.
+func (c *LiveClient) LatestCommitAuthorLogin(ctx context.Context, owner, repo string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/commits?per_page=1", owner, repo))
+	if err != nil {
+		return "", fmt.Errorf("list commits for %s/%s: %w", owner, repo, err)
+	}
+	var commits []struct {
+		Author *struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := decodeJSON(resp, &commits); err != nil {
+		return "", fmt.Errorf("decode commits for %s/%s: %w", owner, repo, err)
+	}
+	if len(commits) == 0 || commits[0].Author == nil {
+		return "", nil
+	}
+	return commits[0].Author.Login, nil
+}
+
 // GetAuthenticatedUserIdentity returns the display name and email of
 // the authenticated user by calling GET /user.
 //
