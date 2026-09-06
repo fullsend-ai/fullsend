@@ -1,0 +1,123 @@
+# Contributor Ladder
+
+This document defines the path from first-time contributor to
+maintainer. Each role grants additional capabilities and carries
+additional expectations. Advancement is not automatic — it requires a
+request, a track record, and maintainer approval.
+
+For the maintainer role specifically — including eligibility, the
+nomination process, and what maintainers do — see
+[MAINTAINERS.md](MAINTAINERS.md).
+
+## Roles
+
+### Vouched
+
+**What it means:** You have been approved to submit pull requests.
+
+**What it unlocks:**
+
+- PRs are no longer auto-closed by the vouch gate
+- You can contribute code, docs, and tests
+
+**Criteria:**
+
+- Describe what you want to work on and why
+- Write the request yourself (not AI-generated)
+
+**How to request:** Open a
+[Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request)
+discussion. A maintainer will review and comment `/vouch` if approved.
+
+**Who approves:** Any single maintainer.
+
+### Triage
+
+**What it means:** You have GitHub `triage` collaborator access on the
+repository.
+
+**What it unlocks:**
+
+- `/fs-triage` and `/fs-review` slash commands (observation agents)
+- Ability to label, close, and reopen issues
+- Automatic e2e CI triggering on your PRs (no maintainer label needed)
+
+**Criteria:**
+
+- Already vouched
+- At least 2 merged PRs or substantive reviews demonstrating
+  familiarity with the project's conventions and review etiquette
+- Responsive to feedback on your own PRs
+
+**How to request:** Open a
+[Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request)
+discussion. Link to your merged PRs or reviews.
+
+**Who approves:** Any single maintainer.
+
+### Write
+
+**What it means:** You have GitHub `write` collaborator access on the
+repository.
+
+**What it unlocks:**
+
+- `/fs-code` and `/fs-fix` slash commands (mutation agents)
+- Push access to non-protected branches
+
+**Criteria:**
+
+- Already at the Triage role
+- Sustained contribution history: multiple merged PRs across different
+  areas of the codebase, or deep expertise in a specific subsystem
+- Demonstrated understanding of project conventions (commit messages,
+  PR workflow, review etiquette)
+- Trusted not to push directly to protected branches or bypass review
+
+**How to request:** Open a
+[Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request)
+discussion. Link to your contribution history.
+
+**Who approves:** Two maintainers must approve. A single maintainer
+can request more discussion but cannot unilaterally grant write access.
+
+### Maintainer
+
+**What it means:** You have merge and approval rights and are a member
+of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
+team. You are expected to be an active regular participant in the
+project and to help review contributions you are not driving.
+
+**What it unlocks:**
+
+- CODEOWNERS approval required to merge PRs
+- Authorizing CI runs on PRs from non-maintainers
+- Issue triage and backlog management
+- All capabilities from previous roles
+
+**Criteria and process:** See [MAINTAINERS.md](MAINTAINERS.md) for the
+full eligibility criteria, nomination process, and time commitment.
+
+## Requesting a role
+
+Role changes use the following request mechanisms:
+
+| Role | Request mechanism | Approval |
+|------|-------------------|----------|
+| Vouched | [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) | 1 maintainer |
+| Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 maintainer |
+| Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 maintainers |
+| Maintainer | Issue (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
+
+## Revoking access
+
+Any maintainer may revoke a collaborator's access at any role level. Common
+reasons include:
+
+- Extended inactivity (no contributions or reviews for 6+ months)
+- Misuse of granted permissions
+- Violation of project norms or [contributing guidelines](CONTRIBUTING.md)
+
+Revocation is not punitive — it reflects current activity level. A
+contributor whose access is revoked for inactivity can re-request it
+through the normal process.
