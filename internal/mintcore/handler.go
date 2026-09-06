@@ -420,7 +420,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if len(dropped) > 0 {
 				sort.Strings(dropped)
 				log.Printf("dropped: org=%s role=%s dropped_permissions=%v",
-					callerOrg, req.Role, dropped)
+					targetOrg, req.Role, dropped)
 			}
 		}
 	}
@@ -647,7 +647,7 @@ func (h *Handler) loadAppPermissions(ctx context.Context, githubBaseURL, jwt, ap
 	if err != nil {
 		return nil, err
 	}
-	return perms, nil
+	return copyPermissions(perms), nil
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
