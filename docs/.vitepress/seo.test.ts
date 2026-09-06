@@ -6,6 +6,7 @@ import {
   isIndexablePage,
   isNonContentPath,
   isSitemapUrl,
+  markdownUrl,
   pageOutputPath,
   pageRobotsHead,
   pageSeoHead,
@@ -65,6 +66,20 @@ describe("canonicalUrl", () => {
   });
 });
 
+describe("markdownUrl", () => {
+  it("keeps the .md filename of a content page", () => {
+    expect(markdownUrl("agents/triage.md")).toBe("https://fullsend.sh/docs/agents/triage.md");
+  });
+
+  it("uses index.md for a directory page, not the trailing-slash HTML URL", () => {
+    expect(markdownUrl("agents/index.md")).toBe("https://fullsend.sh/docs/agents/index.md");
+  });
+
+  it("does not follow the root HTML redirect", () => {
+    expect(markdownUrl("index.md")).toBe("https://fullsend.sh/docs/index.md");
+  });
+});
+
 describe("pageSeoHead", () => {
   const head = pageSeoHead({
     page: "agents/triage.md",
@@ -77,6 +92,17 @@ describe("pageSeoHead", () => {
     const url = "https://fullsend.sh/docs/agents/triage";
     expect(head).toContainEqual(["link", { rel: "canonical", href: url }]);
     expect(head).toContainEqual(["meta", { property: "og:url", content: url }]);
+  });
+
+  it("emits an alternate link to the published markdown source", () => {
+    expect(head).toContainEqual([
+      "link",
+      {
+        rel: "alternate",
+        type: "text/markdown",
+        href: "https://fullsend.sh/docs/agents/triage.md",
+      },
+    ]);
   });
 
   it("emits page-specific og:title and og:description", () => {
@@ -139,9 +165,7 @@ describe("isSitemapUrl", () => {
 
 describe("pageRobotsHead", () => {
   it("marks the directly reachable 404 asset noindex", () => {
-    expect(pageRobotsHead("404.md")).toEqual([
-      ["meta", { name: "robots", content: "noindex" }],
-    ]);
+    expect(pageRobotsHead("404.md")).toEqual([["meta", { name: "robots", content: "noindex" }]]);
     expect(pageRobotsHead("agents/triage.md")).toEqual([]);
   });
 });
