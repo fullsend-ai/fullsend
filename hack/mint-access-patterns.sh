@@ -66,7 +66,25 @@ ACTIVE_BRANCH_REPOS=()
 ACTIVE_BRANCH_NAMES=()
 
 usage() {
-  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+  cat <<'USAGE'
+mint-access-patterns — exercise mint repos-field + workflow-host access patterns
+via GHA OIDC (ADR 0082 / PR #5916).
+
+Usage:
+  hack/mint-access-patterns.sh --mint-url URL [options]
+
+Options:
+  --org ORG             GitHub org (default: fullsand-ai)
+  --mint-url URL        Mint base URL (or set FULLSEND_MINT_URL)
+  --foreign-org ORG     Target org for e2e foreign-mint cases (default: halfsend)
+  --role ROLE           Run only cases for this role (default: all roles in matrix)
+  --mode MODE           per-repo (default) | per-org | both
+  --project GCP_PROJECT Optional: surgically enroll/unenroll for MODE
+  --region REGION       GCP region for mint CLI (default: us-central1)
+  --timeout SECONDS     Per-case workflow wait timeout (default: 600)
+  --poll-interval SEC   Poll interval while waiting for runs (default: 5)
+  -h, --help            Show this help
+USAGE
 }
 
 die() {
@@ -117,19 +135,17 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "Unknown option: $1" >&2
       usage >&2
-      exit 2
+      die "unknown option: $1"
       ;;
   esac
 done
 
+# TODO(ADR-0044): Remove per-org and both modes after existing users complete
+# migration to the sole supported per-repo installation model.
 case "$MODE" in
   per-repo | per-org | both) ;;
-  *)
-    echo "ERROR: --mode must be per-repo, per-org, or both (got: ${MODE})" >&2
-    exit 2
-    ;;
+  *) die "--mode must be per-repo, per-org, or both (got: ${MODE})" ;;
 esac
 
 case "$TIMEOUT" in
@@ -147,27 +163,18 @@ case "$ROLE_FILTER" in
   *) die "--role must be one of triage, coder, review, retro, prioritize, fullsend, or e2e (got: ${ROLE_FILTER})" ;;
 esac
 
-if [[ -z "$MINT_URL" ]]; then
-  echo "ERROR: --mint-url or FULLSEND_MINT_URL is required" >&2
-  exit 2
-fi
+[[ -n "$MINT_URL" ]] || die "--mint-url or FULLSEND_MINT_URL is required"
 MINT_URL="${MINT_URL%/}"
 
 for cmd in gh jq git curl; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "ERROR: $cmd is required but not found in PATH" >&2
-    exit 2
-  fi
+  command -v "$cmd" &>/dev/null || die "$cmd is required but not found in PATH"
 done
 
 GH_API_TOKEN="${GH_TOKEN:-}"
 if [[ -z "$GH_API_TOKEN" ]]; then
   GH_API_TOKEN="$(gh auth token 2>/dev/null || true)"
 fi
-if [[ -z "$GH_API_TOKEN" ]]; then
-  echo "ERROR: set GH_TOKEN or run gh auth login (needed for HTTPS git)" >&2
-  exit 2
-fi
+[[ -n "$GH_API_TOKEN" ]] || die "set GH_TOKEN or run gh auth login (needed for HTTPS git)"
 # Credential helper for HTTPS remotes (same pattern as eval/scripts/setup-fixture.sh).
 GH_CRED_HELPER="!f(){ echo \"password=${GH_API_TOKEN}\"; };f"
 
@@ -526,7 +533,12 @@ FTR
 }
 
 # Direct mint workflow (on: push) for .fullsend or in-repo-host negative.
-# Args: destination directory, role, repos JSON, expected scope repo, optional target org.
+# Arguments:
+#   $1 destination directory
+#   $2 mint role
+#   $3 requested repositories as JSON, or "-" to omit repos
+#   $4 expected fully-qualified repository scope, or empty
+#   $5 optional target organization
 write_direct_mint_workflow() {
   local dest_dir="$1"
   local role="$2"
@@ -579,7 +591,12 @@ FTR
 }
 
 # Thin shim on mint-test that calls {org}/fullsend reusable.
-# Args: destination directory, role, repos JSON, expected scope repo, optional target org.
+# Arguments:
+#   $1 destination directory
+#   $2 mint role
+#   $3 requested repositories as JSON, or "-" to omit repos
+#   $4 expected fully-qualified repository scope, or empty
+#   $5 optional target organization
 write_shim_workflow() {
   local dest_dir="$1"
   local role="$2"
