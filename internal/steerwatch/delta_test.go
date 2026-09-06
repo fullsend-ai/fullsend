@@ -714,3 +714,47 @@ func TestBuildText_DoesNotWriteTheEnvelopeOpeningLine(t *testing.T) {
 	assert.True(t, strings.HasPrefix(text, "Triggered by follow-up workflow run(s)"),
 		"the body should lead with its own first line, not a truncated one")
 }
+
+// TestSteerInstruction_BlankFirstLineDoesNotPanic covers a comment whose
+// body opens with a newline — ordinary human formatting. strings.Fields on
+// that empty first line returns an EMPTY slice, so the old
+// `strings.Fields(first + " ")[0]` panicked; the trailing space was not the
+// guard it looked like, since strings.Fields(" ") is empty too. The panic
+// landed in the watcher goroutine and took the run down with it.
+func TestSteerInstruction_BlankFirstLineDoesNotPanic(t *testing.T) {
+	for name, body := range map[string]string{
+		"leading newline":   "\nplease check the migration",
+		"leading CRLF":      "\r\nplease check the migration",
+		"whitespace only":   "   \n\t ",
+		"empty":             "",
+		"blank then steer":  "\n/fs-steer cover the error path",
+		"spaces then steer": "   /fs-steer cover the error path",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				steerInstruction(deltaItem{Kind: "comment", Body: body})
+			})
+		})
+	}
+
+	// A command on the first line is still recognised, and one pushed onto
+	// a later line is still not a command.
+	assert.NotEmpty(t, steerInstruction(deltaItem{Kind: "comment", Body: "   /fs-steer cover the error path"}))
+	assert.Empty(t, steerInstruction(deltaItem{Kind: "comment", Body: "\n/fs-steer cover the error path"}),
+		"the command must be on the first line, as the route arm requires")
+}
+
+// TestTruncate_NonPositiveBudget covers the other panic: `len(s) <= max` is
+// false for every negative max, so the old code fell through to slicing
+// with a negative bound. buildText computes the context budget by
+// subtracting the amendments and the delimiters from maxDeltaBytes, so
+// nothing guarantees it is positive.
+func TestTruncate_NonPositiveBudget(t *testing.T) {
+	for _, max := range []int{-1, -4096, 0} {
+		assert.NotPanics(t, func() { truncate("some context body", max) }, "max=%d", max)
+		assert.Empty(t, truncate("some context body", max), "max=%d must yield nothing", max)
+	}
+	// The ordinary paths are unchanged.
+	assert.Equal(t, "short", truncate("short", 32))
+	assert.Contains(t, truncate(strings.Repeat("a", 100), 10), "[truncated]")
+}
