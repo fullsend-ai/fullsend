@@ -437,8 +437,10 @@ type reposInstallConfig struct {
 	runtime                string
 
 	// Vendor flags
-	vendor        bool
-	vendorChanged bool
+	vendor         bool
+	vendorChanged  bool
+	fullsendBinary string
+	fullsendSource string
 
 	// Test overrides
 	testClient          forge.Client
@@ -472,6 +474,10 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 				opts.gitlabBotToken = os.Getenv(forge.VarGitLabBotToken)
 			}
 			opts.vendorChanged = cmd.Flags().Changed("vendor")
+			applyDeprecatedVendorBinaryFlag(cmd, &opts.vendor)
+			if err := validateVendorFlags(opts.vendor, opts.fullsendBinary, opts.fullsendSource); err != nil {
+				return err
+			}
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
@@ -491,7 +497,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
-	cmd.Flags().BoolVar(&opts.vendor, "vendor", false, "vendor binary, reusable workflows, actions, and agent content into each repo for offline CI")
+	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
 	return cmd
 }
@@ -735,7 +741,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		if repoVendor {
 			var vendorErr error
-			files, _, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, "", "")
+			files, _, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, opts.fullsendBinary, opts.fullsendSource)
 			if vendorErr != nil {
 				return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 			}

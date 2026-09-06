@@ -192,7 +192,7 @@ func installedGetFileFn(_ context.Context, _, _, path string) ([]byte, error) {
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	sc := &stubClient{}
-	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "", t.Logf)
+	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "", "", t.Logf)
 	require.NotNil(t, e)
 	var _ ensurer = e
 }

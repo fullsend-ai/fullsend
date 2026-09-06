@@ -44,8 +44,9 @@ func TestBehaviourSuite(t *testing.T) {
 	client := e2etest.NewLiveClient(token)
 
 	binary := e2etest.BuildCLIBinary(t)
+	vendorBinary := e2etest.CrossCompileCLIBinary(t)
 
-	driver, err := install.NewCFMintFactory(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
+	driver, err := install.NewCFMintFactory(org, client, token, binary, vendorBinary, e2eCfg.GCPProjectID, t.Logf)
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}

@@ -52,6 +52,7 @@ type repoEnsurer struct {
 	client        forge.Client
 	token         string
 	binary        string
+	vendorBinary  string
 	fullsendRef   string
 	logf          func(string, ...any)
 	runCLI        CLIRunnerFunc
@@ -63,7 +64,7 @@ type repoEnsurer struct {
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
-	token, binary, fullsendRef string,
+	token, binary, vendorBinary, fullsendRef string,
 	logf func(string, ...any),
 ) ensurer {
 	return &repoEnsurer{
@@ -71,6 +72,7 @@ func newRepoEnsurer(
 		client:        client,
 		token:         token,
 		binary:        binary,
+		vendorBinary:  vendorBinary,
 		fullsendRef:   fullsendRef,
 		logf:          logf,
 		runCLI:        e2etest.TryRunCLI,
@@ -165,7 +167,7 @@ func (e *repoEnsurer) installFullsend(org, repoName string) error {
 	fullTarget := org + "/" + repoName
 	return common.RunReposInstall(
 		e.binary, e.token, fullTarget,
-		e.e2eCfg.MintURL, e.fullsendRef, e.e2eCfg.GCPProjectID, e.e2eCfg.WIFProvider,
+		e.e2eCfg.MintURL, e.fullsendRef, e.e2eCfg.GCPProjectID, e.e2eCfg.WIFProvider, e.vendorBinary,
 		e.runCLI, e.logf,
 	)
 }

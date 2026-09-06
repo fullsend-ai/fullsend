@@ -328,7 +328,7 @@ func TestBuildCFMintDriver_HappyPath(t *testing.T) {
 		installMintURL: "https://mint.test",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
@@ -339,7 +339,7 @@ func TestBuildCFMintDriver_InstallFails(t *testing.T) {
 		installErr: fmt.Errorf("deploy boom"),
 	}
 
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
+	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
 	assert.Contains(t, err.Error(), "deploy boom")
@@ -350,7 +350,7 @@ func TestBuildCFMintDriver_EmptyMintURL(t *testing.T) {
 		installMintURL: "",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", fakeInferenceStatusCLI, t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
@@ -418,7 +418,7 @@ func TestNewCFMintFactory_NoPEMs_FailsEarly(t *testing.T) {
 		t.Setenv(envVar, "")
 	}
 
-	_, err := NewCFMintFactory("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := NewCFMintFactory("my-org", nil, "tok", "/bin/fullsend", "", "proj", t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
 }

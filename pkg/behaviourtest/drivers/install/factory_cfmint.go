@@ -40,7 +40,7 @@ type cfmintConfig struct {
 func NewCFMintFactory(
 	org string,
 	client forge.Client,
-	token, binary, gcpProjectID string,
+	token, binary, vendorBinary, gcpProjectID string,
 	logf func(string, ...any),
 ) (Driver, error) {
 	pemDir, err := setupCFMintPEMDir()
@@ -65,7 +65,7 @@ func NewCFMintFactory(
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 	}
 
-	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, e2etest.TryRunCLI, logf)
+	return buildCFMintDriver(org, md, client, token, binary, vendorBinary, gcpProjectID, e2etest.TryRunCLI, logf)
 }
 
 var _ Factory = NewCFMintFactory
@@ -75,7 +75,7 @@ func buildCFMintDriver(
 	org string,
 	md mintDriver,
 	client forge.Client,
-	token, binary, gcpProjectID string,
+	token, binary, vendorBinary, gcpProjectID string,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) (Driver, error) {
@@ -101,7 +101,7 @@ func buildCFMintDriver(
 		GCPProjectID: gcpProjectID,
 		WIFProvider:  wifProvider,
 	}
-	ens := newRepoEnsurer(e2eCfg, client, token, binary, fullsendRef, logf)
+	ens := newRepoEnsurer(e2eCfg, client, token, binary, vendorBinary, fullsendRef, logf)
 
 	drv := newComposedDriver(org, md, ens, client, logf)
 	if cd, ok := drv.(*composedDriver); ok {

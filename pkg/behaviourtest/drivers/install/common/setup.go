@@ -73,8 +73,11 @@ func ProvisionInference(
 // ref-pinned resolution, vendored binary, and mint URL. Each call uses a
 // unique temp manifest path so concurrent scenarios don't collide; repos
 // install creates the file automatically.
+//
+// When vendorBinary is non-empty, it is passed as --fullsend-binary to
+// skip per-repo cross-compilation.
 func RunReposInstall(
-	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
+	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider, vendorBinary string,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
@@ -108,6 +111,9 @@ func RunReposInstall(
 	}
 	if wif := strings.TrimSpace(wifProvider); wif != "" {
 		args = append(args, "--inference-wif-provider", wif)
+	}
+	if vendorBinary != "" {
+		args = append(args, "--fullsend-binary", vendorBinary)
 	}
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))

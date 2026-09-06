@@ -33,7 +33,7 @@ type mintDriver interface {
 type Factory func(
 	org string,
 	client forge.Client,
-	token, binary, gcpProjectID string,
+	token, binary, vendorBinary, gcpProjectID string,
 	logf func(string, ...any),
 ) (Driver, error)
 
