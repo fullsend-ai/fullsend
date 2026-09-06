@@ -30,8 +30,9 @@ func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Manage agent registrations in config",
-		Long:  "Commands for adding, listing, updating, and removing agent registrations in fullsend config.",
+		Long:  "Commands for generating, adding, listing, updating, and removing agents in fullsend config.",
 	}
+	cmd.AddCommand(newAgentNewCmd())
 	cmd.AddCommand(newAgentAddCmd())
 	cmd.AddCommand(newAgentListCmd())
 	cmd.AddCommand(newAgentUpdateCmd())
