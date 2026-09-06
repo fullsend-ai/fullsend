@@ -314,12 +314,19 @@ type Issue struct {
 
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
-	ID        int
-	NodeID    string
-	HTMLURL   string
-	Body      string
-	Author    string
+	ID      int
+	NodeID  string
+	HTMLURL string
+	Body    string
+	Author  string
+	// CreatedAt is when the comment was written. UpdatedAt is when its
+	// body last changed, and equals CreatedAt for a comment never edited.
+	// The two differ for an edited comment, and the difference matters
+	// wherever a decision was made about the text: an authorization the
+	// original wording earned does not extend to a replacement.
+	// UpdatedAt is empty on forges that do not report it.
 	CreatedAt string
+	UpdatedAt string
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,

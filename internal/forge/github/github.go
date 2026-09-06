@@ -2866,6 +2866,7 @@ func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, 
 				Login string `json:"login"`
 			} `json:"user"`
 			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding issue comments page %d: %w", page, err)
@@ -2879,6 +2880,7 @@ func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, 
 				Body:      r.Body,
 				Author:    r.User.Login,
 				CreatedAt: r.CreatedAt,
+				UpdatedAt: r.UpdatedAt,
 			})
 		}
 
