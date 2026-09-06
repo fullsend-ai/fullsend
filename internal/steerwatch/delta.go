@@ -430,13 +430,22 @@ func (w *Watcher) buildText(runs []forge.WorkflowRun, d delta) (string, int, map
 	budget := maxDeltaBytes - head.Len()
 	dropped := false
 	for _, item := range d.amendments {
-		rendered := renderAmendment(item)
+		rendered, clipped := renderAmendment(item)
 		if dropped || amend.Len()+len(rendered) > budget {
 			dropped = true
 			for _, id := range item.RunIDs {
 				excluded[id] = true
 			}
 			continue
+		}
+		if clipped {
+			// Delivered, but not whole. The agent acts on what arrived;
+			// the run is still not receipted, because the part that was
+			// cut may be the part that asked for something, and a receipt
+			// would tell the queued run to skip it.
+			for _, id := range item.RunIDs {
+				excluded[id] = true
+			}
 		}
 		amend.WriteString(rendered)
 	}
@@ -454,7 +463,8 @@ func (w *Watcher) buildText(runs []forge.WorkflowRun, d delta) (string, int, map
 			ctxBody.WriteString(renderContext(item))
 		}
 		remaining := maxDeltaBytes - b.Len() - len(contextOpen) - len(contextClose)
-		body := truncate(ctxBody.String(), remaining)
+		// Context is not receipted, so its clipping is not tracked.
+		body, _ := truncate(ctxBody.String(), remaining)
 		b.WriteString(contextOpen)
 		b.WriteString(body)
 		b.WriteString(contextClose)
@@ -477,15 +487,20 @@ const (
 // whole would cost its run's receipt.
 const maxAmendmentBytes = 4096
 
-func renderAmendment(item deltaItem) string {
-	body := truncate(item.Body, maxAmendmentBytes)
+// renderAmendment renders one amendment and reports whether it was clipped
+// to fit maxAmendmentBytes. A clipped amendment reaches the agent without
+// part of its text — possibly the sentence that asked for something — so
+// the caller must not receipt the run that carried it.
+func renderAmendment(item deltaItem) (string, bool) {
+	body, bodyClipped := truncate(item.Body, maxAmendmentBytes)
 	switch {
 	case item.Instruction != "":
-		return fmt.Sprintf("Instruction from @%s: %s\n\n", item.Author, truncate(item.Instruction, maxAmendmentBytes))
+		instruction, clipped := truncate(item.Instruction, maxAmendmentBytes)
+		return fmt.Sprintf("Instruction from @%s: %s\n\n", item.Author, instruction), clipped
 	case item.Kind == "review":
-		return fmt.Sprintf("Review from @%s (%s):\n%s\n\n", item.Author, item.State, body)
+		return fmt.Sprintf("Review from @%s (%s):\n%s\n\n", item.Author, item.State, body), bodyClipped
 	default:
-		return fmt.Sprintf("Comment from @%s:\n%s\n\n", item.Author, body)
+		return fmt.Sprintf("Comment from @%s:\n%s\n\n", item.Author, body), bodyClipped
 	}
 }
 
@@ -520,24 +535,29 @@ func joinLogins(m map[string]bool) string {
 	return strings.Join(keys, ", ")
 }
 
-// truncate caps s at max bytes without splitting a rune. A non-positive
+// truncate caps s at max bytes without splitting a rune and reports
+// whether anything was cut. Callers that receipt work need that second
+// value: a clipped amendment was delivered incomplete, so the run behind it
+// has not been fully acted on.
+//
+// A non-positive
 // budget yields the empty string: the `len(s) <= max` test below is false
 // for every negative max, which used to fall through to slicing with a
 // negative bound and panic. The caller subtracts the amendments and the
 // context delimiters from maxDeltaBytes, so the budget it passes is not
 // guaranteed to be positive.
-func truncate(s string, max int) string {
+func truncate(s string, max int) (string, bool) {
 	if max <= 0 {
-		return ""
+		return "", s != ""
 	}
 	if len(s) <= max {
-		return s
+		return s, false
 	}
 	cut := max
 	for cut > 0 && !utf8Start(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "\n[truncated]"
+	return s[:cut] + "\n[truncated]", true
 }
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
