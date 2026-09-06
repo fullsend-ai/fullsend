@@ -142,7 +142,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	if useFork {
 		return forkAndCommit(ctx, client, printer,
 			owner, repo, scaffoldBranch, defaultBranch,
-			commitMsg, prTitle, prBody, files)
+			commitMsg, prTitle, prBody, files, realClock{}, forkWaitTimeout)
 	}
 
 	// Upstream path: try to push directly, fail clearly on 403.
@@ -152,9 +152,12 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 }
 
 // forkAndCommit creates a fork, waits for it to be ready, then commits.
+// The clk and timeout parameters are threaded through to waitForFork so
+// callers (and tests) above this level can inject a fake clock and shorter
+// deadline without wall-clock delays.
 func forkAndCommit(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile) (bool, error) {
+	files []forge.TreeFile, clk clock, timeout time.Duration) (bool, error) {
 
 	printer.StepStart("Creating fork")
 	forkOwner, forkRepo, err := client.CreateFork(ctx, owner, repo)
@@ -164,7 +167,7 @@ func forkAndCommit(ctx context.Context, client forge.Client, printer *ui.Printer
 	}
 	printer.StepDone(fmt.Sprintf("Fork created: %s/%s", forkOwner, forkRepo))
 
-	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo, realClock{}, forkWaitTimeout); err != nil {
+	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo, clk, timeout); err != nil {
 		return false, err
 	}
 
