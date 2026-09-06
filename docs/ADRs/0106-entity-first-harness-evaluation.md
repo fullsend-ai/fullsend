@@ -20,6 +20,10 @@ Date: 2026-09-03
 
 Accepted
 
+Partially supersedes [ADR 0061](0061-harness-cel-dispatch.md): a
+`NormalizedEvent` is no longer the sole CEL input to a harness trigger. ADR
+0061's remaining dispatch decisions remain current.
+
 Partially supersedes [ADR 0063](0063-polling-based-work-discovery.md): polling
 no longer has to reconstruct changes as `NormalizedEvent` values. ADR 0063's
 poll command, driver architecture, per-repo scope, and coordination decisions

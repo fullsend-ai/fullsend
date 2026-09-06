@@ -299,12 +299,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
-  dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
-  express threading on `transition.comment.id` / `parent_id` (`parent_id` always
-  names the thread root), reuse CEL harness triggers and ADR 0054 authorization,
-  and write back through host/post-script or host-side API servers via
-  `conversation.Client` — not a separate always-on chat bot and not an
-  extension of `forge.Client`
+  dispatch as resolved entities with `entity.kind: conversation`; when a
+  prompting event is available, it expresses threading on
+  `transition.comment.id` / `parent_id` (`parent_id` always names the thread
+  root). They reuse CEL harness triggers and ADR 0054 authorization, and write
+  back through host/post-script or host-side API servers via
+  `conversation.Client` — not a separate always-on chat bot and not an extension
+  of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
 - Dispatch authorization gate: all agent dispatch paths — slash commands
   and automatic event triggers — require authorization before dispatching.
