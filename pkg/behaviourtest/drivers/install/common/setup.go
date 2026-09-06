@@ -84,6 +84,9 @@ func RunReposInstall(
 	}
 	manifest := f.Name()
 	f.Close()
+	// Remove the empty file so repos install bootstraps a v1 manifest;
+	// an existing empty file parses as version 0 and fails validation.
+	os.Remove(manifest)
 	defer os.Remove(manifest)
 
 	args := []string{
