@@ -60,8 +60,19 @@ composition and how each field type is merged (scalar override, list
 append, map merge, struct replace).
 
 For example, if `mergeBaseIntoChild` gains handling for a new
-`foo_script` scalar field, then `mergeForgeConfigInto` must also
+`foo_script` scalar field, then `mergeForgeConfig` must also
 handle `foo_script` if it appears inside `ForgeConfig`.
+
+> **Note — resolve before merge.** Each base layer's forge and overlay
+> blocks are resolved (flattened into top-level fields) by
+> `resolveBaseForgeAndOverlays` in `loadBaseChain` **before** the base
+> is merged into the child via `mergeBaseIntoChild`
+> ([#6798](https://github.com/fullsend-ai/fullsend/issues/6798)).
+> This ensures base forge/overlay values participate in the merge as
+> top-level fields, not as forge/overlay blocks that would compete with
+> the child's own blocks during the final `ResolveForge`/`ResolveOverlays`.
+> When adding a new field to `ForgeConfig`, ensure `mergeForgeConfig`
+> handles it (the resolve step delegates to `mergeForgeConfig`).
 
 > **Note — removed counterparts.** Earlier versions of this document
 > referenced path-rewriting functions in `internal/cli/migrate.go` and
@@ -83,12 +94,9 @@ structs:
    composition.
 3. **Update `mergeForgeConfig`** if the field can appear under
    `forge.<platform>` blocks.
-4. **Update `mergeForgeConfigInto`** if the field appears in
-   `ForgeConfig` and participates in `base:` composition of forge
-   blocks.
-5. **Update tests** in `compose_test.go` and `forge_test.go` to cover
+4. **Update tests** in `compose_test.go` and `forge_test.go` to cover
    the new field in all affected functions.
-6. **Update the [Harness Field Reference](harness-fields.md)** — If the
+5. **Update the [Harness Field Reference](harness-fields.md)** — If the
    change adds a new field to `ForgeConfig`, moves a field between
    classification tiers (top-level-only → forge-overridable or vice
    versa), or changes merge semantics, update the relevant tables:
