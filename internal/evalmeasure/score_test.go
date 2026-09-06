@@ -21,6 +21,7 @@ func TestScoreFitness_CompletePass(t *testing.T) {
 	assert.Contains(t, r.Explanation, "span_tree=pass")
 	assert.Contains(t, r.Explanation, "cost_tools_turns=pass")
 	assert.Contains(t, r.Explanation, "exit=pass")
+	assert.Contains(t, r.Explanation, "forge_interaction=pass")
 	assert.NotContains(t, r.Explanation, "=fail")
 }
 
@@ -266,6 +267,95 @@ func TestScoreFitness_AgentSpansWithoutRunSkipped(t *testing.T) {
 	r := ScoreFitness(tr)
 	assert.Equal(t, LabelSkip, r.Label)
 	assert.Contains(t, r.Explanation, "root run span missing")
+}
+
+func TestScoreFitness_NoForgeInteractionFails(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "ffffffffffffffffffffffffffffffff",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":             "triage",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.operation.name":      "invoke_agent",
+					"fullsend.work_item_id":      "acme/demo#1",
+					"exit_code":                  int64(0),
+					"gen_ai.request.model":       "claude-opus-4-6",
+					"gen_ai.usage.input_tokens":  int64(100),
+					"gen_ai.usage.output_tokens": int64(20),
+					"fullsend.cost_usd":          0.54,
+					"fullsend.tool_calls":        int64(0),
+					"fullsend.num_turns":         int64(0),
+					"fullsend.iterations":        int64(1),
+				},
+			},
+			{Name: "sandbox_create"},
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":              "anthropic",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.request.model":       "claude-opus-4-6",
+					"gen_ai.usage.input_tokens":  int64(100),
+					"gen_ai.usage.output_tokens": int64(20),
+					"fullsend.cost_usd":          0.54,
+					"fullsend.tool_calls":        int64(0),
+					"exit_code":                  int64(0),
+				},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelFail, r.Label)
+	assert.Less(t, r.Value, 1.0)
+	assert.Contains(t, r.Explanation, "forge_interaction=fail")
+	assert.Contains(t, r.Explanation, "missing: forge_interaction")
+}
+
+func TestScoreFitness_ForgeInteractionOnAgentSpanPasses(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":             "triage",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.operation.name":      "invoke_agent",
+					"fullsend.work_item_id":      "acme/demo#1",
+					"exit_code":                  int64(0),
+					"gen_ai.request.model":       "claude-opus-4-6",
+					"gen_ai.usage.input_tokens":  int64(100),
+					"gen_ai.usage.output_tokens": int64(20),
+					"fullsend.cost_usd":          0.54,
+					"fullsend.tool_calls":        int64(0),
+					"fullsend.num_turns":         int64(8),
+					"fullsend.iterations":        int64(1),
+				},
+			},
+			{Name: "sandbox_create"},
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":              "anthropic",
+					"gen_ai.agent.name":          "triage",
+					"gen_ai.request.model":       "claude-opus-4-6",
+					"gen_ai.usage.input_tokens":  int64(100),
+					"gen_ai.usage.output_tokens": int64(20),
+					"fullsend.cost_usd":          0.54,
+					"fullsend.tool_calls":        int64(5),
+					"exit_code":                  int64(0),
+				},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelPass, r.Label)
+	assert.Equal(t, 1.0, r.Value)
+	assert.Contains(t, r.Explanation, "forge_interaction=pass")
 }
 
 func TestScoreFitness_ProviderNameAccepted(t *testing.T) {
