@@ -66,6 +66,12 @@ type GrantedScope struct {
 	RepoSelection  string
 	AppID          string
 	InstallationID int64
+
+	// AppPermissions holds the GitHub App's configured permissions,
+	// fetched via GET /app. Used to compute which permissions were
+	// dropped by role-level downscoping. Nil when the fetch fails
+	// (soft failure — token minting proceeds regardless).
+	AppPermissions map[string]string
 }
 
 // canonicalRolePermissions defines the minimum GitHub App permissions per agent role.
@@ -426,6 +432,43 @@ func findOrgInstallationDetails(ctx context.Context, githubBaseURL, jwt, org str
 	return inst, nil
 }
 
+// appResponse is the (partial) response from GET /app.
+type appResponse struct {
+	Permissions map[string]string `json:"permissions"`
+}
+
+// GetAppPermissions returns the GitHub App's configured permissions via
+// GET /app. The caller supplies an App JWT (not an installation token).
+// Used to determine which permissions the app has so the handler can
+// log which ones were dropped by role-level downscoping.
+func GetAppPermissions(ctx context.Context, githubBaseURL, jwt string) (map[string]string, error) {
+	reqURL := fmt.Sprintf("%s/app", githubBaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating app permissions request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
+
+	resp, err := mintHTTP(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting app permissions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("getting app permissions returned status %d", resp.StatusCode)
+	}
+
+	var appResp appResponse
+	if err := json.NewDecoder(resp.Body).Decode(&appResp); err != nil {
+		return nil, fmt.Errorf("decoding app permissions: %w", err)
+	}
+	return appResp.Permissions, nil
+}
+
 // variableResponse is the JSON shape for GET /orgs/{org}/actions/variables/{name}
 // and GET /repos/{owner}/{repo}/actions/variables/{name} (identical schema).
 type variableResponse struct {
@@ -707,6 +750,9 @@ func effectiveInstallationPermissions(role string, requested, granted map[string
 }
 
 func copyPermissions(perms map[string]string) map[string]string {
+	if perms == nil {
+		return nil
+	}
 	out := make(map[string]string, len(perms))
 	for k, v := range perms {
 		out[k] = v
