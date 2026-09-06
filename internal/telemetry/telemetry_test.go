@@ -193,6 +193,24 @@ func TestSpanLimits(t *testing.T) {
 		"a valid specific var wins regardless of the generic one")
 }
 
+func TestFreeTextAttrValueLenLimit(t *testing.T) {
+	pinOTELEnv(t)
+	t.Setenv(ContentCaptureEnvVar, "")
+	assert.Equal(t, MaxSpanAttrValueLen, FreeTextAttrValueLenLimit())
+
+	t.Setenv(ContentCaptureEnvVar, "true")
+	assert.Equal(t, MaxSpanAttrValueLen, FreeTextAttrValueLenLimit(),
+		"content capture must not lift free-text call-site bound")
+	assert.Equal(t, -1, spanLimits().AttributeValueLengthLimit,
+		"precondition: SpanLimits is unlimited under content capture")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "128")
+	assert.Equal(t, 128, FreeTextAttrValueLenLimit(), "operator finite limit wins")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "-1")
+	assert.Equal(t, -1, FreeTextAttrValueLenLimit(), "operator -1 stays unlimited")
+}
+
 // TestSetup_ContentCaptureOperatorLimitWarning pins the collision warning:
 // when the Level 3 gate is on but an operator's finite attribute value
 // length limit is configured, the SDK will cut gen_ai.output.messages
@@ -977,4 +995,18 @@ func TestParentSampledProcessor_AllowsSampledTrace(t *testing.T) {
 	root.End()
 
 	assert.ElementsMatch(t, []string{"root", "child"}, spy.ended)
+}
+
+func TestOTLPEnabledAndValidate(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	assert.False(t, OTLPEnabled())
+	require.NoError(t, ValidateOTLPEndpoints())
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	assert.True(t, OTLPEnabled())
+	require.NoError(t, ValidateOTLPEndpoints())
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "not-a-url")
+	require.Error(t, ValidateOTLPEndpoints())
 }
