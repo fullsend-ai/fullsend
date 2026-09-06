@@ -26,11 +26,13 @@ func (f *fakeMintDriver) Teardown(_ context.Context) error {
 	return f.teardownErr
 }
 
-// fakeComposedClient satisfies forge.Client for composed driver tests.
+// fakeComposedClient satisfies forge.Client and forge.AllRepoLister
+// for composed driver tests.
 type fakeComposedClient struct {
 	forge.Client
 	deleteRepoErr error
 	deletedRepos  []string
+	allRepos      []forge.Repository
 }
 
 func (f *fakeComposedClient) DeleteRepo(_ context.Context, _, repo string) error {
@@ -39,6 +41,10 @@ func (f *fakeComposedClient) DeleteRepo(_ context.Context, _, repo string) error
 	}
 	f.deletedRepos = append(f.deletedRepos, repo)
 	return nil
+}
+
+func (f *fakeComposedClient) ListAllOrgRepos(_ context.Context, _ string) ([]forge.Repository, error) {
+	return f.allRepos, nil
 }
 
 func TestNewComposedDriver_ReturnsDriver(t *testing.T) {
@@ -102,41 +108,62 @@ func TestComposedDriver_MarkDeleted(t *testing.T) {
 	assert.False(t, cd.created[name], "marked repo should be removed from tracking")
 }
 
-func TestComposedDriver_Finalize_SweepsOrphans(t *testing.T) {
+func TestComposedDriver_Finalize_PrunesOldRuns(t *testing.T) {
 	if KeepRepos() {
-		t.Skip("KeepRepos() hardcoded to true for debugging")
+		t.Skip("KeepRepos() is true")
 	}
-	client := &fakeComposedClient{}
+
+	// Simulate 14 runs × 16 repos = 224 repos, over the 200 threshold.
+	// Oldest 2 runs should be pruned (224 - 16 = 208 ≥ 200, 208 - 16 = 192 < 200).
+	var repos []forge.Repository
+	for i := 1; i <= 14; i++ {
+		ts := fmt.Sprintf("20260905T%02d0000", i)
+		for j := 0; j < 16; j++ {
+			repos = append(repos, forge.Repository{
+				Name: fmt.Sprintf("bt-%s-%08x", ts, j),
+			})
+		}
+	}
+
+	client := &fakeComposedClient{allRepos: repos}
 	mint := &fakeMintDriver{}
-	e := &fakeEnsurer{}
 
-	d := newComposedDriver("org", mint, e, client, t.Logf)
+	d := newComposedDriver("org", mint, &fakeEnsurer{}, client, t.Logf)
 
-	name, err := d.CreateRepo(context.Background(), "orphan")
+	err := d.Finalize(context.Background())
 	require.NoError(t, err)
-	_ = name
 
-	err = d.Finalize(context.Background())
-	require.NoError(t, err)
-	assert.Contains(t, client.deletedRepos, "bt-fake-orphan",
-		"Finalize should delete repos not marked as deleted")
+	// Only run 1 (ts=01) should be deleted. Run 2 can't be deleted (208-16=192 < 200).
+	assert.Len(t, client.deletedRepos, 16, "should delete exactly one run (16 repos)")
+	for _, name := range client.deletedRepos {
+		assert.Contains(t, name, "20260905T010000", "deleted repos should be from the oldest run")
+	}
 	assert.True(t, mint.teardownCalled)
 }
 
-func TestComposedDriver_Finalize_SkipsMarkedRepos(t *testing.T) {
-	client := &fakeComposedClient{}
-	e := &fakeEnsurer{}
+func TestComposedDriver_Finalize_NoPruneUnderThreshold(t *testing.T) {
+	if KeepRepos() {
+		t.Skip("KeepRepos() is true")
+	}
 
-	d := newComposedDriver("org", &fakeMintDriver{}, e, client, t.Logf)
+	// 10 runs × 16 repos = 160 repos, under threshold.
+	var repos []forge.Repository
+	for i := 1; i <= 10; i++ {
+		ts := fmt.Sprintf("20260905T%02d0000", i)
+		for j := 0; j < 16; j++ {
+			repos = append(repos, forge.Repository{
+				Name: fmt.Sprintf("bt-%s-%08x", ts, j),
+			})
+		}
+	}
 
-	name, err := d.CreateRepo(context.Background(), "cleaned")
+	client := &fakeComposedClient{allRepos: repos}
+
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+
+	err := d.Finalize(context.Background())
 	require.NoError(t, err)
-
-	d.MarkDeleted(name)
-
-	err = d.Finalize(context.Background())
-	require.NoError(t, err)
-	assert.Empty(t, client.deletedRepos, "Finalize should not re-delete marked repos")
+	assert.Empty(t, client.deletedRepos, "should not delete any repos when under threshold")
 }
 
 func TestComposedDriver_Finalize_KeepRepos(t *testing.T) {
@@ -168,6 +195,30 @@ func TestComposedDriver_Finalize_NilMint(t *testing.T) {
 
 	err := d.Finalize(context.Background())
 	require.NoError(t, err)
+}
+
+func TestComposedDriver_Finalize_IgnoresNonBTRepos(t *testing.T) {
+	if KeepRepos() {
+		t.Skip("KeepRepos() is true")
+	}
+
+	repos := []forge.Repository{
+		{Name: "some-other-repo"},
+		{Name: "another-repo"},
+	}
+	// Add enough bt-* repos to exceed threshold, but non-bt repos shouldn't count.
+	for i := 0; i < 16; i++ {
+		repos = append(repos, forge.Repository{
+			Name: fmt.Sprintf("bt-20260905T010000-%08x", i),
+		})
+	}
+
+	client := &fakeComposedClient{allRepos: repos}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+
+	err := d.Finalize(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, client.deletedRepos, "16 bt-* repos is under threshold, should not prune")
 }
 
 // failingEnsurer always returns an error.
