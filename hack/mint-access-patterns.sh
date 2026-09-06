@@ -60,9 +60,18 @@ COUNT_FAIL=0
 COUNT_ERROR=0
 GH_API_TOKEN=""
 GH_CRED_HELPER=""
+TMPROOT=""
+REUSABLE_BRANCH=""
+ACTIVE_BRANCH_REPOS=()
+ACTIVE_BRANCH_NAMES=()
 
 usage() {
-  sed -n '2,40p' "$0" | sed 's/^# \?//'
+  sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -123,6 +132,21 @@ case "$MODE" in
     ;;
 esac
 
+case "$TIMEOUT" in
+  '' | *[!0-9]*) die "--timeout must be a positive integer (got: ${TIMEOUT})" ;;
+esac
+((TIMEOUT > 0)) || die "--timeout must be greater than zero"
+
+case "$POLL_INTERVAL" in
+  '' | *[!0-9]*) die "--poll-interval must be a positive integer (got: ${POLL_INTERVAL})" ;;
+esac
+((POLL_INTERVAL > 0)) || die "--poll-interval must be greater than zero"
+
+case "$ROLE_FILTER" in
+  '' | triage | coder | review | retro | prioritize | fullsend | e2e) ;;
+  *) die "--role must be one of triage, coder, review, retro, prioritize, fullsend, or e2e (got: ${ROLE_FILTER})" ;;
+esac
+
 if [[ -z "$MINT_URL" ]]; then
   echo "ERROR: --mint-url or FULLSEND_MINT_URL is required" >&2
   exit 2
@@ -147,6 +171,37 @@ fi
 # Credential helper for HTTPS remotes (same pattern as eval/scripts/setup-fixture.sh).
 GH_CRED_HELPER="!f(){ echo \"password=${GH_API_TOKEN}\"; };f"
 
+TMPROOT=$(mktemp -d)
+REUSABLE_BRANCH="mint-ap-reusable-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+
+register_branch() {
+  ACTIVE_BRANCH_REPOS+=("$1")
+  ACTIVE_BRANCH_NAMES+=("$2")
+}
+
+unregister_branch() {
+  local repo="$1" branch="$2" i
+  for i in "${!ACTIVE_BRANCH_NAMES[@]}"; do
+    if [[ "${ACTIVE_BRANCH_REPOS[$i]}" == "$repo" && "${ACTIVE_BRANCH_NAMES[$i]}" == "$branch" ]]; then
+      unset 'ACTIVE_BRANCH_REPOS[i]' 'ACTIVE_BRANCH_NAMES[i]'
+    fi
+  done
+}
+
+# Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317
+cleanup() {
+  local i
+  for i in "${!ACTIVE_BRANCH_NAMES[@]}"; do
+    gh api -X DELETE "/repos/${ACTIVE_BRANCH_REPOS[$i]}/git/refs/heads/${ACTIVE_BRANCH_NAMES[$i]}" \
+      --silent >/dev/null 2>&1 || true
+  done
+  rm -rf "$TMPROOT"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # --- colors (status token only) ---
 C_PASS=""
 C_FAIL=""
@@ -170,7 +225,7 @@ ensure_repo() {
   if gh api "/repos/${full}" --silent &>/dev/null; then
     return 0
   fi
-  echo "creating repo ${full}"
+  echo "creating repo ${full}" >&2
   if gh repo create "${full}" --public --add-readme --description "mint access-pattern test fixture" &>/dev/null; then
     return 0
   fi
@@ -213,65 +268,39 @@ fullsend_mint() {
 
 workflow_host_add() {
   local repo="$1"
-  echo "enrollment: workflow-host add ${repo}"
-  if fullsend_mint workflow-host add "${repo}" --project="${GCP_PROJECT}" --region="${GCP_REGION}" 2>/dev/null; then
-    return 0
-  fi
-  # Fallback when CLI lacks workflow-host (pre-#5916): merge into WORKFLOW_HOST_REPOS.
-  echo "enrollment: workflow-host CLI unavailable; merging WORKFLOW_HOST_REPOS via gcloud"
-  if ! command -v gcloud &>/dev/null; then
-    echo "ERROR: gcloud required for WORKFLOW_HOST_REPOS fallback" >&2
-    return 1
-  fi
-  local traffic_rev current merged
-  traffic_rev=$(gcloud run services describe fullsend-mint \
-    --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
-    --format='value(status.traffic[0].revisionName)')
-  current=$(gcloud run revisions describe "${traffic_rev}" \
-    --project="${GCP_PROJECT}" --region="${GCP_REGION}" --format=json \
-    | jq -r '.spec.containers[0].env[]? | select(.name=="WORKFLOW_HOST_REPOS") | .value // empty')
-  merged=$(
-    {
-      [[ -n "$current" ]] && tr ',' '\n' <<<"$current"
-      printf '%s\n' "${repo}"
-    } | awk 'NF && !seen[$0]++' | paste -sd, -
-  )
-  echo "enrollment: setting WORKFLOW_HOST_REPOS=${merged}"
-  gcloud run services update fullsend-mint \
-    --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
-    --update-env-vars="WORKFLOW_HOST_REPOS=${merged}" \
-    --quiet
+  echo "enrollment: workflow-host add ${repo}" >&2
+  fullsend_mint workflow-host add "${repo}" --project="${GCP_PROJECT}" --region="${GCP_REGION}"
 }
 
 configure_mint_enrollment() {
-  echo "enrollment: configuring mint for mode=${MODE} project=${GCP_PROJECT} region=${GCP_REGION}"
+  echo "enrollment: configuring mint for mode=${MODE} project=${GCP_PROJECT} region=${GCP_REGION}" >&2
   case "$MODE" in
     per-repo)
-      echo "enrollment: unenroll org ${ORG}"
-      fullsend_mint unenroll "${ORG}" --project="${GCP_PROJECT}" --region="${GCP_REGION}" --yolo || true
-      echo "enrollment: enroll repo ${ORG}/mint-test"
+      echo "enrollment: unenroll org ${ORG}" >&2
+      fullsend_mint unenroll "${ORG}" --project="${GCP_PROJECT}" --region="${GCP_REGION}" --yolo
+      echo "enrollment: enroll repo ${ORG}/mint-test" >&2
       fullsend_mint enroll "${ORG}/mint-test" --project="${GCP_PROJECT}" --region="${GCP_REGION}"
       workflow_host_add "${UPSTREAM_WORKFLOW_HOST}"
       workflow_host_add "${ORG}/${WORKFLOW_REPO}"
       ;;
     per-org)
-      echo "enrollment: unenroll repo ${ORG}/mint-test"
-      fullsend_mint unenroll "${ORG}/mint-test" --project="${GCP_PROJECT}" --region="${GCP_REGION}" --yolo || true
-      echo "enrollment: enroll org ${ORG}"
+      echo "enrollment: unenroll repo ${ORG}/mint-test" >&2
+      fullsend_mint unenroll "${ORG}/mint-test" --project="${GCP_PROJECT}" --region="${GCP_REGION}" --yolo
+      echo "enrollment: enroll org ${ORG}" >&2
       fullsend_mint enroll "${ORG}" --project="${GCP_PROJECT}" --region="${GCP_REGION}"
       workflow_host_add "${UPSTREAM_WORKFLOW_HOST}"
       workflow_host_add "${ORG}/${WORKFLOW_REPO}"
       ;;
     both)
-      echo "enrollment: enroll org ${ORG}"
+      echo "enrollment: enroll org ${ORG}" >&2
       fullsend_mint enroll "${ORG}" --project="${GCP_PROJECT}" --region="${GCP_REGION}"
-      echo "enrollment: enroll repo ${ORG}/mint-test"
+      echo "enrollment: enroll repo ${ORG}/mint-test" >&2
       fullsend_mint enroll "${ORG}/mint-test" --project="${GCP_PROJECT}" --region="${GCP_REGION}"
       workflow_host_add "${UPSTREAM_WORKFLOW_HOST}"
       workflow_host_add "${ORG}/${WORKFLOW_REPO}"
       ;;
   esac
-  echo "enrollment: done"
+  echo "enrollment: done" >&2
 }
 
 # Mint curl body used by reusable + in-repo / .fullsend direct workflows.
@@ -284,12 +313,18 @@ mint_curl_run_script() {
           finish() { exit 0; }
           trap finish EXIT
 
-          OIDC_TOKEN=$(curl -sSf --retry 3 --retry-delay 2 --retry-all-errors \
+          if ! OIDC_RESPONSE=$(curl -sSf --retry 3 --retry-delay 2 --retry-all-errors \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint" | jq -r '.value' || true)
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint"); then
+            jq -n '{outcome:"error",error:"oidc_transport"}' > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            exit 0
+          fi
+          OIDC_TOKEN=$(jq -r '.value // empty' <<<"$OIDC_RESPONSE" 2>/dev/null || true)
           if [[ -z "$OIDC_TOKEN" || "$OIDC_TOKEN" == "null" ]]; then
             echo "Failed to obtain OIDC token" >&2
-            jq -n '{outcome:"denied",error:"oidc"}' > mint-ap-result.json
+            jq -n '{outcome:"error",error:"oidc_response"}' > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
             exit 0
           fi
           echo "::add-mask::$OIDC_TOKEN"
@@ -311,31 +346,50 @@ mint_curl_run_script() {
             fi
           fi
 
-          HTTP_CODE=$(curl -sS --retry 2 --retry-delay 2 \
+          if ! HTTP_CODE=$(curl -sS --retry 2 --retry-delay 2 --retry-all-errors \
             -o mint-ap-response.json -w '%{http_code}' \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$BODY" \
-            "${MINT_URL}/v1/token" || true)
-
-          if [[ ! "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
-            echo "Mint denied/failed HTTP $HTTP_CODE"
-            jq -n --arg code "$HTTP_CODE" '{outcome:"denied",http_status:($code|tonumber)}' \
-              > mint-ap-result.json
+            "${MINT_URL}/v1/token"); then
+            jq -n '{outcome:"error",error:"mint_transport"}' > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
             exit 0
           fi
 
-          TOKEN=$(jq -r '.token // empty' mint-ap-response.json)
+          if [[ "$HTTP_CODE" == "403" ]]; then
+            echo "Mint denied HTTP $HTTP_CODE"
+            jq -n --arg code "$HTTP_CODE" '{outcome:"denied",http_status:($code|tonumber)}' \
+              > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            exit 0
+          fi
+          if [[ ! "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Mint failed HTTP $HTTP_CODE" >&2
+            jq -n --arg code "$HTTP_CODE" '{outcome:"error",error:"mint_http",http_status:($code|tonumber)}' \
+              > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            exit 0
+          fi
+
+          if ! TOKEN=$(jq -er '.token | select(type == "string" and length > 0)' mint-ap-response.json); then
+            TOKEN=""
+          fi
           if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
             echo "Mint response missing token" >&2
-            jq -n '{outcome:"denied",error:"no_token"}' > mint-ap-result.json
+            jq -n '{outcome:"error",error:"mint_response"}' > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
             exit 0
           fi
           echo "::add-mask::$TOKEN"
 
-          SELECTION=$(jq -r '.repository_selection // empty' mint-ap-response.json)
-          REPOS=$(jq -c '.granted_repos // []' mint-ap-response.json)
-          PERMS=$(jq -c '.granted_permissions // {}' mint-ap-response.json)
+          if ! SELECTION=$(jq -er '.repository_selection | select(type == "string")' mint-ap-response.json) ||
+            ! REPOS=$(jq -ec '.granted_repos // [] | select(type == "array") | sort' mint-ap-response.json) ||
+            ! PERMS=$(jq -ec '.granted_permissions // {} | select(type == "object")' mint-ap-response.json); then
+            jq -n '{outcome:"error",error:"mint_scope_response"}' > mint-ap-result.json
+            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            exit 0
+          fi
 
           jq -n \
             --arg outcome minted \
@@ -345,41 +399,56 @@ mint_curl_run_script() {
             '{outcome:$outcome, repository_selection:$selection, granted_repos:$repos, granted_permissions:$perms}' \
             > mint-ap-result.json
 
-          echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+          case "$ROLE" in
+            triage) EXPECTED_PERMS='{"contents":"read","issues":"write","metadata":"read"}' ;;
+            coder) EXPECTED_PERMS='{"checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write"}' ;;
+            review) EXPECTED_PERMS='{"checks":"read","contents":"read","issues":"write","metadata":"read","pull_requests":"write"}' ;;
+            retro) EXPECTED_PERMS='{"actions":"read","contents":"read","issues":"write","metadata":"read","pull_requests":"write"}' ;;
+            prioritize) EXPECTED_PERMS='{"contents":"read","issues":"write","metadata":"read","organization_projects":"write"}' ;;
+            fullsend) EXPECTED_PERMS='{"actions":"write","actions_variables":"read","contents":"write","metadata":"read","pull_requests":"write","workflows":"write"}' ;;
+            e2e) EXPECTED_PERMS='{"actions":"write","actions_variables":"write","administration":"write","contents":"write","issues":"write","members":"write","metadata":"read","organization_actions_variables":"write","organization_administration":"write","pull_requests":"write","secrets":"write","workflows":"write"}' ;;
+          esac
 
+          SCOPE_VALID=true
           if [[ -n "$EXPECTED_SCOPE_REPO" ]]; then
             if [[ "$SELECTION" != "selected" ]]; then
               echo "Expected repository_selection=selected, got '${SELECTION}'" >&2
-              jq -n \
-                --arg selection "$SELECTION" \
-                --argjson repos "$REPOS" \
-                --argjson perms "$PERMS" \
-                '{outcome:"denied",error:"scope",repository_selection:$selection,granted_repos:$repos,granted_permissions:$perms}' \
-                > mint-ap-result.json
-              exit 0
+              SCOPE_VALID=false
+            elif ! jq -e --arg want "$EXPECTED_SCOPE_REPO" \
+              '.granted_repos == [$want]' mint-ap-result.json >/dev/null; then
+              echo "Expected granted_repos to equal [$EXPECTED_SCOPE_REPO], got $REPOS" >&2
+              SCOPE_VALID=false
             fi
-            if ! jq -e --arg want "$EXPECTED_SCOPE_REPO" \
-              '.granted_repos | index($want) != null' mint-ap-result.json >/dev/null; then
-              echo "Expected granted_repos to contain $EXPECTED_SCOPE_REPO, got $REPOS" >&2
-              jq -n \
-                --arg selection "$SELECTION" \
-                --argjson repos "$REPOS" \
-                --argjson perms "$PERMS" \
-                '{outcome:"denied",error:"scope",repository_selection:$selection,granted_repos:$repos,granted_permissions:$perms}' \
-                > mint-ap-result.json
-              exit 0
-            fi
+          elif jq -e 'length == 1 and .[0] == "*"' <<<"${REPOS_JSON:-[]}" >/dev/null 2>&1 &&
+            { [[ "$SELECTION" != "all" ]] || [[ "$REPOS" != "[]" ]]; }; then
+            echo "Expected installation-wide scope with no explicit repositories, got selection=$SELECTION repos=$REPOS" >&2
+            SCOPE_VALID=false
           fi
+          if ! jq -e --argjson expected "$EXPECTED_PERMS" '.granted_permissions == $expected' \
+            mint-ap-result.json >/dev/null; then
+            echo "Granted permissions do not exactly match role $ROLE" >&2
+            SCOPE_VALID=false
+          fi
+          if [[ "$SCOPE_VALID" != true ]]; then
+            jq -n \
+              --arg selection "$SELECTION" \
+              --argjson repos "$REPOS" \
+              --argjson perms "$PERMS" \
+              '{outcome:"error",error:"scope",repository_selection:$selection,granted_repos:$repos,granted_permissions:$perms}' \
+              > mint-ap-result.json
+          fi
+          echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
 RUNSCRIPT
 }
 
-# Write reusable workflow onto {org}/fullsend main (idempotent content push).
+# Write the reusable workflow to a disposable branch removed by cleanup().
 ensure_fullsend_reusable() {
   local full_repo="${ORG}/${WORKFLOW_REPO}"
   local work tmp
-  echo "setup: ensuring reusable workflow on ${full_repo}"
-  work=$(mktemp -d)
-  tmp=$(mktemp)
+  echo "setup: ensuring reusable workflow on ${full_repo}" >&2
+  work=$(mktemp -d "${TMPROOT}/reusable.XXXXXX")
+  tmp=$(mktemp "${TMPROOT}/reusable-error.XXXXXX")
+  register_branch "$full_repo" "$REUSABLE_BRANCH"
   (
     set -euo pipefail
     git -c "credential.helper=${GH_CRED_HELPER}" \
@@ -445,13 +514,9 @@ HDR
 FTR
     } >.github/workflows/mint-ap-reusable.yml
     git add .github/workflows/mint-ap-reusable.yml
-    if git diff --cached --quiet; then
-      echo "setup: reusable workflow already up to date"
-    else
-      git commit -m "mint-ap: sync reusable workflow" --quiet
-      git push origin HEAD:main --quiet
-      echo "setup: pushed reusable workflow to ${full_repo}@main"
-    fi
+    git commit --allow-empty -m "mint-ap: disposable reusable workflow" --quiet
+    git push origin "HEAD:${REUSABLE_BRANCH}" --quiet
+    echo "setup: pushed reusable workflow to ${full_repo}@${REUSABLE_BRANCH}" >&2
   ) 2>"${tmp}" || {
     echo "ERROR: failed to ensure reusable on ${full_repo}: $(tr '\n' ' ' <"${tmp}" | head -c 300)" >&2
     rm -rf "${work}" "${tmp}"
@@ -461,6 +526,7 @@ FTR
 }
 
 # Direct mint workflow (on: push) for .fullsend or in-repo-host negative.
+# Args: destination directory, role, repos JSON, expected scope repo, optional target org.
 write_direct_mint_workflow() {
   local dest_dir="$1"
   local role="$2"
@@ -513,6 +579,7 @@ FTR
 }
 
 # Thin shim on mint-test that calls {org}/fullsend reusable.
+# Args: destination directory, role, repos JSON, expected scope repo, optional target org.
 write_shim_workflow() {
   local dest_dir="$1"
   local role="$2"
@@ -535,7 +602,7 @@ permissions:
   actions: write
 jobs:
   mint:
-    uses: ${ORG}/${WORKFLOW_REPO}/.github/workflows/mint-ap-reusable.yml@main
+    uses: ${ORG}/${WORKFLOW_REPO}/.github/workflows/mint-ap-reusable.yml@${REUSABLE_BRANCH}
     with:
       mint_url: '${MINT_URL//\'/\'\'}'
       role: '${role//\'/\'\'}'
@@ -549,9 +616,10 @@ EOF
 fetch_result_json() {
   local full_repo="$1" run_id="$2"
   local tmp attempt
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d "${TMPROOT}/result.XXXXXX")
 
   for attempt in 1 2 3 4 5; do
+    rm -rf "${tmp:?}"/*
     if gh run download "${run_id}" --repo "${full_repo}" -n mint-ap-result -D "${tmp}" &>/dev/null; then
       if [[ -f "${tmp}/mint-ap-result.json" ]]; then
         cat "${tmp}/mint-ap-result.json"
@@ -559,6 +627,7 @@ fetch_result_json() {
         return 0
       fi
     fi
+    echo "result artifact unavailable (attempt ${attempt}/5); retrying" >&2
     sleep 2
   done
 
@@ -576,14 +645,14 @@ fetch_result_json() {
 }
 
 wait_for_run() {
-  local full_repo="$1" branch="$2"
+  local full_repo="$1" branch="$2" head_sha="$3"
   local deadline=$((SECONDS + TIMEOUT))
   local run_json run_id status
 
   while ((SECONDS < deadline)); do
-    run_json=$(gh run list --repo "${full_repo}" --branch "${branch}" --limit 1 \
-      --json databaseId,status,conclusion,url 2>/dev/null || echo '[]')
-    run_id=$(jq -r '.[0].databaseId // empty' <<<"$run_json")
+    run_json=$(gh run list --repo "${full_repo}" --branch "${branch}" --limit 20 \
+      --json databaseId,status,conclusion,url,headSha 2>/dev/null || echo '[]')
+    run_id=$(jq -r --arg sha "$head_sha" '[.[] | select(.headSha == $sha)][0].databaseId // empty' <<<"$run_json")
     if [[ -n "$run_id" ]]; then
       break
     fi
@@ -596,8 +665,16 @@ wait_for_run() {
   fi
 
   while ((SECONDS < deadline)); do
-    run_json=$(gh run view "${run_id}" --repo "${full_repo}" \
-      --json databaseId,status,conclusion,url)
+    if ! run_json=$(gh run view "${run_id}" --repo "${full_repo}" \
+      --json databaseId,status,conclusion,url,headSha 2>/dev/null); then
+      echo "transient error reading workflow run ${run_id}; retrying" >&2
+      sleep "${POLL_INTERVAL}"
+      continue
+    fi
+    if [[ "$(jq -r '.headSha // empty' <<<"$run_json")" != "$head_sha" ]]; then
+      echo "workflow run ${run_id} has unexpected head SHA" >&2
+      return 1
+    fi
     status=$(jq -r '.status' <<<"$run_json")
     if [[ "$status" == "completed" ]]; then
       printf '%s\n' "$run_json"
@@ -624,7 +701,7 @@ mtest() {
   local host_style="${8:-shim}"
   local label="${id}/${role}"
   local full_repo="${ORG}/${caller_repo}"
-  local branch work tmp_err run_json run_id run_url conclusion actual result_json scope_rest
+  local branch work tmp_err head_sha run_json run_id run_url conclusion actual result_json scope_rest
   local expected_scope_full=""
   local target_org_arg=""
 
@@ -649,8 +726,8 @@ mtest() {
   branch="mint-ap-${id}-${role}-$(rand_hex)"
   branch=$(tr -c 'a-zA-Z0-9._-' '-' <<<"$branch" | sed 's/-\+/-/g; s/^-//; s/-$//')
 
-  work=$(mktemp -d)
-  tmp_err=$(mktemp)
+  work=$(mktemp -d "${TMPROOT}/case.XXXXXX")
+  tmp_err=$(mktemp "${TMPROOT}/case-error.XXXXXX")
 
   if ! (
     set -euo pipefail
@@ -684,11 +761,14 @@ mtest() {
     return 0
   fi
   rm -f "${tmp_err}"
+  head_sha=$(git -C "${work}/repo" rev-parse HEAD)
+  register_branch "$full_repo" "$branch"
 
-  if ! run_json=$(wait_for_run "${full_repo}" "${branch}" 2>"${work}/wait.err"); then
+  if ! run_json=$(wait_for_run "${full_repo}" "${branch}" "$head_sha" 2>"${work}/wait.err"); then
     print_case_line ERROR "$label" "$(tr '\n' ' ' <"${work}/wait.err" | head -c 200)"
     COUNT_ERROR=$((COUNT_ERROR + 1))
     git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
   fi
@@ -701,16 +781,26 @@ mtest() {
     print_case_line ERROR "$label" "workflow conclusion=${conclusion:-unknown}  ${run_url}"
     COUNT_ERROR=$((COUNT_ERROR + 1))
     git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
   fi
 
   result_json=$(fetch_result_json "${full_repo}" "${run_id}" 2>/dev/null || true)
   actual=$(jq -r '.outcome // empty' <<<"${result_json:-{}}" 2>/dev/null || true)
+  if [[ "$actual" == "error" ]]; then
+    print_case_line ERROR "$label" "mint workflow error=$(jq -r '.error // "unknown"' <<<"$result_json")  ${run_url}"
+    COUNT_ERROR=$((COUNT_ERROR + 1))
+    git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    unregister_branch "$full_repo" "$branch"
+    rm -rf "${work}"
+    return 0
+  fi
   if [[ "$actual" != "minted" && "$actual" != "denied" ]]; then
     print_case_line ERROR "$label" "missing or invalid mint-ap-result artifact  ${run_url}"
     COUNT_ERROR=$((COUNT_ERROR + 1))
     git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+    unregister_branch "$full_repo" "$branch"
     rm -rf "${work}"
     return 0
   fi
@@ -723,6 +813,7 @@ mtest() {
   fi
 
   git -C "${work}/repo" push origin --delete "${branch}" --quiet 2>/dev/null || true
+  unregister_branch "$full_repo" "$branch"
   rm -rf "${work}"
 
   if [[ "$actual" == "$expect" ]]; then
@@ -787,6 +878,12 @@ esac
 # Negative: mint job hosted in mint-test (must deny). host_style=in-repo-host
 # id                 role         caller      repos_json              expect  scope   target  host_style
 mtest in-repo-host   triage       mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   coder        mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   review       mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   retro        mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   prioritize   mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   fullsend     mint-test   '["mint-test"]'         denied  -       -       in-repo-host
+mtest in-repo-host   e2e          mint-test   '["mint-test"]'         denied  -       -       in-repo-host
 
 # Same-org via mint-test shim → {org}/fullsend reusable
 # id                 role         caller      repos_json              expect                  scope      target  host_style
