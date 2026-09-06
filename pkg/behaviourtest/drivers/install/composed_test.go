@@ -221,11 +221,151 @@ func TestComposedDriver_Finalize_IgnoresNonBTRepos(t *testing.T) {
 	assert.Empty(t, client.deletedRepos, "16 bt-* repos is under threshold, should not prune")
 }
 
+func TestComposedDriver_Finalize_PruneDeleteError(t *testing.T) {
+	if KeepRepos() {
+		t.Skip("KeepRepos() is true")
+	}
+
+	var repos []forge.Repository
+	for i := 1; i <= 14; i++ {
+		ts := fmt.Sprintf("20260905T%02d0000", i)
+		for j := 0; j < 16; j++ {
+			repos = append(repos, forge.Repository{
+				Name: fmt.Sprintf("bt-%s-%08x", ts, j),
+			})
+		}
+	}
+
+	client := &fakeComposedClient{
+		allRepos:      repos,
+		deleteRepoErr: fmt.Errorf("permission denied"),
+	}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+
+	err := d.Finalize(context.Background())
+	require.NoError(t, err, "delete errors are logged, not fatal")
+}
+
+func TestComposedDriver_Finalize_SkipsShortRepoNames(t *testing.T) {
+	if KeepRepos() {
+		t.Skip("KeepRepos() is true")
+	}
+
+	repos := []forge.Repository{
+		{Name: "bt-short"},
+		{Name: "bt-20260905T010000-aabbccdd"},
+	}
+	client := &fakeComposedClient{allRepos: repos}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+
+	err := d.Finalize(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, client.deletedRepos, "under threshold, nothing pruned")
+}
+
+func TestComposedDriver_Finalize_ListError(t *testing.T) {
+	if KeepRepos() {
+		t.Skip("KeepRepos() is true")
+	}
+
+	client := &fakeComposedClientWithListError{
+		fakeComposedClient: fakeComposedClient{},
+		listErr:            fmt.Errorf("API error"),
+	}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+
+	err := d.Finalize(context.Background())
+	require.NoError(t, err, "list errors are logged, not fatal")
+}
+
+type fakeComposedClientWithListError struct {
+	fakeComposedClient
+	listErr error
+}
+
+func (f *fakeComposedClientWithListError) ListAllOrgRepos(_ context.Context, _ string) ([]forge.Repository, error) {
+	return nil, f.listErr
+}
+
+// fakeRateLimitClient implements forge.Client, AllRepoLister,
+// RateLimitReporter, and RateLimitQuerier for testing rate limit logging.
+type fakeRateLimitClient struct {
+	fakeComposedClient
+	rl       forge.RateLimit
+	seen     bool
+	queryErr error
+}
+
+func (f *fakeRateLimitClient) RateLimit() (forge.RateLimit, bool) {
+	return f.rl, f.seen
+}
+
+func (f *fakeRateLimitClient) GetRateLimit(_ context.Context) (forge.RateLimit, error) {
+	if f.queryErr != nil {
+		return forge.RateLimit{}, f.queryErr
+	}
+	return f.rl, nil
+}
+
+func TestComposedDriver_LogRateLimit(t *testing.T) {
+	client := &fakeRateLimitClient{
+		rl:   forge.RateLimit{Limit: 5000, Remaining: 4500, Resource: "core"},
+		seen: true,
+	}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+	cd := d.(*composedDriver)
+	cd.logRateLimit("test")
+}
+
+func TestComposedDriver_LogRateLimit_NotSeen(t *testing.T) {
+	client := &fakeRateLimitClient{seen: false}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+	cd := d.(*composedDriver)
+	cd.logRateLimit("test")
+}
+
+func TestComposedDriver_QueryRateLimit(t *testing.T) {
+	client := &fakeRateLimitClient{
+		rl: forge.RateLimit{Limit: 5000, Remaining: 4500, Resource: "core"},
+	}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+	cd := d.(*composedDriver)
+	cd.queryRateLimit("test")
+}
+
+func TestComposedDriver_QueryRateLimit_Error(t *testing.T) {
+	client := &fakeRateLimitClient{queryErr: fmt.Errorf("network error")}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+	cd := d.(*composedDriver)
+	cd.queryRateLimit("test")
+}
+
+func TestComposedDriver_QueryRateLimit_NotSupported(t *testing.T) {
+	client := &fakeComposedClient{}
+	d := newComposedDriver("org", &fakeMintDriver{}, &fakeEnsurer{}, client, t.Logf)
+	cd := d.(*composedDriver)
+	cd.queryRateLimit("test")
+	cd.logRateLimit("test")
+}
+
+func TestComposedDriver_CreateRepo_TracksOnPartialFailure(t *testing.T) {
+	client := &fakeComposedClient{}
+	e := &failingEnsurer{err: fmt.Errorf("install failed"), name: "bt-partial-repo"}
+	d := newComposedDriver("org", &fakeMintDriver{}, e, client, t.Logf)
+
+	_, err := d.CreateRepo(context.Background(), "test")
+	require.Error(t, err)
+
+	cd := d.(*composedDriver)
+	assert.True(t, cd.created["bt-partial-repo"], "should track repo name even on partial failure")
+}
+
 // failingEnsurer always returns an error.
 type failingEnsurer struct {
-	err error
+	err  error
+	name string
 }
 
 func (f *failingEnsurer) CreateRepo(_ context.Context, _, _ string) (string, error) {
-	return "", f.err
+	return f.name, f.err
 }

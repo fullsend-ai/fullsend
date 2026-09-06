@@ -168,6 +168,79 @@ func TestListAllOrgRepos_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "list all org repos")
 }
 
+func TestGetRateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/rate_limit", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"resources": map[string]any{
+				"core": map[string]any{
+					"limit":     5400,
+					"remaining": 4999,
+					"reset":     1788664105,
+					"used":      401,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	rl, err := client.GetRateLimit(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5400, rl.Limit)
+	assert.Equal(t, 4999, rl.Remaining)
+	assert.Equal(t, "core", rl.Resource)
+	assert.False(t, rl.Reset.IsZero())
+}
+
+func TestGetRateLimit_ZeroReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"resources": map[string]any{
+				"core": map[string]any{
+					"limit":     5000,
+					"remaining": 5000,
+					"reset":     0,
+					"used":      0,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	rl, err := client.GetRateLimit(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5000, rl.Limit)
+	assert.True(t, rl.Reset.IsZero(), "zero reset unix time should produce zero time")
+}
+
+func TestGetRateLimit_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message": "server error"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetRateLimit(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get rate limit")
+}
+
+func TestGetRateLimit_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetRateLimit(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode rate limit")
+}
+
 func TestCreateRepo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
