@@ -185,7 +185,13 @@ func steerInstruction(item deltaItem) string {
 	if i := strings.IndexAny(first, "\r\n"); i >= 0 {
 		first = first[:i]
 	}
-	if strings.TrimSpace(strings.ToLower(strings.Fields(first + " ")[0])) != steerCommand {
+	// Fields on a blank first line returns an EMPTY slice, so indexing it
+	// panics — and the panic lands in the watcher goroutine, taking the run
+	// with it. The trailing " " that used to stand in for this check is not
+	// one: strings.Fields(" ") is empty too. A body opening with a newline
+	// is ordinary human formatting, so this is reached by a plain comment.
+	fields := strings.Fields(first)
+	if len(fields) == 0 || strings.ToLower(fields[0]) != steerCommand {
 		return ""
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(item.Body), steerCommand))
@@ -487,8 +493,16 @@ func joinLogins(m map[string]bool) string {
 	return strings.Join(keys, ", ")
 }
 
-// truncate caps s at max bytes without splitting a rune.
+// truncate caps s at max bytes without splitting a rune. A non-positive
+// budget yields the empty string: the `len(s) <= max` test below is false
+// for every negative max, which used to fall through to slicing with a
+// negative bound and panic. The caller subtracts the amendments and the
+// context delimiters from maxDeltaBytes, so the budget it passes is not
+// guaranteed to be positive.
 func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(s) <= max {
 		return s
 	}
