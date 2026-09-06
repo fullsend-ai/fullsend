@@ -612,12 +612,8 @@ func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetO
 func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, appID string) (map[string]string, error) {
 	h.appPermsCacheMu.Lock()
 	if entry, ok := h.appPermsCache[appID]; ok && time.Since(entry.fetchedAt) < h.appPermsCacheTTL {
-		perms := make(map[string]string, len(entry.perms))
-		for k, v := range entry.perms {
-			perms[k] = v
-		}
 		h.appPermsCacheMu.Unlock()
-		return perms, nil
+		return copyPermissions(entry.perms), nil
 	}
 	if inflight, ok := h.appPermsInflight[appID]; ok {
 		h.appPermsCacheMu.Unlock()
@@ -625,7 +621,7 @@ func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, 
 		if inflight.err != nil {
 			return nil, inflight.err
 		}
-		return copyPerms(inflight.perms), nil
+		return copyPermissions(inflight.perms), nil
 	}
 	inflight := &appPermsInflight{}
 	inflight.wg.Add(1)
@@ -638,7 +634,7 @@ func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, 
 	delete(h.appPermsInflight, appID)
 	if err == nil {
 		h.appPermsCache[appID] = appPermsCacheEntry{
-			perms:     copyPerms(perms),
+			perms:     copyPermissions(perms),
 			fetchedAt: time.Now(),
 		}
 	}
@@ -651,18 +647,6 @@ func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, 
 		return nil, err
 	}
 	return perms, nil
-}
-
-// copyPerms returns a shallow copy of a permissions map.
-func copyPerms(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {

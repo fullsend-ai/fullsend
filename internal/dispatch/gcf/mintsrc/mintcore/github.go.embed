@@ -750,6 +750,9 @@ func effectiveInstallationPermissions(role string, requested, granted map[string
 }
 
 func copyPermissions(perms map[string]string) map[string]string {
+	if perms == nil {
+		return nil
+	}
 	out := make(map[string]string, len(perms))
 	for k, v := range perms {
 		out[k] = v
