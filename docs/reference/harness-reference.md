@@ -29,8 +29,14 @@ providers:                           # Network access via provider profiles
 # ── Skills & plugins ──────────────────────────────────────────
 skills:
   - skills/my-skill                  # Local path or URL with #sha256=...
-plugins:
-  - plugins/gopls-lsp                # Local path or URL with #sha256=...
+plugins:                             # Directories a runtime loads (ADR 0094)
+  - plugins/gopls-lsp                # Claude plugin (plugin.json); Claude Code loads it
+  - extensions/go-diagnostics        # pi extension (index.* or package.json entry point)
+  - path: extensions/pi-fff          # Object form only when env or runtime options are needed
+    env:
+      FFF_MULTIGREP: "1"             # Exported before the runtime starts (code-loaded entries)
+    pi:
+      args: ["--fff-mode", "override"] # Flags the extension registers with pi.registerFlag
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -67,7 +73,8 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
 
 # ── Timeouts ──────────────────────────────────────────────────
-timeout_minutes: 20
+timeout_minutes: 20                  # Per-iteration budget (default 30); exported to
+                                     # the sandbox as FULLSEND_TIMEOUT_MINUTES
 sandbox_timeout_seconds: 300         # 30-600
 
 # ── Remote resources ──────────────────────────────────────────
@@ -134,9 +141,40 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+
+**`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and terminates the agent's processes in the sandbox when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES` and the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds) into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Both names are reserved: an `env.sandbox` entry with either name is dropped.
+
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+
+**`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.
+
+Sourcing is the `skills:` rule: a path in the harness repository, or a forge tree URL pinned with `#sha256=`. `npm:`/`git:`/`ssh:` sources are rejected — pi would fetch them from the network at startup, which the sandbox cannot do.
+
+Each entry is a path string, or `{path, env, pi}`. `env` (exported before the runtime starts) and the `pi:` block apply only to an entry a runtime loads as code; on a Claude plugin they are a validation error, not a silent drop.
+
+Validation rejects an entry that breaks any of these rules:
+
+- **Format** — the directory is a Claude plugin (`plugin.json` at its root or `.claude-plugin/plugin.json`, checked first) or one pi would load. A directory that is neither is rejected: Claude Code would ignore it and pi would exit 1 or load nothing.
+- **Names** — `a-z`, `A-Z`, `0-9`, `_`, `-`; no duplicate paths, and no duplicate basenames across entries (the second upload would replace the first in the sandbox).
+- **Sources** — `npm:`/`git:`/`ssh:` sources and `..` segments are rejected; a URL entry must carry `#sha256=` and point at a forge `/tree/` directory.
+- **Tree contents** — regular files and directories only (no symlinks or special files), with names free of newlines, carriage returns and backslashes; the injection scan reads every text file, and a symlink would carry its target into the sandbox unscanned.
+
+A pi-format entry must also satisfy pi's own loader rule:
+
+- **Entry point** — `index.js`/`index.ts`/`index.mjs`/`index.cjs`, or a `package.json` `main` pointing at an existing file, or a `package.json` `"pi": {"extensions": [...]}` list.
+- **A `pi` object wins outright** — pi then loads only what `pi.extensions` names, never `index.*` or `main`, so `{"pi": {}}` or an unresolvable `pi.extensions` loads *nothing*, silently, with pi exiting 0.
+- **No package layout** — an `extensions/`, `prompts/`, `skills/` or `themes/` entry (a plain file of that name counts) makes pi read the directory as a package and ignore `index.js`; use `pi.extensions` instead.
+- **Containment** — a `pi.extensions` or `main` entry that is absolute or climbs out with `..` is rejected, in a nested `package.json` as well as the top one; pi resolves both with no containment check.
+- **Glob entries** (`*`, `?`) are matched against the tree, so a pattern selecting nothing is rejected; `**` and brace patterns are accepted unevaluated, `[...]` is a literal file name to pi, and a leading `!` is a *disable* pattern — a `pi.extensions` made only of `!` entries is rejected.
+- **`package.json`** — a UTF-8 byte-order mark is stripped before parsing, as pi strips it.
+- **Reserved names** — not `fullsend-hooks`, `anthropic-vertex` or `xai-vertex`, which the runner owns.
+- **`pi.args`** — flags the extension registered with `pi.registerFlag`, each `--flag` or `--flag=value` (pi has no single-dash options), never one of pi's own option names, with no value starting with `-` or `@`. One bare word may follow a `--flag` written without `=`; any other bare word is prompt text pi would prepend to the agent's prompt.
+- **`env` keys** match `^[A-Z_][A-Z0-9_]*$` and may not name the interpreter environment (`PATH`, `HOME`, `TMPDIR`, `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), a credential- or proxy-shaped name (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), a trust-store or resolver name (`HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), or a runner/provider family (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`).
+
+`plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
@@ -173,7 +211,7 @@ More-specific entries go last so they override broader defaults.
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
-| `plugins`, `api_servers` | Concatenated (base + child) |
+| `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |

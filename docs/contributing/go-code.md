@@ -192,6 +192,60 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Concurrent error handling
+
+When goroutines fan out to perform **independent** operations that can each
+fail on their own (e.g., a `sync.WaitGroup` + `go func` loop creating
+providers), collect **every** failure and surface them together with
+`errors.Join`. Do not keep a single error variable (e.g., `firstErr`) that
+discards all failures after the first — that forces the user into
+fix-and-rerun cycles: they fix the one error shown, rerun, and only then
+discover the next.
+
+The canonical pattern — a mutex-guarded `[]error` accumulated across
+goroutines and joined after `wg.Wait()` — is in `internal/cli/run.go`
+(provider fan-out):
+
+```go
+var (
+    mu   sync.Mutex
+    wg   sync.WaitGroup
+    errs []error
+)
+for _, pd := range allDefs {
+    wg.Add(1)
+    go func(pd harness.ProviderDef) {
+        defer wg.Done()
+        if err := sandbox.EnsureProvider(ctx, /* … */); err != nil {
+            mu.Lock()
+            errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+            mu.Unlock()
+            return
+        }
+    }(pd)
+}
+wg.Wait()
+if err := errors.Join(errs...); err != nil {
+    return err
+}
+```
+
+The `sync.Mutex` is the idiom used here; writing each goroutine's result into
+its own pre-sized slice slot (one index per goroutine, no lock) is equally
+acceptable. The requirement is that no failure is dropped — not the specific
+synchronization mechanism.
+
+**This applies only to independent fan-out.** When goroutines are *not*
+independent — you deliberately want the first failure to cancel the rest
+(e.g., an `errgroup.Group` sharing a `context.Context`) — fail-fast is
+correct and must not be forced into error collection.
+
+**When reviewing PRs:** Flag a fan-out that captures only the first error (a
+single `firstErr`/`err` variable, or break-on-first) across independent
+goroutines as a **medium-severity** finding, and recommend collecting a
+`[]error` and returning `errors.Join`. Do not flag intentional fail-fast
+cancellation patterns.
+
 ## Context-aware blocking
 
 Functions that accept `context.Context` must not use `time.Sleep` or other
@@ -358,6 +412,75 @@ When the fetch falls outside that envelope you must build a custom client. Commo
 - **Constrain redirects.** Block them (as `fetch.FetchURL` does) or cap the hop count; and if you allow any hop, re-run the checks above against each redirect target — both the scheme check and, via per-connection dialing, the internal-IP check — not just the scheme.
 
 When the set of legitimate hosts *is* known, add a domain allowlist too, even on the custom path.
+
+
+## Credential redaction for external content
+
+Any runner feature that processes external content — validation script
+output, CI logs, script stdout/stderr — for injection into LLM prompts,
+logging, or file storage **must** redact credentials before that content
+leaves the runner boundary. The validation loop's `redactFeedback`
+function in `internal/cli/run.go` is the canonical implementation.
+
+### Invariants
+
+1. **Scan `RunnerEnv` for credential literal values.** Iterate the
+   runner environment map and replace every value whose key is
+   classified as sensitive by `sensitiveEnvKey` (explicit names like
+   `PUSH_TOKEN`, `GH_TOKEN`, plus suffix matches on `_TOKEN`,
+   `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
+   `[REDACTED:<key>]`. Skip values shorter than
+   `minRedactableSecretLen` (currently 8) — short values like `"main"`
+   or `"true"` cause false-positive mangling.
+
+2. **Apply `security.SecretRedactor` as a second-pass fallback.**
+   The `RunnerEnv` scan only catches credentials the harness declared.
+   A `security.NewSecretRedactor().Scan(content)` call catches
+   credentials with recognizable shapes (known-prefix tokens such as
+   `ghp_`, `sk-ant-`, `AKIA`, PEM blocks, connection strings) that
+   never passed through the runner
+   environment — for example, a key baked into a test fixture or a
+   pre-commit hook printing its own secrets.
+
+3. **Use `truncateUTF8` when enforcing size limits on external
+   content.** Naive byte slicing (`s[:max]`) can split a multi-byte
+   UTF-8 rune, producing invalid text that breaks downstream JSON
+   serialization or LLM tokenization. Use `truncateUTF8(s, max)`
+   (defined in `internal/cli/run.go`), which backs up to the last
+   valid rune boundary before appending a `[truncated]` marker.
+
+4. **Write files containing potential secrets with mode `0600`.**
+   Feedback files, redacted logs, and any file derived from external
+   content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
+   The run directory is uploaded as a CI artifact; restrictive
+   permissions limit exposure if the artifact is downloaded to a
+   shared filesystem.
+
+### Why both passes are needed
+
+Neither pass alone is sufficient. Opaque tokens (e.g., a GitHub
+installation token with no recognizable prefix) have no pattern for the
+`SecretRedactor` to match — only the literal `RunnerEnv` scan catches
+those. Conversely, credentials that never entered the runner environment
+(a PEM key printed by a repo hook, a fixture secret) are invisible to
+the env scan — only the pattern-based `SecretRedactor` catches those.
+
+### When this applies
+
+Apply these invariants whenever external content crosses a trust
+boundary in the runner:
+
+- Validation script output injected into the next iteration's LLM
+  prompt (`feedback_mode`)
+- Pre-commit or post-script output routed back to the agent
+- CI log fragments stored in the run directory
+- Any new feature that captures subprocess output for prompt injection,
+  storage, or logging
+
+See also [#2107](https://github.com/fullsend-ai/fullsend/issues/2107)
+(replicate existing security patterns) and
+[#2872](https://github.com/fullsend-ai/fullsend/issues/2872)
+(post-script security invariants) for related guidance in other layers.
 
 ## Running the fullsend CLI
 

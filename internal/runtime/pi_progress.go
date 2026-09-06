@@ -97,7 +97,10 @@ type piToolExecutionEndEvent struct {
 // read/write/edit.path, ls.path, grep/find.pattern). Each argument is
 // redacted before it is collapsed or capped — the secret patterns need the
 // whole token, so a display cut landing mid-token would let the fragment
-// through. Tools outside pi's built-in set yield "".
+// through. Tools outside pi's built-in set (extension tools, ADR 0094)
+// show their first string-valued argument among the conventional names
+// path, file, pattern, query, command, so live progress is not blank for
+// them; anything else yields "".
 func piToolContext(toolName string, args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
@@ -128,6 +131,15 @@ func piToolContext(toolName string, args json.RawMessage) string {
 		return capRunes(str("path"), maxPathDisplay)
 	case "grep", "find":
 		return capRunes(str("pattern"), maxPatternDisplay)
+	default:
+		for _, key := range []string{"path", "file", "pattern", "query", "command"} {
+			if s := str(key); s != "" {
+				if key == "path" || key == "file" {
+					return capRunes(s, maxPathDisplay)
+				}
+				return capRunes(s, maxPatternDisplay)
+			}
+		}
 	}
 	return ""
 }
@@ -245,7 +257,15 @@ func piIsErrorStop(reason string) bool {
 // already settled — so callers must not treat a non-nil error as "no
 // result was delivered".
 //
-// Pi's wire format (v0.84.2):
+// Pi's wire format (v0.84.2), re-checked at the pinned 0.85.0. Note where
+// these shapes actually come from: json-event.js only projects
+// message_update and passes everything else through, so its being
+// byte-identical proves little on its own. The header comes from
+// core/session-manager.js, which still emits the same literal with
+// CURRENT_SESSION_VERSION = 3; the event types come from
+// core/agent-session.js, which differs only in compaction/idle lifecycle
+// and emits an unchanged set of type literals; modes/print-mode.js and
+// modes/json-event.js, which serialize them, are byte-identical:
 //   - Session header {type:session, version:3, id, timestamp, cwd} — no model.
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.

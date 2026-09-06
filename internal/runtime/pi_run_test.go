@@ -97,11 +97,11 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}, BashAllowlist: []string{"gh"}, Hooks: &piHooksManifest{}}
 	params := piTestParams()
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -132,9 +132,65 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// pi resolves the provider prefix case-insensitively; so must the gate.
 	params.Model = "Anthropic-Vertex/claude-opus-4-6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "&& unset ANTHROPIC_API_KEY")
 	assert.Contains(t, cmd, "--model 'Anthropic-Vertex/claude-opus-4-6'")
+}
+
+// TestBuildPiRunCommand_AgentTool is the golden for the Agent tool wiring:
+// the extension's integrity guard runs before .env whether or not hooks are
+// on, its -e comes right after the hook adapter and before declared
+// extensions, --tools carries Agent,Task, and the parent's own provider
+// -e set is unchanged (the manifest's child extension list is for children).
+func TestBuildPiRunCommand_AgentTool(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	agentExt := "/sandbox/pi-config/fullsend-agent.js"
+	hooksExt := "/sandbox/pi-config/fullsend-hooks.js"
+	agent := &piAgentManifest{Enabled: true, Extensions: []string{piVertexExtensionPath, piXaiVertexExtensionPath, hooksExt}}
+	declared := []piManifestExtension{{Name: "go-diagnostics", Path: "/sandbox/pi-config/extensions/go-diagnostics", SHA256: strings.Repeat("a", 64)}}
+
+	// Hooks on, default tool set.
+	m := &piManifest{AgentName: "review", Hooks: &piHooksManifest{}, Agent: agent}
+	params := piTestParams()
+	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
+	cmd := buildPiRunCommand(params, m, declared, "")
+	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
+		"load order: hook adapter, Agent extension, declared extensions")
+	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+hooksExt+"'", "the provider extension still comes first")
+	assert.NotContains(t, cmd, "-e '"+piXaiVertexExtensionPath+"'", "the parent loads only its own provider; the child list in the manifest is not the parent's")
+	assert.NotContains(t, cmd, "--tools", "no tools: frontmatter → pi's default set plus the extension's tools")
+	guard := piAgentGuard(agentExt)
+	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+guard+" && "+piExtensionsGuard(declared),
+		"the runner-owned guards run in order, ahead of the declared-extension guard")
+	assert.Contains(t, cmd, piExtensionsGuard(declared)+" && . '/sandbox/workspace/.env'",
+		"every guard runs before the agent-writable .env is sourced")
+	assert.Contains(t, guard, fmt.Sprintf("exit %d", piAgentTamperedExit), "its own code, so Run names this extension and not the hook adapter")
+	assert.NotContains(t, guard, fmt.Sprintf("exit %d", piHooksMissingExit))
+	assert.Contains(t, guard, "command -p sha256sum")
+	sum := sha256.Sum256(piAgentExtensionJS)
+	assert.Contains(t, guard, hex.EncodeToString(sum[:]), "the guard pins the embedded copy's hash")
+
+	// Hooks off: the Agent guard and -e still apply, on their own.
+	params.HooksSettingsPath = ""
+	cmd = buildPiRunCommand(params, m, nil, "")
+	assert.NotContains(t, cmd, hooksExt)
+	assert.Contains(t, cmd, "&& "+guard+" && . '/sandbox/workspace/.env'")
+	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' --model")
+
+	// A declared tools: list naming Agent carries both names into --tools.
+	m.Tools = []string{"bash", "read", "Agent", "Task"}
+	cmd = buildPiRunCommand(params, m, nil, "")
+	assert.Contains(t, cmd, "--tools 'bash,read,Agent,Task'")
+
+	// Tool off: nothing of it in the command line.
+	off := &piManifest{AgentName: "triage", Tools: []string{"bash"}, Hooks: &piHooksManifest{}}
+	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
+	cmd = buildPiRunCommand(params, off, nil, "")
+	assert.NotContains(t, cmd, "fullsend-agent")
+	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && . '/sandbox/workspace/.env'")
+	disabled := &piManifest{AgentName: "triage", Agent: &piAgentManifest{Enabled: false}}
+	assert.NotContains(t, buildPiRunCommand(params, disabled, nil, ""), "fullsend-agent")
 }
 
 // TestPiHooksGuard runs the rendered guard under a real sh: it must exit 97
@@ -201,6 +257,142 @@ func TestPiHooksGuard(t *testing.T) {
 	assert.NotContains(t, string(out2), "RAN")
 }
 
+// TestPiAgentGuard runs the rendered Agent-extension guard under a real sh:
+// like the hook adapter it must exit before pi starts when the file is
+// missing or is not the embedded copy, and the tools it uses must not be
+// shadowable from the agent-writable .env.
+func TestPiAgentGuard(t *testing.T) {
+	t.Parallel()
+	if err := exec.Command("sh", "-c", "command -p sha256sum /dev/null >/dev/null && command -p cut -d' ' -f1 /dev/null").Run(); err != nil {
+		t.Skip("sha256sum/cut not on the default PATH (stock macOS); the sandbox image has coreutils")
+	}
+	dir := t.TempDir()
+	ext := filepath.Join(dir, "fullsend-agent.js")
+
+	run := func(prefix string) (int, string) {
+		out, err := exec.Command("sh", "-c", prefix+piAgentGuard(ext)+" && echo RAN").CombinedOutput()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			require.NoError(t, err, string(out))
+		}
+		return code, string(out)
+	}
+
+	code, out := run("")
+	assert.Equal(t, piAgentTamperedExit, code, "missing extension")
+	assert.NotContains(t, out, "RAN")
+	assert.Contains(t, out, "Agent extension missing or modified")
+
+	require.NoError(t, os.WriteFile(ext, append(append([]byte{}, piAgentExtensionJS...), []byte("\n// tampered\n")...), 0o644))
+	code, out = run("")
+	assert.Equal(t, piAgentTamperedExit, code, "modified extension")
+	assert.NotContains(t, out, "RAN")
+
+	require.NoError(t, os.WriteFile(ext, piAgentExtensionJS, 0o644))
+	code, out = run("")
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "RAN")
+
+	// A function or PATH entry standing in for sha256sum must not make a
+	// tampered copy pass: the guard uses `command -p`.
+	require.NoError(t, os.WriteFile(ext, []byte("// tampered\n"), 0o644))
+	sum := sha256.Sum256(piAgentExtensionJS)
+	hexSum := hex.EncodeToString(sum[:])
+	shadowDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(shadowDir, "sha256sum"), []byte("#!/bin/sh\necho '"+hexSum+"  x'\n"), 0o755))
+	code, out = run("sha256sum() { echo '" + hexSum + "  x'; }; cut() { echo '" + hexSum + "'; }; PATH=" + shellQuote(shadowDir) + ":$PATH; ")
+	assert.Equal(t, piAgentTamperedExit, code, "shadowed sha256sum")
+	assert.NotContains(t, out, "RAN")
+
+	// Each runner-owned artifact has its own code, so Run names the one that
+	// failed instead of listing every guard the command line carries.
+	assert.NotEqual(t, piHooksMissingExit, piAgentTamperedExit)
+	for _, other := range []int{piManifestTamperedExit, piExtensionTamperedExit, piConfigTamperedExit} {
+		assert.NotEqual(t, other, piAgentTamperedExit, "the Agent guard's exit code must not collide with another guard's")
+	}
+}
+
+// TestPiManifestGuard covers the manifest integrity check: the manifest
+// names the pi binary children run, the -e list they load and their tool
+// allowlists, and the config dir is writable by the agent between
+// iterations — so Run refuses to start on a manifest that is not the one
+// Bootstrap wrote.
+func TestPiManifestGuard(t *testing.T) {
+	t.Parallel()
+	if err := exec.Command("sh", "-c", "command -p sha256sum /dev/null >/dev/null && command -p cut -d' ' -f1 /dev/null").Run(); err != nil {
+		t.Skip("sha256sum/cut not on the default PATH (stock macOS); the sandbox image has coreutils")
+	}
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "fullsend-manifest.json")
+	body := []byte(`{"agentName":"triage"}`)
+	sum := sha256.Sum256(body)
+	guard := piManifestGuard(manifest, hex.EncodeToString(sum[:]))
+
+	run := func() (int, string) {
+		out, err := exec.Command("sh", "-c", guard+" && echo RAN").CombinedOutput()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			require.NoError(t, err, string(out))
+		}
+		return code, string(out)
+	}
+
+	code, out := run()
+	assert.Equal(t, piManifestTamperedExit, code, "missing manifest")
+	assert.NotContains(t, out, "RAN")
+	assert.Contains(t, out, "manifest missing or modified")
+
+	require.NoError(t, os.WriteFile(manifest, body, 0o644))
+	code, out = run()
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "RAN")
+
+	require.NoError(t, os.WriteFile(manifest, []byte(`{"agentName":"triage","agent":{"enabled":true,"piBin":"/tmp/evil"}}`), 0o644))
+	code, out = run()
+	assert.Equal(t, piManifestTamperedExit, code, "a rewritten manifest is refused")
+	assert.NotContains(t, out, "RAN")
+}
+
+// TestBuildPiRunCommand_ManifestGuard checks where the guard is emitted:
+// before .env can shadow the tools it uses, and again after .env, since
+// .env could have rewritten the manifest between the two.
+func TestBuildPiRunCommand_ManifestGuard(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	m := &piManifest{AgentName: "triage", Model: "opus"}
+	params := piTestParams()
+
+	assert.NotContains(t, buildPiRunCommand(params, m, nil, ""), "manifest missing or modified",
+		"no recorded digest (Bootstrap did not run in this process) means no guard, not a failed run")
+
+	cmd := buildPiRunCommand(params, m, nil, "abc123")
+	assert.Equal(t, 2, strings.Count(cmd, "manifest missing or modified"), "checked before and after .env")
+	first := strings.Index(cmd, "manifest missing or modified")
+	envSource := strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'")
+	assert.Less(t, first, envSource, "the first check runs before the agent-writable .env is sourced")
+	assert.Contains(t, cmd, "unset -f test [ command sha256sum cut",
+		"the second check restores the real tools first; unset is a special builtin")
+	assert.Contains(t, cmd, "= 'abc123' ]")
+
+	// The digest is handed to the extensions so a process that loads the
+	// manifest later in the iteration — a sub-agent's hook adapter — can
+	// re-check it. Exported after .env, so .env cannot set or clear it, and
+	// after the second guard, so it can only carry a digest that matched.
+	export := strings.Index(cmd, "export "+piManifestSumEnv+"='abc123'")
+	require.Positive(t, export, "the digest is exported for the hook adapter to re-check")
+	assert.Greater(t, export, envSource, "after .env, which cannot then set it")
+	assert.Greater(t, export, strings.LastIndex(cmd, "manifest missing or modified"),
+		"after the post-.env guard, so it only ever carries a digest that just matched")
+
+	assert.NotContains(t, buildPiRunCommand(params, m, nil, ""), piManifestSumEnv,
+		"no recorded digest means nothing to re-check against either")
+}
+
 func TestPiBareModelID(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "claude-opus-4-6", piBareModelID("anthropic-vertex/claude-opus-4-6"), "two-segment: strips provider")
@@ -217,7 +409,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 
 	// Short form: xai/grok-4.6 is normalized to xai-vertex/xai/grok-4.6.
 	params.Model = "xai/grok-4.6"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalized model spec")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
@@ -229,7 +421,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 
 	// Long form: xai-vertex/xai/grok-4.6 passes through.
 	params.Model = "xai-vertex/xai/grok-4.6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
@@ -239,7 +431,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	// silently sending traffic to xAI's native API instead of Vertex.
 	for _, spec := range []string{"Xai-Vertex/xai/grok-4.6", "XAI/grok-4.6", "Xai/grok-4.6"} {
 		params.Model = spec
-		cmd = buildPiRunCommand(params, m)
+		cmd = buildPiRunCommand(params, m, nil, "")
 		assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "canonical spec for %s", spec)
 		assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY unset for %s", spec)
 		assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "extension loaded for %s", spec)
@@ -248,7 +440,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	// unset must run after the agent-writable .env is sourced, or the .env
 	// could re-export XAI_API_KEY after we cleared it.
 	params.Model = "xai/grok-4.6"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Less(t, strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'"), strings.Index(cmd, "&& unset XAI_API_KEY"),
 		"XAI_API_KEY is unset after .env is sourced")
 }
@@ -275,7 +467,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 
 	// openai/gpt-5.6-luna passes through as a two-segment spec.
 	params.Model = "openai/gpt-5.6-luna"
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 
 	assert.Contains(t, cmd, "--model 'openai/gpt-5.6-luna'", "model spec")
 	assert.NotContains(t, cmd, "--api-key", "no --api-key: it would outrank the auth.json pi re-reads per request and pin the iteration to one placeholder")
@@ -296,7 +488,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	// Case-insensitive gate: pi resolves providers case-insensitively.
 	for _, spec := range []string{"OpenAI/gpt-5.6-luna", "OPENAI/gpt-5.6-luna", "Openai/gpt-5.6-sol"} {
 		params.Model = spec
-		cmd = buildPiRunCommand(params, m)
+		cmd = buildPiRunCommand(params, m, nil, "")
 		assert.Contains(t, cmd, "&& "+PiOpenAIAuthSeed(PiRuntime{}.ConfigDir()), "seed for %s", spec)
 		assert.Contains(t, cmd, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY", "unset for %s", spec)
 	}
@@ -305,7 +497,7 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	// config-dir guard runs before it (nothing can shadow `test` yet) and
 	// again after it, behind `unset -f test`, in case .env wrote a file.
 	params.Model = "openai/gpt-5.6-luna"
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	envIdx := strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'")
 	unsetIdx := strings.Index(cmd, "&& unset OPENAI_BASE_URL")
 	assert.Less(t, envIdx, unsetIdx, "unset after .env sourced")
@@ -513,7 +705,7 @@ func TestPiOpenAIConfigGuard(t *testing.T) {
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "anthropic")
-	cmd := buildPiRunCommand(piTestParams(), &piManifest{})
+	cmd := buildPiRunCommand(piTestParams(), &piManifest{}, nil, "")
 	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
 	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
@@ -529,7 +721,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	params.Debug = "*"
 	// A manifest claiming hooks must not matter: the runner's signal decides.
 	m := &piManifest{AgentName: "code", Model: "opus", Tools: nil, Hooks: &piHooksManifest{}}
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-4-6'", "harness model wins over the agent definition")
 	assert.Contains(t, cmd, "--thinking 'high'")
@@ -544,7 +736,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 func TestBuildPiRunCommand_EmptyToolRestriction(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	m := &piManifest{Tools: []string{}}
-	cmd := buildPiRunCommand(piTestParams(), m)
+	cmd := buildPiRunCommand(piTestParams(), m, nil, "")
 	assert.Contains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "--tools ")
 }
@@ -554,7 +746,7 @@ func TestBuildPiRunCommand_QuotesRepoDirAndModel(t *testing.T) {
 	params := piTestParams()
 	params.RepoDir = "/sandbox/workspace/it's"
 	params.Model = "anthropic/claude'x"
-	cmd := buildPiRunCommand(params, &piManifest{})
+	cmd := buildPiRunCommand(params, &piManifest{}, nil, "")
 	assert.Contains(t, cmd, `cd '/sandbox/workspace/it'\''s'`)
 	assert.Contains(t, cmd, `--model 'anthropic/claude'\''x'`)
 }
@@ -577,7 +769,7 @@ func TestPiThinkingFor_DefaultAndUnknown(t *testing.T) {
 
 	params := piTestParams()
 	params.Effort = "bogus"
-	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"})
+	cmd := buildPiRunCommand(params, &piManifest{AgentName: "triage", Model: "opus"}, nil, "")
 	assert.Contains(t, cmd, "--thinking 'high'", "unknown effort falls back to the default, not to pi's medium")
 }
 
@@ -638,13 +830,13 @@ func TestBuildPiRunCommand_HonoursPromptOverride(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "opus"}
 
 	params := piTestParams()
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, shellQuote(DefaultAgentPrompt), "empty prompt falls back to the default")
 
 	// The validation loop injects the previous iteration's failure here; a
 	// runtime that ignores it turns feedback_mode into a blind retry (#1050).
 	params.Prompt = "Previous iteration failed: tests did not pass.\nFix it; don't repeat it."
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, shellQuote(params.Prompt))
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
 	assert.True(t, strings.HasSuffix(cmd, "</dev/null"), "stdin stays closed")
@@ -680,8 +872,8 @@ func TestTranslatePiModel_WithConfigAlias(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-5",
 		translatePiModel("sonnet", map[string]string{"sonnet": "anthropic-vertex/claude-sonnet-5"}),
 		"provider/id alias value is not re-prefixed")
-	assert.Equal(t, "google-vertex/gemini-3.7-flash",
-		translatePiModel("haiku", map[string]string{"haiku": "google-vertex/gemini-3.7-flash"}),
+	assert.Equal(t, "google-vertex/gemini-3.8-flash",
+		translatePiModel("haiku", map[string]string{"haiku": "google-vertex/gemini-3.8-flash"}),
 		"an alias can retarget to another provider")
 
 	// An alias mapped to Grok goes through the same xai normalisation as
@@ -735,7 +927,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "sonnet", Tools: []string{"bash"}}
 	params := piTestParams()
 	params.ModelAliases = map[string]string{"sonnet": "claude-sonnet-5"}
-	cmd := buildPiRunCommand(params, m)
+	cmd := buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-5'",
 		"config alias remaps the model in the build command")
 
@@ -744,7 +936,7 @@ func TestBuildPiRunCommand_WithConfigAlias(t *testing.T) {
 	// the alias was resolved ahead of normalisation this produced
 	// "anthropic-vertex/xai/grok-4.6" and skipped the gate.
 	params.ModelAliases = map[string]string{"sonnet": "xai/grok-4.6"}
-	cmd = buildPiRunCommand(params, m)
+	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "xai alias value is normalised")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "xai-vertex gate fires for an aliased Grok spec")
 	assert.NotContains(t, cmd, "anthropic-vertex/xai", "no double prefix")
@@ -763,4 +955,59 @@ func TestPiDocumentedAliasesMatchConfigKeys(t *testing.T) {
 		got = append(got, alias)
 	}
 	assert.ElementsMatch(t, want, got, "config.ValidModelAliasKeys and piDocumentedAliases drifted")
+}
+
+// TestBuildPiRunCommand_LoaderEnvHygiene pins the module-loader environment
+// hygiene that runs on *every* provider path. The agent-writable .env can
+// otherwise hand jiti a JITI_ALIAS map that swaps the file behind an `-e`
+// path for another one (reproduced on pi 0.84.4: the bundled cli.js takes
+// the isBundledNode branch of createJiti, which passes no `alias`, so jiti
+// fills it from the environment) — the extension tree hash and the hook
+// adapter's SHA-256 both stay clean because the source file is untouched.
+// NODE_OPTIONS/NODE_PATH are the same class of hole and were only cleared
+// on the openai path.
+func TestBuildPiRunCommand_LoaderEnvHygiene(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	m := &piManifest{AgentName: "triage", Model: "opus"}
+	envSource := ". '" + sandbox.SandboxWorkspace + "/.env'"
+
+	for _, model := range []string{
+		"opus",                  // anthropic-vertex
+		"xai/grok-4",            // xai-vertex
+		"openai/gpt-5.6-luna",   // built-in openai
+		"anthropic/claude-opus", // a provider with no gate at all
+	} {
+		params := piTestParams()
+		params.Model = model
+		cmd := buildPiRunCommand(params, m, nil, "")
+
+		assert.Contains(t, cmd, "&& "+piLoaderEnvUnset(), "loader env hygiene runs for %s", model)
+		envIdx := strings.Index(cmd, envSource)
+		require.GreaterOrEqual(t, envIdx, 0, ".env is sourced for %s", model)
+		unsetIdx := strings.Index(cmd, "&& "+piLoaderEnvUnset())
+		assert.Less(t, envIdx, unsetIdx, "the unset must come after .env for %s", model)
+		// JITI_FS_CACHE is re-exported after the unset, not before it.
+		assert.Less(t, unsetIdx, strings.Index(cmd, "export JITI_FS_CACHE=false"),
+			"JITI_FS_CACHE is re-exported after the family is cleared, for %s", model)
+	}
+
+	// Every JITI_* name jiti 2.7.0 reads from the environment (jiti/dist/
+	// jiti.cjs) is cleared, except JITI_FS_CACHE, which EnvExports pins.
+	unset := piLoaderEnvUnset()
+	for _, name := range []string{
+		"JITI_ALIAS", "JITI_CACHE", "JITI_DEBUG", "JITI_ESM_EVAL_TEMP_FILE",
+		"JITI_EXTENSIONS", "JITI_INTEROP_DEFAULT", "JITI_JSX", "JITI_MODULE_CACHE",
+		"JITI_NATIVE_MODULES", "JITI_REBUILD_FS_CACHE", "JITI_REQUIRE_CACHE",
+		"JITI_RESPECT_TMPDIR_ENV", "JITI_SOURCE_MAPS", "JITI_TRANSFORM_MODULES",
+		"JITI_TRY_NATIVE", "JITI_TSCONFIG_PATHS",
+		"NODE_OPTIONS", "NODE_PATH",
+	} {
+		assert.Contains(t, strings.Fields(unset), name, "%s is cleared", name)
+	}
+	assert.NotContains(t, strings.Fields(unset), "JITI_FS_CACHE", "JITI_FS_CACHE is pinned by EnvExports, not unset")
+
+	// `unset` is a special builtin, so a function defined by .env cannot
+	// stand in for it — but it still has to be spelled as one word.
+	assert.True(t, strings.HasPrefix(unset, "unset "), "the fragment is a bare `unset` invocation: %q", unset)
 }

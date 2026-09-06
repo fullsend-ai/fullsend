@@ -16,24 +16,47 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type bootstrapInput struct {
-	sandboxName string
-	agentPath   string
-	agentName   string
-	skillDirs   []string
-	pluginDirs  []string
+	sandboxName  string
+	agentPath    string
+	agentName    string
+	skillDirs    []string
+	plugins      []PluginInput
+	modelAliases map[string]string
 }
 
-func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
-func (b bootstrapInput) AgentPath() string    { return b.agentPath }
-func (b bootstrapInput) AgentName() string    { return b.agentName }
-func (b bootstrapInput) SkillDirs() []string  { return b.skillDirs }
-func (b bootstrapInput) PluginDirs() []string { return b.pluginDirs }
+func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
+func (b bootstrapInput) AgentPath() string                  { return b.agentPath }
+func (b bootstrapInput) AgentName() string                  { return b.agentName }
+func (b bootstrapInput) SkillDirs() []string                { return b.skillDirs }
+func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
+func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
+func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
+func (b bootstrapInput) ParentModel() string                { return "" }
+
+// claudePlugins and piPlugins build the two kinds of plugin input from
+// host directories, so a test names the format it means.
+func claudePlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindClaude})
+	}
+	return out
+}
+
+func piPlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindPi})
+	}
+	return out
+}
 
 func TestBootstrap_EmptyAgentPath(t *testing.T) {
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "test"})
@@ -903,7 +926,7 @@ func TestClaudeRuntime_Bootstrap_PluginSymlink(t *testing.T) {
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginPath},
+		plugins:     claudePlugins(pluginPath),
 	})
 	require.NoError(t, err)
 
@@ -986,7 +1009,7 @@ func TestClaudeRuntime_Bootstrap_ReservedPluginName_FailsLoudly(t *testing.T) {
 				sandboxName: "test-sandbox",
 				agentPath:   agentFile,
 				agentName:   "review",
-				pluginDirs:  []string{pluginDir},
+				plugins:     claudePlugins(pluginDir),
 			})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), reserved)
@@ -1023,7 +1046,7 @@ func TestClaudeRuntime_Bootstrap_PluginMaliciousName_MarketplaceSetupQuoted(t *t
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginDir},
+		plugins:     claudePlugins(pluginDir),
 	})
 	require.NoError(t, err)
 

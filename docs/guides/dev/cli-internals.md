@@ -436,7 +436,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
-│  │  └── sources .env.d/*.env files          │                   │
+│  │  ├── sources .env.d/*.env files          │                   │
+│  │  └── sources .fullsend/iteration.env     │                   │
+│  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
+│  │       FULLSEND_ITERATION_DEADLINE,       │                   │
+│  │       rewritten before every iteration)  │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
@@ -484,10 +488,15 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ for i := 1; i <= max_iterations; i++ {   │                   │
 │  │   if i > 1: ClearIterationArtifacts      │                   │
 │  │     (sweep stray processes, clear output)│                   │
-│  │   run agent → extract output             │                   │
+│  │   write .fullsend/iteration.env deadline │                   │
+│  │   run agent                              │                   │
+│  │   if killed at timeout: sweep stray      │                   │
+│  │     processes (agent still runs, #7042)  │                   │
+│  │   extract output                         │                   │
 │  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
 │  │   if pass → break (early exit)           │                   │
+│  │   if killed at timeout → break (#7042)   │                   │
 │  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
 │  │                                          │                   │
@@ -541,6 +550,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 ```go
 SandboxWorkspace       = "/sandbox/workspace"
 SandboxClaudeConfig    = "/sandbox/claude-config"
+SandboxCodexConfig     = "/sandbox/codex-config"
 SandboxPiConfig        = "/sandbox/pi-config"
 SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```

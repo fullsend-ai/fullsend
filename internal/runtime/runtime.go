@@ -20,6 +20,34 @@ type RunMetrics struct {
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	Model                    string  `json:"model"`
+	// PerModelUsage breaks the totals above down by the model spec that
+	// spent them. Runtimes that dispatch sub-agents (pi's Agent tool) fill
+	// it with one entry per child model plus the parent's own, so a run
+	// whose cost is dominated by children is legible in metrics.json;
+	// runtimes without sub-agents leave it nil and the totals stand alone.
+	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
+}
+
+// ModelUsage is one model's token and cost contribution to a run. Requests
+// counts the agent invocations attributed to the model (one for the parent
+// iteration, one per sub-agent call).
+type ModelUsage struct {
+	Requests                 int     `json:"requests"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CostUSD                  float64 `json:"cost_usd"`
+}
+
+// Add accumulates other into u.
+func (u *ModelUsage) Add(other ModelUsage) {
+	u.Requests += other.Requests
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheCreationInputTokens += other.CacheCreationInputTokens
+	u.CacheReadInputTokens += other.CacheReadInputTokens
+	u.CostUSD += other.CostUSD
 }
 
 // DefaultAgentPrompt is the prompt handed to the agent CLI when RunParams
@@ -40,8 +68,14 @@ type RunParams struct {
 	FallbackModels []string
 	RepoDir        string
 	FullsendDir    string
-	PluginDirs     []string
-	Debug          string
+	// PluginDirs are the sandbox-side directories Claude Code is pointed at
+	// with --plugin-dir, one per Claude-format plugin the runner uploaded.
+	PluginDirs []string
+	// Plugins are the harness's declared plugins (host paths and formats),
+	// the same list Bootstrap received. PiRuntime.Run re-hashes the pi-format
+	// entries to render the sandbox preflight; other runtimes ignore them.
+	Plugins []PluginInput
+	Debug   string
 	// HooksSettingsPath, if set, is passed as --settings so Claude Code
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string

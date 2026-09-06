@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/skill"
@@ -91,11 +92,19 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
+	// Mirror of the pi runtime's skip: a pi extension is code with no
+	// Claude Code equivalent, so it is named and skipped rather than
+	// silently dropped.
 	var pluginDirs []string
-	for _, p := range input.PluginDirs() {
-		if p != "" {
-			pluginDirs = append(pluginDirs, p)
+	for _, e := range input.Plugins() {
+		if e.Path == "" {
+			continue
 		}
+		if e.Kind != pluginformat.KindClaude {
+			fmt.Fprintf(os.Stderr, "Plugin %q: skipped — the Claude Code runtime does not load pi extensions (see docs/runtimes.md)\n", e.SandboxName())
+			continue
+		}
+		pluginDirs = append(pluginDirs, e.Path)
 	}
 	if len(pluginDirs) > 0 {
 		if err := duplicateDestinationNameError("plugin", pluginDirs, reservedPluginDestNames...); err != nil {
@@ -191,7 +200,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 // running (see killStrayProcesses), then removes its outputs and transcripts
 // so artifacts are per-iteration.
 func (r ClaudeRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/*.jsonl", r.WorkspaceDir(), r.ConfigDir())
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err

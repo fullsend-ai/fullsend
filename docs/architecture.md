@@ -109,6 +109,11 @@ repo baseline and overrides)
   triggers a retry (capped); exhaustion is a hard failure — no unvalidated
   output is emitted
   ([ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md)).
+  An iteration killed at `timeout_minutes` is not retried: the run ends with a
+  distinct timeout error unless an iteration's output already validated, and
+  the budget reaches the sandbox as `FULLSEND_TIMEOUT_MINUTES` plus a
+  per-iteration `FULLSEND_ITERATION_DEADLINE`
+  ([ADR 0105](ADRs/0105-timed-out-iteration-ends-the-run.md)).
 - Forge-portable harness schema: `role` and `slug` move into the harness
   YAML (eliminating the config.yaml `agents:` block dependency), and a
   `forge:` section separates platform-specific config from platform-neutral
@@ -224,7 +229,8 @@ flowchart TB
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path) and [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI-only through a custom model provider whose bearer token comes from a runner-seeded file, with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path) and [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI-only through a custom model provider whose bearer token comes from a runner-seeded file, with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 
 ### Behaviour testing
 
@@ -701,6 +707,9 @@ event ──► DISPATCHER
           ║ Validation loop (if configured):                      ║
           ║   schema check on host                                ║
           ║   ├─ pass: continue                                   ║
+          ║   ├─ fail + agent killed at timeout: HARD FAILURE     ║
+          ║   │   (no retry; "agent timed out" error, unless an   ║
+          ║   │   earlier or this iteration's output validated)   ║
           ║   ├─ fail + retries remain: re-run agent w/ feedback  ║
           ║   └─ fail + retries exhausted: HARD FAILURE           ║
           ║     (no unvalidated output emitted)                   ║

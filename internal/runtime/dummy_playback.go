@@ -101,9 +101,22 @@ func (DummyPlaybackRuntime) EnvExports() []string { return nil }
 
 func (r DummyPlaybackRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
+	// Same contract as DummyRuntime: every declared plugin (ADR 0094) is
+	// named, with its format, and skipped rather than silently dropped.
+	for _, e := range input.Plugins() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — the dummy-playback runtime loads no plugins (see docs/runtimes.md)\n", e.SandboxName(), e.Kind)
+		}
+	}
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy-playback", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("dummy-playback bootstrap exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("dummy-playback bootstrap failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -292,10 +305,16 @@ func (r DummyPlaybackRuntime) commitToCurrentBranch(sandboxName, repoDir, entryN
 // the real sandbox, so it gets the same between-iteration hygiene as the
 // agent runtimes), then removes the previous iteration's output.
 func (r DummyPlaybackRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr)
+	clearStrayProcesses(r.execFn(), sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("dummy-playback clear iteration artifacts exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("dummy-playback clear iteration artifacts failed: %s", strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 func (DummyPlaybackRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }
