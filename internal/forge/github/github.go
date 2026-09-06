@@ -586,6 +586,53 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivat
 	return result, nil
 }
 
+// ListAllOrgRepos returns all repos in an org without filtering forks
+// or archived repos. Used for deferred cleanup in behaviour tests.
+func (c *LiveClient) ListAllOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
+	var result []forge.Repository
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&page=%d&type=all", org, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list all org repos page %d: %w", page, err)
+		}
+
+		var repos []struct {
+			ID            int64  `json:"id"`
+			Name          string `json:"name"`
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
+			Private       bool   `json:"private"`
+			Archived      bool   `json:"archived"`
+			Fork          bool   `json:"fork"`
+		}
+		if err := decodeJSON(resp, &repos); err != nil {
+			return nil, fmt.Errorf("decode all org repos page %d: %w", page, err)
+		}
+
+		for _, r := range repos {
+			result = append(result, forge.Repository{
+				ID:            r.ID,
+				Name:          r.Name,
+				FullName:      r.FullName,
+				DefaultBranch: r.DefaultBranch,
+				Private:       r.Private,
+				Archived:      r.Archived,
+				Fork:          r.Fork,
+			})
+		}
+
+		if len(repos) < 100 {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+var _ forge.AllRepoLister = (*LiveClient)(nil)
+
 // CreateRepo creates a new repository under an organization.
 //
 // The repo is created with auto_init: true so that a default branch exists

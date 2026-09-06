@@ -18,40 +18,35 @@ import (
 // --- generateRepoName unit tests ---
 
 func TestGenerateRepoName_ContainsPrefix(t *testing.T) {
-	name := generateRepoName("test scenario")
+	name := generateRepoName("20260905T153020")
 	assert.True(t, strings.HasPrefix(name, "bt-"), "name should start with bt- prefix")
 }
 
 func TestGenerateRepoName_Format(t *testing.T) {
-	name := generateRepoName("test scenario")
-	// Should be "bt-{8hex}-{8hex}" = 20 chars.
-	assert.Len(t, name, 20)
+	name := generateRepoName("20260905T153020")
+	// Should be "bt-{15-char-timestamp}-{8-char-uuid}" = 27 chars.
+	assert.Len(t, name, 27)
+	assert.Equal(t, "bt-20260905T153020-", name[:19])
 }
 
 func TestGenerateRepoName_UniquePerCall(t *testing.T) {
-	a := generateRepoName("test scenario")
-	b := generateRepoName("test scenario")
+	ts := "20260905T153020"
+	a := generateRepoName(ts)
+	b := generateRepoName(ts)
 	assert.NotEqual(t, a, b, "each call should produce a unique name (different UUID)")
 }
 
-func TestGenerateRepoName_SameHashForSameHint(t *testing.T) {
-	a := generateRepoName("test scenario")
-	b := generateRepoName("test scenario")
-	// Different UUIDs but same hash suffix.
-	assert.Equal(t, a[12:], b[12:], "hash suffix should be deterministic for the same hint")
+func TestGenerateRepoName_SharedTimestamp(t *testing.T) {
+	ts := "20260905T153020"
+	a := generateRepoName(ts)
+	b := generateRepoName(ts)
+	assert.Equal(t, a[:18], b[:18], "same run timestamp should share the prefix")
 }
 
-func TestGenerateRepoName_DifferentHashForDifferentHint(t *testing.T) {
-	a := generateRepoName("scenario A")
-	b := generateRepoName("scenario B")
-	assert.NotEqual(t, a[12:], b[12:], "different hints should produce different hash suffixes")
-}
-
-func TestScenarioHash_Deterministic(t *testing.T) {
-	a := scenarioHash("test scenario")
-	b := scenarioHash("test scenario")
-	assert.Equal(t, a, b)
-	assert.Len(t, a, 8)
+func TestGenerateRepoName_DifferentTimestamp(t *testing.T) {
+	a := generateRepoName("20260905T153020")
+	b := generateRepoName("20260905T160000")
+	assert.NotEqual(t, a[:18], b[:18], "different timestamps should produce different prefixes")
 }
 
 // --- stubClient for ensure tests ---

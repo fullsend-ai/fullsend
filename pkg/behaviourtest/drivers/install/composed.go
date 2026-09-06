@@ -3,6 +3,8 @@ package install
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -60,26 +62,13 @@ func (d *composedDriver) MarkDeleted(repoName string) {
 	d.mu.Unlock()
 }
 
+const repoKeepThreshold = 200
+
 func (d *composedDriver) Finalize(ctx context.Context) error {
 	d.queryRateLimit("Finalize start")
 
 	if !KeepRepos() {
-		d.mu.Lock()
-		remaining := make([]string, 0, len(d.created))
-		for name := range d.created {
-			remaining = append(remaining, name)
-		}
-		d.mu.Unlock()
-
-		for _, name := range remaining {
-			d.logf("[driver] finalize: deleting orphaned %s/%s", d.org, name)
-			if err := d.client.DeleteRepo(ctx, d.org, name); err != nil {
-				if !forge.IsNotFound(err) {
-					d.logf("[driver] finalize: failed to delete %s/%s: %v", d.org, name, err)
-				}
-			}
-		}
-		d.queryRateLimit("Finalize after cleanup")
+		d.pruneOldRuns(ctx)
 	}
 
 	if d.mint == nil {
@@ -89,6 +78,67 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 		return fmt.Errorf("Finalize: mint teardown: %w", err)
 	}
 	return nil
+}
+
+func (d *composedDriver) pruneOldRuns(ctx context.Context) {
+	lister, ok := d.client.(forge.AllRepoLister)
+	if !ok {
+		d.logf("[driver] prune: client does not support AllRepoLister, skipping")
+		return
+	}
+
+	repos, err := lister.ListAllOrgRepos(ctx, d.org)
+	if err != nil {
+		d.logf("[driver] prune: failed to list repos: %v", err)
+		return
+	}
+
+	groups := make(map[string][]string)
+	for _, r := range repos {
+		if !strings.HasPrefix(r.Name, "bt-") {
+			continue
+		}
+		if len(r.Name) < 19 {
+			continue
+		}
+		ts := r.Name[3:18]
+		groups[ts] = append(groups[ts], r.Name)
+	}
+
+	total := 0
+	for _, names := range groups {
+		total += len(names)
+	}
+
+	if total <= repoKeepThreshold {
+		d.logf("[driver] prune: %d bt-* repos, at or under threshold (%d), skipping", total, repoKeepThreshold)
+		return
+	}
+
+	timestamps := make([]string, 0, len(groups))
+	for ts := range groups {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Strings(timestamps)
+
+	for _, ts := range timestamps {
+		names := groups[ts]
+		if total-len(names) < repoKeepThreshold {
+			break
+		}
+		d.logf("[driver] prune: deleting run %s (%d repos)", ts, len(names))
+		for _, name := range names {
+			if err := d.client.DeleteRepo(ctx, d.org, name); err != nil {
+				if !forge.IsNotFound(err) {
+					d.logf("[driver] prune: failed to delete %s/%s: %v", d.org, name, err)
+				}
+			}
+		}
+		total -= len(names)
+	}
+
+	d.logf("[driver] prune: %d bt-* repos remaining", total)
+	d.queryRateLimit("Finalize after cleanup")
 }
 
 func (d *composedDriver) DefaultConcurrency() int {

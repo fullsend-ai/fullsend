@@ -2,8 +2,6 @@ package install
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -59,6 +57,7 @@ type repoEnsurer struct {
 	runCLI        CLIRunnerFunc
 	settle        SettleFunc
 	eventDelivery EventDeliveryFunc
+	runTimestamp  string
 }
 
 func newRepoEnsurer(
@@ -77,21 +76,16 @@ func newRepoEnsurer(
 		runCLI:        e2etest.TryRunCLI,
 		settle:        awaitWorkflowReady,
 		eventDelivery: awaitEventDelivery,
+		runTimestamp:  time.Now().UTC().Format("20060102T150405"),
 	}
 }
 
-func generateRepoName(hint string) string {
-	h := sha256.Sum256([]byte(hint))
-	return fmt.Sprintf("bt-%s-%s", uuid.New().String()[:8], hex.EncodeToString(h[:4]))
-}
-
-func scenarioHash(hint string) string {
-	h := sha256.Sum256([]byte(hint))
-	return hex.EncodeToString(h[:4])
+func generateRepoName(runTimestamp string) string {
+	return fmt.Sprintf("bt-%s-%s", runTimestamp, uuid.New().String()[:8])
 }
 
 func (e *repoEnsurer) CreateRepo(ctx context.Context, org, hint string) (string, error) {
-	repoName := generateRepoName(hint)
+	repoName := generateRepoName(e.runTimestamp)
 	target := org + "/" + repoName
 
 	description := fmt.Sprintf("Behaviour test: %s", hint)
