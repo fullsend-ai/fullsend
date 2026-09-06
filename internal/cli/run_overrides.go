@@ -3,9 +3,11 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // Runtime-neutral override environment variables. They are overrides of the
@@ -18,6 +20,7 @@ const (
 	envModel          = "FULLSEND_MODEL"
 	envEffort         = "FULLSEND_EFFORT"
 	envFallbackModels = "FULLSEND_FALLBACK_MODELS"
+	envStallTimeout   = "FULLSEND_STALL_TIMEOUT"
 	// envPiModel is the pre-#6526 pi-only model override, kept as an alias of
 	// FULLSEND_MODEL for pi runs. FULLSEND_PI_PROVIDER stays pi-only (it is
 	// the provider prefix for bare ids, not a model choice).
@@ -125,6 +128,73 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		}
 	}
 	return o, nil
+}
+
+// defaultStallTimeout is how long the runtime event stream may stay silent
+// before the run is killed as stalled. Streaming tool output counts as
+// liveness (every well-formed stream line resets the clock), so this floor
+// only has to cover genuinely silent calls. The binding constraint is Claude
+// Code's bash ceiling: BASH_MAX_TIMEOUT_MS defaults to 600000ms (10m) and
+// the model routinely requests the full ceiling for test suites, so the
+// default must sit above it or a legitimately quiet 10m command is killed as
+// stalled. 15m gives that headroom; repos that raise BASH_MAX_TIMEOUT_MS or
+// know their event cadence tune FULLSEND_STALL_TIMEOUT to match.
+const defaultStallTimeout = 15 * time.Minute
+
+// resolveStallTimeout returns the event-inactivity timeout for the run:
+// FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
+// disables the watchdog), the default when it is unset. A malformed value
+// returns the default plus an error, so the caller can say so instead of
+// silently running without the watchdog it thinks it configured.
+func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envStallTimeout))
+	if raw == "" {
+		return defaultStallTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultStallTimeout, fmt.Errorf("%s=%q is not a duration (e.g. 10m, 0 to disable): %w", envStallTimeout, raw, err)
+	}
+	if d < 0 {
+		return defaultStallTimeout, fmt.Errorf("%s=%q must not be negative (0 disables the watchdog)", envStallTimeout, raw)
+	}
+	return d, nil
+}
+
+// effectiveStallTimeout disables the watchdog (returns 0) when it could never
+// fire: sandbox.ExecStreamReader wraps the command in the global run
+// timeout's context, so a stall the global deadline reaches first is never
+// reported as one. The comparison is against the kill's worst case, not the
+// threshold — the watchdog polls, so a stall crossing the threshold right
+// after a tick is noticed one interval later (StallDetectionLatency), and a
+// value just under the run timeout would otherwise be reported as armed while
+// usually losing the race anyway. Clear of that, the configured value stands
+// unchanged — no clamping or deriving, existing configs keep their behavior.
+func effectiveStallTimeout(stall, run time.Duration) time.Duration {
+	if stall+agentruntime.StallDetectionLatency(stall) >= run {
+		return 0
+	}
+	return stall
+}
+
+// runStallTimeout is the whole stall-timeout decision for one run: resolve
+// FULLSEND_STALL_TIMEOUT, report a malformed value rather than silently
+// running without the watchdog it configured, and disarm — saying so — when
+// the run's own timeout would always win the race. Zero means no watchdog.
+func runStallTimeout(getenv func(string) string, run time.Duration, printer *ui.Printer) time.Duration {
+	stall, err := resolveStallTimeout(getenv)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", err, stall))
+	}
+	if effective := effectiveStallTimeout(stall, run); effective != stall {
+		// The watchdog could never fire — the global deadline always wins the
+		// race. Say so instead of arming one that silently protects nothing.
+		printer.StepInfo(fmt.Sprintf(
+			"Stall watchdog inactive: FULLSEND_STALL_TIMEOUT (%s) is not below the run timeout (timeout_minutes, %s) by more than the %s detection interval",
+			stall, run, agentruntime.StallDetectionLatency(stall)))
+		return effective
+	}
+	return stall
 }
 
 // validateRuntimeName mirrors the config validation so a flag/env override

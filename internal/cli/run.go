@@ -201,6 +201,10 @@ type aggregateMetrics struct {
 	// breakdown summing to the totals across a retry. A run on a runtime
 	// without sub-agents keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
+	// Stalled records that the run was killed by the stall watchdog — the
+	// event stream went silent for FULLSEND_STALL_TIMEOUT — rather than
+	// failing on its own. Omitted when false.
+	Stalled bool `json:"stalled,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -209,6 +213,21 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
+}
+
+// noteStalledRun records a stall verdict on an iteration that failed. A
+// wedged agent is killed on evidence of silence rather than billed for the
+// rest of the global timeout, so the failure is annotated both in the console
+// and in metrics.json — the cheap failure has to be a legible one, and it
+// otherwise looks like any other non-zero exit. Any other error is left
+// alone.
+func noteStalledRun(runErr error, stallTimeout time.Duration, agg *aggregateMetrics, printer *ui.Printer) {
+	if !errors.Is(runErr, agentruntime.ErrStalled) {
+		return
+	}
+	agg.Stalled = true
+	printer.StepFail(fmt.Sprintf(
+		"Agent produced no events for %s and was terminated as stalled (FULLSEND_STALL_TIMEOUT, 0 disables)", stallTimeout))
 }
 
 var (
@@ -2075,6 +2094,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
 
+	stallTimeout := runStallTimeout(os.Getenv, timeout, printer)
+
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
 		maxIterations = h.ValidationLoop.MaxIterations
@@ -2226,6 +2247,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Debug:             debug,
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
+			StallTimeout:      stallTimeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
@@ -2255,6 +2277,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if runErr != nil {
 			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
+			noteStalledRun(runErr, stallTimeout, &aggMetrics, printer)
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully

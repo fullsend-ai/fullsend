@@ -74,6 +74,12 @@ persona, or a model this run cannot serve, is caught slightly later — at Boots
 harness's skills have been read — so the sandbox exists but the agent has not started. See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
+## Stall watchdog
+
+The global run timeout is wall-clock, so a wedged agent looks exactly like a thinking one until it expires — and the run is billed for the difference. The watchdog watches the runtime output stream instead: every well-formed line the runtime writes counts as liveness, including lines that map to no agent event (pi's `tool_execution_update` while a tool streams output, Claude Code's `user` tool-result messages, codex's `item.started`/`item.updated`), so an actively streaming tool is never mistaken for a stall. It covers claude, pi and codex — every runtime that streams — and the scripted `dummy` runtimes ignore it. After half of `FULLSEND_STALL_TIMEOUT` of stream silence it warns once (`::warning::no agent events for 7m30s` in CI), and after the full duration it kills the run: first the agent inside the sandbox, through the same TERM-then-KILL sweep that clears stray processes between iterations, then the local `openshell sandbox exec` client. Cancelling the exec is all the global timeout does and it signals nothing inside the sandbox, so the sweep is what actually stops a wedged agent from writing the workspace and spending tokens — including under `--keep-sandbox`, where nothing else would. The run then fails with `agent stalled` and records `"stalled": true` in `metrics.json`.
+
+`FULLSEND_STALL_TIMEOUT` takes a Go duration and defaults to `15m`; `0` disables the watchdog. The default sits above Claude Code's bash ceiling — `BASH_MAX_TIMEOUT_MS` defaults to 600000ms (10 minutes) and the model routinely requests the full ceiling for test suites — so a legitimately quiet long command is not killed as stalled; a repo that raises `BASH_MAX_TIMEOUT_MS` should raise the stall timeout with it. The value must clear the harness `timeout_minutes` by more than the watchdog's polling interval (a twentieth of the stall timeout, capped at 30s): any closer and the global timeout wins the race, so the watchdog is not armed and the run logs that stall protection is inactive. Harnesses with a short `timeout_minutes` — 10 minutes or less — therefore get no stall protection at the default; lower `FULLSEND_STALL_TIMEOUT` for those or accept that the global timeout is the only backstop. A value that is not a duration is reported in the run log and ignored, and the default applies.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory:
@@ -98,6 +104,7 @@ Each run produces artifacts in the output directory:
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
 | `per_model_usage` | Per-model-spec breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled). See below |
+| `stalled` | Present (`true`) only when the run was killed by the stall watchdog |
 
 #### Per-model usage
 

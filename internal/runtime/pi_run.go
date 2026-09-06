@@ -791,6 +791,14 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	defer cancel()
 
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -821,6 +829,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	var lastResult *ResultEvent
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case InitEvent:
 			return
@@ -839,16 +848,27 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parsePiStream(reader, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// tool_execution_update lines emitted while a tool streams output, which
+	// map to no AgentEvent — resets the silence clock, so an actively
+	// streaming tool is never mistaken for a stall.
+	if _, parseErr := parsePiStreamLines(reader, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return exitCode, stallErr
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)

@@ -372,6 +372,17 @@ const (
 //     processor shuts down silently — so a stream with no terminal event is
 //     reported as an incomplete, failed run rather than a success.
 func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, err error) {
+	return parseCodexStreamLines(r, onEvent, nil)
+}
+
+// parseCodexStreamLines is parseCodexStream with a per-line liveness hook:
+// onLine (nil ok) is called for every well-formed JSON line — including the
+// item and lifecycle types that map to no AgentEvent, `item.updated` among
+// them, emitted while a command streams output — and for every fully consumed
+// line too large to parse (> streamBufSize). Any stream activity is proof of
+// life, so the stall watchdog counts lines, not just the sparser semantic
+// events.
+func parseCodexStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) (threadID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -554,6 +565,12 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			for isPrefix && readErr == nil {
 				_, isPrefix, readErr = br.ReadLine()
 			}
+			// A fully consumed oversized line is excluded from semantic
+			// parsing but is still stream activity: the runtime that wrote a
+			// megabyte is alive, so it must feed the watchdog.
+			if readErr == nil && onLine != nil {
+				onLine()
+			}
 			continue
 		}
 		if len(line) == 0 {
@@ -565,6 +582,9 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 		// mid-write) is skipped; it must not abort the whole run.
 		if jsonErr := json.Unmarshal(line, &env); jsonErr != nil {
 			continue
+		}
+		if onLine != nil {
+			onLine()
 		}
 
 		switch env.Type {
