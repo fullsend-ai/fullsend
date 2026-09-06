@@ -115,7 +115,8 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // genuinely App-authored. A stronger identity check (performed_via_github_app,
 // the App's client id) does not help for the same reason.
 //
-// KNOWN GAP: this check is necessary but NOT sufficient. It authenticates two public strings, not the code path that
+// KNOWN GAP, tracked before this ships: this check is necessary but NOT
+// sufficient. It authenticates two public strings, not the code path that
 // wrote them. An agent holding the same App installation token can post a
 // top-level comment carrying both status tags and a marker — via a
 // post-script shelling out to `gh`, which reaches neither NeutralizeMarkers
@@ -127,13 +128,17 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // downstream softens that: checkSteerAlreadyHandled trusts this outright,
 // and internal/cli/run.go returns before the start comment or the
 // pre-script on the strength of it. Calling the check "advisory" would
-// describe an implementation that does not exist. It is trusted.
+// describe an implementation that does not exist. It is trusted — which is
+// why ADR 0101 makes authenticated receipts a precondition for ENABLING
+// steering in a repository, rather than something to tighten later. The
+// gate is the ADR's; fullsend#7006 carries the work, and the ADR states
+// the policy without citing the issue by number.
 //
-// Whether to close the gap is a maintainer's call, not this file's:
-// fullsend#7006 tracks the hardening as optional, on the view that the
-// interface need only be no worse than what is already offered. This
-// comment states what the code does and does not speak for that decision
-// or for any ADR.
+// The gate is on enabling, not on merging: steering ships off by default,
+// so nothing here blocks this change landing. Reading it as a merge gate,
+// or as optional hardening, both get it wrong in the dangerous direction —
+// the second reads as permission to turn steering on without the receipt
+// work.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {
 	if author == "" {
 		return SteerMarker{}, false
