@@ -169,3 +169,9 @@ beside telemetry when at least one new score is produced (tool-agnostic). Distin
 spans only; the root span keeps `fullsend.cost_usd` and `fullsend.tool_calls`
 (custom-namespaced, not auto-summed by MLflow). This prevents MLflow from
 double-counting token usage across the trace.
+
+**2026-09-03 — Tool-call span topology ([ADR 0102](0102-tool-call-span-topology.md)):**
+each tool call the runtime reports becomes an `execute_tool` child of its
+iteration's `agent` span, metadata only; the message record on the `agent`
+span stays the content carrier. Sub-agent nesting (deferred item 1 above)
+remains deferred.

@@ -374,6 +374,8 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
   > **Planned:** portable remote score export via the same OTLP configuration as agent traces ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). Not yet implemented.
 
+- Tool-call span topology: every tool call the runtime reports becomes an `execute_tool` child span of its iteration's `agent` span — semantic-convention metadata only, timed at runner receipt; tool content stays on the `agent` span's message record ([ADR 0102](ADRs/0102-tool-call-span-topology.md)).
+
 **Open questions:**
 
 - What signals matter most — cost, latency, token usage, action logs, decision traces, or something else?

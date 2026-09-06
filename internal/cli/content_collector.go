@@ -14,12 +14,36 @@ import (
 
 // maxContentBytes bounds the conversation content attached to one agent
 // span (one iteration), measured on the raw part bytes before JSON
-// encoding. The value is far above what text+reasoning+tool-call
-// summaries produce in practice (the full-transcript mean of ~369K chars
-// includes tool results, which are not captured yet) and was accepted
-// whole by the pilot backend in live validation. Revisit when tool
-// results join the stream.
+// encoding — the marshaled attribute additionally carries per-part JSON
+// syntax and escaping, so a budget-binding iteration serializes larger
+// than this value. A 255KB attribute was accepted whole by the pilot
+// backend in live validation; beyond that is unproven, so the total
+// stays put and tool results are bounded per part instead.
 const maxContentBytes = 256 * 1024
+
+// maxToolIDBytes bounds a tool call/result id. The stream decodes ids
+// unbounded and Level 3 lifts the SDK attribute cap; real ids run tens
+// of bytes, so anything beyond this is malformed and gets dropped —
+// never truncated, since a truncated id could falsely collide with
+// another call's. Id bytes that pass the bound still count toward the
+// size budget like every other serialized part byte.
+const maxToolIDBytes = 256
+
+// maxToolResultBytes bounds one tool result's response within the
+// suffix budget. Measured on three real review-agent MAIN-THREAD
+// transcripts (2026-08-25): uncapped results total 222-389KB per
+// iteration — overflowing maxContentBytes on two of three runs — while
+// an 8KiB cap kept those runs at 127-255KB with 78-89% of results
+// untouched (p50 2-3.5KB, p90 9-19KB). The live stream this collector
+// consumes also interleaves sub-agent results, so those figures are a
+// lower bound on production volume and the eviction-pressure reduction
+// is a lower-bound claim. The cap lowers eviction pressure; it does
+// not prevent it — a heavier iteration still overflows the total
+// budget and evicts oldest-first, marked via the truncated and
+// dropped-bytes attributes. A capped response keeps its tail, extending
+// the budget's ordered-suffix policy to individual results; no consumer
+// requirement has confirmed either direction yet.
+const maxToolResultBytes = 8 * 1024
 
 // newContentCollectorIfEnabled returns a live collector when the Level 3
 // gate is on and nil otherwise — nil is the off state and is inert at
@@ -31,17 +55,18 @@ func newContentCollectorIfEnabled() *contentCollector {
 	return nil
 }
 
-// contentEventHandler tees the normalized event stream to the console
-// renderer and the collector. A nil collector returns a nil handler so
-// the runtime keeps its default renderer path — supplying any OnEvent
-// replaces that renderer, and losing it silences CI output.
-func contentEventHandler(render func(agentruntime.AgentEvent), c *contentCollector) func(agentruntime.AgentEvent) {
-	if c == nil {
-		return nil
-	}
+// iterationEventHandler tees the normalized event stream to the console
+// renderer, the Level 3 collector and the tool-span tracker, in that
+// order. It is always non-nil: tool spans are metadata and are emitted
+// with the content gate off, and supplying any OnEvent replaces the
+// runtime's default renderer — losing it silences CI output — so the
+// renderer runs first whatever else is off. A nil collector (gate off)
+// and a nil tracker are inert.
+func iterationEventHandler(render func(agentruntime.AgentEvent), c *contentCollector, t *toolSpanTracker) func(agentruntime.AgentEvent) {
 	return func(evt agentruntime.AgentEvent) {
 		render(evt)
 		c.Handle(evt)
+		t.Handle(evt)
 	}
 }
 
@@ -73,22 +98,104 @@ func attachContent(span trace.Span, res contentResult) {
 // contentPart is one part of the assembled assistant output message,
 // shaped for the GenAI output-messages JSON schema: TextPart
 // ({type:"text",content}), the schema's GenericPart extension point
-// ({type:"reasoning",content}), and ToolCallRequestPart
-// ({type:"tool_call",name}+summary). A tool summary is not the tool's
-// arguments, so no arguments field is ever fabricated from it.
+// ({type:"reasoning",content}), ToolCallRequestPart
+// ({type:"tool_call",id,name}+summary), and ToolCallResponsePart
+// ({type:"tool_call_response",id,response}). A tool summary is not the
+// tool's arguments, so no arguments field is ever fabricated from it.
 type contentPart struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Type     string `json:"type"`
+	Content  string `json:"content,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Response string `json:"response,omitempty"`
+	// IsError mirrors the wire's is_error on failed tool calls; it is
+	// content-bearing (an errored empty result is signal, not absence)
+	// and accounts a fixed footprint. Truncated marks a part whose bulk
+	// field was cut, so a consumer never reads a fragment as a whole
+	// result; it is set only by the collector's own cuts and stays
+	// outside the accounting.
+	IsError   bool `json:"is_error,omitempty"`
+	Truncated bool `json:"fullsend.truncated,omitempty"`
+	// bulkScanned records that the bulk field was already redacted at
+	// accumulation (per-result cap or pre-trim), so Result must not scan
+	// those bytes again — a re-scan can re-match masked values and
+	// double-count findings.
+	bulkScanned bool
 }
 
+// isErrorFootprint is the serialized cost of `"is_error":true,` — the
+// bytes an errored-empty part contributes to the attribute.
+const isErrorFootprint = 16
+
+// MarshalJSON emits the schema-REQUIRED response key on
+// tool_call_response parts even when the response is empty; omitempty
+// on the shared struct would drop it.
+func (p contentPart) MarshalJSON() ([]byte, error) {
+	type alias contentPart
+	if p.Type != "tool_call_response" {
+		return json.Marshal(alias(p))
+	}
+	a := alias(p)
+	a.Response = "" // serialized by the outer field below instead
+	return json.Marshal(struct {
+		alias
+		Response string `json:"response"`
+	}{a, p.Response})
+}
+
+// contentBytes counts a part's content-bearing bytes. A part with none
+// contributes nothing to the output and is never kept. An error flag is
+// content: a failed call with empty output must survive, so it counts
+// its serialized footprint.
+func contentBytes(p contentPart) int {
+	n := len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
+	if p.IsError {
+		n += isErrorFootprint
+	}
+	return n
+}
+
+// partSize is the part's budget footprint: content-bearing bytes plus
+// id bytes, since the id serializes into the attribute like everything
+// else. JSON syntax and escaping added at marshal time remain uncounted
+// — the budget is measured on raw part bytes, as documented on
+// maxContentBytes.
 func partSize(p contentPart) int {
-	return len(p.Content) + len(p.Name) + len(p.Summary)
+	return contentBytes(p) + len(p.ID)
+}
+
+// boundedID drops an id that exceeds maxToolIDBytes; the part survives
+// without correlation rather than carrying a malformed identifier.
+func boundedID(id string) string {
+	if len(id) > maxToolIDBytes {
+		return ""
+	}
+	return id
 }
 
 // contentMessage is one message in the gen_ai.output.messages array.
 // finish_reason is REQUIRED by the schema's OutputMessage definition.
+//
+// The whole iteration is deliberately shaped as ONE assistant message,
+// a knowing deviation from the convention on two separate counts:
+//
+//   - role placement: the convention's worked example puts
+//     client-executed tool results under a role:"tool" message in
+//     gen_ai.input.messages; here they ride in the assistant output
+//     record. Schema-valid — ToolCallResponsePart is admitted in
+//     output messages.
+//   - cardinality: the registry note on gen_ai.output.messages says
+//     each message corresponds to exactly one generation
+//     (choice/candidate); this record packs an iteration's many
+//     generations into one message, which that note forbids
+//     independently of part-type admission.
+//
+// Rationale for both: parts keep stream order, and the iteration has
+// exactly one meaningful finish_reason — per-generation messages would
+// each require a finish_reason with no independent meaning. If a
+// consumer ever needs per-generation messages, that is a deliberate
+// carrier change, not a reinterpretation of this shape.
 type contentMessage struct {
 	Role         string        `json:"role"`
 	Parts        []contentPart `json:"parts"`
@@ -101,8 +208,8 @@ type contentResult struct {
 	// OutputMessages is the gen_ai.output.messages JSON string, empty
 	// when the iteration produced no content.
 	OutputMessages string
-	// DroppedBytes counts raw content bytes removed by the size budget
-	// (content, tool name, and summary bytes alike).
+	// DroppedBytes counts raw part bytes removed by the size budget
+	// (content, tool name, summary, tool response, and id bytes alike).
 	DroppedBytes int
 	// Truncated reports whether the budget cut or dropped anything.
 	Truncated bool
@@ -143,8 +250,8 @@ func newContentCollector(maxBytes int) *contentCollector {
 
 // Handle consumes one normalized event. Contiguous text and reasoning
 // deltas of the same kind coalesce into a single part (the Claude parser
-// emits per-delta); tool calls are discrete parts. All other event kinds
-// carry no conversation content and are ignored.
+// emits per-delta); tool calls and tool results are discrete parts. All
+// other event kinds carry no conversation content and are ignored.
 func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	if c == nil {
 		return
@@ -155,10 +262,41 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ThinkingEvent:
 		c.appendText("reasoning", e.Text)
 	case agentruntime.ToolUseEvent:
-		c.parts = append(c.parts, contentPart{Type: "tool_call", Name: e.Name, Summary: e.Summary})
-		c.total += len(e.Name) + len(e.Summary)
-		c.evictOverflow()
+		c.appendPart(contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary})
+	case agentruntime.ToolResultEvent:
+		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result, IsError: e.IsError}
+		// A parser-side partial flatten (non-text blocks skipped) is a
+		// cut like any other: the part must not read as a whole result.
+		p.Truncated = e.Partial
+		if len(p.Response) > maxToolResultBytes {
+			// Redact before the cap cut — the same invariant as every
+			// other cut: trimming raw bytes first could split a secret at
+			// the boundary past recognition. Redaction alone can shrink
+			// the response under the cap; that is not a cut.
+			p.Response = c.redact(p.Response, &c.findings)
+			p.bulkScanned = true
+			kept := tailToRuneBoundary(p.Response, maxToolResultBytes)
+			c.evicted += len(p.Response) - len(kept)
+			if len(kept) < len(p.Response) {
+				p.Truncated = true
+			}
+			p.Response = kept
+		}
+		c.appendPart(p)
 	}
+}
+
+// appendPart admits one discrete part. Parts with no content-bearing
+// bytes are refused: they would contribute nothing to the output (an
+// empty result produces no part) yet accumulate unboundedly, invisible
+// to the size-based eviction.
+func (c *contentCollector) appendPart(p contentPart) {
+	if contentBytes(p) == 0 {
+		return
+	}
+	c.parts = append(c.parts, p)
+	c.total += partSize(p)
+	c.evictOverflow()
 }
 
 func (c *contentCollector) appendText(kind, text string) {
@@ -167,6 +305,10 @@ func (c *contentCollector) appendText(kind, text string) {
 	}
 	if n := len(c.parts); n > 0 && c.parts[n-1].Type == kind {
 		c.parts[n-1].Content += text
+		// The appended bytes are unscanned; a secret can straddle the
+		// old/new boundary, so the WHOLE field must rescan — clear the
+		// pre-trim's scanned flag rather than tracking a prefix.
+		c.parts[n-1].bulkScanned = false
 	} else {
 		c.parts = append(c.parts, contentPart{Type: kind, Content: text})
 	}
@@ -191,23 +333,54 @@ func (c *contentCollector) evictOverflow() {
 		if c.total-head < c.maxBytes {
 			break
 		}
-		c.redact(c.parts[0].Content, &c.findings)
-		c.redact(c.parts[0].Name, &c.findings)
-		c.redact(c.parts[0].Summary, &c.findings)
+		hp := &c.parts[0]
+		hb := bulkField(hp)
+		if !hp.bulkScanned {
+			c.redact(*hb, &c.findings)
+		}
+		if hb != &hp.Content {
+			c.redact(hp.Content, &c.findings)
+		}
+		if hb != &hp.Response {
+			c.redact(hp.Response, &c.findings)
+		}
+		c.redact(hp.Name, &c.findings)
+		c.redact(hp.Summary, &c.findings)
+		c.redact(hp.ID, &c.findings)
 		c.evicted += head
 		c.total -= head
 		c.parts = c.parts[1:]
 	}
 	if len(c.parts) == 1 && c.parts[0].Type != "tool_call" && c.total > 2*c.maxBytes {
-		p := &c.parts[0]
-		before := len(p.Content)
-		p.Content = c.redact(p.Content, &c.findings)
-		c.total -= before - len(p.Content)
-		kept := tailToRuneBoundary(p.Content, c.maxBytes)
-		c.evicted += len(p.Content) - len(kept)
-		c.total -= len(p.Content) - len(kept)
-		p.Content = kept
+		bulk := bulkField(&c.parts[0])
+		before := len(*bulk)
+		// Deliberately unconditional: a re-fired pre-trim means bytes
+		// coalesced since the last scan, and a straddling secret needs
+		// the whole field visible — redact-before-cut outranks avoiding
+		// a rare re-match of already-masked values.
+		*bulk = c.redact(*bulk, &c.findings)
+		c.parts[0].bulkScanned = true
+		c.total -= before - len(*bulk)
+		kept := tailToRuneBoundary(*bulk, c.maxBytes)
+		c.evicted += len(*bulk) - len(kept)
+		c.total -= len(*bulk) - len(kept)
+		if len(kept) < len(*bulk) {
+			c.parts[0].Truncated = true
+		}
+		*bulk = kept
 	}
+}
+
+// bulkField returns the part's dominant content-bearing field, the one
+// size cuts operate on: response for tool_call_response parts, content
+// for text and reasoning. tool_call parts have no bulk field — a partial
+// name or summary would misrepresent the call, so they are never cut,
+// only dropped whole.
+func bulkField(p *contentPart) *string {
+	if p.Type == "tool_call_response" {
+		return &p.Response
+	}
+	return &p.Content
 }
 
 // Result assembles the redacted, size-bounded output messages for one
@@ -231,10 +404,20 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 
 	redacted := make([]contentPart, 0, len(c.parts))
 	for _, p := range c.parts {
-		p.Content = c.redact(p.Content, &res.Findings)
+		bulk := bulkField(&p)
+		if !p.bulkScanned {
+			*bulk = c.redact(*bulk, &res.Findings)
+		}
+		if bulk != &p.Content {
+			p.Content = c.redact(p.Content, &res.Findings)
+		}
+		if bulk != &p.Response {
+			p.Response = c.redact(p.Response, &res.Findings)
+		}
 		p.Name = c.redact(p.Name, &res.Findings)
 		p.Summary = c.redact(p.Summary, &res.Findings)
-		if partSize(p) == 0 {
+		p.ID = c.redactID(p.ID, &res.Findings)
+		if contentBytes(p) == 0 {
 			continue // sanitized away entirely; the finding is recorded
 		}
 		redacted = append(redacted, p)
@@ -257,14 +440,22 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 			continue
 		}
 		res.Truncated = true
-		if !full && p.Type != "tool_call" && remaining > 0 {
-			tail := tailToRuneBoundary(p.Content, remaining)
-			res.DroppedBytes += size - len(tail)
-			if tail != "" {
-				p.Content = tail
-				kept = append(kept, p)
-			}
+		bulk := bulkField(&p)
+		// Bytes the part carries besides its bulk field (its id, for
+		// tool_call_response parts) must fit before any bulk tail can.
+		nonBulk := size - len(*bulk)
+		tail := ""
+		if !full && p.Type != "tool_call" && remaining > nonBulk {
+			tail = tailToRuneBoundary(*bulk, remaining-nonBulk)
+		}
+		if tail != "" {
+			res.DroppedBytes += size - nonBulk - len(tail)
+			*bulk = tail
+			p.Truncated = true
+			kept = append(kept, p)
 		} else {
+			// The part drops whole — every byte it carried is charged,
+			// id included (an empty rune-boundary tail lands here too).
 			res.DroppedBytes += size
 		}
 		full = true
@@ -272,6 +463,16 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 
 	if len(kept) == 0 {
 		return res
+	}
+	for _, p := range kept {
+		// A kept part marked truncated (parser-side partial flatten, or
+		// a cap cut in an otherwise under-budget iteration) must surface
+		// on the span marker too — it is the only cheap filter for
+		// affected spans. No byte count is fabricated for it.
+		if p.Truncated {
+			res.Truncated = true
+			break
+		}
 	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]
@@ -303,6 +504,21 @@ func (c *contentCollector) redact(text string, findings *[]security.Finding) str
 		return ""
 	}
 	return text
+}
+
+// redactID scans a part id like every other stream-derived string; on
+// any finding the id is dropped entirely — a substituted id could
+// falsely collide with another call's.
+func (c *contentCollector) redactID(id string, findings *[]security.Finding) string {
+	if id == "" {
+		return id
+	}
+	scanned := c.pipeline.Scan(id)
+	*findings = append(*findings, scanned.Findings...)
+	if len(scanned.Findings) > 0 {
+		return ""
+	}
+	return id
 }
 
 // tailToRuneBoundary keeps at most the last n bytes of s, starting on a

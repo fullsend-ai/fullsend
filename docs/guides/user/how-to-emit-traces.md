@@ -113,7 +113,9 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 ## Capture conversation content
 
 Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, and tool calls to each `agent` span, in the local file and
+text, reasoning, tool calls, and tool results — when the runtime's stream
+provides them; Claude runs do — to each `agent` span, in the
+local file and
 at the endpoint. Content is redacted for secrets and bounded per iteration,
 but may still contain proprietary code or PII — make sure your backend's
 access controls fit before enabling it.
@@ -121,6 +123,12 @@ access controls fit before enabling it.
 ```bash
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
+
+With the `claude` runtime, tool calls are visible at every level as
+`execute_tool` child spans of each `agent` span (tool name, call id, timing,
+error) — that is metadata, not content, and this variable does not affect
+it. The pi and codex runtimes emit none yet (see
+[Runtimes](../../runtimes.md)).
 
 ## Disable trace export
 
