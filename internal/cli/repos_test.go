@@ -1161,7 +1161,7 @@ func TestReposInstallCmd_VendorFlag(t *testing.T) {
 	assert.Equal(t, "false", f.DefValue)
 }
 
-func TestReposInstallCmd_VendorFlags(t *testing.T) {
+func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
 
 	binaryFlag := cmd.Flags().Lookup("fullsend-binary")
