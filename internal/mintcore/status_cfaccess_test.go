@@ -182,6 +182,46 @@ func TestStatusCFAccess_ExpiredToken_Returns401(t *testing.T) {
 	}
 }
 
+func TestStatusCFAccess_ExpiryBoundary_ClockSkew(t *testing.T) {
+	// Test the boundary condition: a token whose exp equals exactly
+	// now-maxClockSkew is considered expired (<=), while exp one second
+	// later is valid. This matches the pattern in JWKSVerifier.
+	env := newCFAccessTestEnv(t)
+
+	now := time.Now()
+	skew := int64(maxClockSkew.Seconds())
+
+	t.Run("exp at boundary is expired", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+		req.Header.Set("Cf-Access-Jwt-Assertion", env.signCFAccessToken(t, map[string]any{
+			"iat": now.Add(-10 * time.Minute).Unix(),
+			"exp": now.Unix() - skew, // exactly at the boundary
+		}))
+		env.handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for exp at clock-skew boundary, got %d: %s",
+				rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("exp one second past boundary is valid", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+		req.Header.Set("Cf-Access-Jwt-Assertion", env.signCFAccessToken(t, map[string]any{
+			"iat": now.Add(-10 * time.Minute).Unix(),
+			"exp": now.Unix() - skew + 1, // one second past the boundary
+		}))
+		env.handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for exp one second past clock-skew boundary, got %d: %s",
+				rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func TestStatusCFAccess_WrongAudience_Returns401(t *testing.T) {
 	env := newCFAccessTestEnv(t)
 
