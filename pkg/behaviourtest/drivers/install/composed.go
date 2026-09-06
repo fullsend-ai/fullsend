@@ -45,12 +45,14 @@ func newComposedDriver(
 
 func (d *composedDriver) CreateRepo(ctx context.Context, hint string) (string, error) {
 	name, err := d.ensurer.CreateRepo(ctx, d.org, hint)
+	if name != "" {
+		d.mu.Lock()
+		d.created[name] = true
+		d.mu.Unlock()
+	}
 	if err != nil {
 		return "", fmt.Errorf("creating repo in %s: %w", d.org, err)
 	}
-	d.mu.Lock()
-	d.created[name] = true
-	d.mu.Unlock()
 	d.logf("[driver] created %s/%s", d.org, name)
 	d.logRateLimit("after CreateRepo")
 	return name, nil

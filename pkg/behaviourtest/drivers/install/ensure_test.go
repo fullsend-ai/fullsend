@@ -234,7 +234,7 @@ func TestCreateRepo_CreateRepoError(t *testing.T) {
 	assert.Contains(t, err.Error(), "permission denied")
 }
 
-func TestCreateRepo_InstallCLIError(t *testing.T) {
+func TestCreateRepo_InstallCLIError_ReturnsRepoName(t *testing.T) {
 	speedUpGitReadyPoll(t)
 	sc := &stubClient{}
 	e := &repoEnsurer{
@@ -248,12 +248,13 @@ func TestCreateRepo_InstallCLIError(t *testing.T) {
 		logf: t.Logf,
 	}
 
-	_, err := e.CreateRepo(context.Background(), "org", "test")
+	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cli exploded")
+	assert.True(t, strings.HasPrefix(name, "bt-"), "should return repo name on partial failure for cleanup tracking")
 }
 
-func TestCreateRepo_SettleError(t *testing.T) {
+func TestCreateRepo_SettleError_ReturnsRepoName(t *testing.T) {
 	speedUpGitReadyPoll(t)
 	sc := &stubClient{getFileFn: installedGetFileFn}
 	e := &repoEnsurer{
@@ -266,9 +267,10 @@ func TestCreateRepo_SettleError(t *testing.T) {
 		logf: t.Logf,
 	}
 
-	_, err := e.CreateRepo(context.Background(), "org", "test")
+	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for Actions readiness")
+	assert.True(t, strings.HasPrefix(name, "bt-"), "should return repo name on partial failure for cleanup tracking")
 }
 
 // --- awaitGitReady tests ---
@@ -353,7 +355,7 @@ func TestAwaitWorkflowReady_ExhaustsAttempts(t *testing.T) {
 	assert.Contains(t, err.Error(), fmt.Sprintf("%d attempts", settleMaxAttempts))
 }
 
-func TestCreateRepo_ValidationError(t *testing.T) {
+func TestCreateRepo_ValidationError_ReturnsRepoName(t *testing.T) {
 	speedUpGitReadyPoll(t)
 	sc := &stubClient{
 		getFileFn: func(_ context.Context, _, _, _ string) ([]byte, error) {
@@ -368,9 +370,10 @@ func TestCreateRepo_ValidationError(t *testing.T) {
 		logf:   t.Logf,
 	}
 
-	_, err := e.CreateRepo(context.Background(), "org", "test")
+	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "post-install validation")
+	assert.True(t, strings.HasPrefix(name, "bt-"), "should return repo name on partial failure for cleanup tracking")
 }
 
 func TestCreateRepo_NilSettle(t *testing.T) {
@@ -472,7 +475,7 @@ func TestAwaitEventDelivery_ContextCancelled(t *testing.T) {
 	assert.Contains(t, err.Error(), "context cancelled")
 }
 
-func TestCreateRepo_EventDeliveryError(t *testing.T) {
+func TestCreateRepo_EventDeliveryError_ReturnsRepoName(t *testing.T) {
 	speedUpGitReadyPoll(t)
 	sc := &stubClient{getFileFn: installedGetFileFn}
 	e := &repoEnsurer{
@@ -486,12 +489,13 @@ func TestCreateRepo_EventDeliveryError(t *testing.T) {
 		logf: t.Logf,
 	}
 
-	_, err := e.CreateRepo(context.Background(), "org", "test")
+	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "verifying event delivery")
+	assert.True(t, strings.HasPrefix(name, "bt-"), "should return repo name on partial failure for cleanup tracking")
 }
 
-func TestCreateRepo_WarmupIssueError(t *testing.T) {
+func TestCreateRepo_WarmupIssueError_ReturnsRepoName(t *testing.T) {
 	speedUpGitReadyPoll(t)
 	sc := &stubClient{createIssueErr: fmt.Errorf("issue creation failed")}
 	e := &repoEnsurer{
@@ -503,7 +507,8 @@ func TestCreateRepo_WarmupIssueError(t *testing.T) {
 		logf:          t.Logf,
 	}
 
-	_, err := e.CreateRepo(context.Background(), "org", "test")
+	name, err := e.CreateRepo(context.Background(), "org", "test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating warmup issue")
+	assert.True(t, strings.HasPrefix(name, "bt-"), "should return repo name on partial failure for cleanup tracking")
 }
