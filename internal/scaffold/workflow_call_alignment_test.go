@@ -332,18 +332,26 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	}
 }
 
-// TestReusableDispatchProjectNumberInput validates that reusable-dispatch.yml
-// declares project_number as an input and threads it to the prioritize job.
-func TestReusableDispatchProjectNumberInput(t *testing.T) {
+// TestProjectNumberInputsAreOptional validates that workflows accepting an
+// optional project board consistently allow comment-only prioritization.
+func TestProjectNumberInputsAreOptional(t *testing.T) {
+	for _, name := range []string{"reusable-dispatch.yml", "reusable-prioritize.yml"} {
+		t.Run(name, func(t *testing.T) {
+			content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+			require.NoError(t, err)
+
+			var wf reusableWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+
+			input, ok := wf.On.WorkflowCall.Inputs["project_number"]
+			require.True(t, ok, "%s should declare project_number input", name)
+			assert.False(t, input.Required, "%s project_number should allow comment-only prioritization", name)
+			assert.Empty(t, input.Default, "%s project_number should default to empty", name)
+		})
+	}
+
 	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
 	require.NoError(t, err)
-
-	var wf reusableWorkflow
-	require.NoError(t, yaml.Unmarshal(content, &wf))
-
-	input, ok := wf.On.WorkflowCall.Inputs["project_number"]
-	require.True(t, ok, "reusable-dispatch.yml should declare project_number input")
-	assert.False(t, input.Required, "project_number should be optional (not all orgs use prioritize)")
 
 	// Verify the prioritize job uses it (ADR 62: env var, not with:).
 	s := string(content)
