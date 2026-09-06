@@ -91,6 +91,18 @@ func TestRunGitHubSetupWithOpts_NonVendoredNoRef_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "non-vendored mode requires FullsendRef")
 }
 
+func TestRunGitHubSetupWithOpts_VendoredWithRef_ReturnsError(t *testing.T) {
+	runner := func(_, _ string, _ ...string) (string, error) {
+		t.Fatal("CLI should not be called when validation fails")
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, FullsendRef: "main"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendored mode conflicts with FullsendRef")
+}
+
 func TestRunGitHubSetup_DelegatesToWithOpts(t *testing.T) {
 	var capturedArgs []string
 	runner := func(_, _ string, args ...string) (string, error) {

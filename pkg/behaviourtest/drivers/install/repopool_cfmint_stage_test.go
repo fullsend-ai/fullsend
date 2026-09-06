@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_stageMintDeployArgs_WithAppSet(t *testing.T) {
+func TestStageMintDeployArgs_WithAppSet(t *testing.T) {
 	cfg := stageMintConfig{
 		pemDir:            "/tmp/pems",
 		allowedOrgs:       "",
@@ -20,7 +20,7 @@ func Test_stageMintDeployArgs_WithAppSet(t *testing.T) {
 		appSet:            "fullsend-test",
 	}
 
-	args := stageMintDeployArgs(cfg)
+	args := StageMintDeployArgs(cfg)
 
 	assert.Contains(t, args, "--platform")
 	assert.Contains(t, args, "cloudflare")
@@ -54,7 +54,7 @@ func Test_stageMintDeployArgs_WithAppSet(t *testing.T) {
 	}
 }
 
-func Test_stageMintDeployArgs_WithoutAppSet(t *testing.T) {
+func TestStageMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := stageMintConfig{
 		pemDir:            "/tmp/pems",
 		allowedOrgs:       "",
@@ -62,7 +62,7 @@ func Test_stageMintDeployArgs_WithoutAppSet(t *testing.T) {
 		workflowHostRepos: "halfsend/test-repo-01",
 	}
 
-	args := stageMintDeployArgs(cfg)
+	args := StageMintDeployArgs(cfg)
 
 	assert.NotContains(t, args, "--app-set")
 	assert.Contains(t, args, "--custom-domain")

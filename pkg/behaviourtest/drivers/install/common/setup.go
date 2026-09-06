@@ -50,6 +50,9 @@ func RunGitHubSetupWithOpts(
 	if !opts.Vendor && opts.FullsendRef == "" {
 		return fmt.Errorf("github setup %s: non-vendored mode requires FullsendRef to be set", target)
 	}
+	if opts.Vendor && opts.FullsendRef != "" {
+		return fmt.Errorf("github setup %s: vendored mode conflicts with FullsendRef %q — use one or the other", target, opts.FullsendRef)
+	}
 	args := []string{
 		"github", "setup", target,
 		"--direct",

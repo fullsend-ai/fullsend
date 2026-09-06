@@ -190,9 +190,9 @@ func newStageMintDriver(
 	}, nil
 }
 
-// stageMintDeployArgs builds the CLI arguments for a durable
+// StageMintDeployArgs builds the CLI arguments for a durable
 // `fullsend mint deploy --platform=cloudflare` with a custom domain.
-func stageMintDeployArgs(cfg stageMintConfig) []string {
+func StageMintDeployArgs(cfg stageMintConfig) []string {
 	args := []string{
 		"mint", "deploy",
 		"--platform", "cloudflare",
@@ -211,7 +211,7 @@ func stageMintDeployArgs(cfg stageMintConfig) []string {
 
 func (d *stageMintMintDriver) Install(_ context.Context, _ string) (string, error) {
 	d.logf("[stage-cfmint] deploying durable mint at %s", StageMintURL)
-	args := stageMintDeployArgs(d.cfg)
+	args := StageMintDeployArgs(d.cfg)
 
 	d.logf("[stage-cfmint] running fullsend %s", strings.Join(args, " "))
 	if _, err := d.cliRunner(d.binary, d.token, args...); err != nil {
