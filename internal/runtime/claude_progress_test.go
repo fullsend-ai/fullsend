@@ -1270,3 +1270,58 @@ func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
 		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
 	}
 }
+
+// TestParseClaudeStreamMalformedResultFallsBackToTokensEvent verifies that
+// when a result event has valid outer JSON (type: "result") but invalid inner
+// fields (e.g., usage is a string instead of an object), the deferred
+// TokensEvent still fires with the cumulative snapshot. This is a regression
+// test for the flag-before-validation ordering bug (#6932): seenResult must
+// not be set before the unmarshal succeeds.
+func TestParseClaudeStreamMalformedResultFallsBackToTokensEvent(t *testing.T) {
+	lines := []string{
+		// Token data from a normal API call.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":3000,"cache_read_input_tokens":400,"cache_creation_input_tokens":100}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1600}}}`,
+		// Malformed result event: valid outer JSON with type "result", but
+		// usage is a string instead of an object, causing unmarshal to fail.
+		`{"type":"result","num_turns":5,"total_cost_usd":0.30,"usage":"not-an-object"}`,
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	var results []ResultEvent
+	for _, e := range events {
+		switch ev := e.(type) {
+		case TokensEvent:
+			tokens = append(tokens, ev)
+		case ResultEvent:
+			results = append(results, ev)
+		}
+	}
+
+	// The malformed result should not produce a ResultEvent.
+	if len(results) != 0 {
+		t.Errorf("expected 0 ResultEvents from malformed result, got %d", len(results))
+	}
+
+	// The deferred TokensEvent must fire with the cumulative snapshot,
+	// because seenResult should NOT have been set.
+	if len(tokens) == 0 {
+		t.Fatal("expected deferred TokensEvent to fire when result unmarshal fails, got 0")
+	}
+
+	last := tokens[len(tokens)-1]
+	if last.InputTokens != 3000 {
+		t.Errorf("expected 3000 input tokens, got %d", last.InputTokens)
+	}
+	if last.OutputTokens != 1600 {
+		t.Errorf("expected 1600 output tokens, got %d", last.OutputTokens)
+	}
+	if last.CacheRead != 400 {
+		t.Errorf("expected 400 cache read tokens, got %d", last.CacheRead)
+	}
+	if last.CacheWrite != 100 {
+		t.Errorf("expected 100 cache write tokens, got %d", last.CacheWrite)
+	}
+}
