@@ -48,9 +48,18 @@ type callerJob struct {
 }
 
 type jobConcurrency struct {
-	Group            string `yaml:"group"`
-	CancelInProgress bool   `yaml:"cancel-in-progress"`
+	Group string `yaml:"group"`
+	// CancelInProgress is a Node, not a bool: reusable-dispatch.yml stage
+	// jobs gate it on a repository variable, so the value is an expression
+	// string on those jobs and a literal boolean everywhere else.
+	CancelInProgress yaml.Node `yaml:"cancel-in-progress"`
 }
+
+// preserveGatedCancel is the cancel-in-progress value every
+// reusable-dispatch stage job must carry: today's cancelling behaviour
+// unless the consumer repository sets FULLSEND_PRESERVE_RUNS=true, in which
+// case the run in flight is left to finish.
+const preserveGatedCancel = "${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}"
 
 // reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
 type reusableStageWorkflow struct {
@@ -141,6 +150,14 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-",
 		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
+	// The matrix fan-out is a stage job too, and carries the same
+	// cancel-in-progress expression, so it is pinned here alongside the six
+	// built-in stages. Its group is keyed by matrix identity rather than by
+	// the event payload, because a poller supplies the work item.
+	"harness-run": {
+		groupPrefix: "fullsend-harness-",
+		groupMust:   []string{"matrix.agent", "github.repository", "matrix.status_repo", "matrix.status_number"},
 	},
 }
 
@@ -497,8 +514,13 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 				assert.Contains(t, job.Concurrency.Group, fragment,
 					"job %q concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, job.Concurrency.CancelInProgress,
-				"job %q should cancel in-progress runs when a newer dispatch arrives", stage)
+			assert.Equal(t, preserveGatedCancel, job.Concurrency.CancelInProgress.Value,
+				"job %q must cancel in-progress runs by default and stop cancelling "+
+					"only when the consumer sets FULLSEND_PRESERVE_RUNS=true. A new stage "+
+					"job must be added to dispatchStageConcurrencyExpectations, or its "+
+					"concurrency is unpinned", stage)
+			assert.Equal(t, "!!str", job.Concurrency.CancelInProgress.Tag,
+				"job %q must carry the gate as an expression, not a literal", stage)
 		})
 	}
 }
@@ -521,8 +543,11 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"reusable-%s.yml concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
+			assert.Equal(t, "true", wf.Concurrency.CancelInProgress.Value,
 				"reusable-%s.yml should cancel in-progress runs", stage)
+			assert.Equal(t, "!!bool", wf.Concurrency.CancelInProgress.Tag,
+				"reusable-%s.yml cancel-in-progress must stay a literal boolean, "+
+					"not the string \"true\" — Node.Value cannot tell them apart", stage)
 
 			callerExpect := thinCallerConcurrencyExpectations[stage]
 			assert.NotEqual(t, callerExpect.groupPrefix, expect.groupPrefix,
@@ -549,8 +574,11 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"%s concurrency group should reference %q", path, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
+			assert.Equal(t, "true", wf.Concurrency.CancelInProgress.Value,
 				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+			assert.Equal(t, "!!bool", wf.Concurrency.CancelInProgress.Tag,
+				"%s cancel-in-progress must stay a literal boolean, not the string "+
+					"\"true\" — Node.Value cannot tell them apart", path)
 		})
 	}
 }
@@ -1048,8 +1076,11 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 				`fullsend-dispatch-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\}\}-\$\{\{\s*github\.event\.action\s*==\s*'labeled'\s*&&\s*format\('label-\{0\}',\s*github\.event\.label\.name\)\s*\|\|\s*'dispatch'\s*\}\}`,
 				job.Concurrency.Group,
 				"%s concurrency group must match full label-aware structure", tc.name)
-			assert.False(t, job.Concurrency.CancelInProgress,
+			assert.Equal(t, "false", job.Concurrency.CancelInProgress.Value,
 				"%s concurrency group must have cancel-in-progress: false", tc.name)
+			assert.Equal(t, "!!bool", job.Concurrency.CancelInProgress.Tag,
+				"%s cancel-in-progress must stay a literal boolean, not the string "+
+					"\"false\" — Node.Value cannot tell them apart", tc.name)
 		})
 	}
 
