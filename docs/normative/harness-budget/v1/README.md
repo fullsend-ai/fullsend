@@ -81,7 +81,9 @@ failed validation *or* a failed repository extraction (which retries without
 reaching validation). The marker is absent when the run ended for its own
 reasons — validation passed, iterations exhausted, a single-iteration
 harness, or a crash — even if the final iteration's cost crossed the cap on
-the way out.
+the way out. An iteration the runner killed at `timeout_minutes` ends the run
+before any retry is due ([ADR 0105](../../../ADRs/0105-timed-out-iteration-ends-the-run.md)),
+so such a run is not marked either, whatever its cost.
 
 The marker records why retries stopped. It implies nothing about the final
 validation state: the post-loop validation sweep may still pass an earlier
