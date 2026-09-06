@@ -2252,9 +2252,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// iteration is the only harmful state, so clear it and go on.
 			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
 			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
-				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
-					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
-				}
 				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
 			}
 		}
