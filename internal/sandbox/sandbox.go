@@ -483,6 +483,9 @@ func ensureProviderArgs(ctx context.Context, name string, args, updateArgs, extr
 		if lastErr == nil {
 			return nil
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Retry only on the transient concurrency errors.
 		if !isTransientProviderErr(lastErr) {
 			return lastErr
