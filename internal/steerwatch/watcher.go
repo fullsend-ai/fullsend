@@ -474,6 +474,12 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 	w.mu.Unlock()
 
 	authorized := authorizedActors(accepted)
+	// The instant the delta's view of the item begins. The new baseline is
+	// this, not the time delivery finished: a comment that lands while the
+	// delta is being built and delivered is not in this delta, so moving
+	// the baseline past it would filter its text out of the next one while
+	// its own run could still be accepted and receipted.
+	snapshot := time.Now().UTC()
 	d, err := w.buildDelta(ctx, baseline, authorized)
 	if err != nil {
 		w.warnf("Building the work-item delta failed: %v", err)
@@ -539,7 +545,7 @@ func (w *Watcher) pollAndSteer(ctx context.Context) bool {
 		return false
 	}
 
-	w.markSteered(msg.FollowUpRunID, included, d)
+	w.markSteered(msg.FollowUpRunID, included, d, snapshot)
 	w.logf("Steered the agent with follow-up run(s) %s", runIDs(included))
 	return true
 }
@@ -561,7 +567,7 @@ func (w *Watcher) markSeen(runs ...forge.WorkflowRun) {
 // The baseline advances only here: moving it for a run that produced no
 // steer would push the window past content the agent never saw, and that
 // content would then never reach it.
-func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta) {
+func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta, snapshot time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	batch := DeliveredSteer{MessageID: messageID}
@@ -571,7 +577,9 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 	}
 	w.delivered = append(w.delivered, batch)
 	w.steers++
-	w.baseline = time.Now().UTC()
+	// The boundary the delta actually covered, not "now": delivery takes
+	// time, and anything that arrived during it belongs to the next delta.
+	w.baseline = snapshot
 
 	// Advance the content baseline to the state the agent was actually
 	// told about. Without this an issue's title, body and labels stay
@@ -610,9 +618,15 @@ func (w *Watcher) poll(ctx context.Context) []forge.WorkflowRun {
 		}
 		if rej != nil {
 			w.logf("Follow-up run %d rejected (%s)", run.ID, rej)
-			// A rejected-on-authorization run must not be retried every
-			// poll: its verdict cannot change.
-			w.markSeen(run)
+			// A verdict that cannot change is final, and the run must not
+			// be re-examined every poll. "Not yet" is not such a verdict:
+			// a Route job still running, or a stage job the API has not
+			// listed, becomes an answer on a later poll, and marking it
+			// seen would discard a legitimate update for the sake of
+			// polling a moment early.
+			if !rej.pending {
+				w.markSeen(run)
+			}
 			continue
 		}
 		accepted = append(accepted, run)

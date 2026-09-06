@@ -373,3 +373,49 @@ func TestWatcher_lowOnTime(t *testing.T) {
 		assert.False(t, w.lowOnTime())
 	})
 }
+
+// TestPollAndSteer_PendingRouteIsReconsidered is finding 6: a Route job
+// that has not concluded, or a stage job the API has not listed yet, is
+// "not yet" rather than "no". Marking such a run seen made the answer
+// permanent, so a legitimate update polled a moment early was never
+// reconsidered — which on a busy item is the common case, not the rare one.
+func TestPollAndSteer_PendingRouteIsReconsidered(t *testing.T) {
+	api := newFakeAPI()
+	// First poll: Route is queued, so it has concluded nothing.
+	api.jobsByID[101] = jobsJSON(routeJob(""), stageJob(stageName, "queued", ""))
+	api.listed = [][]map[string]any{
+		{runJSON(runOpts{id: 101, prNumbers: []int{7}})},
+		{runJSON(runOpts{id: 101, prNumbers: []int{7}})},
+	}
+	rec := &recorder{}
+	w := newWatcher(t, api, prItems(), rec, nil)
+
+	assert.False(t, w.pollAndSteer(context.Background()))
+	assert.Empty(t, rec.delivered())
+	assert.False(t, w.seen[101], "a pending verdict must not be recorded as final")
+
+	// Once Route concludes, the same run is judged again and accepted.
+	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
+	assert.True(t, w.pollAndSteer(context.Background()),
+		"the run must be reconsidered once Route answers")
+	assert.Len(t, rec.delivered(), 1)
+}
+
+// TestPollAndSteer_UnlistedStageJobIsReconsidered covers the other pending
+// shape: the Route job answered but the stage job is not in the listing
+// yet, which the API does routinely while a run is starting.
+func TestPollAndSteer_UnlistedStageJobIsReconsidered(t *testing.T) {
+	api := newFakeAPI()
+	api.jobsByID[101] = jobsJSON(routeJob("success"))
+	api.listed = [][]map[string]any{
+		{runJSON(runOpts{id: 101, prNumbers: []int{7}})},
+		{runJSON(runOpts{id: 101, prNumbers: []int{7}})},
+	}
+	w := newWatcher(t, api, prItems(), &recorder{}, nil)
+
+	assert.False(t, w.pollAndSteer(context.Background()))
+	assert.False(t, w.seen[101], "an unlisted stage job is not a refusal")
+
+	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
+	assert.True(t, w.pollAndSteer(context.Background()))
+}

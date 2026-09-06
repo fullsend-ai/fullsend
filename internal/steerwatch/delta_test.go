@@ -345,7 +345,7 @@ func TestIssueSnapshotAdvancesOnlyOnDelivery(t *testing.T) {
 	require.Len(t, again.context, 1, "an undelivered change must stay in the next delta")
 
 	// Once delivered, it is not repeated.
-	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d)
+	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d, time.Now().UTC())
 	after, err := w.buildDelta(context.Background(), w.Baseline(), nil)
 	require.NoError(t, err)
 	assert.True(t, after.empty(), "a delivered change must not repeat, got %v", after.context)
@@ -360,8 +360,7 @@ func TestIssueSnapshotAdvanceCatchesARevert(t *testing.T) {
 	items.issue = &forge.Issue{Number: 7, Title: "New", Body: "B"}
 	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), nil)
 	require.NoError(t, err)
-	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d)
-
+	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d, time.Now().UTC())
 	// Reverted to the original. Against a run-start snapshot this reads as
 	// "unchanged" and the agent is never told; against the delivered state
 	// it is a change and is reported.
@@ -380,7 +379,7 @@ func TestHeadBaselineAdvancesOnDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, d.headMoved)
 
-	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d)
+	w.markSteered(101, []forge.WorkflowRun{{ID: 101}}, d, time.Now().UTC())
 	assert.Equal(t, "bbb222", w.Head())
 
 	after, err := w.buildDelta(context.Background(), w.Baseline(), nil)

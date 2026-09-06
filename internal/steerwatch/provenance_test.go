@@ -85,7 +85,7 @@ func TestJobSelected_JobAbsent(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestRouteSucceeded(t *testing.T) {
+func TestRouteVerdict(t *testing.T) {
 	// Under queue: single a later event cancels the earlier pending stage
 	// job and the run concludes cancelled — but the Route job's success is
 	// what carries the authorization, so the run is still a valid steer.
@@ -93,12 +93,26 @@ func TestRouteSucceeded(t *testing.T) {
 		{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
 		{Name: stageName, Status: "completed", Conclusion: "cancelled"},
 	}
-	assert.True(t, routeSucceeded(jobs))
+	ok, pending := routeVerdict(jobs)
+	assert.True(t, ok)
+	assert.False(t, pending)
 
 	jobs[0].Conclusion = "failure"
-	assert.False(t, routeSucceeded(jobs))
+	ok, pending = routeVerdict(jobs)
+	assert.False(t, ok)
+	assert.False(t, pending, "a concluded failure is a final answer")
 
-	assert.False(t, routeSucceeded([]forge.WorkflowJob{{Name: stageName}}), "no Route job at all")
+	// "Not yet" must be distinguishable from "no": both of these become an
+	// answer on a later poll, and treating them as refusals would discard a
+	// legitimate update for being polled a moment early.
+	jobs[0].Conclusion = ""
+	ok, pending = routeVerdict(jobs)
+	assert.False(t, ok)
+	assert.True(t, pending, "a Route job still running has not answered")
+
+	ok, pending = routeVerdict([]forge.WorkflowJob{{Name: stageName}})
+	assert.False(t, ok)
+	assert.True(t, pending, "no Route job listed yet is not a refusal")
 }
 
 func TestBoundToItem(t *testing.T) {
@@ -152,7 +166,7 @@ func TestCandidateChecks_Accepts(t *testing.T) {
 	assert.Nil(t, w.candidateChecks(run))
 
 	// Once consumed, the same run is never taken again.
-	w.markSteered(int64(run.ID), []forge.WorkflowRun{run}, delta{})
+	w.markSteered(int64(run.ID), []forge.WorkflowRun{run}, delta{}, time.Now().UTC())
 	rej := w.candidateChecks(run)
 	require.NotNil(t, rej)
 	assert.Equal(t, "once", rej.check)
