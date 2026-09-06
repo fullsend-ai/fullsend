@@ -3637,6 +3637,126 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+// TestGetCached_ConditionalRequestReuses304 exercises the #6702 fix
+// through ListWorkflowRuns: the first request has no If-None-Match, the
+// server returns 200 with an ETag; the second request must send that
+// exact ETag back, and on 304 the client must decode the cached body
+// rather than an empty one.
+func TestGetCached_ConditionalRequestReuses304(t *testing.T) {
+	const etag = `W/"abc123"`
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			assert.Empty(t, r.Header.Get("If-None-Match"), "first request must not send If-None-Match")
+			w.Header().Set("ETag", etag)
+			json.NewEncoder(w).Encode(map[string]any{
+				"workflow_runs": []map[string]any{
+					{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+				},
+			})
+		case 2:
+			assert.Equal(t, etag, r.Header.Get("If-None-Match"), "second request must echo the weak ETag verbatim")
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			t.Fatalf("unexpected call %d", calls)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, second, 1, "304 must decode to the cached body, not an empty one")
+	assert.Equal(t, first[0].ID, second[0].ID)
+	assert.Equal(t, "in_progress", second[0].Status)
+	assert.Equal(t, 2, calls)
+}
+
+// TestGetCached_ChangedETagRefetchesBody guards against the flake class
+// this fix could reintroduce if done wrong: a status change must always
+// come with a new ETag from the (real) server, and the client must not
+// keep serving a stale cached body once the ETag changes.
+func TestGetCached_ChangedETagRefetchesBody(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		status := "in_progress"
+		etag := `"v1"`
+		if calls > 1 {
+			status = "completed"
+			etag = `"v2"`
+		}
+		w.Header().Set("ETag", etag)
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": status, "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "in_progress", first[0].Status)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "completed", second[0].Status)
+}
+
+// TestGetCached_NoETagNotCached ensures a response without an ETag
+// header is decoded normally and never triggers a conditional request
+// on the next call — there is nothing to send.
+func TestGetCached_NoETagNotCached(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Empty(t, r.Header.Get("If-None-Match"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	_, err = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+}
+
+// TestEtagCache_Bounded ensures a long-lived client polling many
+// distinct URLs (one per workflow run, in the behaviour suite) does not
+// grow etagCache without bound.
+func TestEtagCache_Bounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+r.URL.Path+`"`)
+		json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	for i := range etagCacheLimit * 2 {
+		_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", i)
+		require.NoError(t, err)
+	}
+	client.etagMu.Lock()
+	size := len(client.etagCache)
+	client.etagMu.Unlock()
+	assert.LessOrEqual(t, size, etagCacheLimit)
+}
+
 func TestListWorkflowRunJobs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
