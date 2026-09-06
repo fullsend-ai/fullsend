@@ -576,6 +576,9 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 			}
 			assert.Equal(t, "true", wf.Concurrency.CancelInProgress.Value,
 				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+			assert.Equal(t, "!!bool", wf.Concurrency.CancelInProgress.Tag,
+				"%s cancel-in-progress must stay a literal boolean, not the string "+
+					"\"true\" — Node.Value cannot tell them apart", path)
 		})
 	}
 }

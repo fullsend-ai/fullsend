@@ -4953,12 +4953,40 @@ func extractMapString(m map[string]any, keys ...string) string {
 // report a head move on every run.
 func runHeadSHA(forgePlatform string) string {
 	if forgePlatform == "gitlab" {
-		return os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
+		return gitlabMergeRequestHeadSHA()
 	}
 	if sha := os.Getenv("PR_HEAD_SHA"); sha != "" {
 		return sha
 	}
 	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// gitlabMergeRequestHeadSHA returns the source-branch head of the merge
+// request this run was dispatched for, or "" when the run is not against one.
+//
+// CI_MERGE_REQUEST_SOURCE_BRANCH_SHA is preferred but is not always set. Of
+// it, GitLab's predefined-variables reference says: "The variable is empty in
+// merge request pipelines. The SHA is present only in merged results
+// pipelines." So on an ordinary merge request pipeline it is empty, and
+// exporting that would tell the agent this run has no head at all — the
+// signal reserved for issue runs — leaving it unable to notice the branch
+// moving underneath it.
+//
+// CI_COMMIT_SHA fills that gap, but only conditionally: in a merged results
+// pipeline it is the merge-result commit rather than the source head, so an
+// unconditional fallback would export the wrong SHA there. Guarding on the
+// pipeline source is self-correcting — in a merged results pipeline the
+// first variable is populated, so the fallback is never reached — and a
+// pipeline that is not a merge request keeps returning "", which is correct
+// because there is no merge request head to report.
+func gitlabMergeRequestHeadSHA() string {
+	if sha := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); sha != "" {
+		return sha
+	}
+	if os.Getenv("CI_PIPELINE_SOURCE") == "merge_request_event" {
+		return os.Getenv("CI_COMMIT_SHA")
+	}
+	return ""
 }
 
 // buildRunFactsEnvLines exports this run's baseline into the sandbox.
