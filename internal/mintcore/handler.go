@@ -419,7 +419,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(dropped) > 0 {
 				sort.Strings(dropped)
-				log.Printf("minted: org=%s role=%s dropped_permissions=%v",
+				log.Printf("dropped: org=%s role=%s dropped_permissions=%v",
 					callerOrg, req.Role, dropped)
 			}
 		}
