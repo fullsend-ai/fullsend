@@ -222,7 +222,7 @@ type STSVerifierConfig struct {
 HTTP calls happen at request time, not construction time. Files that
 call `mintHTTP` include:
 
-- `github.go` — GitHub App installation token creation; app permission fetch for dropped-permission logging (GET /app)
+- `github.go` — GitHub App installation token creation
 - `jwks_verifier.go` — JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access

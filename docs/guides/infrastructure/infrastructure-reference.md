@@ -27,7 +27,8 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  ┌──────────────────────────────────────────────────┐           │
 │  │ POST /v1/token                                   │           │
 │  │ Authorization: Bearer <OIDC JWT>                 │           │
-│  │ Body: { "role": "coder", "repos": ["my-repo"] }  │           │
+│  │ Body: { "role": "coder", "repos": ["my-repo"],   │           │
+│  │        "level": "write" }                        │           │
 │  └──────────┬───────────────────────────────────────┘           │
 │             │                                                   │
 │             ▼                                                   │
@@ -67,6 +68,7 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  │  6. Create Scoped Installation Token                     │   │
 │  │     ├─ POST /app/installations/{id}/access_tokens        │   │
 │  │     ├─ Scope to requested repos[]                        │   │
+│  │     ├─ Apply RolePermissionsForLevel() minimum set        │   │
 │  │     ├─ Intersect with granted permissions                │   │
 │  │     └─ Drop only explicitly optional rollout scopes      │   │
 │  │                                                          │   │
@@ -102,7 +104,7 @@ App registration. To change token-level permissions for dispatch, update the
 ### Role Permissions Matrix
 
 The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes.
-Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
+Each role defines named privilege levels as keys. Built-in roles define **write** (the full permission set shown below) and **read** (same keys, all values `"read"`) as static table entries. Token requests accept an optional `level` field; omitting it defaults to `write` (temporary compatibility default — a future release will change to `read`). Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
 
 | Role | contents | packages | pull_requests | issues | actions | checks | workflows | actions_variables | organization_projects | metadata |
 |------|----------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|

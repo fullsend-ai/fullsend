@@ -762,8 +762,6 @@ func TestHandler_EmptyRepos_CrossOrgStarAlias(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -1276,8 +1274,6 @@ func TestHandler_FullFlow(t *testing.T) {
 				},
 				RepositorySelection: "selected",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -1346,8 +1342,6 @@ func TestHandler_FullFlowGrantedScopeAll(t *testing.T) {
 				Permissions:         map[string]string{"contents": "read", "issues": "write", "metadata": "read"},
 				RepositorySelection: "all",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -1424,8 +1418,6 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 				Token:     "ghs_scoped",
 				ExpiresAt: "2026-05-06T12:00:00Z",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -1434,7 +1426,7 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"coder","repos":["my-repo","other-repo"]}`
+	body := `{"role":"coder","level":"write","repos":["my-repo","other-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1457,7 +1449,7 @@ func TestHandler_FullFlowWithRepos(t *testing.T) {
 		t.Fatal("expected permissions in token request")
 	}
 	if perms["contents"] != "write" {
-		t.Fatalf("expected contents:write for coder role, got %v", perms["contents"])
+		t.Fatalf("expected contents:write for coder role at write level, got %v", perms["contents"])
 	}
 }
 
@@ -1774,7 +1766,7 @@ func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"retro","repos":["test-repo"]}`
+	body := `{"role":"retro","level":"write","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1795,10 +1787,10 @@ func TestHandler_FullFlowWithRepos_Retro(t *testing.T) {
 		t.Fatalf("expected contents:read for retro role, got %v", perms["contents"])
 	}
 	if perms["pull_requests"] != "write" {
-		t.Fatalf("expected pull_requests:write for retro role, got %v", perms["pull_requests"])
+		t.Fatalf("expected pull_requests:write for retro role at write level, got %v", perms["pull_requests"])
 	}
 	if perms["issues"] != "write" {
-		t.Fatalf("expected issues:write for retro role, got %v", perms["issues"])
+		t.Fatalf("expected issues:write for retro role at write level, got %v", perms["issues"])
 	}
 	if perms["metadata"] != "read" {
 		t.Fatalf("expected metadata:read for retro role, got %v", perms["metadata"])
@@ -1845,7 +1837,7 @@ func TestHandler_FullFlowWithRepos_Prioritize(t *testing.T) {
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	body := `{"role":"prioritize","repos":["test-repo"]}`
+	body := `{"role":"prioritize","level":"write","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1863,10 +1855,10 @@ func TestHandler_FullFlowWithRepos_Prioritize(t *testing.T) {
 		t.Fatalf("expected contents:read for prioritize role, got %v", perms["contents"])
 	}
 	if perms["issues"] != "write" {
-		t.Fatalf("expected issues:write for prioritize role, got %v", perms["issues"])
+		t.Fatalf("expected issues:write for prioritize role at write level, got %v", perms["issues"])
 	}
 	if perms["organization_projects"] != "write" {
-		t.Fatalf("expected organization_projects:write for prioritize role, got %v", perms["organization_projects"])
+		t.Fatalf("expected organization_projects:write for prioritize role at write level, got %v", perms["organization_projects"])
 	}
 	if perms["metadata"] != "read" {
 		t.Fatalf("expected metadata:read for prioritize role, got %v", perms["metadata"])
@@ -2054,8 +2046,6 @@ func TestHandler_MultiOrg_FullFlow(t *testing.T) {
 				Token:     "ghs_other_org_token",
 				ExpiresAt: "2026-05-07T12:00:00Z",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -2214,8 +2204,6 @@ func TestHandler_STSVerifier_Integration(t *testing.T) {
 				Token:     "ghs_sts_test_token",
 				ExpiresAt: "2026-06-02T12:00:00Z",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -2375,8 +2363,6 @@ func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 				Token:     "ghs_correct_org_token",
 				ExpiresAt: "2026-05-07T12:00:00Z",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3088,8 +3074,6 @@ func TestHandler_LogsRequestedPermissionNotGranted(t *testing.T) {
 				ExpiresAt:   "2026-05-06T12:00:00Z",
 				Permissions: map[string]string{"contents": "write", "metadata": "read"},
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3227,8 +3211,6 @@ func TestHandler_OptionalPermissionDroppedBeforeTokenPost(t *testing.T) {
 				Token:     "ghs_test_token",
 				ExpiresAt: "2026-05-06T12:00:00Z",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3295,8 +3277,6 @@ func TestHandler_SameOrgExplicitTargetOrg(t *testing.T) {
 				Repositories:        []installationTokenRepository{{FullName: "test-org/test-repo"}},
 				RepositorySelection: "selected",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3359,8 +3339,6 @@ func TestHandler_CrossOrgFullFlow(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3492,8 +3470,6 @@ func TestHandler_ForeignAllowlistCached(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3567,8 +3543,6 @@ func TestHandler_ForeignAllowlistConcurrent(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3749,8 +3723,6 @@ func TestHandler_RepoLevelForeignGrant_CrossOrg(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_CODER_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3871,8 +3843,6 @@ func TestHandler_RepoLevelForeignGrant_OrgLevelForInstallationWide(t *testing.T)
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3941,8 +3911,6 @@ func TestHandler_IntraOrgRepoForeignGrant(t *testing.T) {
 				Name:  "FULLSEND_FOREIGN_CODER_REPOS",
 				Value: "test-org/caller-repo",
 			})
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -4145,10 +4113,11 @@ func TestHandler_OrgLevelForeignDoesNotAuthorizeRepoScoped(t *testing.T) {
 	}
 }
 
-func TestHandler_DroppedPermissionsLogged(t *testing.T) {
-	// When the GitHub App has permissions that the role does not request,
-	// the handler should log the dropped permissions after minting.
-	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
+func TestHandler_LevelDefault(t *testing.T) {
+	// When level is omitted, the handler defaults to "write" for backward
+	// compatibility — existing HTTP clients that do not send a level field
+	// keep receiving write-level tokens.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -4156,53 +4125,37 @@ func TestHandler_DroppedPermissionsLogged(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"triage": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
 	token := env.signToken(t, nil)
 
+	var capturedPerms map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			// App has more permissions than the triage role requests.
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"permissions": map[string]string{
-					"contents":          "read",
-					"issues":            "write",
-					"metadata":          "read",
-					"actions_variables": "read",
-					"pull_requests":     "write",
-				},
-			})
 		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
 			json.NewEncoder(w).Encode(installationResponse{
-				ID: 12345, Account: struct {
+				ID: 1, Account: struct {
 					Login string `json:"login"`
 				}{Login: "test-org"},
 			})
-		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			capturedPerms = body["permissions"].(map[string]interface{})
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:     "ghs_triage_token",
+				Token:     "ghs_write_default",
 				ExpiresAt: "2026-08-19T12:00:00Z",
-				Permissions: map[string]string{
-					"contents": "read",
-					"issues":   "write",
-					"metadata": "read",
-				},
 			})
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-
-	body := `{"role":"triage","repos":["test-repo"]}`
+	// No "level" field in the request body.
+	body := `{"role":"coder","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -4212,22 +4165,18 @@ func TestHandler_DroppedPermissionsLogged(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "dropped_permissions=") {
-		t.Fatalf("expected dropped_permissions in log output, got: %s", logOutput)
+	// Verify that write-level permissions were requested (omitted defaults to write).
+	if capturedPerms["contents"] != "write" {
+		t.Fatalf("expected contents=write (write level default), got %v", capturedPerms["contents"])
 	}
-	if !strings.Contains(logOutput, "actions_variables:read") {
-		t.Fatalf("expected actions_variables:read in dropped permissions, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "pull_requests:write") {
-		t.Fatalf("expected pull_requests:write in dropped permissions, got: %s", logOutput)
+	if capturedPerms["pull_requests"] != "write" {
+		t.Fatalf("expected pull_requests=write (write level default), got %v", capturedPerms["pull_requests"])
 	}
 }
 
-func TestHandler_AppPermissionsCached(t *testing.T) {
-	// Two consecutive mint requests for the same role should only
-	// trigger one GET /app call — the second should hit the cache.
-	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
+func TestHandler_LevelWrite(t *testing.T) {
+	// Explicit level=write should use the full write-level permissions.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
 	if err != nil {
@@ -4235,146 +4184,36 @@ func TestHandler_AppPermissionsCached(t *testing.T) {
 	}
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"triage": pemData},
+		pems: map[string][]byte{"coder": pemData},
 	})
+	token := env.signToken(t, nil)
 
-	var appCallCount int
-	var mu sync.Mutex
-
+	var capturedPerms map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			mu.Lock()
-			appCallCount++
-			mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"permissions": map[string]string{
-					"contents":      "read",
-					"issues":        "write",
-					"metadata":      "read",
-					"pull_requests": "write",
-				},
-			})
 		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
 			json.NewEncoder(w).Encode(installationResponse{
-				ID: 12345, Account: struct {
+				ID: 1, Account: struct {
 					Login string `json:"login"`
 				}{Login: "test-org"},
 			})
-		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			capturedPerms = body["permissions"].(map[string]interface{})
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:     "ghs_triage_token",
+				Token:     "ghs_write",
 				ExpiresAt: "2026-08-19T12:00:00Z",
-				Permissions: map[string]string{
-					"contents": "read",
-					"issues":   "write",
-					"metadata": "read",
-				},
 			})
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-
-	// First request — should call GET /app.
-	token := env.signToken(t, nil)
-	body := `{"role":"triage","repos":["test-repo"]}`
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	env.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("first request: expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Second request — should use cached GET /app result.
-	token2 := env.signToken(t, nil)
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
-	req2.Header.Set("Authorization", "Bearer "+token2)
-	env.handler.ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("second request: expected 200, got %d: %s", rec2.Code, rec2.Body.String())
-	}
-
-	mu.Lock()
-	count := appCallCount
-	mu.Unlock()
-	if count != 1 {
-		t.Fatalf("expected exactly 1 GET /app call (cached on second request), got %d", count)
-	}
-
-	// Both should still log dropped_permissions.
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "dropped_permissions=") {
-		t.Fatalf("expected dropped_permissions in log output, got: %s", logOutput)
-	}
-}
-
-func TestHandler_NoDroppedPermissions_ExactMatch(t *testing.T) {
-	// When the app's permissions exactly match the role's permissions,
-	// no dropped_permissions line should appear in the log.
-	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
-
-	pemData, err := generateTestRSAKey()
-	if err != nil {
-		t.Fatalf("generating test key: %v", err)
-	}
-
-	env := newTestOIDCEnv(t, &fakePEMAccessor{
-		pems: map[string][]byte{"triage": pemData},
-	})
-	token := env.signToken(t, nil)
-
-	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			// App permissions exactly match triage role.
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"permissions": map[string]string{
-					"contents": "read",
-					"issues":   "write",
-					"metadata": "read",
-				},
-			})
-		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(installationResponse{
-				ID: 12345, Account: struct {
-					Login string `json:"login"`
-				}{Login: "test-org"},
-			})
-		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:     "ghs_triage_token",
-				ExpiresAt: "2026-08-19T12:00:00Z",
-				Permissions: map[string]string{
-					"contents": "read",
-					"issues":   "write",
-					"metadata": "read",
-				},
-			})
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer github.Close()
-	env.handler.githubBaseURL = github.URL
-
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-
-	body := `{"role":"triage","repos":["test-repo"]}`
+	body := `{"role":"coder","level":"write","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -4384,15 +4223,119 @@ func TestHandler_NoDroppedPermissions_ExactMatch(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	logOutput := logBuf.String()
-	if strings.Contains(logOutput, "dropped_permissions=") {
-		t.Fatalf("expected no dropped_permissions when app and role match exactly, got: %s", logOutput)
+	// Verify write-level permissions were requested.
+	if capturedPerms["contents"] != "write" {
+		t.Fatalf("expected contents=write (write level), got %v", capturedPerms["contents"])
+	}
+	if capturedPerms["pull_requests"] != "write" {
+		t.Fatalf("expected pull_requests=write (write level), got %v", capturedPerms["pull_requests"])
 	}
 }
 
-func TestHandler_DroppedPermissions_AppFetchFails(t *testing.T) {
-	// When GET /app fails, the mint should still succeed (soft failure),
-	// and no dropped_permissions should be logged.
+func TestHandler_LevelUnknown(t *testing.T) {
+	// Level validation now runs after OIDC auth, so the verifier must
+	// return valid claims for auth to pass before the level check fires.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		claims: &Claims{
+			RepositoryOwner: "test-org",
+			Repository:      "test-org/test-repo",
+			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		},
+	})
+
+	body := `{"role":"coder","level":"admin","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown level, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if !strings.Contains(resp["error"], "has no level") {
+		t.Fatalf("expected 'has no level' error, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_LevelInvalidFormat(t *testing.T) {
+	// Invalid level identifiers (uppercase, too long, starting with digit or
+	// dash) must be rejected with 400 before the role+level lookup runs.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		claims: &Claims{
+			RepositoryOwner: "test-org",
+			Repository:      "test-org/test-repo",
+			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		},
+	})
+
+	cases := []struct {
+		name  string
+		level string
+	}{
+		{"uppercase", "Write"},
+		{"starts-with-digit", "1read"},
+		{"starts-with-dash", "-read"},
+		{"too-long", "abcdefghijklmnopqrstuvwxyz0123456"}, // 33 chars
+		{"contains-space", "re ad"},
+		{"contains-dot", "re.ad"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"role":"coder","level":%q,"repos":["test-repo"]}`, tc.level)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for level %q, got %d: %s", tc.level, rec.Code, rec.Body.String())
+			}
+			var resp map[string]string
+			json.NewDecoder(rec.Body).Decode(&resp)
+			if !strings.Contains(resp["error"], "invalid level format") {
+				t.Fatalf("expected 'invalid level format' error for level %q, got: %s", tc.level, resp["error"])
+			}
+		})
+	}
+}
+
+func TestHandler_LevelValidCustomName(t *testing.T) {
+	// Extra named levels that match the pattern should pass format
+	// validation and only fail on the role+level lookup (not format check).
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		claims: &Claims{
+			RepositoryOwner: "test-org",
+			Repository:      "test-org/test-repo",
+			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		},
+	})
+
+	// "deploy-ro" matches the level pattern but coder has no such level.
+	body := `{"role":"coder","level":"deploy-ro","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	// Should fail on role+level lookup, not format validation.
+	if !strings.Contains(resp["error"], "has no level") {
+		t.Fatalf("expected 'has no level' error, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_LevelRead_AlreadyReadOnly(t *testing.T) {
+	// For a role like triage (already mostly read), read level should still work.
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -4405,58 +4348,82 @@ func TestHandler_DroppedPermissions_AppFetchFails(t *testing.T) {
 	})
 	token := env.signToken(t, nil)
 
+	var capturedPerms map[string]interface{}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/app" && r.Method == http.MethodGet:
-			// Simulate GET /app failure.
-			w.WriteHeader(http.StatusInternalServerError)
 		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
 			json.NewEncoder(w).Encode(installationResponse{
-				ID: 12345, Account: struct {
+				ID: 1, Account: struct {
 					Login string `json:"login"`
 				}{Login: "test-org"},
 			})
-		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			capturedPerms = body["permissions"].(map[string]interface{})
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:     "ghs_triage_token",
+				Token:     "ghs_triage_read",
 				ExpiresAt: "2026-08-19T12:00:00Z",
-				Permissions: map[string]string{
-					"contents": "read",
-					"issues":   "write",
-					"metadata": "read",
-				},
 			})
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer github.Close()
 	env.handler.githubBaseURL = github.URL
 
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-
-	body := `{"role":"triage","repos":["test-repo"]}`
+	body := `{"role":"triage","level":"read","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	env.handler.ServeHTTP(rec, req)
 
-	// Mint should still succeed even when GET /app fails.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	logOutput := logBuf.String()
-	// Should warn about the fetch failure.
-	if !strings.Contains(logOutput, "could not fetch app permissions") {
-		t.Fatalf("expected warning about app permissions fetch failure, got: %s", logOutput)
+	// Triage read level: issues downgraded from write to read.
+	if capturedPerms["issues"] != "read" {
+		t.Fatalf("expected issues=read (read level), got %v", capturedPerms["issues"])
 	}
-	// Should NOT log dropped_permissions since we don't have app permissions.
-	if strings.Contains(logOutput, "dropped_permissions=") {
-		t.Fatalf("should not log dropped_permissions when app fetch fails, got: %s", logOutput)
+	if capturedPerms["contents"] != "read" {
+		t.Fatalf("expected contents=read, got %v", capturedPerms["contents"])
 	}
+}
+
+func TestNewHandler_CustomRolePermissions_MultiLevel(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":            `{"triage":"100","deployer":"400"}`,
+		"CUSTOM_ROLE_PERMISSIONS": `{"deployer":{"levels":{"read":{"contents":"read","metadata":"read"},"write":{"contents":"write","metadata":"read","deployments":"write"}}}}`,
+		"ALLOWED_WORKFLOW_FILES":  "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	if !h.checkAllowedRole("deployer") {
+		t.Fatal("deployer should be allowed")
+	}
+	if !HasRole("deployer") {
+		t.Fatal("deployer should be registered")
+	}
+
+	readPerms, err := RolePermissionsForLevel("deployer", LevelRead)
+	if err != nil {
+		t.Fatalf("RolePermissionsForLevel read: %v", err)
+	}
+	if readPerms["contents"] != "read" {
+		t.Fatalf("expected read contents=read, got %q", readPerms["contents"])
+	}
+
+	writePerms, err := RolePermissionsForLevel("deployer", LevelWrite)
+	if err != nil {
+		t.Fatalf("RolePermissionsForLevel write: %v", err)
+	}
+	if writePerms["deployments"] != "write" {
+		t.Fatalf("expected write deployments=write, got %q", writePerms["deployments"])
+	}
+
+	t.Cleanup(func() { RegisterCustomRoleLevels(nil) })
 }
