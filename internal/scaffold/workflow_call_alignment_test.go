@@ -649,6 +649,32 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	}
 }
 
+// TestClosedIssueReadyToCodeDoesNotDispatch guards the final routing boundary
+// against a close-between-check-and-label race in post-triage. Both dispatch
+// implementations must use the issue state carried by the labeled event.
+func TestClosedIssueReadyToCodeDoesNotDispatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			condition := `elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]] && [[ "${ISSUE_STATE}" == "open" ]]; then`
+			assert.Contains(t, s, `ISSUE_STATE: ${{ github.event.issue.state }}`,
+				"route step must read issue state from the triggering event")
+			assert.Contains(t, s, condition,
+				"ready-to-code must require an open issue in the same conditional")
+			assert.Regexp(t, regexp.QuoteMeta(condition)+`\n\s+#[^\n]*\n\s+if [^\n]+; then\n\s+STAGE="code"\n\s+fi`, s,
+				"STAGE=code must remain inside the guarded ready-to-code branch")
+		})
+	}
+}
+
 // TestShimScaffoldBranchFilter validates that both shim templates skip dispatch
 // for PRs from the fullsend/scaffold branch. Without this filter, the shim
 // fires pull_request_target on the scaffold PR, causing dispatch noise (#5470).
