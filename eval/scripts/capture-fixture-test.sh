@@ -67,7 +67,7 @@ assert_call_count() {
   local name="$1"
   local expected="$2"
   local actual
-  actual="$(wc -l < "$GH_CALL_LOG")"
+  actual="$(wc -l < "$GH_CALL_LOG" | tr -d '[:space:]')"
 
   if [[ "$actual" -ne "$expected" ]]; then
     echo "FAIL: $name — expected $expected gh call(s), got $actual"
