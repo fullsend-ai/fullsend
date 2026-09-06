@@ -566,7 +566,7 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		// Fetch the app's configured permissions (cached per appID)
 		// so the handler can log which ones were dropped by
 		// role-level downscoping.
-		appPerms, appErr := h.cachedAppPermissions(ctx, h.githubBaseURL, jwt, appID)
+		appPerms, appErr := h.loadAppPermissions(ctx, h.githubBaseURL, jwt, appID)
 		if appErr != nil {
 			log.Printf("WARNING: could not fetch app permissions for dropped-permission logging: %v", appErr)
 		} else {
@@ -603,13 +603,14 @@ func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetO
 	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
 }
 
-// cachedAppPermissions returns the GitHub App's configured permissions,
+// loadAppPermissions returns the GitHub App's configured permissions,
 // caching the result per appID with a TTL of h.appPermsCacheTTL.
 // App permissions change only when an admin reconfigures the GitHub App,
 // so caching avoids a GET /app round-trip on every mint request.
 // Concurrent cache-miss requests for the same appID are deduplicated
 // using the same inflight pattern as loadForeignAllowlist.
-func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, appID string) (map[string]string, error) {
+// The underlying HTTP call is made by GetAppPermissions (fetch).
+func (h *Handler) loadAppPermissions(ctx context.Context, githubBaseURL, jwt, appID string) (map[string]string, error) {
 	h.appPermsCacheMu.Lock()
 	if entry, ok := h.appPermsCache[appID]; ok && time.Since(entry.fetchedAt) < h.appPermsCacheTTL {
 		h.appPermsCacheMu.Unlock()
