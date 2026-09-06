@@ -55,9 +55,6 @@ concurrency:
     ${{ github.event_name == 'pull_request_target'
         && format('e2e-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
-  # Label events are auth, not a code change — never cancel an in-progress run.
-  # Cancel for opened/synchronize/reopened and for non-main non-PR triggers.
-  # Explicit outer parens: (A && B) || (C && D).
   cancel-in-progress: >-
     ${{ (github.event_name == 'pull_request_target'
         && github.event.action != 'labeled')
@@ -183,8 +180,7 @@ jobs:
 
   behaviour:
     # Same gate authorization as e2e — checks out untrusted PR head with secrets.
-    # Runs only on authorized PRs, merge_group (required check; treated as
-    # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
+    # Runs on authorized PRs, merge_group, push to main, and workflow_dispatch.
     # Environment uses event_name, not github.ref: pull_request_target sets
     # github.ref to the base branch (usually main).
     needs: gate
@@ -193,6 +189,7 @@ jobs:
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch') ||
         (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
       )
     # Scalar form keeps default deployment: true so runs list under Environments.
@@ -270,9 +267,10 @@ jobs:
           mkdir -p "${{ runner.temp }}/behaviour-artifacts"
           make behaviour-test 2>&1 | tee "${{ runner.temp }}/behaviour-artifacts/behaviour-test.log"
         env:
+          E2E_KEEP_REPOS: ${{ vars.E2E_KEEP_REPOS }}
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
-          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_FULLSEND_REF: ${{ github.head_ref || github.ref_name }}
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}

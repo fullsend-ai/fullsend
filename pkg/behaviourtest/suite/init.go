@@ -9,68 +9,50 @@ import (
 	"github.com/cucumber/godog"
 	messages "github.com/cucumber/messages/go/v21"
 
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 // InitScenario registers tag-based skips, Before/After hooks, and shared steps.
 // Each scenario receives its own World cloned from template. The unified
-// install.Driver on template.Driver handles repo allocation/deallocation;
-// scenarios that need a repo call AllocateRepo in a step (e.g. "Given the
-// enrolled test repository"), and the After hook deallocates on cleanup.
+// install.Driver on template.Driver handles repo creation/deletion;
+// scenarios that need a repo call CreateRepo in a step (e.g. "Given a
+// test repository with fullsend installed"), and the After hook deletes
+// the repo on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template)
+		return beforeScenario(ctx, scenario, tagNames(scenario.Tags), template)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
-		return afterScenario(ctx, template.Driver, err)
+		return afterScenario(ctx, err)
 	})
 	steps.Register(sc)
 }
 
-// beforeScenario clones the template World, resets scenario fields.
-// Repo allocation is handled by the step (via Driver.AllocateRepo),
-// not by the Before hook.
-func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
+func beforeScenario(ctx context.Context, scenario *godog.Scenario, tags []string, template *world.World) (context.Context, error) {
 	if err := SkipErrorForTagNames(tags, template); err != nil {
 		return ctx, err
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
+	w.ScenarioName = scenario.Name
 
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil
 }
 
-// afterScenario runs scenario cleanup and deallocates the repo if one was
-// allocated. Deallocation errors are surfaced as test failures rather than
-// panicking the godog runner.
-//
-// driver.DeallocateRepo is deferred so the lease is returned even if
-// steps.CleanupScenario panics. Named return values allow the deferred
-// closure to surface a deallocation error when no scenario error exists.
-func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error) (_ context.Context, retErr error) {
-	retErr = scenarioErr
+// afterScenario runs scenario cleanup: releases per-scenario resources
+// (e.g. Jira mock servers, temp dirs). Repos are retained for rate-limit
+// scaling. Cleanup errors are logged but never fail the test.
+func afterScenario(ctx context.Context, scenarioErr error) (context.Context, error) {
 	w := world.FromContext(ctx)
 	if w == nil {
-		return ctx, retErr
+		return ctx, scenarioErr
 	}
-	if driver != nil && w.LeasedRepoName != "" {
-		name := w.LeasedRepoName
-		defer func() {
-			if deallocErr := driver.DeallocateRepo(ctx, name); deallocErr != nil {
-				if w.Logf != nil {
-					w.Logf("deallocating repo: %v", deallocErr)
-				}
-				if retErr == nil {
-					retErr = fmt.Errorf("deallocating repo: %w", deallocErr)
-				}
-			}
-		}()
+	if err := steps.CleanupScenario(w); err != nil && w.Logf != nil {
+		w.Logf("cleanup: %v", err)
 	}
-	steps.CleanupScenario(w)
-	return ctx, retErr
+	return ctx, scenarioErr
 }
 
 func resetScenarioWorld(w *world.World) {
@@ -94,14 +76,10 @@ func resetScenarioWorld(w *world.World) {
 	w.RecordedBranchSHAs = nil
 	w.CreatedBranches = nil
 	w.CreatedPRNumbers = nil
-	w.LeasedRepoName = ""
-	w.KillSwitchActivated = false
-	w.RuntimeOverridden = false
-	w.RuntimeOriginal = ""
-	w.AllowedResourcesOverridden = false
-	w.AllowedResourcesOriginal = nil
-	w.AgentsOverridden = false
-	w.AgentsOriginal = nil
+	w.RepoOwner = w.Org
+	w.RepoName = ""
+	w.RepoFull = ""
+	w.ScenarioName = ""
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
@@ -120,20 +98,9 @@ func SkipErrorForTagNames(tags []string, w *world.World) error {
 	for _, tag := range tags {
 		name := strings.TrimPrefix(tag, "@")
 		switch {
-		case name == "skip:per-org" && w.Config.InstallMode == "per-org":
-			return godog.ErrSkip
-		case name == "skip:per-repo" && w.Config.InstallMode == "per-repo":
-			return godog.ErrSkip
-		case name == "requires:per-repo" && w.Config.InstallMode != "per-repo":
-			return godog.ErrSkip
 		case name == "skip:gitlab" && w.Config.SCM == "gitlab":
 			return godog.ErrSkip
 		case strings.HasPrefix(name, "requires:capability:"):
-			// Skip unless the runner declares the capability via
-			// BEHAVIOUR_CAPABILITIES. Gates scenarios that assert
-			// behavior only present past a dependency version, so CI
-			// stays green until the dependency ships and the runner
-			// opts in.
 			capability := strings.TrimPrefix(name, "requires:capability:")
 			if capability == "" {
 				return fmt.Errorf("malformed tag %q: requires:capability: needs a name", tag)

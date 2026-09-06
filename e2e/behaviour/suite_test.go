@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cucumber/godog"
-	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
@@ -37,41 +36,28 @@ func TestBehaviourSuite(t *testing.T) {
 	e2eCfg := e2etest.LoadEnvConfig(t)
 	ctx := context.Background()
 
-	runID := uuid.New().String()
-	org, token, err := e2etest.AcquireOrg(ctx, e2eCfg, runID, e2etest.OrgPool(), e2eCfg.LockTimeout, t.Logf)
+	org := e2etest.BehaviourOrg()
+	token, err := e2etest.TokenForOrg(ctx, e2eCfg, org)
 	if err != nil {
-		t.Fatalf("acquiring org: %v", err)
+		t.Fatalf("resolving token for %s: %v", org, err)
 	}
 	client := e2etest.NewLiveClient(token)
-	t.Cleanup(func() {
-		e2etest.ReleaseLock(context.Background(), client, org, runID, t)
-	})
 
 	binary := e2etest.BuildCLIBinary(t)
+	vendorBinary := e2etest.CrossCompileCLIBinary(t)
 
-	e2etest.CleanupStaleResources(ctx, client, token, org, t)
-
-	// Call the Factory to get the unified driver. The factory deploys
-	// the preview mint and constructs all internal pieces (pool, ensurer).
-	// Driver-specific config (PEMs, suite name, pool size) is read from
-	// env internally.
-	driver, err := install.NewRepoPoolCFMintPreviews(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
+	driver, err := install.NewCFMintFactory(org, client, token, binary, vendorBinary, e2eCfg.GCPProjectID, t.Logf)
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}
 
-	// Register Finalize as cleanup so the preview mint is torn down
-	// even if the suite fails partway through. Finalize also reclaims
-	// any outstanding leases, logging them as errors.
 	t.Cleanup(func() {
 		if finalizeErr := driver.Finalize(context.Background()); finalizeErr != nil {
 			t.Logf("driver finalize: %v", finalizeErr)
 		}
 	})
 
-	// Default concurrency to driver capacity. Honor GODOG_CONCURRENCY
-	// when set; warn (do not fail) if it exceeds capacity.
-	concurrency := driver.Capacity()
+	concurrency := driver.DefaultConcurrency()
 	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" {
 		n, err := strconv.Atoi(c)
 		if err != nil || n < 1 {
@@ -79,19 +65,12 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 		concurrency = n
 	}
-	if concurrency > driver.Capacity() {
-		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block in AllocateRepo", concurrency, driver.Capacity())
-	}
 
 	var scmDriver scm.Driver
 	switch cfg.SCM {
 	case "github":
 		scmDriver = scmgh.New(client)
 	case "gitlab":
-		// TODO: client is a GitHub forge.Client (from e2etest.NewLiveClient).
-		// When BEHAVIOUR_SCM=gitlab is used in CI, this must be replaced with
-		// a GitLab-backed forge.Client. Currently latent: no CI job sets
-		// BEHAVIOUR_SCM=gitlab and @skip:gitlab tag removal is still pending.
 		scmDriver = scmgl.New(client)
 	default:
 		t.Fatalf("unsupported BEHAVIOUR_SCM %q", cfg.SCM)
@@ -102,10 +81,6 @@ func TestBehaviourSuite(t *testing.T) {
 	case "githubactions":
 		ciDriver = gaci.New(client, token)
 	case "gitlabci":
-		// TODO: client is a GitHub forge.Client (from e2etest.NewLiveClient).
-		// When BEHAVIOUR_CI=gitlabci is used in CI, this must be replaced with
-		// a GitLab-backed forge.Client. Currently latent: no CI job sets
-		// BEHAVIOUR_CI=gitlabci.
 		ciDriver = glci.New(client, token)
 	default:
 		t.Fatalf("unsupported BEHAVIOUR_CI %q", cfg.CI)

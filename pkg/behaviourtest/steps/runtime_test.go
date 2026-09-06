@@ -34,42 +34,18 @@ func (r *recordingSCM) CommitFile(_ context.Context, _, _, path, _ string, conte
 
 const perRepoDummyConfig = "version: \"1\"\nruntime: dummy\nroles:\n  - triage\n"
 
-func TestGivenRepositoryRuntime_WritesRuntimeAndRecordsOriginal(t *testing.T) {
+func TestGivenRepositoryRuntime_WritesRuntime(t *testing.T) {
 	t.Parallel()
 	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 
 	require.NoError(t, givenRepositoryRuntime(w, "pi"))
-	assert.True(t, w.RuntimeOverridden)
-	assert.Equal(t, "dummy", w.RuntimeOriginal, "install-time runtime is remembered for cleanup")
 	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.lastPath)
 	assert.Contains(t, string(scmDriver.lastContent), "runtime: pi")
 
-	// A second override in the same scenario keeps the first original.
 	scmDriver.fileContent = scmDriver.lastContent
 	require.NoError(t, givenRepositoryRuntime(w, "claude"))
-	assert.Equal(t, "dummy", w.RuntimeOriginal)
-}
-
-func TestGivenRepositoryRuntime_RefusesNonDummyOriginal(t *testing.T) {
-	t.Parallel()
-	// No explicit runtime: ConfigRuntime resolves to the code default
-	// ("claude"); recording that for restore would hand the slot a real
-	// runtime after cleanup, so the step must refuse.
-	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nroles:\n  - triage\n")}}
-	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
-	err := givenRepositoryRuntime(w, "pi")
-	require.ErrorContains(t, err, "suite invariant")
-	assert.False(t, scmDriver.commitFileCalled)
-	assert.False(t, w.RuntimeOverridden)
-}
-
-func TestRestoreRuntime_DefaultsToDummyWhenOriginalUnset(t *testing.T) {
-	t.Parallel()
-	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nruntime: pi\nroles:\n  - triage\n")}}
-	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver, RuntimeOverridden: true}
-	require.NoError(t, RestoreRuntime(w))
-	assert.Contains(t, string(scmDriver.lastContent), "runtime: dummy")
+	assert.Contains(t, string(scmDriver.lastContent), "runtime: claude")
 }
 
 func TestGivenPiAgent_CommitsDefinitionWithFixtureInlined(t *testing.T) {
@@ -97,30 +73,8 @@ func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {
 	err := givenRepositoryRuntime(w, "opencode")
 	require.ErrorContains(t, err, "not one of")
 	assert.False(t, scmDriver.commitFileCalled, "nothing committed for an unknown runtime")
-	assert.False(t, w.RuntimeOverridden)
 
 	require.ErrorContains(t, givenRepositoryRuntime(&world.World{SCM: scmDriver}, "pi"), "no repo configured")
-}
-
-func TestRestoreRuntime_PutsOriginalBack(t *testing.T) {
-	t.Parallel()
-	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nruntime: pi\nroles:\n  - triage\n")}}
-	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver, RuntimeOverridden: true, RuntimeOriginal: "dummy"}
-	require.NoError(t, RestoreRuntime(w))
-	assert.Contains(t, string(scmDriver.lastContent), "runtime: dummy")
-	assert.NotContains(t, string(scmDriver.lastContent), "runtime: pi")
-}
-
-func TestCleanupScenario_RestoresRuntimeOnlyWhenOverridden(t *testing.T) {
-	t.Parallel()
-	overridden := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte("version: \"1\"\nruntime: pi\nroles:\n  - triage\n")}}
-	CleanupScenario(&world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: overridden, RuntimeOverridden: true, RuntimeOriginal: "dummy"})
-	assert.True(t, overridden.commitFileCalled)
-	assert.Contains(t, string(overridden.lastContent), "runtime: dummy")
-
-	untouched := &recordingSCM{}
-	CleanupScenario(&world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: untouched})
-	assert.False(t, untouched.commitFileCalled, "no config commit when the runtime was not overridden")
 }
 
 func writeArtifact(t *testing.T, root, rel, content string) {
@@ -233,9 +187,6 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 
 	require.NoError(t, givenRepositoryAgentSettings(w, "triage:\n  runtime: claude\ncode:\n  runtime: dummy\nlint:\n  model: haiku\n"))
-	assert.True(t, w.AgentsOverridden)
-	assert.Equal(t, []config.AgentEntry{{Source: "harness/lint.yaml", Effort: "high"}}, w.AgentsOriginal,
-		"pre-scenario agents are remembered for cleanup")
 	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.lastPath)
 	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
 	require.NoError(t, err)

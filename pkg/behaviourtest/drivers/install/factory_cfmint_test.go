@@ -319,15 +319,19 @@ func (m *testCFMintMintDriver) Teardown(_ context.Context) error {
 	return m.teardownErr
 }
 
+func fakeInferenceStatusCLI(_, _ string, args ...string) (string, error) {
+	return `{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc"}`, nil
+}
+
 func TestBuildCFMintDriver_HappyPath(t *testing.T) {
 	mint := &testCFMintMintDriver{
 		installMintURL: "https://mint.test",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	assert.Equal(t, 3, d.Capacity())
+	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
 }
 
 func TestBuildCFMintDriver_InstallFails(t *testing.T) {
@@ -335,32 +339,21 @@ func TestBuildCFMintDriver_InstallFails(t *testing.T) {
 		installErr: fmt.Errorf("deploy boom"),
 	}
 
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
+	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cfmint factory: deploying mint")
 	assert.Contains(t, err.Error(), "deploy boom")
 }
 
 func TestBuildCFMintDriver_EmptyMintURL(t *testing.T) {
-	// Install returns empty mint URL — driver should still construct.
 	mint := &testCFMintMintDriver{
 		installMintURL: "",
 	}
 
-	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 2, t.Logf)
+	d, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "", "proj", fakeInferenceStatusCLI, t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	assert.Equal(t, 2, d.Capacity())
-}
-
-func TestBuildCFMintDriver_InvalidPoolSize(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installMintURL: "https://mint.test",
-	}
-
-	_, err := buildCFMintDriver("org", mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "capacity must be positive")
+	assert.Equal(t, DefaultConcurrency, d.DefaultConcurrency())
 }
 
 func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
@@ -373,11 +366,6 @@ func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
 	require.Error(t, err, "teardown failures must be returned so Finalize can join them")
 	assert.Contains(t, err.Error(), "preview mint teardown")
 	assert.Contains(t, err.Error(), "teardown boom")
-}
-
-func TestBuildRepoList(t *testing.T) {
-	list := buildRepoList("my-org", 3)
-	assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02,my-org/test-repo-03", list)
 }
 
 func TestSetupCFMintPEMDir_NoPEMVars(t *testing.T) {
@@ -401,46 +389,7 @@ func TestSetupCFMintPEMDir_MaterializesPEMs(t *testing.T) {
 	assert.Equal(t, "fake-pem-data", string(data))
 }
 
-// --- envPoolSize / envSuiteName / envAppSet env helper tests ---
-
-func TestEnvPoolSize_Default(t *testing.T) {
-	// Without BEHAVIOUR_POOL_SIZE set, should return DefaultPoolSize.
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "")
-	assert.Equal(t, DefaultPoolSize, envPoolSize(t.Logf))
-}
-
-func TestEnvPoolSize_Override(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "7")
-	assert.Equal(t, 7, envPoolSize(t.Logf))
-}
-
-func TestEnvPoolSize_InvalidFallsBackToDefault(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "not-a-number")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, "not-a-number")
-	assert.Contains(t, logged, "WARNING")
-}
-
-func TestEnvPoolSize_ZeroFallsBackToDefault(t *testing.T) {
-	// Zero is not a valid pool size (must be > 0), so fallback.
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "0")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, `"0"`)
-	assert.Contains(t, logged, "WARNING")
-}
-
-func TestEnvPoolSize_NegativeFallsBackToDefault(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "-3")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, "-3")
-	assert.Contains(t, logged, "WARNING")
-}
+// --- envSuiteName / envAppSet env helper tests ---
 
 func TestEnvSuiteName_Default(t *testing.T) {
 	t.Setenv("BEHAVIOUR_SUITE_NAME", "")
@@ -462,16 +411,14 @@ func TestEnvAppSet_Override(t *testing.T) {
 	assert.Equal(t, "my-app-set", envAppSet())
 }
 
-// --- NewRepoPoolCFMintPreviews factory tests ---
+// --- NewCFMintFactory factory tests ---
 
-func TestNewRepoPoolCFMintPreviews_NoPEMs_FailsEarly(t *testing.T) {
-	// When no TEST_*_PEM env vars are set, setupCFMintPEMDir returns "",
-	// and newCFMintDriver rejects the empty pemDir.
+func TestNewCFMintFactory_NoPEMs_FailsEarly(t *testing.T) {
 	for _, envVar := range cfmintPEMRoleEnvVars {
 		t.Setenv(envVar, "")
 	}
 
-	_, err := NewRepoPoolCFMintPreviews("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := NewCFMintFactory("my-org", nil, "tok", "/bin/fullsend", "", "proj", t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
 }

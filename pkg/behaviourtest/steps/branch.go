@@ -57,19 +57,9 @@ func expandIssuePlaceholder(w *world.World, s string) (string, error) {
 	return strings.ReplaceAll(s, issuePlaceholder, strconv.Itoa(w.IssueNumber)), nil
 }
 
-// resetBranchIfExists deletes a leftover branch from a previous scenario
-// on the same pool repo. Pool repos are reused, so fixed branch names in
-// feature files must tolerate debris.
-func resetBranchIfExists(w *world.World, branch string) error {
-	if err := w.SCM.DeleteBranch(context.Background(), w.RepoOwner, w.RepoName, branch); err != nil && !forge.IsNotFound(err) {
-		return fmt.Errorf("deleting leftover branch %s: %w", branch, err)
-	}
-	return nil
-}
-
 func ensureScenarioRepo(w *world.World) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before branch operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before branch operations")
 	}
 	return nil
 }
@@ -80,9 +70,6 @@ func givenSeededRemoteBranch(w *world.World, branch string) error {
 	}
 	branch, err := expandIssuePlaceholder(w, branch)
 	if err != nil {
-		return err
-	}
-	if err := resetBranchIfExists(w, branch); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -109,7 +96,7 @@ func givenOpenPullRequestOnBranch(w *world.World, branch string) error {
 		return err
 	}
 	// Note: a bot-authored PR "opened" event dispatches a review-stage
-	// run in enrolled repos. It cannot satisfy this scenario's own
+	// run in test repos. It cannot satisfy this scenario's own
 	// assertions (those filter by agent job/artifact and ScenarioStart),
 	// but it does consume a runner and may fail after the scenario ends.
 	base, err := w.SCM.GetDefaultBranch(context.Background(), w.RepoOwner, w.RepoName)

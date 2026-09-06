@@ -27,8 +27,8 @@ scopes tokens to the caller's `repository_owner`: the App installation lookup an
 lookup both use the org from the OIDC `repository` claim.
 
 Some workloads need to act on a **different** org than the workflow's owner. The e2e
-test pool ([ADR 0040](0040-org-pool-for-parallel-e2e-tests.md)) runs CI from
-`fullsend-ai/fullsend` but mutates dedicated pool orgs (`halfsend-01`, …). Future
+tests ([ADR 0040](0040-org-pool-for-parallel-e2e-tests.md)) run CI from
+`fullsend-ai/fullsend` but mutate dedicated test orgs (e.g. `fullsend-ai-test`). Future
 cross-org agent flows ([#672](https://github.com/fullsend-ai/fullsend/issues/672),
 [#1916](https://github.com/fullsend-ai/fullsend/issues/1916)) have the same shape.
 
