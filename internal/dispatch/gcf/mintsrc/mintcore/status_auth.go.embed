@@ -71,6 +71,7 @@ func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*sta
 	if !errors.Is(cfErr, errStatusAuthSkip) {
 		// Real rejection — 401 immediately, no fall-through.
 		log.Printf("CF Access status validator rejected request: %v", cfErr)
+		return nil, errors.New("authentication failed")
 	}
 
 	return nil, errors.New("authentication failed")

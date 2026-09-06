@@ -107,7 +107,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--app-set` | `fullsend-ai` | App set name for PEM bootstrap |
 | `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize`. The `e2e` role is internal-only and not intended for user configuration |
 | `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
-| `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group` |
+| `--status-auth` | `oidc` | Comma-separated status auth modes. Each non-oidc mode selects a Go build tag. Modes: `oidc`, `github`. `oidc` is always compiled in; `github` requires `--status-github-group`. **Note:** Cloudflare Access auth is not a `--status-auth` mode — it is always compiled in and activates when both `StatusCFAccessAud` and `StatusCFAccessTeam` are stamped at deploy time |
 | `--status-github-group` | | `ORG/TEAM` slug for GitHub status auth (required when `github` mode enabled). Example: `--status-github-group=acme/platform-team` |
 | `--source-dir` | | Path to local mint source (default: checkout path when present, embedded otherwise) |
 | `--dry-run` | `false` | Preview changes without making them |

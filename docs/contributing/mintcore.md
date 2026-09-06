@@ -224,6 +224,7 @@ call `mintHTTP` include:
 
 - `github.go` — GitHub App installation token creation; app permission fetch for dropped-permission logging (GET /app)
 - `jwks_verifier.go` — JWKS key fetching
+- `status_cfaccess.go` — CF Access JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access
 

@@ -129,6 +129,7 @@ func validateStatusCFAccess(ctx context.Context, r *http.Request) error {
 	signingInput := parts[0] + "." + parts[1]
 	hashed := sha256.Sum256([]byte(signingInput))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, hashed[:], signature); err != nil {
+		// Error detail omitted — avoids leaking crypto internals.
 		return fmt.Errorf("invalid CF Access JWT signature")
 	}
 
