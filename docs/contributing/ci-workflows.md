@@ -184,7 +184,7 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts on failure. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
 Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 
