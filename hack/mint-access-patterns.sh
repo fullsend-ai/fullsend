@@ -42,6 +42,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# fullsand-ai is the primary test org, halfsend is foreign, and
+# fullsend-ai/fullsend is the real upstream reusable-workflow host.
 ORG="fullsand-ai"
 MINT_URL="${FULLSEND_MINT_URL:-}"
 FOREIGN_ORG="halfsend"
