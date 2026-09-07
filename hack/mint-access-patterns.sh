@@ -212,7 +212,7 @@ cleanup() {
   local i
   for i in "${!ACTIVE_BRANCH_NAMES[@]}"; do
     gh api -X DELETE "/repos/${ACTIVE_BRANCH_REPOS[$i]}/git/refs/heads/${ACTIVE_BRANCH_NAMES[$i]}" \
-      --silent >/dev/null 2>&1 || true
+      --silent &>/dev/null || true
   done
   rm -rf "$TMPROOT"
 }
