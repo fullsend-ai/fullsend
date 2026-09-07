@@ -185,8 +185,12 @@ git_auth() {
   git -c "credential.helper=${GH_CRED_HELPER}" "$@"
 }
 
+rand_hex() {
+  od -An -N4 -tx1 /dev/urandom | tr -d ' \n'
+}
+
 TMPROOT=$(mktemp -d)
-REUSABLE_BRANCH="mint-ap-reusable-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+REUSABLE_BRANCH="mint-ap-reusable-$(rand_hex)"
 
 register_branch() {
   ACTIVE_BRANCH_REPOS+=("$1")
@@ -227,10 +231,6 @@ if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_ERROR=$'\033[33m'
   C_RESET=$'\033[0m'
 fi
-
-rand_hex() {
-  od -An -N4 -tx1 /dev/urandom | tr -d ' \n'
-}
 
 # --- repo ensure ---
 ensure_repo() {
@@ -325,20 +325,27 @@ mint_curl_run_script() {
           # Always exit 0 so GitHub does not email on "failed" runs; outcome lives
           # in mint-ap-result.json for the driver.
           finish() { exit 0; }
+          emit_result() { printf 'MINT_AP_RESULT=%s\n' "$(jq -c . mint-ap-result.json)"; }
           trap finish EXIT
 
           if ! OIDC_RESPONSE=$(curl -sSf --retry 3 --retry-delay 2 --retry-all-errors \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint"); then
             jq -n '{outcome:"error",error:"oidc_transport"}' > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
             exit 0
           fi
           OIDC_TOKEN=$(jq -r '.value // empty' <<<"$OIDC_RESPONSE" 2>/dev/null || true)
           if [[ -z "$OIDC_TOKEN" || "$OIDC_TOKEN" == "null" ]]; then
             echo "Failed to obtain OIDC token" >&2
             jq -n '{outcome:"error",error:"oidc_response"}' > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
+            exit 0
+          fi
+          if [[ "$OIDC_TOKEN" == *$'\n'* || "$OIDC_TOKEN" == *$'\r'* || "$OIDC_TOKEN" == *'::'* ]]; then
+            echo "OIDC response contained an unsafe token value" >&2
+            jq -n '{outcome:"error",error:"oidc_response"}' > mint-ap-result.json
+            emit_result
             exit 0
           fi
           echo "::add-mask::$OIDC_TOKEN"
@@ -367,7 +374,7 @@ mint_curl_run_script() {
             -d "$BODY" \
             "${MINT_URL}/v1/token"); then
             jq -n '{outcome:"error",error:"mint_transport"}' > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
             exit 0
           fi
 
@@ -375,14 +382,14 @@ mint_curl_run_script() {
             echo "Mint denied HTTP $HTTP_CODE"
             jq -n --arg code "$HTTP_CODE" '{outcome:"denied",http_status:($code|tonumber)}' \
               > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
             exit 0
           fi
           if [[ ! "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
             echo "Mint failed HTTP $HTTP_CODE" >&2
             jq -n --arg code "$HTTP_CODE" '{outcome:"error",error:"mint_http",http_status:($code|tonumber)}' \
               > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
             exit 0
           fi
 
@@ -392,7 +399,13 @@ mint_curl_run_script() {
           if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
             echo "Mint response missing token" >&2
             jq -n '{outcome:"error",error:"mint_response"}' > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
+            exit 0
+          fi
+          if [[ "$TOKEN" == *$'\n'* || "$TOKEN" == *$'\r'* || "$TOKEN" == *'::'* ]]; then
+            echo "Mint response contained an unsafe token value" >&2
+            jq -n '{outcome:"error",error:"mint_response"}' > mint-ap-result.json
+            emit_result
             exit 0
           fi
           echo "::add-mask::$TOKEN"
@@ -401,7 +414,7 @@ mint_curl_run_script() {
             ! REPOS=$(jq -ec '.granted_repos // [] | select(type == "array") | sort' mint-ap-response.json) ||
             ! PERMS=$(jq -ec '.granted_permissions // {} | select(type == "object")' mint-ap-response.json); then
             jq -n '{outcome:"error",error:"mint_scope_response"}' > mint-ap-result.json
-            echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+            emit_result
             exit 0
           fi
 
@@ -428,7 +441,7 @@ mint_curl_run_script() {
             *)
               echo "Unknown role: $ROLE" >&2
               jq -n '{outcome:"error",error:"unknown_role"}' > mint-ap-result.json
-              echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+              emit_result
               exit 0
               ;;
           esac
@@ -464,7 +477,7 @@ mint_curl_run_script() {
               '{outcome:"error",error:"scope",repository_selection:$selection,granted_repos:$repos,granted_permissions:$perms}' \
               > mint-ap-result.json
           fi
-          echo "MINT_AP_RESULT=$(cat mint-ap-result.json)"
+          emit_result
 RUNSCRIPT
 }
 
