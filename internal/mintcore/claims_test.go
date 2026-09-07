@@ -303,6 +303,61 @@ func TestIsPublicMintRepos(t *testing.T) {
 	assert.False(t, IsPublicMintRepos(map[string]bool{}))
 }
 
+func TestValidateWorkflowRef_WorkflowHostWildcard(t *testing.T) {
+	wildcardHosts := map[string]bool{"*": true}
+	allowedFiles := []string{"reusable-dispatch.yml", "dispatch.yml"}
+
+	tests := []struct {
+		name       string
+		ref        string
+		repository string
+		wantErr    string
+	}{
+		{
+			"wildcard accepts any repo workflow",
+			"myorg/my-repo/.github/workflows/reusable-dispatch.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"wildcard accepts ephemeral repo workflow",
+			"fullsend-ai-test/bt-abc12345/.github/workflows/dispatch.yml@refs/heads/main",
+			"fullsend-ai-test/bt-abc12345",
+			"",
+		},
+		{
+			"wildcard still enforces basename allowlist",
+			"myorg/my-repo/.github/workflows/evil.yml@refs/heads/main",
+			"myorg/my-repo",
+			"not in allowed list",
+		},
+		{
+			"wildcard rejects non-workflow path",
+			"myorg/my-repo/scripts/run.sh@refs/heads/main",
+			"myorg/my-repo",
+			"does not reference an allowed workflow host repo",
+		},
+		{
+			"wildcard still accepts upstream",
+			"fullsend-ai/fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateWorkflowRef(tt.ref, tt.repository, true, wildcardHosts, allowedFiles)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 	// Public mode (PER_REPO_WIF_REPOS=*) is no longer special-cased.
 	// It behaves like per-repo mode: workflow host repos and basename

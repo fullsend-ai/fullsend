@@ -29,17 +29,18 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 - Add **behaviour tests** under `e2e/behaviour/` using **godog** and portable Gherkin feature files.
 - Exercise **real SCM + real CI** through **driver interfaces** (`scm.Driver`, `ci.Driver`, `install.Driver`); v1 implementations target GitHub and GitHub Actions.
 - Substitute inference with a **dummy runtime** (`runtime: dummy` in per-repo config, or `defaults.runtime: dummy` for per-org) that executes scripted operations in the real OpenShell sandbox and emits `behaviour-results.json`.
-- Select backends via **runner env** (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`); feature files stay install-mode agnostic. v1 runs **per-repo** against the halfsend org pool; the suite provisions fullsend via `fullsend github setup` rather than requiring pre-installed orgs.
+- Select backends via **runner env** (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_ORG`); feature files stay install-mode agnostic. v1 runs **per-repo** against a dedicated test org; the suite provisions fullsend via `fullsend repos install --fullsend-ref` rather than requiring pre-installed orgs.
 - Use **compatibility tags** (`@skip:*`, `@requires:*`) to filter scenarios for future backends; tags do not select configuration.
 
 ## Consequences
 
 - Behaviour tests can pass while prompt quality regresses; LLM evals remain necessary for instruction coverage.
 - Behaviour orgs are provisioned at suite start with `--runtime dummy`; production orgs must not use dummy unintentionally.
-- **Note (2026-07, #5439 / PR #5489):** Numbered behaviour pool repos (`test-repo-NN`) are lazily created and installed on first scenario use via the ensurer internal to `install.Driver`; suite-start provisioning still applies to the shared admin/`test-repo` install path where used.
+- **Note (2026-07, #5439 / PR #5489):** Ephemeral repos (`bt-{timestamp}-{uuid8}`) are created and installed on-demand per scenario via the ensurer internal to `install.Driver`; suite-start provisioning still applies to the shared admin/`test-repo` install path where used.
+- **Note (2026-09, #6864):** Migrated from halfsend org pool to single-org ephemeral repos (`fullsend-ai-test`). Repos are retained across runs to boost the GitHub App installation rate limit (5,000 base + 50/repo beyond 20, capped at 12,500/hr). Old runs are pruned when the count exceeds 200.
 - Adding GitLab or Tekton requires new drivers and runner env values, not feature file rewrites.
 - Dummy runtime op vocabulary stays minimal; new ops require runtime + docs updates when scenarios need them.
-- Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, GCP WIF/mint, and the shared halfsend org pool. Transient outages, API rate limits, or pool org state corruption can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
-- Behaviour tests share the halfsend org pool and lock mechanism with admin e2e tests (`e2e.yml` runs both jobs). Lock hold time scales with scenario count; pool size was doubled to absorb the additional load and can be increased again if contention appears.
+- Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, and GCP WIF/mint. Transient outages or API rate limits can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
+- Behaviour tests use a dedicated org (`fullsend-ai-test`) separate from admin e2e tests. Rate limits scale with retained repo count; pruning keeps the count within a target threshold.
 
 > **Note (2026-07):** Shared live-test infrastructure (org pool, CLI runner, cleanup) lives in `pkg/e2etest/`; the Gherkin framework lives in `pkg/behaviourtest/`. In-repo runners remain under `e2e/behaviour/` and `e2e/admin/`.

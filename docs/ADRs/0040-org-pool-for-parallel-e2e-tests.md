@@ -75,3 +75,8 @@ slice in the test code. No architectural changes are needed.
   local runs use a user token with pool-org admin access (`gh auth login`).
 - Pool expansion is an operational task (provision org, update one slice
   literal), not an architectural change.
+
+> **Later note (2026-09, #6864):** Behaviour tests no longer use the halfsend
+> org pool. They migrated to single-org ephemeral repos in `fullsend-ai-test`
+> ([ADR 0066](0066-behaviour-tests-with-gherkin-and-drivers.md)). This ADR
+> remains accurate for admin e2e tests, which still use the pool.

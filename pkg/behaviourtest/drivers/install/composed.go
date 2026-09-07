@@ -2,172 +2,177 @@ package install
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// composedDriver wraps a mintDriver, ensurer, and an internal
-// channel-based pool into a unified Driver. The suite constructs one
-// via newComposedDriver (typically called from a Factory) and threads
-// it through World. Scenarios call AllocateRepo / DeallocateRepo;
-// Finalize tears down suite-scoped resources.
+// composedDriver wraps a mintDriver, ensurer, and forge client into a
+// unified Driver. Scenarios call CreateRepo to provision an ephemeral
+// repo; deletion is handled by CleanupScenario via the SCM driver.
+// The composedDriver tracks every repo it creates so Finalize can
+// sweep any that were not cleaned up (e.g. cancelled CI jobs).
 type composedDriver struct {
 	org     string
 	mint    mintDriver
 	ensurer ensurer
+	client  forge.Client
 	logf    func(string, ...any)
 
-	// rate, when set, samples the shared installation token's primary
-	// rate-limit budget on every allocation and release, so a suite
-	// that later goes blind on 403s shows in its own log how the
-	// budget drained across the run (#6702).
-	rate forge.RateLimitReporter
-
-	names    chan string // buffered channel of available repo names
-	capacity int
-
-	mu          sync.Mutex
-	outstanding map[string]struct{} // names currently leased
+	mu      sync.Mutex
+	created map[string]bool
 }
 
-// newComposedDriver constructs a unified Driver from its constituent
-// parts. It pre-fills the internal pool with repo names in the form
-// "test-repo-01" … "test-repo-NN". The caller (Factory) is responsible
-// for deploying the mint and creating the ensurer before calling this.
+// newComposedDriver returns a Driver. mint may be nil when no preview
+// mint is needed (e.g. pre-existing mint). client is used both for repo
+// CRUD and optional rate-limit reporting via type assertion.
 func newComposedDriver(
 	org string,
 	mint mintDriver,
-	ensurer ensurer,
-	capacity int,
+	ens ensurer,
+	client forge.Client,
 	logf func(string, ...any),
-) (Driver, error) {
-	if capacity <= 0 {
-		return nil, fmt.Errorf("composed driver: capacity must be positive, got %d", capacity)
-	}
-	names := make(chan string, capacity)
-	for i := 1; i <= capacity; i++ {
-		names <- fmt.Sprintf("test-repo-%02d", i)
-	}
+) Driver {
 	return &composedDriver{
-		org:         org,
-		mint:        mint,
-		ensurer:     ensurer,
-		logf:        logf,
-		names:       names,
-		capacity:    capacity,
-		outstanding: make(map[string]struct{}),
-	}, nil
+		org:     org,
+		mint:    mint,
+		ensurer: ens,
+		client:  client,
+		logf:    logf,
+		created: make(map[string]bool),
+	}
 }
 
-// AllocateRepo leases a slot from the internal pool and ensures the
-// repo is created and installed. Blocks until a slot is free or ctx
-// is cancelled.
-func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
-	// Acquire a name from the pool (blocks if all slots are in use).
-	var name string
-	select {
-	case name = <-d.names:
-	case <-ctx.Done():
-		return "", fmt.Errorf("allocating repo: %w", ctx.Err())
-	}
-
-	d.mu.Lock()
-	d.outstanding[name] = struct{}{}
-	d.mu.Unlock()
-
-	// Ensure the repo exists and has fullsend installed.
-	if err := d.ensurer.EnsureRepo(ctx, d.org, name); err != nil {
-		// Return the name to the pool on failure so it can be retried.
+func (d *composedDriver) CreateRepo(ctx context.Context, hint string) (string, error) {
+	name, err := d.ensurer.CreateRepo(ctx, d.org, hint)
+	if name != "" {
 		d.mu.Lock()
-		delete(d.outstanding, name)
+		d.created[name] = true
 		d.mu.Unlock()
-		d.names <- name
-		return "", fmt.Errorf("allocating repo %s/%s: %w", d.org, name, err)
 	}
-
-	d.logf("[driver] allocated %s/%s", d.org, name)
-	d.logRateLimit("after allocating " + d.org + "/" + name)
+	if err != nil {
+		return "", fmt.Errorf("creating repo in %s: %w", d.org, err)
+	}
+	d.logf("[driver] created %s/%s", d.org, name)
+	d.logRateLimit("after CreateRepo")
 	return name, nil
 }
 
-// DeallocateRepo returns a previously allocated repo to the pool.
-// Errors on unknown name or double-release.
-func (d *composedDriver) DeallocateRepo(_ context.Context, repoName string) error {
+func (d *composedDriver) MarkDeleted(repoName string) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	delete(d.created, repoName)
+	d.mu.Unlock()
+}
 
-	if _, ok := d.outstanding[repoName]; !ok {
-		return fmt.Errorf("DeallocateRepo: %q is not an outstanding lease (possible double-release)", repoName)
+const repoKeepThreshold = 200
+
+func (d *composedDriver) Finalize(ctx context.Context) error {
+	d.queryRateLimit("Finalize start")
+
+	if !KeepRepos() {
+		d.pruneOldRuns(ctx)
 	}
-	delete(d.outstanding, repoName)
-	// Send inside the lock: the channel buffer equals capacity and this
-	// name was removed during AllocateRepo, so the send is guaranteed
-	// non-blocking.
-	d.names <- repoName
-	d.logf("[driver] deallocated %s/%s", d.org, repoName)
-	d.logRateLimit("after deallocating " + d.org + "/" + repoName)
+
+	if d.mint == nil {
+		return nil
+	}
+	if err := d.mint.Teardown(ctx); err != nil {
+		return fmt.Errorf("Finalize: mint teardown: %w", err)
+	}
 	return nil
 }
 
-// Finalize tears down suite-scoped resources (mint). If leases are
-// still outstanding, it reclaims them (logging the names) and returns
-// an error alongside any mint teardown error via errors.Join.
-func (d *composedDriver) Finalize(ctx context.Context) error {
-	d.mu.Lock()
-	var leakErr error
-	if len(d.outstanding) > 0 {
-		leaked := make([]string, 0, len(d.outstanding))
-		for name := range d.outstanding {
-			leaked = append(leaked, name)
-		}
-		d.logf("[driver] Finalize: reclaiming %d outstanding lease(s): %v", len(leaked), leaked)
-		for _, name := range leaked {
-			delete(d.outstanding, name)
-			d.names <- name
-		}
-		leakErr = fmt.Errorf("Finalize: %d outstanding lease(s) not deallocated: %v", len(leaked), leaked)
-	}
-	d.mu.Unlock()
-
-	var teardownErr error
-	if d.mint != nil {
-		if err := d.mint.Teardown(ctx); err != nil {
-			teardownErr = fmt.Errorf("Finalize: mint teardown: %w", err)
-		}
-	}
-
-	return errors.Join(leakErr, teardownErr)
-}
-
-// Capacity returns the max concurrent outstanding allocations.
-func (d *composedDriver) Capacity() int {
-	return d.capacity
-}
-
-// Compile-time check.
-var _ Driver = (*composedDriver)(nil)
-
-// withRateLimitReporter attaches client as the driver's rate-limit
-// sampler when it reports one; other clients leave sampling off.
-func withRateLimitReporter(d Driver, client forge.Client) Driver {
-	if cd, ok := d.(*composedDriver); ok {
-		if r, ok := client.(forge.RateLimitReporter); ok {
-			cd.rate = r
-		}
-	}
-	return d
-}
-
-// logRateLimit writes one primary-quota sample, if a reporter is set
-// and has observed a response.
-func (d *composedDriver) logRateLimit(when string) {
-	if d.rate == nil {
+func (d *composedDriver) pruneOldRuns(ctx context.Context) {
+	lister, ok := d.client.(forge.AllRepoLister)
+	if !ok {
+		d.logf("[driver] prune: client does not support AllRepoLister, skipping")
 		return
 	}
-	if rl, seen := d.rate.RateLimit(); seen {
-		d.logf("[driver] rate limit %s: %s", when, rl)
+
+	repos, err := lister.ListAllOrgRepos(ctx, d.org)
+	if err != nil {
+		d.logf("[driver] prune: failed to list repos: %v", err)
+		return
 	}
+
+	groups := make(map[string][]string)
+	for _, r := range repos {
+		if !strings.HasPrefix(r.Name, "bt-") {
+			continue
+		}
+		if len(r.Name) < 19 {
+			continue
+		}
+		ts := r.Name[3:18]
+		groups[ts] = append(groups[ts], r.Name)
+	}
+
+	total := 0
+	for _, names := range groups {
+		total += len(names)
+	}
+
+	if total <= repoKeepThreshold {
+		d.logf("[driver] prune: %d bt-* repos, at or under threshold (%d), skipping", total, repoKeepThreshold)
+		return
+	}
+
+	timestamps := make([]string, 0, len(groups))
+	for ts := range groups {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Strings(timestamps)
+
+	for _, ts := range timestamps {
+		names := groups[ts]
+		if total-len(names) < repoKeepThreshold {
+			break
+		}
+		d.logf("[driver] prune: deleting run %s (%d repos)", ts, len(names))
+		for _, name := range names {
+			if err := d.client.DeleteRepo(ctx, d.org, name); err != nil {
+				if !forge.IsNotFound(err) {
+					d.logf("[driver] prune: failed to delete %s/%s: %v", d.org, name, err)
+				}
+			}
+		}
+		total -= len(names)
+	}
+
+	d.logf("[driver] prune: %d bt-* repos remaining", total)
+	d.queryRateLimit("Finalize after cleanup")
 }
+
+func (d *composedDriver) DefaultConcurrency() int {
+	return DefaultConcurrency
+}
+
+func (d *composedDriver) logRateLimit(label string) {
+	r, ok := d.client.(forge.RateLimitReporter)
+	if !ok {
+		return
+	}
+	rl, seen := r.RateLimit()
+	if !seen {
+		return
+	}
+	d.logf("[rate-limit] %s: %s", label, rl.String())
+}
+
+func (d *composedDriver) queryRateLimit(label string) {
+	q, ok := d.client.(forge.RateLimitQuerier)
+	if !ok {
+		return
+	}
+	rl, err := q.GetRateLimit(context.Background())
+	if err != nil {
+		d.logf("[rate-limit] %s: query failed: %v", label, err)
+		return
+	}
+	d.logf("[rate-limit] %s: %s", label, rl.String())
+}
+
+var _ Driver = (*composedDriver)(nil)

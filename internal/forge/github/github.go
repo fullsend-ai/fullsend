@@ -586,6 +586,53 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivat
 	return result, nil
 }
 
+// ListAllOrgRepos returns all repos in an org without filtering forks
+// or archived repos. Used for deferred cleanup in behaviour tests.
+func (c *LiveClient) ListAllOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
+	var result []forge.Repository
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/orgs/%s/repos?per_page=100&page=%d&type=all", org, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list all org repos page %d: %w", page, err)
+		}
+
+		var repos []struct {
+			ID            int64  `json:"id"`
+			Name          string `json:"name"`
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
+			Private       bool   `json:"private"`
+			Archived      bool   `json:"archived"`
+			Fork          bool   `json:"fork"`
+		}
+		if err := decodeJSON(resp, &repos); err != nil {
+			return nil, fmt.Errorf("decode all org repos page %d: %w", page, err)
+		}
+
+		for _, r := range repos {
+			result = append(result, forge.Repository{
+				ID:            r.ID,
+				Name:          r.Name,
+				FullName:      r.FullName,
+				DefaultBranch: r.DefaultBranch,
+				Private:       r.Private,
+				Archived:      r.Archived,
+				Fork:          r.Fork,
+			})
+		}
+
+		if len(repos) < 100 {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+var _ forge.AllRepoLister = (*LiveClient)(nil)
+
 // CreateRepo creates a new repository under an organization.
 //
 // The repo is created with auto_init: true so that a default branch exists
@@ -4012,6 +4059,42 @@ func (c *LiveClient) UpdateCIVariable(_ context.Context, _, _, _, _ string, _ bo
 func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ string) error {
 	return forge.ErrNotSupported
 }
+
+// GetRateLimit queries GET /rate_limit and returns the core resource
+// bucket. This call does not count against the primary rate limit.
+func (c *LiveClient) GetRateLimit(ctx context.Context) (forge.RateLimit, error) {
+	resp, err := c.get(ctx, "/rate_limit")
+	if err != nil {
+		return forge.RateLimit{}, fmt.Errorf("get rate limit: %w", err)
+	}
+	var body struct {
+		Resources struct {
+			Core struct {
+				Limit     int   `json:"limit"`
+				Remaining int   `json:"remaining"`
+				Reset     int64 `json:"reset"`
+				Used      int   `json:"used"`
+			} `json:"core"`
+		} `json:"resources"`
+	}
+	if err := decodeJSON(resp, &body); err != nil {
+		return forge.RateLimit{}, fmt.Errorf("decode rate limit: %w", err)
+	}
+	core := body.Resources.Core
+	var reset time.Time
+	if core.Reset > 0 {
+		reset = time.Unix(core.Reset, 0)
+	}
+	return forge.RateLimit{
+		Limit:     core.Limit,
+		Remaining: core.Remaining,
+		Reset:     reset,
+		Resource:  "core",
+		Observed:  time.Now(),
+	}, nil
+}
+
+var _ forge.RateLimitQuerier = (*LiveClient)(nil)
 
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {

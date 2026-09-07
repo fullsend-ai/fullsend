@@ -7,17 +7,16 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func registerTriageSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
+	sc.Step(`^a test repository with fullsend installed$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenInstalledTestRepository(ctx, world.FromContext(ctx))
 	})
-	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
-		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
+	sc.Step(`^an installed repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
+		return ctx, givenInstalledRepository(world.FromContext(ctx), fullName)
 	})
 	sc.Step(`^an issue with title "([^"]+)" and body containing "([^"]+)"$`, func(ctx context.Context, title, bodyContains string) (context.Context, error) {
 		return ctx, givenIssueWithTitleAndBody(world.FromContext(ctx), title, bodyContains)
@@ -36,11 +35,8 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
-	// Guard double-allocation: if AllocateRepo was already called for
-	// this scenario (e.g. duplicate "Given the enrolled test repository"
-	// step), skip rather than leaking a second slot.
-	if w.LeasedRepoName != "" {
+func givenInstalledTestRepository(ctx context.Context, w *world.World) error {
+	if w.RepoName != "" {
 		return nil
 	}
 
@@ -48,12 +44,11 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		return fmt.Errorf("no install driver configured; use a Factory to construct a Driver for the suite")
 	}
 
-	repoName, err := w.Driver.AllocateRepo(ctx)
+	repoName, err := w.Driver.CreateRepo(ctx, w.ScenarioName)
 	if err != nil {
-		return fmt.Errorf("allocating repo: %w", err)
+		return fmt.Errorf("creating repo: %w", err)
 	}
 
-	w.LeasedRepoName = repoName
 	w.RepoOwner = w.Org
 	w.RepoName = repoName
 	w.RepoFull = w.Org + "/" + repoName
@@ -61,7 +56,7 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 	return nil
 }
 
-func givenEnrolledRepository(w *world.World, fullName string) error {
+func givenInstalledRepository(w *world.World, fullName string) error {
 	owner, repo, err := scm.ParseRepo(fullName)
 	if err != nil {
 		return err
@@ -88,53 +83,15 @@ func givenIssue(w *world.World) error {
 
 func createIssue(w *world.World, title, body string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before creating issues")
 	}
-	trigger := time.Now()
 	issue, err := w.SCM.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
 	if err != nil {
 		return err
 	}
 	w.IssueNumber = issue.Number
 	w.IssueTitle = title
-	// fullsend.yaml triggers on issues opened and labeled. Drain the issue-open
-	// run before applying ready-for-triage so the labeled dispatch is not skipped.
-	if err := drainIssueOpenWorkflow(w, trigger); err != nil {
-		return err
-	}
 	return nil
-}
-
-// issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
-// retry to compensate for clock drift between the test runner and GitHub.
-// 30 s covers typical NTP drift without matching stale runs from prior
-// scenarios (pool repos are org-isolated).
-const issueOpenDrainSkewBuffer = 30 * time.Second
-
-// drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
-// the issues.opened event. If the first attempt fails (typically due to
-// GitHub Actions webhook delivery lag or clock skew between the runner
-// and GitHub), it retries once with a relaxed trigger timestamp.
-func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
-	ctx := context.Background()
-	repo := w.RepoName
-	file := install.PerRepoTriageWorkflow
-
-	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
-	if err == nil {
-		return nil
-	}
-
-	// Retry with a clock-skew buffer. When the test runner's clock is
-	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
-	// before our trigger timestamp and the first poll window misses it.
-	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
-	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
-	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
-		return nil
-	}
-
-	return fmt.Errorf("waiting for issue-open workflow: %w", err)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {

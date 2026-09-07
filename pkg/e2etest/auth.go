@@ -122,3 +122,10 @@ func tokenForOrg(ctx context.Context, cfg envConfig, org string) (string, error)
 	}
 	return resolveLocalToken()
 }
+
+// TokenForOrg returns an API token for operating on the given org.
+// In CI (GitHub Actions) it mints an OIDC e2e token; locally it falls
+// back to GH_TOKEN / GITHUB_TOKEN / gh auth token.
+func TokenForOrg(ctx context.Context, cfg EnvConfig, org string) (string, error) {
+	return tokenForOrg(ctx, cfg.internal(), org)
+}

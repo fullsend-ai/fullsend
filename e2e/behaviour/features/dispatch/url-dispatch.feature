@@ -1,7 +1,7 @@
 Feature: URL-sourced harness dispatch
 
   Background:
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And a harness-hosting repository "url-harness-host"
 
   Scenario: URL-sourced harness with CEL trigger dispatches agent

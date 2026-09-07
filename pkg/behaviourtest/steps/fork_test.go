@@ -196,57 +196,32 @@ func TestForkSteps_WorldStateTransitions(t *testing.T) {
 
 // --- resolveForkName unit tests ---
 
-func TestResolveForkName_NoLease(t *testing.T) {
-	w := &world.World{RepoName: "test-repo"}
-	got := resolveForkName(w, "test-repo-fork")
-	assert.Equal(t, "test-repo-fork", got, "without lease, logical name is unchanged")
+func TestResolveForkName_AppendsSuffix(t *testing.T) {
+	w := &world.World{RepoName: "bt-a1b2c3d4-triage"}
+	got := resolveForkName(w, "fork")
+	assert.Equal(t, "bt-a1b2c3d4-triage-fork", got)
 }
 
-func TestResolveForkName_LeasedRepoMaps(t *testing.T) {
-	w := &world.World{
-		LeasedRepoName: "test-repo-07",
-		RepoName:       "test-repo-07",
-	}
-	got := resolveForkName(w, "test-repo-fork")
-	assert.Equal(t, "test-repo-07-fork", got,
-		"leased repo should remap test-repo-fork to test-repo-07-fork")
+func TestResolveForkName_ArbitrarySuffix(t *testing.T) {
+	w := &world.World{RepoName: "bt-deadbeef-dispatch"}
+	got := resolveForkName(w, "secondary")
+	assert.Equal(t, "bt-deadbeef-dispatch-secondary", got)
 }
 
-func TestResolveForkName_CustomNameUnchanged(t *testing.T) {
-	w := &world.World{
-		LeasedRepoName: "test-repo-07",
-		RepoName:       "test-repo-07",
-	}
-	got := resolveForkName(w, "custom-fork")
-	assert.Equal(t, "custom-fork", got,
-		"non-prefixed name should be unchanged even with a lease")
-}
-
-func TestResolveForkName_DifferentSuffix(t *testing.T) {
-	w := &world.World{
-		LeasedRepoName: "test-repo-03",
-		RepoName:       "test-repo-03",
-	}
-	got := resolveForkName(w, "test-repo-secondary")
-	assert.Equal(t, "test-repo-03-secondary", got,
-		"should preserve arbitrary suffix after test-repo prefix")
-}
-
-func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
+func TestGivenFork_ResolvesEphemeralForkName(t *testing.T) {
 	scmDriver := &fakeForkSCM{}
 	w := &world.World{
-		Org:            "org",
-		RepoOwner:      "org",
-		RepoName:       "test-repo-07",
-		RepoFull:       "org/test-repo-07",
-		LeasedRepoName: "test-repo-07",
-		SCM:            scmDriver,
+		Org:       "org",
+		RepoOwner: "org",
+		RepoName:  "bt-a1b2c3d4-triage",
+		RepoFull:  "org/bt-a1b2c3d4-triage",
+		SCM:       scmDriver,
 	}
-	err := givenFork(w, "test-repo-fork")
+	err := givenFork(w, "fork")
 	require.NoError(t, err)
-	assert.Equal(t, "test-repo-07-fork", scmDriver.createForkName,
+	assert.Equal(t, "bt-a1b2c3d4-triage-fork", scmDriver.createForkName,
 		"CreateFork should receive the resolved fork name")
-	assert.Equal(t, "test-repo-07-fork", w.ForkRepo)
+	assert.Equal(t, "bt-a1b2c3d4-triage-fork", w.ForkRepo)
 }
 
 // --- awaitForkReady unit tests ---

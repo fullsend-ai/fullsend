@@ -50,3 +50,25 @@ func buildCLIBinary(t *testing.T, modRoot string) string {
 	}
 	return binary
 }
+
+// CrossCompileCLIBinary cross-compiles the fullsend CLI for linux/amd64 with
+// CGO_ENABLED=0 and the -vendored version stamp, matching the binary that
+// repos install --vendor produces. Building once and passing the result via
+// --fullsend-binary avoids repeating the cross-compilation for every repo.
+func CrossCompileCLIBinary(t *testing.T) string {
+	t.Helper()
+	modRoot := ModuleRoot(t)
+	binary := filepath.Join(t.TempDir(), "fullsend-linux-amd64")
+	cmd := exec.Command("go", "build",
+		"-ldflags", "-X github.com/fullsend-ai/fullsend/internal/cli.version=dev-vendored",
+		"-o", binary,
+		"./cmd/fullsend/",
+	)
+	cmd.Dir = modRoot
+	cmd.Env = append(cmd.Environ(), "GOTOOLCHAIN=auto", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cross-compiling fullsend for linux/amd64: %s\n%s", err, out)
+	}
+	return binary
+}

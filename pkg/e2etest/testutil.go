@@ -540,6 +540,19 @@ func OrgPool() []string {
 	return orgPool
 }
 
+// DefaultBehaviourOrg is the default org for behaviour tests when
+// BEHAVIOUR_ORG is unset.
+const DefaultBehaviourOrg = "fullsend-ai-test"
+
+// BehaviourOrg returns the GitHub org for behaviour tests from
+// BEHAVIOUR_ORG, falling back to DefaultBehaviourOrg.
+func BehaviourOrg() string {
+	if v := os.Getenv("BEHAVIOUR_ORG"); v != "" {
+		return v
+	}
+	return DefaultBehaviourOrg
+}
+
 // NewLiveClient creates a GitHub API client from a token.
 func NewLiveClient(token string) *gh.LiveClient {
 	return newLiveClient(token)

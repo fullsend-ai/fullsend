@@ -34,7 +34,7 @@ func registerDummyAgentSteps(sc *godog.ScenarioContext) {
 
 func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before dummy-agent operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before dummy-agent operations")
 	}
 	if len(table.Rows) < 2 {
 		return fmt.Errorf("dummy agent table requires a header and at least one row")

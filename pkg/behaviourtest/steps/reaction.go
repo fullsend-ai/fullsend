@@ -24,7 +24,7 @@ func registerReactionSteps(sc *godog.ScenarioContext) {
 }
 
 // givenReactionsEnabled sets status_notifications.reaction.start and
-// .completion to "enabled" in the enrolled repo's config.yaml. This
+// .completion to "enabled" in the test repo's config.yaml. This
 // causes the runner to post emoji reactions on start and completion.
 func givenReactionsEnabled(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
@@ -51,30 +51,6 @@ func givenReactionsEnabled(w *world.World) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: enable reaction notifications", merged); err != nil {
-		return fmt.Errorf("updating config: %w", err)
-	}
-	return nil
-}
-
-// DisableReactionNotifications removes the status_notifications from
-// the enrolled repo's config.yaml. Exported so CleanupScenario can
-// call it during scenario teardown.
-func DisableReactionNotifications(w *world.World) error {
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	cfg.SetStatusNotifications(nil)
-	merged, err := cfg.Marshal()
-	if err != nil {
-		return err
-	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: disable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -114,27 +90,4 @@ func thenIssueDoesNotHaveReaction(w *world.World, content string) error {
 		}
 	}
 	return nil
-}
-
-// reactionsEnabledInConfig checks if status_notifications.reaction is
-// set in the repo config. Used by cleanup to decide whether to reset.
-func reactionsEnabledInConfig(w *world.World) bool {
-	if w.SCM == nil || w.Org == "" || w.RepoName == "" {
-		return false
-	}
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
-	if err != nil {
-		return false
-	}
-	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
-	if err != nil {
-		return false
-	}
-	sn := cfg.StatusNotifications()
-	if sn == nil {
-		return false
-	}
-	return (sn.Reaction.Start != "" && sn.Reaction.Start != "disabled") ||
-		(sn.Reaction.Completion != "" && sn.Reaction.Completion != "disabled")
 }

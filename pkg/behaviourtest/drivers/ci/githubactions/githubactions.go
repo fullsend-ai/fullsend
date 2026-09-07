@@ -522,7 +522,7 @@ func isTerminalFailure(conclusion string) bool {
 
 // listHarnessRunsAfter returns harness workflow runs created at or after
 // the trigger time. The listing error is returned rather than swallowed:
-// during the #6647 flake the pool-org installation token was rate
+// during the #6647 flake the installation token was rate
 // limited for the whole wait, every poll's listing failed, and the wait
 // reported "no recent workflow runs found" for runs that existed.
 // Callers record the error and surface it in their timeout diagnostics.

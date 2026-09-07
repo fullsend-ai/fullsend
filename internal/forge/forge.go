@@ -369,6 +369,21 @@ type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
 }
 
+// RateLimitQuerier is implemented by clients that can explicitly query
+// the rate limit endpoint (GET /rate_limit). Unlike RateLimitReporter,
+// which returns the last observed response headers, this makes a
+// dedicated API call and does not count against the primary rate limit.
+type RateLimitQuerier interface {
+	GetRateLimit(ctx context.Context) (RateLimit, error)
+}
+
+// AllRepoLister is implemented by clients that can list all repos in an
+// org without filtering forks or archived repos. Used by the behaviour
+// test harness for deferred repo cleanup.
+type AllRepoLister interface {
+	ListAllOrgRepos(ctx context.Context, org string) ([]Repository, error)
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID            int

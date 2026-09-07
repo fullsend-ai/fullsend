@@ -25,7 +25,7 @@ Feature: Code applier branch handling
   agent/<issue>-.* head assertion can never match the decoy itself.
 
   Background:
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
 
   @requires:capability:applier-branch-namespace
   Scenario: Code run is renamed into the issue namespace and other branches are untouched
