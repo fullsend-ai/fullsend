@@ -142,12 +142,21 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Contains(t, cmd, "cd "+shellQuote(params.RepoDir))
 	assert.Contains(t, cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
 	assert.Contains(t, cmd, "&& export "+openCodeRuntimeEnv+"=opencode")
-	assert.Contains(t, cmd, "&& opencode run --format json --thinking")
+	// opencode runs inside the tee pipeline so its stream lands in a sandbox
+	// transcript file for ExtractTranscripts while still streaming to the host.
+	assert.Contains(t, cmd, "opencode run --format json --thinking")
 	assert.Contains(t, cmd, "--model "+shellQuote("anthropic-vertex/claude-opus-4-6"))
 	assert.Contains(t, cmd, "--variant "+shellQuote("high"))
 	assert.Contains(t, cmd, "--agent "+shellQuote("triage"))
 	assert.Contains(t, cmd, shellQuote(DefaultAgentPrompt))
 	assert.Contains(t, cmd, "</dev/null")
+	// The stream is tee'd to the sandbox transcript path and the transcript
+	// dir is created first.
+	assert.Contains(t, cmd, "mkdir -p "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeOutputSubdir))
+	assert.Contains(t, cmd, "| tee "+shellQuote(openCodeSandboxTranscriptPath()))
+	// opencode's real exit code is re-raised past tee (which always exits 0).
+	assert.Contains(t, cmd, "echo $? > "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, "exit \"$(cat "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
 	// No hooks signal → no integrity guard.
 	assert.NotContains(t, cmd, "refusing to run unhooked")
 }

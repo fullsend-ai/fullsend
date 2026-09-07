@@ -146,6 +146,50 @@ func TestOpenCodeExtractTranscripts_NoneFound(t *testing.T) {
 	assert.Empty(t, entries, "no transcript files when none are found")
 }
 
+func TestOpenCodeExtractTranscripts_DownloadsTeedStream(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	binDir := t.TempDir()
+	// The `test -f <transcript> && echo found` probe reports the sandbox tee'd
+	// transcript exists; download writes an ndjson stream into the requested
+	// destination dir (openshell sandbox download always treats the last arg as
+	// a directory), which DownloadFile renames to the requested local name.
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    *"echo found"*) echo found; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  printf '{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}\n' > "$5/$(basename "$4")"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := filepath.Join(work, "transcripts")
+	require.NoError(t, OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", out))
+
+	// The tee'd transcript is downloaded as <agentLabel>-output.jsonl.
+	saved := filepath.Join(out, "triage-"+openCodeOutputFile)
+	data, err := os.ReadFile(saved)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"type":"step_finish"`)
+
+	// The probe and download targeted the sandbox tee path Run writes to.
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), openCodeSandboxTranscriptPath())
+
+	// A clean (non-error) stream produces no error annotations.
+	assert.Empty(t, OpenCodeRuntime{}.ParseTranscriptErrors(out))
+}
+
 func TestOpenCodePathHelpers(t *testing.T) {
 	t.Parallel()
 	r := OpenCodeRuntime{}
