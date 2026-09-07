@@ -674,6 +674,7 @@ fetch_result_json() {
   return 1
 }
 
+# Wait for the workflow triggered by head_sha on branch and print its run JSON.
 wait_for_run() {
   local full_repo="$1" branch="$2" head_sha="$3"
   local deadline=$((SECONDS + TIMEOUT))
