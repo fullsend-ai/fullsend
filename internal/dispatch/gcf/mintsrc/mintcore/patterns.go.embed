@@ -22,6 +22,12 @@ var RepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9._-]{0,99}$`)
 // RolePattern restricts role to safe lowercase identifiers.
 var RolePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
+// LevelPattern restricts privilege level names to safe lowercase identifiers:
+// starts with a letter, followed by up to 31 lowercase letters, digits,
+// underscores, or hyphens (max 32 chars total). Empty is treated as
+// "omitted" by callers and is not validated here.
+var LevelPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
 // ValidateOrgName checks that an org name matches GitHubOrgPattern and
 // does not contain double-hyphens (which would be ambiguous in secret names).
 func ValidateOrgName(org string) error {
@@ -36,6 +42,18 @@ func ValidateOrgName(org string) error {
 func ValidateRoleName(role string) error {
 	if !RolePattern.MatchString(role) || strings.Contains(role, "--") {
 		return fmt.Errorf("invalid role name %q", role)
+	}
+	return nil
+}
+
+// ValidateLevelName checks that a privilege level name matches LevelPattern.
+// Empty names are allowed (callers treat them as "omitted").
+func ValidateLevelName(level string) error {
+	if level == "" {
+		return nil
+	}
+	if !LevelPattern.MatchString(level) {
+		return fmt.Errorf("invalid level name %q", level)
 	}
 	return nil
 }

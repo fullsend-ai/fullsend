@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, SELF, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import worker, { type Env } from "./index";
@@ -75,13 +75,39 @@ describe("site worker", () => {
 });
 
 describe("wrangler bindings", () => {
-  // Regression guard: the Worker only ever ran for /api/* while
-  // `run_worker_first = ["/api/*"]` was set, so a missing ASSETS binding was
-  // harmless. Without `binding = "ASSETS"` in wrangler.toml, every request that
-  // *reaches* the Worker now 503s. That is not every request — exact asset
-  // matches and unmatched navigations are served without invoking the Worker —
-  // but it does include unmatched non-navigation requests (fetch/XHR, probes).
   it("provides env.ASSETS from wrangler.toml", () => {
     expect((env as Env).ASSETS).toBeDefined();
+  });
+});
+
+async function fetchPath(path: string, navigate: boolean): Promise<Response> {
+  const headers = navigate ? { "Sec-Fetch-Mode": "navigate" } : undefined;
+  return SELF.fetch(`https://example.test${path}`, { headers });
+}
+
+describe("asset 404-page routing", () => {
+  it.each(["/does-not-exist", "/admin/foo"])(
+    "returns the root 404 page for %s",
+    async (path) => {
+      for (const navigate of [true, false]) {
+        const res = await fetchPath(path, navigate);
+        expect(res.status).toBe(404);
+        expect(await res.text()).toContain("Page not found");
+      }
+    },
+  );
+
+  it("returns the docs 404 page for misses under /docs/", async () => {
+    for (const navigate of [true, false]) {
+      const res = await fetchPath("/docs/this-does-not-exist", navigate);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("docs not found");
+    }
+  });
+
+  it("serves the landing page at /", async () => {
+    const res = await fetchPath("/", false);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("landing");
   });
 });

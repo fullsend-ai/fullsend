@@ -95,6 +95,84 @@ func TestMintTokenCmd_InvalidRole(t *testing.T) {
 	}
 }
 
+func TestMintTokenCmd_LevelDefaultsToWrite(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(struct {
+			Value string `json:"value"`
+		}{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Level string `json:"level"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(mintclient.MintResult{
+			Token:     "ghu_test",
+			ExpiresAt: "2026-06-11T23:30:00Z",
+		})
+	}))
+	defer mintServer.Close()
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidcServer.URL+"?d=1")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	var stdout bytes.Buffer
+	cmd := newMintTokenCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"--role", "triage", "--repos", "r", "--mint-url", mintServer.URL})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotLevel != "write" {
+		t.Errorf("level sent to mint = %q, want %q (default should be write)", gotLevel, "write")
+	}
+}
+
+func TestMintTokenCmd_LevelPassedThrough(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(struct {
+			Value string `json:"value"`
+		}{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Level string `json:"level"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(mintclient.MintResult{
+			Token:     "ghu_test",
+			ExpiresAt: "2026-06-11T23:30:00Z",
+		})
+	}))
+	defer mintServer.Close()
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidcServer.URL+"?d=1")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	var stdout bytes.Buffer
+	cmd := newMintTokenCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"--role", "triage", "--repos", "r", "--mint-url", mintServer.URL, "--level", "read"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotLevel != "read" {
+		t.Errorf("level sent to mint = %q, want %q", gotLevel, "read")
+	}
+}
+
 func TestMintTokenCmd_RoleAliasResolved(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(struct {

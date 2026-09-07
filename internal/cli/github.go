@@ -19,6 +19,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -71,6 +72,7 @@ type githubSetupConfig struct {
 	vendor                   bool
 	fullsendBinary           string
 	fullsendSource           string
+	fullsendRef              string // --fullsend-ref: per-repo upstream workflow ref override
 	dryRun                   bool
 	direct                   bool
 	runtime                  string
@@ -115,6 +117,14 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 			if err := validateVendorFlags(cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource); err != nil {
 				return err
 			}
+			if cfg.fullsendRef != "" {
+				if cfg.vendor {
+					return fmt.Errorf("--fullsend-ref conflicts with --vendor; use one or the other")
+				}
+				if !repos.IsValidRef(cfg.fullsendRef) {
+					return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", cfg.fullsendRef)
+				}
+			}
 
 			if cfg.configHash != "" && cfg.configPreset == "" {
 				return fmt.Errorf("--config-hash requires --config")
@@ -122,7 +132,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 
 			_, _, isRepoTarget := parseTarget(cfg.target)
 			if !isRepoTarget {
-				for _, name := range []string{"config", "config-hash", "signoff"} {
+				for _, name := range []string{"config", "config-hash", "signoff", "fullsend-ref"} {
 					if cmd.Flags().Changed(name) {
 						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
 					}
@@ -198,6 +208,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude, pi or codex; dummy is for behaviour-test installs only). Prompted on a terminal when omitted")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
+	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override (conflicts with --vendor)")
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
 	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires GitHub user identity)")
@@ -417,6 +428,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
+	if cfg.fullsendRef != "" {
+		upstreamRef = cfg.fullsendRef
+		upstreamTag = "" // explicit ref overrides the version tag
+	}
 	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor, upstreamRef, upstreamTag)
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
