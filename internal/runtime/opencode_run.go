@@ -76,6 +76,24 @@ func openCodeBareModelID(spec string) string {
 // supplies the embedded adapter bytes the guard compares against.
 const openCodeHooksMissingExit = 97
 
+// Sandbox-side transcript layout. Run tees opencode's --format json stream
+// into a file under openCodeOutputSubdir (inside WorkspaceDir);
+// ExtractTranscripts downloads it after the run. openCodeRunRCFile holds
+// opencode's exit code so the tee pipeline can re-raise it (see
+// buildOpenCodeRunCommand).
+const (
+	openCodeOutputSubdir = "output"
+	openCodeRunRCFile    = ".opencode-run-rc"
+)
+
+// openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json
+// stream into and ExtractTranscripts downloads from. It is under the
+// runner-cleared WorkspaceDir/output dir so ClearIterationArtifacts wipes it
+// between iterations.
+func openCodeSandboxTranscriptPath() string {
+	return sandbox.SandboxWorkspace + "/" + openCodeOutputSubdir + "/" + openCodeOutputFile
+}
+
 // buildOpenCodeRunCommand renders the in-sandbox command line for one
 // iteration. Security-relevant construction: every interpolated value is
 // shell-escaped (single-quote with the classic '\” escape) because the
@@ -92,40 +110,59 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 
 	modelSpec := translateOpenCodeModel(params.Model)
 
-	parts := []string{"cd " + shellQuote(params.RepoDir)}
+	// Prelude: the setup that must run in the top-level shell (not the pipe
+	// subshell) so its exit codes propagate directly. In particular the hook
+	// integrity guard exits openCodeHooksMissingExit (97) via `|| { …; exit 97; }`;
+	// were it inside the tee pipeline, that exit would only leave the pipe's
+	// left-hand subshell and be masked. Joined by && so a failed guard or a
+	// missing .env short-circuits before opencode runs.
+	sandboxTranscript := openCodeSandboxTranscriptPath()
+	sandboxTranscriptDir := sandbox.SandboxWorkspace + "/" + openCodeOutputSubdir
+	rcFile := sandbox.SandboxWorkspace + "/" + openCodeRunRCFile
+
+	prelude := []string{
+		"cd " + shellQuote(params.RepoDir),
+		// Ensure the transcript directory exists before tee writes into it.
+		"&& mkdir -p " + shellQuote(sandboxTranscriptDir),
+	}
 	if hooksEnabled {
 		// Before .env: that file is agent-writable and could otherwise shadow
 		// the guard's tools with functions or a PATH entry. #515 supplies the
 		// embedded adapter bytes; until then the guard is only emitted when
 		// the runner signals hooks are on, and #515 wires the real hash.
-		parts = append(parts, "&& "+openCodeHooksGuard(r.openCodeHooksExtensionPath()))
+		prelude = append(prelude, "&& "+openCodeHooksGuard(r.openCodeHooksExtensionPath()))
 	}
-	parts = append(parts,
+	prelude = append(prelude,
 		"&& . "+shellQuote(envFile),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
 
-	parts = append(parts,
-		"&& opencode",
+	// The opencode invocation itself, whose stdout is the --format json stream.
+	invocation := []string{
+		"opencode",
 		"run",
+		// `--format json` emits raw JSON events on stdout (`opencode run --help`:
+		// format choices default|json), which parseOpenCodeStream normalizes.
 		"--format json",
-		// --thinking is required for reasoning/thinking events: non-interactive
-		// runs default thinking=false (run.ts:275), and parseOpenCodeStream only
-		// emits ThinkingEvent when opencode streams "reasoning" parts
-		// (opencode_progress.go). Without it, thinking blocks are silently
-		// dropped from the transcript and UI.
+		// --thinking surfaces reasoning/thinking blocks in the event stream
+		// (`opencode run --help`: "show thinking blocks", boolean). Without it,
+		// thinking parts are dropped from the transcript and UI, and
+		// parseOpenCodeStream only emits ThinkingEvent when opencode streams
+		// "reasoning" parts (opencode_progress.go).
 		"--thinking",
-	)
+	}
 	// translateOpenCodeModel never returns empty (it falls back to the default
 	// alias), so --model is always supplied; opencode's own resolution is a
-	// backstop, not the primary path.
-	parts = append(parts, "--model "+shellQuote(openCodeValidatedArg(modelSpec)))
+	// backstop, not the primary path. --model takes provider/model
+	// (`opencode run --help`).
+	invocation = append(invocation, "--model "+shellQuote(openCodeValidatedArg(modelSpec)))
 	if params.Effort != "" {
-		// OpenCode maps reasoning effort onto the model variant (run.ts
-		// --variant): high, max, minimal, etc.
-		parts = append(parts, "--variant "+shellQuote(openCodeValidatedArg(params.Effort)))
+		// OpenCode maps reasoning effort onto the model variant (`opencode run
+		// --help`: --variant "model variant (provider-specific reasoning
+		// effort, e.g., high, max, minimal)"). Verified against opencode CLI.
+		invocation = append(invocation, "--variant "+shellQuote(openCodeValidatedArg(params.Effort)))
 	}
-	parts = append(parts, "--agent "+shellQuote(openCodeValidatedArg(agentName)))
+	invocation = append(invocation, "--agent "+shellQuote(openCodeValidatedArg(agentName)))
 
 	// The validation loop replaces the prompt on a retry iteration to inject
 	// the previous failure (#1050/#6494); every runtime must honour it, or
@@ -134,15 +171,36 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	if params.Prompt != "" {
 		prompt = params.Prompt
 	}
+	invocation = append(invocation, shellQuote(prompt))
+
 	// Close stdin so a non-TTY pipe held open by the sandbox exec cannot make
 	// opencode block reading piped input (run.ts reads Bun.stdin when not a
-	// TTY), the same hazard pi's </dev/null guards against.
-	parts = append(parts, shellQuote(prompt), "</dev/null")
-
+	// TTY), the same hazard pi's </dev/null guards against. The debug redirect
+	// keeps opencode's stderr out of the tee'd stdout transcript.
+	invocation = append(invocation, "</dev/null")
 	if params.Debug != "" {
-		parts = append(parts, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeDebugLogFile))
+		invocation = append(invocation, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeDebugLogFile))
 	}
-	return strings.Join(parts, " ")
+
+	// The --format json stream is consumed live on the host (streamed to the
+	// parser and host-side tee'd to RunParams.OutputPath). ExtractTranscripts,
+	// however, runs after Run and downloads the transcript from a sandbox file,
+	// so the stream must also land in a sandbox-side path. Pipe opencode's
+	// stdout through tee into the runner-owned sandbox transcript file
+	// (openCodeSandboxTranscriptPath), which ExtractTranscripts downloads.
+	//
+	// A bare pipe would mask opencode's exit code with tee's (effectively
+	// always 0), breaking the stream-error exit handling in Run. So opencode's
+	// exit code is captured to a temp file inside the pipeline and re-raised
+	// afterwards with `exit` — a POSIX-sh construct that works under the
+	// sandbox image's /bin/sh (dash) without relying on the non-POSIX
+	// `pipefail`. The prelude (guard, .env) runs before the pipeline so its
+	// own exits — notably the guard's 97 — are not swallowed by the subshell.
+	pipeline := "{ " + strings.Join(invocation, " ") + " ; echo $? > " + shellQuote(rcFile) + " ; }" +
+		" | tee " + shellQuote(sandboxTranscript) +
+		" ; exit \"$(cat " + shellQuote(rcFile) + " 2>/dev/null || echo 1)\""
+
+	return strings.Join(prelude, " ") + " && " + pipeline
 }
 
 // openCodeValidatedArg constrains model/effort/agent-name values to a safe

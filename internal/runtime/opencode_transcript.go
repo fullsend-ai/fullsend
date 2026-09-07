@@ -12,10 +12,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
-// openCodeOutputFile is the tee'd --format json stream Run writes in the
-// sandbox (RunParams.OutputPath points here). ExtractTranscripts downloads it
-// as the interim transcript; the full-fidelity TranscriptHandler / TraceRecord
-// redesign is deferred to unbound-force#513.
+// openCodeOutputFile is the basename of the tee'd --format json stream Run
+// writes inside the sandbox (see openCodeSandboxTranscriptPath in
+// opencode_run.go). ExtractTranscripts downloads it as the interim transcript;
+// the full-fidelity TranscriptHandler / TraceRecord redesign is deferred to
+// unbound-force#513.
+//
+// Note: this is distinct from RunParams.OutputPath, which is a host path the
+// runner tees the same stream to for the exit-0 override. The sandbox copy
+// exists because ExtractTranscripts runs after Run and can only pull files
+// from the sandbox, not the host.
 const openCodeOutputFile = "output.jsonl"
 
 // ExtractTranscripts downloads the tee'd output.jsonl (OpenCode's --format
@@ -32,7 +38,7 @@ func (r OpenCodeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir s
 	}
 	defer root.Close()
 
-	remotePath := r.WorkspaceDir() + "/output/" + openCodeOutputFile
+	remotePath := openCodeSandboxTranscriptPath()
 	stdout, _, _, err := sandbox.Exec(sandboxName,
 		fmt.Sprintf("test -f %s && echo found || true", shellQuote(remotePath)),
 		10*time.Second,
