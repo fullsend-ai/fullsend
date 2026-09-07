@@ -413,11 +413,13 @@ mint_curl_run_script() {
             '{outcome:$outcome, repository_selection:$selection, granted_repos:$repos, granted_permissions:$perms}' \
             > mint-ap-result.json
 
+          EXPECTED_OPTIONAL_PERMS='{}'
           case "$ROLE" in
             triage) EXPECTED_PERMS='{"contents":"read","issues":"write","metadata":"read"}' ;;
-            # packages:read remains transitional in optionalRolePermissions;
-            # add it here when it becomes part of every coder token.
-            coder) EXPECTED_PERMS='{"checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write"}' ;;
+            coder)
+              EXPECTED_PERMS='{"checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write"}'
+              EXPECTED_OPTIONAL_PERMS='{"packages":"read"}'
+              ;;
             review) EXPECTED_PERMS='{"checks":"read","contents":"read","issues":"write","metadata":"read","pull_requests":"write"}' ;;
             retro) EXPECTED_PERMS='{"actions":"read","contents":"read","issues":"write","metadata":"read","pull_requests":"write"}' ;;
             prioritize) EXPECTED_PERMS='{"contents":"read","issues":"write","metadata":"read","organization_projects":"write"}' ;;
@@ -446,9 +448,12 @@ mint_curl_run_script() {
             echo "Expected installation-wide scope with no explicit repositories, got selection=$SELECTION repos=$REPOS" >&2
             SCOPE_VALID=false
           fi
-          if ! jq -e --argjson expected "$EXPECTED_PERMS" '.granted_permissions == $expected' \
+          if ! jq -e \
+            --argjson expected "$EXPECTED_PERMS" \
+            --argjson optional "$EXPECTED_OPTIONAL_PERMS" \
+            '.granted_permissions == $expected or .granted_permissions == ($expected + $optional)' \
             mint-ap-result.json >/dev/null; then
-            echo "Granted permissions do not exactly match role $ROLE" >&2
+            echo "Granted permissions do not match an allowed shape for role $ROLE" >&2
             SCOPE_VALID=false
           fi
           if [[ "$SCOPE_VALID" != true ]]; then
