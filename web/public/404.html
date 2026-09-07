@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Fullsend — Page not found</title>
+<meta name="description" content="The requested page does not exist on fullsend.sh."/>
+<meta name="robots" content="noindex"/>
+<link rel="icon" type="image/png" href="/docs/img/favicon.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"/>
+<script>
+(function(){var t=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')})();
+</script>
+<style>
+:root{
+  --font-body:'Plus Jakarta Sans',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --bg:#f8fafc;
+  --bg-elevated:#ffffff;
+  --border:#e2e8f0;
+  --text:#1e293b;
+  --text-dim:#475569;
+  --text-muted:#64748b;
+  --accent:#4d7c0f;
+  --accent-contrast:#fff;
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:#0c1220;
+  --bg-elevated:#131c2e;
+  --border:#1e3050;
+  --text:#e8edf4;
+  --text-dim:#8ba0be;
+  --text-muted:#5a7294;
+  --accent:#c4ff0e;
+  --accent-contrast:#0c1220;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:var(--font-body);
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.6;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  -webkit-font-smoothing:antialiased;
+}
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  height:3.5rem;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 2rem;
+  background:rgba(255,255,255,0.85);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+}
+[data-theme="dark"] nav{background:rgba(12,18,32,0.85)}
+.nav-brand{
+  font-weight:800;font-size:1.1rem;
+  color:var(--accent);text-decoration:none;
+  letter-spacing:-0.02em;
+}
+.nav-links{display:flex;gap:1.5rem;align-items:center}
+.nav-links a{
+  font-size:0.9rem;font-weight:500;
+  color:var(--text-dim);text-decoration:none;
+}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{
+  font-size:0.85rem;font-weight:600;
+  padding:0.45rem 1.1rem;border-radius:6px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;
+}
+.nav-cta:hover{opacity:0.85}
+.theme-toggle{
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}
+.theme-toggle svg{width:16px;height:16px;fill:currentColor}
+.nav-hamburger{
+  display:none;
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.nav-hamburger svg{width:20px;height:20px;stroke:currentColor;fill:none}
+.theme-toggle .icon-moon{display:none}
+[data-theme="dark"] .theme-toggle .icon-sun{display:none}
+[data-theme="dark"] .theme-toggle .icon-moon{display:block}
+.not-found{
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:center;
+  max-width:720px;
+  margin:0 auto;
+  padding:7rem 2rem 4rem;
+  width:100%;
+}
+.not-found-code{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  padding:0.35rem 0.9rem;border-radius:20px;
+  background:rgba(196,255,14,0.08);
+  border:1px solid rgba(196,255,14,0.15);
+  color:var(--accent);
+  margin-bottom:1.5rem;
+  letter-spacing:0.03em;
+}
+.not-found h1{
+  font-size:clamp(2.2rem,5vw,3.4rem);
+  font-weight:800;
+  letter-spacing:-0.04em;
+  line-height:1.05;
+  margin-bottom:1rem;
+}
+.not-found p{
+  font-size:1.1rem;
+  color:var(--text-dim);
+  max-width:36rem;
+  margin-bottom:2rem;
+}
+.actions{display:flex;gap:0.75rem;flex-wrap:wrap}
+.btn-primary{
+  display:inline-flex;align-items:center;
+  font-family:var(--font-body);font-size:1rem;font-weight:600;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;
+}
+.btn-primary:hover{opacity:0.85}
+.btn-secondary{
+  display:inline-flex;align-items:center;
+  font-family:var(--font-body);font-size:1rem;font-weight:500;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);text-decoration:none;
+}
+.btn-secondary:hover{border-color:var(--text-muted)}
+footer{
+  padding:2rem;
+  border-top:1px solid var(--border);
+  font-size:0.8rem;
+  color:var(--text-muted);
+  text-align:center;
+}
+footer a{color:var(--text-dim);text-decoration:none}
+footer a:hover{color:var(--text)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+@media(max-width:640px){
+  nav{padding:0 1rem}
+  .nav-links{
+    display:none;flex-direction:column;
+    position:absolute;top:3.5rem;left:0;right:0;
+    background:var(--bg-elevated);
+    border-bottom:1px solid var(--border);
+    padding:1rem;gap:0.75rem;
+  }
+  .nav-links.open{display:flex}
+  .nav-hamburger{display:flex}
+}
+</style>
+</head>
+<body>
+<nav>
+  <a class="nav-brand" href="/">Fullsend</a>
+  <button class="nav-hamburger" id="nav-hamburger" aria-label="Open menu" aria-expanded="false"><svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+  <div class="nav-links" id="nav-links">
+    <a href="/docs/">Docs</a>
+    <a href="/docs/agents/">Agents</a>
+    <a href="/docs/cli/">CLI</a>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-12a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0V5a1 1 0 0 1 1-1zm0 15a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1zm7.071-14.071a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zm-11.314 11.314a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 0 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zM23 12a1 1 0 0 1-1 1h-2a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zM6 12a1 1 0 0 1-1 1H3a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zm13.071 7.071a1 1 0 0 1-1.414 0l-1.414-1.414a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414zM7.757 7.757a1 1 0 0 1-1.414 0L4.929 6.343a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414z"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </button>
+    <a class="nav-cta" href="/docs/">Get Started</a>
+  </div>
+</nav>
+<main class="not-found">
+  <div class="not-found-code">404</div>
+  <h1>This page is not here.</h1>
+  <p>The URL does not match a page on this site. Try the home page or the documentation.</p>
+  <div class="actions">
+    <a class="btn-primary" href="/">Home</a>
+    <a class="btn-secondary" href="/docs/">Documentation</a>
+  </div>
+</main>
+<footer>
+  <a href="/">Fullsend</a> &middot; Apache 2.0
+</footer>
+<script>
+(function(){
+  const toggle=document.getElementById('theme-toggle');
+  const html=document.documentElement;
+  function getPreferred(){
+    const stored=localStorage.getItem('theme');
+    if(stored) return stored;
+    return window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
+  }
+  function apply(t){
+    if(t==='dark') html.setAttribute('data-theme','dark');
+    else html.removeAttribute('data-theme');
+  }
+  apply(getPreferred());
+  toggle.addEventListener('click',()=>{
+    const next=html.getAttribute('data-theme')==='dark'?'light':'dark';
+    localStorage.setItem('theme',next);
+    apply(next);
+  });
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change',e=>{
+    if(!localStorage.getItem('theme')){
+      apply(e.matches?'dark':'light');
+    }
+  });
+})();
+(function(){
+  const btn=document.getElementById('nav-hamburger');
+  const links=document.getElementById('nav-links');
+  btn.addEventListener('click',()=>{
+    const open=links.classList.toggle('open');
+    btn.setAttribute('aria-expanded',String(open));
+    btn.setAttribute('aria-label',open?'Close menu':'Open menu');
+  });
+})();
+</script>
+</body>
+</html>

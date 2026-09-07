@@ -12,6 +12,7 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
@@ -197,6 +198,7 @@ func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string) (
 	result, err := reconcileMintToken(cmd.Context(), mintclient.MintRequest{
 		MintURL: mintURL,
 		Role:    resolveRole(role),
+		Level:   mintcore.LevelWrite,
 		Repos:   []string{repoName},
 	})
 	if err != nil {

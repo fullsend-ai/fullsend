@@ -194,13 +194,30 @@ gh api -X POST /repos/myorg/my-repo/actions/variables \
 
 > **Note:** Repository-level variables override organization-level variables in GitHub Actions. If a repo already has `FULLSEND_MINT_URL` set at the repo level, update it there — the org-level variable will be ignored for that repo.
 
+## Privilege levels
+
+Levels are keys on each role. The mint looks up the requested level and returns the stored permission map — or returns an error if the level is not defined. Every role must define at least `read` and `write`; custom roles may define additional named levels.
+
+| Level | Behavior |
+|-------|----------|
+| `"read"` | Returns the `read`-level permission map (built-in roles: all values `"read"`) |
+| `"write"` | Returns the `write`-level permission map (built-in roles: the canonical ceiling) |
+| _(omitted)_ | Defaults to `"write"` (temporary compatibility default — a future release will change to `"read"`) |
+| _(custom)_ | Custom roles may define extra named levels; the mint looks them up the same way |
+
+Level names must match `^[a-z][a-z0-9_-]{0,31}$` (starts with a lowercase letter, max 32 characters). Invalid names are rejected with HTTP 400.
+
+> **Temporary compatibility default:** Omitting `level` currently defaults to `"write"` so existing HTTP clients keep receiving write-level tokens. A future PR will migrate the default to `"read"`. Callers that need read-only tokens should pass `"level": "read"` explicitly.
+
 ## Custom role permissions
 
 ### Defining permissions
 
 Custom roles require an explicit permissions map via the `CUSTOM_ROLE_PERMISSIONS` environment variable. This tells the mint what permissions to request when creating installation tokens for the role.
 
-The format is a JSON object mapping role names to permission maps:
+#### Flat format
+
+The simplest format is a JSON object mapping role names to permission maps. The given map is stored as both the `read` and `write` levels — requesting either level returns the same permissions:
 
 ```json
 {
@@ -217,6 +234,34 @@ The format is a JSON object mapping role names to permission maps:
   }
 }
 ```
+
+#### Multi-level format
+
+To define distinct `read` and `write` privilege levels for a custom role, wrap the permission maps inside a `levels` key:
+
+```json
+{
+  "deployer": {
+    "levels": {
+      "read": {
+        "contents": "read",
+        "deployments": "read",
+        "metadata": "read"
+      },
+      "write": {
+        "contents": "read",
+        "deployments": "write",
+        "environments": "write",
+        "metadata": "read"
+      }
+    }
+  }
+}
+```
+
+When a token request omits the `level` field (or sets it to `"read"`), the mint returns the `read`-level permissions. Setting `level: "write"` returns the `write`-level permissions. Multi-level roles must define both `read` and `write` levels; extra named levels are allowed. The mint looks up the requested level and fails if it is not defined — there is no derivation or fallback.
+
+Both formats can be mixed in a single `CUSTOM_ROLE_PERMISSIONS` value — some roles flat, others multi-level. The mint auto-detects the format per role by checking for the `levels` key.
 
 Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Supported levels include `read`, `write`, and `admin` where GitHub exposes that level.
 
@@ -303,7 +348,7 @@ jobs:
           curl -s -X POST "${{ vars.FULLSEND_MINT_URL }}/v1/token" \
             -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"role":"scanner","repos":["${{ github.event.repository.name }}"]}'
+            -d '{"role":"scanner","level":"read","repos":["${{ github.event.repository.name }}"]}'
 ```
 
 ## Complete example

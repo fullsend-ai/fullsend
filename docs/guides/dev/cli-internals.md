@@ -25,6 +25,7 @@ fullsend
 │   └── token                                # Mint a short-lived token via OIDC
 │       ├── --role <name>                    #   Agent role (triage, coder, review)
 │       ├── --repos <list>                   #   Comma-separated repo names
+│       ├── --level <name>                   #   Privilege level (read or write; default: write)
 │       ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │       └── --audience <string>              #   OIDC audience (default: fullsend-mint)
 ├── inference                                # Inference credentials (GCP Vertex, OpenAI)
