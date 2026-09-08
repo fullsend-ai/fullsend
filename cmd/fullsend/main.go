@@ -18,18 +18,20 @@ type exitCoder interface {
 	ExitCode() int
 }
 
-func main() {
+// signalContext returns a context that is cancelled on the first
+// SIGINT/SIGTERM, plus a cleanup function that stops signal forwarding.
+// Subsequent signals are absorbed to prevent the default terminate handler
+// from killing the process before cleanup (metrics, telemetry) completes.
+//
+// GitHub Actions sends SIGINT, waits ~7.5 s, then SIGTERM; without absorbing
+// the second signal the default handler terminates the process before the
+// metrics/telemetry flush path finishes (#6936).
+//
+// signal.NotifyContext stops listening after the first signal, which
+// re-enables the default "terminate" handler for subsequent deliveries.
+// Keeping our own channel registered prevents that.
+func signalContext() (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Absorb all SIGINT/SIGTERM signals so subsequent signals don't kill
-	// the process before cleanup (metrics, telemetry) completes. GitHub
-	// Actions sends SIGINT, waits ~7.5 s, then SIGTERM; without absorbing
-	// the second signal the default handler terminates the process before
-	// the metrics/telemetry flush path finishes (#6936).
-	//
-	// signal.NotifyContext stops listening after the first signal, which
-	// re-enables the default "terminate" handler for subsequent deliveries.
-	// Keeping our own channel registered prevents that.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -38,7 +40,12 @@ func main() {
 		for range sigCh { // Subsequent signals: absorbed.
 		}
 	}()
-	defer signal.Stop(sigCh)
+	return ctx, func() { signal.Stop(sigCh) }
+}
+
+func main() {
+	ctx, cleanup := signalContext()
+	defer cleanup()
 
 	if err := cli.Execute(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
