@@ -113,9 +113,9 @@ Role changes use the following request mechanisms:
 
 | Role | Request mechanism | Approval |
 |------|-------------------|----------|
-| Vouched | [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) | 1 maintainer |
-| Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 maintainer |
-| Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 maintainers |
+| Vouched | [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) | 1 Maintainer |
+| Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 Maintainer |
+| Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 Maintainers |
 | Maintainer | Issue (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
 
 ## Revoking access

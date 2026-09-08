@@ -158,7 +158,7 @@ This project defines four contributor roles — Vouched, Triage, Write,
 and Maintainer — each granting additional capabilities. See
 [LADDER.md](LADDER.md) for the full ladder and how to request each role.
 
-For the maintainer role specifically, see
+For the Maintainer role specifically, see
 [MAINTAINERS.md](MAINTAINERS.md).
 
 ## License
