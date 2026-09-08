@@ -2153,6 +2153,30 @@ func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
 		"dry-run bootstrap should not create the manifest file on disk")
 }
 
+func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// When --gitlab-url is provided without --forge, the forge should be
+	// inferred as gitlab because EnsurePlatform creates the GitLab section
+	// before forge inference runs.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/project"},
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
+	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+	assert.Len(t, m.GitLab.Repos, 1)
+	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+}
+
 func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 	tests := []struct {
 		name      string

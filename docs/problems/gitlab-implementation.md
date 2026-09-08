@@ -366,8 +366,8 @@ This keeps the dispatch scanning logic identical across GitHub and GitLab.
 - Add `--forge` flag to `fullsend admin install` for manual override
 
 **Phase 4: Configuration**
-- Add `forge: github` or `forge: gitlab` to `config.yaml`
-- Support forge-specific settings (GitLab instance URL for self-hosted)
+- Add `forge: github` or `forge: gitlab` to `config.yaml` (implementation uses `gitlab.url` in the repos manifest — see Config Schema Changes below)
+- Support forge-specific settings (GitLab instance URL for self-hosted; implemented via `--gitlab-url` flag on `repos install`)
 - Update config schema and validation
 
 **Phase 5: Testing**

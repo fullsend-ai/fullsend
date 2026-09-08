@@ -590,6 +590,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// When --gitlab-url is provided, set the URL in-memory before
 	// creating the forge client factory so it captures the correct
 	// URL for GitLab API calls during repo probing and converge.
+	// Note: EnsurePlatform creates the GitLab section as a side
+	// effect, which intentionally allows the forge-inference logic
+	// below to infer --forge=gitlab when --gitlab-url is set.
 	if opts.gitlabURL != "" {
 		manifest.EnsurePlatform(repos.ForgeGitLab)
 		manifest.GitLab.URL = opts.gitlabURL
@@ -1280,7 +1283,7 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 }
 
 // announceGitlabURLDryRun prints a dry-run preview message for --gitlab-url
-// when the flag is set. Centralises the message and guard so both the
+// when the flag is set. Centralizes the message and guard so both the
 // early-return path and the main --gitlab-url handler share a single
 // definition.
 func announceGitlabURLDryRun(printer *ui.Printer, gitlabURL string) {
