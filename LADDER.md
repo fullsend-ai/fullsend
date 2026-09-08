@@ -47,6 +47,10 @@ repository.
   agent when applied by a user with `write` access or by an agent bot.
 - Automatic e2e CI triggering on your PRs (no maintainer label needed)
 
+These are observation and moderation capabilities across both issues and
+PRs. They do not let agents create or modify repository branches; that
+mutation boundary starts at the Write role.
+
 **Criteria:**
 
 - Already vouched
