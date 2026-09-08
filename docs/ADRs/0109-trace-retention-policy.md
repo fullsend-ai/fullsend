@@ -19,11 +19,12 @@ Accepted
 
 ## Context
 
-Fullsend agent runs produce two categories of trace artifacts at three
-telemetry levels ([ADR 0050](0050-distributed-tracing-instrumentation.md)):
+Fullsend agent runs produce two categories of trace artifacts:
 JSONL reasoning transcripts stored with owner-scoped access
 ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)), and OpenTelemetry
-trace data (`run-telemetry.jsonl` plus optional OTLP export). Eval
+trace data at three telemetry levels
+([ADR 0050](0050-distributed-tracing-instrumentation.md)) — local
+`run-telemetry.jsonl` plus optional OTLP export. Eval
 measurement scores are derived products of traces
 ([ADR 0087](0087-eval-measurements-online-trace-scoring.md)).
 
