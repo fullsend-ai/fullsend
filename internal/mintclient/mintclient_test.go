@@ -948,7 +948,7 @@ func TestQueryStatus_Non401ErrorIsTerminal(t *testing.T) {
 	}
 }
 
-func Test_hasOIDCEnv(t *testing.T) {
+func TestHasOIDCEnv(t *testing.T) {
 	origEnv := envLookup
 	defer func() { envLookup = origEnv }()
 

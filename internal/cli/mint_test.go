@@ -4097,6 +4097,22 @@ func TestMintStatusCmd_EnvURLWarnsIgnoredProject(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestMintStatusCmd_MintURLEmptyEscapeHatch(t *testing.T) {
+	// When FULLSEND_MINT_URL is set but --mint-url="" is explicitly passed,
+	// the command should route to the GCP-based path, not the API-based path.
+	t.Setenv("FULLSEND_MINT_URL", "https://should-be-ignored.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "status", "--mint-url=", "--project=test-project"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
 func TestMintStatusCmd_OrgNotSupportedWithMintURL(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "status", "acme-org", "--mint-url=https://mint.example.com"})

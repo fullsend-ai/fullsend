@@ -401,6 +401,15 @@ export FULLSEND_MINT_URL="https://mint.example.com"
 fullsend mint status
 ```
 
+API-based mode returns the following fields:
+
+- **version** — the mint's build version
+- **commit** — the mint's build commit hash
+- **org** — the calling workflow's organization (OIDC auth only)
+- **allowed_orgs** — all configured allowed organizations (non-OIDC auth)
+- **roles** — configured role names
+- **workflow_host_repos** — repositories allowed as workflow hosts
+
 ### GCP-based mode
 
 When `--project` is provided (and `--mint-url` is not), the command reads
@@ -422,8 +431,7 @@ fullsend mint status acme-corp --project="$GCP_PROJECT"
 
 > The fields below are reported by `--project` (GCP-based) mode.
 > API-based mode (`--mint-url`) returns a different payload — see the
-> `StatusResult` fields (version, commit, organizations, roles, and
-> workflow host repos) documented in the API-based mode section above.
+> field listing in the [API-based mode](#api-based-mode-recommended) section above.
 
 **Cloud Run revision section:**
 

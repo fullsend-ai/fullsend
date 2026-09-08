@@ -1738,8 +1738,8 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	return nil
 }
 
-// mintStatusResolveToken is the function used to resolve a GitHub token
-// for API-based status queries. Overridden in tests.
+// mintStatusResolveToken resolves a GitHub token for API-based status
+// queries. Overridden in tests.
 var mintStatusResolveToken = resolveToken
 
 func newMintStatusCmd() *cobra.Command {
@@ -1749,7 +1749,7 @@ func newMintStatusCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "status [org]",
-		Short: "Show mint state, enrolled orgs, and PEM health",
+		Short: "Show mint state, enrolled orgs, and PEM health (honors FULLSEND_MINT_URL)",
 		Long: `Read-only health check of the token mint infrastructure.
 
 Two modes of operation:
@@ -1791,7 +1791,7 @@ Required IAM roles on the mint project (--project mode only):
 			// Route to API-based or GCP-based path.
 			if mintURL != "" {
 				if mintURLFromEnv && cmd.Flags().Changed("project") {
-					printer.StepWarn("--project is ignored because FULLSEND_MINT_URL is set; unset the env var or pass --mint-url=\"\" to use GCP-based mode")
+					fmt.Fprintf(os.Stderr, "WARNING: --project is ignored because FULLSEND_MINT_URL is set; unset the env var or pass --mint-url=\"\" to use GCP-based mode\n")
 				}
 				if len(args) > 0 {
 					return fmt.Errorf("org argument is not supported with --mint-url")
