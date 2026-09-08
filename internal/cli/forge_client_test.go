@@ -143,6 +143,23 @@ func TestNewForgeClientFactory_WithManifestURLs(t *testing.T) {
 	assert.NotNil(t, glCfg.Client)
 }
 
+func TestNewForgeClientFactory_CapturesManifestGitLabURL(t *testing.T) {
+	// Verify the factory captures the GitLab URL from the manifest at
+	// creation time, so that clients use the manifest-configured URL
+	// rather than falling back to env vars.
+	m := &repos.Manifest{
+		Version: 1,
+		GitLab: &repos.PlatformConfig{
+			URL:   "https://gitlab.self-hosted.example.com",
+			Repos: []repos.RepoEntry{{Name: "group/project"}},
+		},
+	}
+	factory := newForgeClientFactory("glpat-test", m)
+	f := factory.(*forgeClientFactory)
+	assert.Equal(t, "https://gitlab.self-hosted.example.com", f.gitlabURL,
+		"factory should capture the GitLab URL from the manifest")
+}
+
 func TestGetGitLabToken_FromFlag(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().String("gitlab-token", "", "")

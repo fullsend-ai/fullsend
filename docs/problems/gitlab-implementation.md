@@ -489,10 +489,13 @@ func detectForge(repoURL string) (string, error) {
 ### Config Schema Changes
 
 ```yaml
-# config.yaml
-forge: gitlab  # or "github"
-gitlab_instance_url: https://gitlab.example.com  # optional, defaults to gitlab.com
+# repos.yaml (manifest)
+gitlab:
+  url: https://gitlab.example.com  # optional, defaults to gitlab.com
 ```
+
+> **Note:** The original design proposed `gitlab_instance_url` in `config.yaml`;
+> the implementation uses `gitlab.url` in the repos manifest instead.
 
 ### New Packages
 

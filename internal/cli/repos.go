@@ -587,6 +587,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 	}
 
+	// When --gitlab-url is provided, set the URL in-memory before
+	// creating the forge client factory so it captures the correct
+	// URL for GitLab API calls during repo probing and converge.
+	if opts.gitlabURL != "" {
+		manifest.EnsurePlatform(repos.ForgeGitLab)
+		manifest.GitLab.URL = opts.gitlabURL
+	}
+
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
@@ -718,15 +726,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
-	// When --gitlab-url is provided, populate the manifest's GitLab URL.
-	// This enables bootstrapping a new manifest with GitLab repos in a
-	// single command without a prior set-default step.
+	// Persist --gitlab-url to the manifest file. The in-memory assignment
+	// was done earlier (before factory creation) so the forge client
+	// factory already has the correct URL.
 	if opts.gitlabURL != "" {
-		if manifest.GitLab != nil {
+		if len(manifest.GitLab.Repos) > 0 {
 			if opts.dryRun {
 				announceGitlabURLDryRun(printer, opts.gitlabURL)
 			} else {
-				manifest.GitLab.URL = opts.gitlabURL
 				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
 					return fmt.Errorf("writing gitlab.url to manifest: %w", err)
 				}
