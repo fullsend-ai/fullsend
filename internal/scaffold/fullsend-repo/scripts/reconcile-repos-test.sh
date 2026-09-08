@@ -401,6 +401,11 @@ if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
   done
   if [[ "\$repo_arg" == "test-org/test-repo" &&
         "\$head_arg" == "fullsend/onboard" &&
+        -f "${TMPDIR}/pr-list-fails" ]]; then
+    exit 1
+  fi
+  if [[ "\$repo_arg" == "test-org/test-repo" &&
+        "\$head_arg" == "fullsend/onboard" &&
         -f "${TMPDIR}/stale-onboard-pr" ]]; then
     echo "https://github.com/test-org/test-repo/pull/42"
   fi
@@ -455,14 +460,38 @@ case "\$endpoint" in
     fi
     ;;
   repos/test-org/test-repo/git/refs/heads/fullsend/onboard)
-    if [[ "\$method" == "DELETE" && -f "${TMPDIR}/branch-delete-404" ]]; then
-      json='{"status":"404","message":"Not Found"}'
+    if [[ "\$method" == "DELETE" && -f "${TMPDIR}/branch-delete-422" ]]; then
+      json='{"status":"422","message":"Reference does not exist"}'
       rc=1
     elif [[ "\$method" != "DELETE" || -f "${TMPDIR}/branch-delete-fails" ]]; then
       rc=1
     fi
     ;;
+  repos/test-org/new-repo/git/ref/heads/*|repos/test-org/refresh-repo/git/ref/heads/*)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/new-repo/git/commits/base-sha|repos/test-org/refresh-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/new-repo/git/blobs|repos/test-org/refresh-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/new-repo/git/trees|repos/test-org/refresh-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/new-repo/git/commits|repos/test-org/refresh-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/new-repo/git/refs|repos/test-org/refresh-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/new-repo/git/refs/heads/*|repos/test-org/refresh-repo/git/refs/heads/*)
+    rc=0
+    ;;
   repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  repos/test-org/new-repo|repos/test-org/refresh-repo)
     json='{"default_branch":"main","private":false}'
     ;;
   *)
@@ -499,8 +528,17 @@ if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout2.log"; then
   exit 1
 fi
 
-if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2.log"; then
-  echo "FAIL: up-to-date shim was not counted as skipped"
+for repo in new-repo refresh-repo; do
+  if ! grep -q "Enrolling $repo\.\.\." "${TMPDIR}/stdout2.log"; then
+    echo "FAIL: $repo did not reach the enrollment path with an explicit public-repo mock"
+    cat "${TMPDIR}/stdout2.log"
+    exit 1
+  fi
+done
+
+if ! grep -q "✓ test-repo already enrolled (shim up to date)" "${TMPDIR}/stdout2.log" ||
+   ! grep -q "✓ removed-repo already unenrolled (no shim on default branch)" "${TMPDIR}/stdout2.log"; then
+  echo "FAIL: up-to-date or already-unenrolled repos were not reconciled explicitly"
   cat "${TMPDIR}/stdout2.log"
   exit 1
 fi
@@ -587,13 +625,38 @@ if ! grep -q "Deleted branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-
   exit 1
 fi
 
-if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-close-fallback.log"; then
-  echo "FAIL: PR close fallback did not count the repo as reconciled"
+if ! grep -q "✓ test-repo already enrolled (shim up to date)" "${TMPDIR}/stdout2-close-fallback.log"; then
+  echo "FAIL: PR close fallback did not reconcile test-repo"
   cat "${TMPDIR}/stdout2-close-fallback.log"
   exit 1
 fi
 
 echo "PASS: PR close failure falls through to branch cleanup"
+
+# A PR lookup failure also falls through to direct branch cleanup instead of
+# blocking the otherwise successful shim reconciliation.
+rm -f "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails" "${TMPDIR}/branch-delete-fails" "${GH_LOG}"
+touch "${TMPDIR}/pr-list-fails"
+
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-list-failure.log" 2>&1; then
+  echo "FAIL: PR lookup failure blocked shim reconciliation"
+  cat "${TMPDIR}/stdout2-list-failure.log"
+  exit 1
+fi
+
+if ! grep -q "::warning::Failed to check for an open PR on fullsend/onboard for test-repo; attempting direct branch cleanup" "${TMPDIR}/stdout2-list-failure.log"; then
+  echo "FAIL: PR lookup failure did not warn before direct branch cleanup"
+  cat "${TMPDIR}/stdout2-list-failure.log"
+  exit 1
+fi
+
+if ! grep -q "Deleted branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-list-failure.log"; then
+  echo "FAIL: PR lookup failure did not attempt direct branch cleanup"
+  cat "${TMPDIR}/stdout2-list-failure.log"
+  exit 1
+fi
+
+echo "PASS: PR lookup failure falls through to branch cleanup"
 
 # When both the PR close and the fallback branch delete fail, the repo is a
 # genuine reconciliation failure rather than a successful skip.
@@ -612,8 +675,8 @@ if ! grep -q "Failed: 1" "${TMPDIR}/stdout2-failed-cleanup.log"; then
   exit 1
 fi
 
-if grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-failed-cleanup.log"; then
-  echo "FAIL: repo with unrecoverable cleanup was counted as skipped"
+if grep -q "✓ test-repo already enrolled (shim up to date)" "${TMPDIR}/stdout2-failed-cleanup.log"; then
+  echo "FAIL: repo with unrecoverable cleanup was reconciled as current"
   cat "${TMPDIR}/stdout2-failed-cleanup.log"
   exit 1
 fi
@@ -651,15 +714,14 @@ fi
 
 echo "PASS: orphaned onboard branch cleanup failure is reported"
 
-# A branch that races away between the existence check and the DELETE (404 on
-# DELETE) is idempotent success, not a failure — matching the missing-branch
-# GET case.
-rm -f "${TMPDIR}/branch-delete-fails" "${GH_LOG}"
-touch "${TMPDIR}/branch-delete-404"
+# A branch that races away between the existence check and the DELETE (422
+# "Reference does not exist" on DELETE) is idempotent success, not a failure.
+rm -f "${TMPDIR}/branch-delete-fails" "${TMPDIR}/pr-list-fails" "${GH_LOG}"
+touch "${TMPDIR}/branch-delete-422"
 
-if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-delete-404.log" 2>&1; then
-  echo "FAIL: orphaned branch DELETE returning 404 was treated as an error"
-  cat "${TMPDIR}/stdout2-delete-404.log"
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2-delete-422.log" 2>&1; then
+  echo "FAIL: orphaned branch DELETE returning 422 was treated as an error"
+  cat "${TMPDIR}/stdout2-delete-422.log"
   exit 1
 fi
 
@@ -669,21 +731,21 @@ if ! grep -q 'repos/test-org/test-repo/git/refs/heads/fullsend/onboard --method 
   exit 1
 fi
 
-if grep -q "::warning::Failed to delete branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-delete-404.log"; then
-  echo "FAIL: branch DELETE 404 emitted a failure warning"
-  cat "${TMPDIR}/stdout2-delete-404.log"
+if grep -q "::warning::Failed to delete branch fullsend/onboard for test-repo" "${TMPDIR}/stdout2-delete-422.log"; then
+  echo "FAIL: branch DELETE 422 emitted a failure warning"
+  cat "${TMPDIR}/stdout2-delete-422.log"
   exit 1
 fi
 
-if ! grep -q "Skipped (already reconciled): 4" "${TMPDIR}/stdout2-delete-404.log"; then
-  echo "FAIL: branch DELETE 404 did not count the repo as reconciled"
-  cat "${TMPDIR}/stdout2-delete-404.log"
+if ! grep -q "✓ test-repo already enrolled (shim up to date)" "${TMPDIR}/stdout2-delete-422.log"; then
+  echo "FAIL: branch DELETE 422 did not reconcile test-repo"
+  cat "${TMPDIR}/stdout2-delete-422.log"
   exit 1
 fi
 
-echo "PASS: orphaned branch DELETE 404 is idempotent success"
+echo "PASS: orphaned branch DELETE 422 is idempotent success"
 
-rm -f "${TMPDIR}/branch-delete-404"
+rm -f "${TMPDIR}/branch-delete-422"
 
 # ===========================
 # Test 3: pre-sentinel shim migration does not duplicate content

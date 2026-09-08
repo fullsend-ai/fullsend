@@ -254,10 +254,11 @@ delete_branch() {
     return 1
   fi
 
-  # Delete it. A 404 here (branch raced away by a concurrent reconcile run or a
-  # --delete-branch PR close) is idempotent success alongside the normal 204.
+  # Delete it. GitHub returns 422 when the branch raced away between the
+  # existence check and this request (for example, via --delete-branch on a PR).
+  # Treat that and a 404 as idempotent success alongside the normal 204.
   if ! resp=$(gh api "$ref_delete_endpoint" --method DELETE 2>/dev/null); then
-    if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    if printf '%s' "$resp" | jq -e '.status == "404" or .status == "422"' >/dev/null 2>&1; then
       return 0
     fi
     echo "::warning::Failed to delete branch $branch for $repo"
@@ -274,8 +275,9 @@ close_pr_on_branch() {
 
   local pr_url
   if ! pr_url=$(gh pr list --repo "$ORG/$repo" --head "$branch" --json url --jq '.[0].url // empty' 2>/dev/null); then
-    echo "::warning::Failed to check for an open PR on $branch for $repo"
-    return 1
+    echo "::warning::Failed to check for an open PR on $branch for $repo; attempting direct branch cleanup"
+    delete_branch "$repo" "$branch"
+    return $?
   fi
   if [ -n "$pr_url" ]; then
     if gh pr close "$pr_url" --comment "$reason (triggered by commit $COMMIT_SHA)" --delete-branch 2>/dev/null; then
