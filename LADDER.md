@@ -5,7 +5,7 @@ maintainer. Each role grants additional capabilities and carries
 additional expectations. Advancement is not automatic — it requires a
 request, a track record, and maintainer approval.
 
-For the maintainer role specifically — including eligibility, the
+For the Maintainer role specifically — including eligibility, the
 nomination process, and what maintainers do — see
 [MAINTAINERS.md](MAINTAINERS.md).
 
@@ -72,6 +72,8 @@ repository.
 **What it unlocks:**
 
 - `/fs-code` and `/fs-fix` slash commands (mutation agents)
+- `/fs-retro` and `/fs-prioritize` slash commands (analysis agents
+  that require write-level trust)
 - Push access to non-protected branches
 
 **Criteria:**

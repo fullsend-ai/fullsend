@@ -6,7 +6,7 @@ team referenced in [CODEOWNERS](CODEOWNERS).
 
 Maintainer is the final role on the [contributor ladder](LADDER.md).
 See that document for the full path from first-time contributor to
-maintainer, including the intermediate roles (Vouched, Triage, Write).
+Maintainer, including the intermediate roles (Vouched, Triage, Write).
 
 ## What maintainers do that contributors do not
 
