@@ -2120,8 +2120,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Actions cancellation (SIGTERM) terminates the process shortly
 		// after — writing metrics here ensures the artifact upload step
 		// (if: always()) captures the partial usage data (#6936).
-		if ctx.Err() != nil {
-			cancelErr := ctx.Err()
+		//
+		// NOTE: TotalCostUSD will be zero in the persisted metrics because
+		// dollar cost is only available from the terminal ResultEvent,
+		// which a cancelled run never emits. Token counts (input, output,
+		// cache_read, cache_creation) are captured via the deferred
+		// TokensEvent and will be non-zero. See #6936 for background.
+		if cancelErr := ctx.Err(); cancelErr != nil {
 			if runErr == nil {
 				runErr = cancelErr
 			}
