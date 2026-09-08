@@ -1350,15 +1350,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Warn when a profiles/ directory copy and an imported URL-resolved
-		// profile share an id. filterProfilesByDirIDs already skips URL
-		// profiles that have a directory counterpart, so this only fires
-		// for edge cases not caught by the filter (e.g., local-path entries
-		// in profilesDir). Per-repo customization relies on the directory
-		// override, so this only makes it visible (#6971).
+		// Defensive check: warn if any imported URL-resolved profile still
+		// overlaps with a profiles/ directory copy. filterProfilesByDirIDs
+		// already removes all ID-based overlaps from profilesToImport, so
+		// this should not fire in normal operation. The directory copy is
+		// the deterministic winner (#6971, #6977).
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
 		for _, sp := range shadowedProfiles(dirProfileIDs, profilesToImport, profilesDir, generatedProfileIDs) {
-			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); whichever copy was imported most recently is live — delete the directory copy or keep it in sync", sp.ID, profilesDir, sp.LocalPath))
+			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); the directory copy takes precedence — keep them in sync or remove the directory copy", sp.ID, profilesDir, sp.LocalPath))
 		}
 
 		// Import provider profiles (if profiles/ directory exists).
