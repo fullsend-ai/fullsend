@@ -51,5 +51,5 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |
-| [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/`, or adding secrets to `pull_request_target` jobs; review context-variable scoping when refactoring between inline steps, reusable workflows, and composite actions |
+| [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/`, or adding secrets to `pull_request_target` jobs, etc. |
 | [Documentation](docs/contributing/documentation.md) | Changing CLI command behavior, adding or removing subcommands, or renaming flags — covers cross-reference of CLI command groups to all documentation touchpoints |
