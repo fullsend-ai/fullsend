@@ -144,6 +144,7 @@ The record does not decide the weights or thresholds; those belong to the compos
 - **[Operational Observability](operational-observability.md)** — Track records and audit trails overlap with observability data. The distinction: observability serves operators during and after runs; trustworthiness evidence serves the trust decision before granting autonomy.
 - **[Governance](governance.md)** — Who decides what evidence is sufficient? Who reviews the thresholds? Governance determines the policy; trustworthiness evidence provides the mechanism.
 - **[MCP Configuration Drift](mcp-config-drift.md)** — Drift detection is both a specific defense (for MCP configs) and a general evidence concern (any configuration change invalidates prior evidence).
+- **[Human Factors](human-factors.md)** — Trustworthiness evidence builds trust in agent *actions*. The [voice concern](human-factors.md#trust-erosion-from-agent-generated-voice) is the complementary problem: trust in agent *communication* in community-facing contexts.
 
 ## Open questions
 

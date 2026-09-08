@@ -22,6 +22,8 @@ Before the code agent commits or opens a PR, it invokes the review sub-agents lo
 
 This is a normal pattern for humans using coding agents today. It produces higher quality output faster and wastes fewer resources.
 
+This two-phase pattern has external validation. Oxide's [RFD 576](https://rfd.shared.oxide.computer/rfd/0576) requires engineers to self-review LLM-generated code before submitting for peer review — recognizing that self-review catches problems cheaply before they consume reviewer attention. Fullsend's pre-PR phase is the automated analog of this practice. RFD 576 also observes that LLMs "can identify specific issues effectively but miss larger problems" in review, which aligns precisely with the rationale for [decomposing review into specialized sub-agents](#why-review-must-be-decomposed-into-sub-agents) — no single agent catches everything, so the system compensates with multiple specialized perspectives.
+
 ### Phase 2: PR-level review (the actual gate)
 
 The PR is open. Review sub-agents evaluate it with no special trust granted because the code came from a code agent that already ran pre-PR review. The PR-level review is a fully independent evaluation — not a rubber stamp of Phase 1.

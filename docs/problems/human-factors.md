@@ -47,6 +47,31 @@ If agents handle routine contributions, what's left for human contributors?
 - **Community dynamics change.** If most PRs are from agents, the social fabric of the project (review conversations, mentorship through PR feedback, shared ownership) thins out.
 - **Recognition shifts.** In open-source, your commit history is your CV. If agents write most of the code, how do contributors demonstrate their value?
 
+## Trust erosion from agent-generated voice
+
+In open-source communities, trust is built through conversation. Issue descriptions, PR review comments, commit messages, and RFC discussions are not just functional artifacts — they are how contributors demonstrate competence, build reputation, and form working relationships. Writing is a vessel for building trust.
+
+Agent-generated prose in these contexts raises a distinct concern: not whether the content is technically correct, but whether it carries the same weight. Does an agent-authored review comment build the same trust as one from a known contributor? Does an agent-authored issue description convey the same signal about the author's understanding of the problem? When a project's communication channels fill with generated text, does the community's sense of shared voice erode?
+
+This is different from the [role shift](#role-shift-from-author-to-supervisor) problem, which is about what work humans do. The voice problem is about whether the *communication layer* of open-source collaboration — the conversations that build trust and community — survives when agents participate as authors.
+
+**Specific risks:**
+
+- **Review comments lose authority.** A review comment from a known expert carries weight because readers know the person has context and judgment. An agent-generated review comment may be technically accurate but lacks the relational trust that makes review feedback actionable. Contributors may dismiss agent feedback they would accept from a peer.
+- **Issue discussions become transactional.** When agents author issue responses, the back-and-forth that builds shared understanding is replaced by generated summaries. The discussion becomes a series of outputs rather than a conversation.
+- **Commit messages lose narrative.** Well-written commit messages tell the story of *why* a change was made, reflecting the author's understanding. Agent-generated commit messages tend toward mechanical description — technically complete but lacking the judgment that makes commit history useful for future contributors.
+- **Community identity thins.** A project's voice — its tone, its values, its way of discussing trade-offs — emerges from the people who participate. If most communication is agent-generated, the project's voice becomes generic. New contributors joining the community encounter generated text rather than human voices, making it harder to form the connections that sustain long-term participation.
+
+Oxide's [RFD 576](https://rfd.shared.oxide.computer/rfd/0576) articulates this concern sharply: writing is how organizations build trust, and that trust erodes when the voice is not authentically the author's own. In an open-source context where community trust is the primary social capital, this erosion is particularly consequential.
+
+The [trustworthiness evidence](trustworthiness-evidence.md) framework addresses a related but distinct problem — building trust in agent *actions* through structured evidence (static analysis, behavioral evaluation, audit trails). The voice concern here is about trust in agent *communication* — whether agent-authored prose in community-facing contexts undermines the social fabric that open-source communities depend on.
+
+**Open directions:**
+
+- Should agent-authored communications be clearly attributed as such? Transparent attribution avoids deception but may reduce the weight of the communication.
+- Are there community-facing contexts where agent authorship is acceptable (routine status updates, CI reports) and others where it is not (design discussions, review feedback on architectural choices)?
+- Can agents be designed to facilitate human voice rather than replace it — surfacing information and drafting options for humans to communicate in their own words?
+
 ## Job security and professional value
 
 Most contributors in many target organizations are paid engineers. For them, the concerns above have an additional dimension:
@@ -80,6 +105,10 @@ Recent research on AI coding tools specifically reinforces these patterns:
 - An [Anthropic study (2025)](https://www.anthropic.com/research/AI-assistance-coding-skills) found that developers using AI coding assistance scored **17% lower on comprehension tests** when learning new libraries. Developers who delegated code generation to AI scored below 40% on comprehension, while those who used AI for conceptual inquiry scored 65% or higher. The mode of interaction — whether you do the work or delegate it — directly affects whether you build understanding.
 - A [METR randomized controlled trial (2025)](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) found that experienced open-source developers working on their own repositories were **19% slower with AI tools** — but perceived themselves as 20% faster. The gap between perceived and actual performance is relevant to the rubber-stamping risk: people may believe they are reviewing effectively when they are not.
 - Research on [overreliance in human-AI interaction (2025)](https://arxiv.org/html/2509.08010v1) identifies cognitive offloading, automation bias, and the erosion of critical thinking as risks of LLM-assisted work, and notes that long-term deskilling is a serious concern in environments where AI tools dominate routine tasks.
+
+### Values-first LLM adoption
+
+Oxide's [RFD 576: Using LLMs at Oxide](https://rfd.shared.oxide.computer/rfd/0576) (Cantrill, 2026) grounds LLM usage in five values — responsibility, rigor, empathy, teamwork, and urgency — and evaluates specific use cases against them. Its core principle — that employees bear responsibility for artifacts they create regardless of automation employed — presupposes that humans maintain the expertise to bear that responsibility. This reinforces the [automation complacency](#automation-complacency-and-bias) and [out-of-the-loop](#the-out-of-the-loop-performance-problem) findings above: you cannot be responsible for artifacts you lack the expertise to evaluate. RFD 576 also warns that reckless LLM use replaces crisp thinking with "generated flotsam" — a concern especially relevant to [agent-generated design documents and prose](#trust-erosion-from-agent-generated-voice), where tests provide no backstop for quality.
 
 ### Newcomer pathways and communities of practice
 
@@ -130,6 +159,7 @@ These aren't solutions — they're directions worth exploring:
 - **Autonomy spectrum** defines what agents can do. Human factors asks what the experience is like for the humans on the other side of that boundary.
 - **Code review** designs the agent review process. Human factors asks what it's like for humans when code review — traditionally a core engineering activity — is no longer something they do.
 - **[Contributor guidance](contributor-guidance.md)** focuses on making contribution rules clear to both humans and agents. Human factors explores whether the resulting workflow remains rewarding enough to sustain human participation.
+- **[Trustworthiness evidence](trustworthiness-evidence.md)** builds trust in agent actions through structured evidence. The [voice concern](#trust-erosion-from-agent-generated-voice) here is the complementary problem: trust in agent communication.
 
 ## Open questions
 
