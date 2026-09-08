@@ -14,11 +14,13 @@ linked schemas.
 context/
 ├── index.json
 ├── summary.md
+├── conversation.md
 ├── entity/
 │   ├── metadata.json
 │   └── body.md
 ├── comments/<record-key>.md
 ├── reviews/<record-key>.md
+├── threads/<thread-key>.md
 ├── changes/
 │   ├── diff.patch
 │   └── commits.json
@@ -38,7 +40,8 @@ context/
 [`check.schema.json`](check.schema.json), and
 [`thread-state.schema.json`](thread-state.schema.json). `summary.md` is a
 bounded navigation view generated only from the manifest and state documents;
-it must not duplicate record bodies or logs.
+it must not duplicate record bodies or logs. `conversation.md` and the files
+under `threads/` are canonical concatenation views defined below.
 
 ## Stable records and mutable state
 
@@ -51,18 +54,53 @@ forge identifier, canonical repository identifier, record kind, forge record ID
 
 The forge record ID is the platform's immutable opaque ID, not a mutable URL,
 ordinal, database row position, or display number. Record kinds are `comment`,
-`review`, and `check`. This derivation makes paths safe and stable without
-requiring consumers to parse forge-specific IDs.
+`review`, `check`, and `thread`. This derivation makes paths safe and stable
+without requiring consumers to parse forge-specific IDs.
 
-Comment and review Markdown files contain only the filtered body. Their
-manifest records map forge IDs and metadata to body paths, while manifest file
-entries carry byte counts, digests, media types, and filter results. Bodies do not
-contain author, timestamps, ordering, thread membership, resolution, outdated,
-or minimized state. Those properties belong in `index.json` or
-`state/threads.json`. Consequently, resolving a thread or inserting an earlier
-record can change the index, state, and generated summary but must not rename or
-rewrite an unchanged content file. An edited body changes only that record's
-body bytes, digest, filtering result, and source-provided update metadata.
+Comment and review Markdown files are self-contained records with this exact
+UTF-8 layout; header values are canonical JSON strings (or `null`) on one line:
+
+```text
+Fullsend-Record: "comment"
+Source-ID: "opaque-forge-id"
+Source-URL: "https://forge.example/..."
+Author-ID: "opaque-actor-id"
+Author: "forge-login"
+Created-At: "2026-09-08T10:15:30Z"
+
+Filtered Markdown body.
+```
+
+`Fullsend-Record` is `"comment"` or `"review"`. The header order and blank
+line are fixed. `Author-ID` and `Author` may be `null` when the forge withholds
+or has deleted the actor. All header strings are filtered before JSON-string
+serialization. The file contains no update time, ordering, thread membership,
+resolution, outdated, or minimized state; those properties belong in
+`index.json` or `state/threads.json`. Consequently, resolving a thread or
+inserting an earlier record must not rename or rewrite an unchanged record.
+Changing its body or attribution fields changes that record's bytes and digest.
+
+`entity/body.md` uses the same layout with `Fullsend-Record: "entity"`, the
+entity's stable ID and URL, and its author attribution and creation time. This
+makes the initial issue or change-proposal body the first self-contained turn.
+
+## Concatenation views and prompt caching
+
+`conversation.md` is the byte-for-byte concatenation of `entity/body.md`, then
+all comment and review record files in manifest order. `threads/<thread-key>.md`
+is the same concatenation of the records named by that thread's `comment_ids`.
+Before every item after the first, the renderer writes LF, `---`, and LF; each
+source file already ends in exactly one LF. No summary, resolution flag, or
+other mutable state is embedded in either view.
+
+When a later record sorts after the existing records, rendering appends bytes
+and leaves the entire previous view as an identical prefix. This is the normal
+reply path and permits the runtime to send the conversation first, then append
+state or task instructions, preserving prompt-cache reuse. A backfilled earlier
+record, edit, deletion, or attribution change necessarily invalidates the view
+from the first affected record onward. Per-record files still isolate that
+change. Consumers that need current resolution state read `state/threads.json`
+or place it after the conversation prefix; they never infer state from a body.
 
 Check status is observation state in `checks/<record-key>/metadata.json`; its
 log file contains only filtered log bytes. A growing or replaced forge log is
@@ -96,10 +134,11 @@ requires a new filter version. Removing or reinterpreting a status requires v2.
 
 ## Ordering and determinism
 
-Manifest record arrays and thread arrays are sorted by source `created_at`, then
-by the forge record ID's UTF-8 byte order. Thread `comment_ids` preserve forge
-thread order. Commit arrays preserve forge history order. Other arrays state
-their ordering in their owning schema before being added to v1.
+Manifest record arrays are sorted by source `created_at`, then by the forge
+record ID's UTF-8 byte order. Thread arrays use thread creation time and then
+thread ID; `comment_ids` preserve forge thread order. Commit arrays preserve
+forge history order. Other arrays state their ordering in their owning schema
+before being added to v1.
 
 `generated_at` or another runner-clock value is forbidden anywhere under the
 context root. Acquisition timing belongs in run telemetry outside the staged

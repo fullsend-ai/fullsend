@@ -64,10 +64,10 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^(summary[.]md|entity/(metadata[.]json|body[.]md)|comments/[0-9a-f]{64}[.]md|reviews/[0-9a-f]{64}[.]md|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
+          "pattern": "^(summary[.]md|conversation[.]md|entity/(metadata[.]json|body[.]md)|comments/[0-9a-f]{64}[.]md|reviews/[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]md|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
         },
         "role": {
-          "enum": ["summary", "entity_metadata", "entity_body", "comment_body", "review_body", "diff", "commits", "check_metadata", "check_log", "thread_state"]
+          "enum": ["summary", "conversation", "thread_conversation", "entity_metadata", "entity_body", "comment_body", "review_body", "diff", "commits", "check_metadata", "check_log", "thread_state"]
         },
         "media_type": { "type": "string", "minLength": 1 },
         "bytes": { "type": "integer", "minimum": 0 },
@@ -78,7 +78,7 @@
     },
     "record": {
       "type": "object",
-      "required": ["kind", "id", "record_key", "created_at", "filter"],
+      "required": ["kind", "id", "record_key", "author_id", "author", "created_at", "filter"],
       "properties": {
         "kind": { "enum": ["comment", "review", "check"] },
         "id": { "type": "string", "minLength": 1 },
@@ -87,7 +87,8 @@
         "metadata_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/metadata[.]json$" },
         "log_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/log[.]txt$" },
         "source_url": { "type": "string", "format": "uri" },
-        "author": { "type": "string" },
+        "author_id": { "type": ["string", "null"] },
+        "author": { "type": ["string", "null"] },
         "created_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": "string", "format": "date-time" },
         "filter": { "$ref": "#/$defs/filter" }

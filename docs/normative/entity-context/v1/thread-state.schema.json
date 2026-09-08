@@ -9,9 +9,11 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "comment_ids", "resolved", "outdated"],
+        "required": ["id", "thread_key", "created_at", "comment_ids", "resolved", "outdated"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
+          "thread_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "created_at": { "type": "string", "format": "date-time" },
           "comment_ids": {
             "type": "array",
             "items": { "type": "string", "minLength": 1 },

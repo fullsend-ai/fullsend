@@ -3,7 +3,7 @@
   "$id": "https://fullsend.sh/schemas/entity-context/v1/entity.schema.json",
   "title": "Fullsend entity metadata v1",
   "type": "object",
-  "required": ["kind", "id", "number", "title", "state", "source_url", "created_at", "updated_at", "labels"],
+  "required": ["kind", "id", "number", "title", "state", "source_url", "author_id", "author", "created_at", "updated_at", "labels"],
   "properties": {
     "kind": { "enum": ["issue", "change_proposal"] },
     "id": { "type": "string", "minLength": 1 },
@@ -11,7 +11,8 @@
     "title": { "type": "string" },
     "state": { "type": "string", "minLength": 1 },
     "source_url": { "type": "string", "format": "uri" },
-    "author": { "type": "string" },
+    "author_id": { "type": ["string", "null"] },
+    "author": { "type": ["string", "null"] },
     "created_at": { "type": "string", "format": "date-time" },
     "updated_at": { "type": "string", "format": "date-time" },
     "labels": {
