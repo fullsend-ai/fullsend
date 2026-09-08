@@ -122,7 +122,16 @@ proceeding.
 ### 2. Pre-check current state
 
 Run `mint status` to see the current mint state, enrolled orgs, Cloud Run
-revision info, and PEM health:
+revision info, and PEM health.
+
+When `FULLSEND_MINT_URL` is already configured, the simpler API-based
+invocation can be used instead — no GCP IAM roles required:
+
+```bash
+go run ./cmd/fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+Otherwise, use the GCP-based mode:
 
 ```bash
 go run ./cmd/fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"

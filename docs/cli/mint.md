@@ -296,7 +296,25 @@ Read-only — makes no changes.
 
 ## `mint status`
 
-Inspects the mint's current state: deployed function, registered roles, enrolled orgs, and PEM health.
+Inspects the mint's current state. Two modes of operation:
+
+### API-based mode (`--mint-url`)
+
+Queries GET `/v1/status` on the mint service using auto-discovered GitHub
+credentials. Tries GitHub Actions OIDC first, then falls back to
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`. No cloud IAM required.
+
+```bash
+fullsend mint status --mint-url "https://mint.example.com"
+```
+
+When `FULLSEND_MINT_URL` is set and `--mint-url` is not provided,
+the API-based mode is used automatically.
+
+### GCP-based mode (`--project`)
+
+Reads mint state directly from GCP infrastructure (Cloud Function metadata,
+Secret Manager). Requires GCP viewer IAM roles.
 
 ```bash
 fullsend mint status \
@@ -304,7 +322,7 @@ fullsend mint status \
   --region "us-central1"
 ```
 
-Optionally filter to a specific org:
+Optionally filter to a specific org (GCP-based mode only):
 
 ```bash
 fullsend mint status <org> \
@@ -312,7 +330,16 @@ fullsend mint status <org> \
   --region "us-central1"
 ```
 
+When `--mint-url` is provided, `--project` is ignored and the API-based path
+is used. The `[org]` argument is not supported in API-based mode.
+
 Read-only — makes no changes.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL for API-based status |
+| `--project` | | GCP project ID (for direct infrastructure queries) |
+| `--region` | `us-central1` | GCP region (GCP-based mode only) |
 
 ## `mint token`
 

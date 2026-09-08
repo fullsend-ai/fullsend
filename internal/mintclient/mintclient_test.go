@@ -699,3 +699,303 @@ func TestMintToken_LocalhostHTTPAllowed(t *testing.T) {
 		t.Errorf("localhost HTTP should be allowed, got: %v", err)
 	}
 }
+
+// QueryStatus tests
+
+func TestQueryStatus_OIDCPath(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.Path != "/v1/status" {
+			t.Errorf("path = %q, want /v1/status", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer oidc-jwt" {
+			t.Errorf("auth = %q, want %q", got, "Bearer oidc-jwt")
+		}
+		json.NewEncoder(w).Encode(StatusResult{
+			Org:     "acme",
+			Roles:   []string{"coder", "triage"},
+			Version: "1.0.0",
+		})
+	}))
+	defer statusServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthOIDC {
+		t.Errorf("method = %q, want %q", method, StatusAuthOIDC)
+	}
+	if result.Org != "acme" {
+		t.Errorf("org = %q, want %q", result.Org, "acme")
+	}
+	if len(result.Roles) != 2 {
+		t.Errorf("roles = %v, want 2 roles", result.Roles)
+	}
+	if result.Version != "1.0.0" {
+		t.Errorf("version = %q, want %q", result.Version, "1.0.0")
+	}
+}
+
+func TestQueryStatus_GitHubTokenPath(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer ghp-test" {
+			t.Errorf("auth = %q, want %q", got, "Bearer ghp-test")
+		}
+		json.NewEncoder(w).Encode(StatusResult{
+			AllowedOrgs: []string{"acme", "bigcorp"},
+			Roles:       []string{"coder"},
+		})
+	}))
+	defer statusServer.Close()
+
+	// No OIDC env vars → falls through to GitHub token.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-test", nil })
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthGitHub {
+		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
+	}
+	if len(result.AllowedOrgs) != 2 {
+		t.Errorf("allowed_orgs = %v, want 2", result.AllowedOrgs)
+	}
+}
+
+func TestQueryStatus_OIDCFallsBackToGitHub(t *testing.T) {
+	var calls int
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		auth := r.Header.Get("Authorization")
+		if auth == "Bearer oidc-jwt" {
+			// OIDC token rejected by server.
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "auth failed"})
+			return
+		}
+		if auth == "Bearer ghp-fallback" {
+			json.NewEncoder(w).Encode(StatusResult{
+				AllowedOrgs: []string{"acme"},
+				Roles:       []string{"triage"},
+			})
+			return
+		}
+		t.Errorf("unexpected auth header: %q", auth)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer statusServer.Close()
+
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt"})
+	}))
+	defer oidcServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, method, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-fallback", nil })
+	if err != nil {
+		t.Fatalf("QueryStatus() error = %v", err)
+	}
+	if method != StatusAuthGitHub {
+		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
+	}
+	if len(result.AllowedOrgs) != 1 || result.AllowedOrgs[0] != "acme" {
+		t.Errorf("allowed_orgs = %v, want [acme]", result.AllowedOrgs)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (one OIDC, one GitHub)", calls)
+	}
+}
+
+func TestQueryStatus_AllMethodsFail(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "auth failed"})
+	}))
+	defer statusServer.Close()
+
+	// No OIDC env vars, and GitHub token also rejected.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) { return "ghp-bad", nil })
+	if err == nil {
+		t.Fatal("expected error when all auth methods fail")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error = %q, want to contain 'authentication failed'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "OIDC") {
+		t.Errorf("error = %q, want to list OIDC attempt", err.Error())
+	}
+	if !strings.Contains(err.Error(), "GitHub token") {
+		t.Errorf("error = %q, want to list GitHub token attempt", err.Error())
+	}
+}
+
+func TestQueryStatus_NoResolveFunc(t *testing.T) {
+	// No OIDC and no resolveGitHubToken func.
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: "https://mint.example.com",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error = %q, want to contain 'authentication failed'", err.Error())
+	}
+}
+
+func TestQueryStatus_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		req  StatusRequest
+		want string
+	}{
+		{"empty mint URL", StatusRequest{}, "mint URL is required"},
+		{"non-HTTPS mint URL", StatusRequest{MintURL: "http://example.com"}, "mint URL must use HTTPS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := QueryStatus(context.Background(), tt.req, nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := err.Error(); got != tt.want {
+				t.Errorf("error = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryStatus_Non401ErrorIsTerminal(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+	}))
+	defer statusServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string { return "" }
+	defer func() { envLookup = origEnv }()
+
+	ghCalled := false
+	_, _, err := QueryStatus(context.Background(), StatusRequest{
+		MintURL: statusServer.URL,
+	}, func() (string, error) {
+		ghCalled = true
+		return "ghp-test", nil
+	})
+	if err == nil {
+		t.Fatal("expected error on 403")
+	}
+	// 403 from GitHub token should be terminal (not fall through).
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error = %q, want to contain HTTP 403", err.Error())
+	}
+	// Since there are no OIDC env vars, GitHub token is the first (and only)
+	// attempt. The 403 should terminate without trying anything else.
+	if !ghCalled {
+		t.Error("expected GitHub token resolver to be called")
+	}
+}
+
+func Test_hasOIDCEnv(t *testing.T) {
+	origEnv := envLookup
+	defer func() { envLookup = origEnv }()
+
+	t.Run("both set", func(t *testing.T) {
+		envLookup = func(key string) string {
+			switch key {
+			case "ACTIONS_ID_TOKEN_REQUEST_URL":
+				return "http://oidc"
+			case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+				return "tok"
+			default:
+				return ""
+			}
+		}
+		if !hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = false, want true")
+		}
+	})
+
+	t.Run("URL missing", func(t *testing.T) {
+		envLookup = func(key string) string {
+			if key == "ACTIONS_ID_TOKEN_REQUEST_TOKEN" {
+				return "tok"
+			}
+			return ""
+		}
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
+
+	t.Run("token missing", func(t *testing.T) {
+		envLookup = func(key string) string {
+			if key == "ACTIONS_ID_TOKEN_REQUEST_URL" {
+				return "http://oidc"
+			}
+			return ""
+		}
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
+
+	t.Run("neither set", func(t *testing.T) {
+		envLookup = func(key string) string { return "" }
+		if hasOIDCEnv() {
+			t.Error("hasOIDCEnv() = true, want false")
+		}
+	})
+}
