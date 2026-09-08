@@ -482,7 +482,7 @@ func detectForge(repoURL string) (string, error) {
 ### Install Command Changes
 
 - Add `--forge {github|gitlab}` flag (auto-detected if not specified)
-- Add `--gitlab-url` for self-hosted GitLab instances
+- Add `--gitlab-url` for self-hosted GitLab instances *(implemented — see PR #7087)*
 - Update app setup flow to create Project Access Tokens for GitLab
 - Update workflows layer to deploy `.gitlab/` instead of `.github/`
 

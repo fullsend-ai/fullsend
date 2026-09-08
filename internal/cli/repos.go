@@ -708,9 +708,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				opts.repoFilter = filtered
 				if len(filtered) == 0 {
-					if opts.gitlabURL != "" {
-						printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", opts.gitlabURL))
-					}
+					announceGitlabURLDryRun(printer, opts.gitlabURL)
 					printer.Blank()
 					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
 						len(newlyAdded)))
@@ -726,7 +724,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.gitlabURL != "" {
 		if manifest.GitLab != nil {
 			if opts.dryRun {
-				printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", opts.gitlabURL))
+				announceGitlabURLDryRun(printer, opts.gitlabURL)
 			} else {
 				manifest.GitLab.URL = opts.gitlabURL
 				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
@@ -1272,4 +1270,14 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 		return "", fmt.Errorf("provisioning WIF: %w", err)
 	}
 	return wifProvider, nil
+}
+
+// announceGitlabURLDryRun prints a dry-run preview message for --gitlab-url
+// when the flag is set. Centralises the message and guard so both the
+// early-return path and the main --gitlab-url handler share a single
+// definition.
+func announceGitlabURLDryRun(printer *ui.Printer, gitlabURL string) {
+	if gitlabURL != "" {
+		printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", gitlabURL))
+	}
 }
