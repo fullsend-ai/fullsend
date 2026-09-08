@@ -95,9 +95,11 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
 # content like any other and is not distinguished — the same class as a Bash
 # transform of the token (base64, cut), which the hook never caught. An
 # adapter that sends no cwd gets no skip, i.e. masks; Claude Code sends its
-# working directory and the pi adapter its process working directory. Adapters
-# translate tool names to Claude's vocabulary before the chain runs, so the
-# names here apply everywhere.
+# working directory, the pi adapter its process working directory, and the
+# codex adapter the cwd of codex's own hook input — which scopes nothing there
+# today, since codex's apply_patch input carries no file path and its reads
+# are shell output. Adapters translate tool names to Claude's vocabulary
+# before the chain runs, so the names here apply everywhere.
 _TOOL_PATH_KEY = {
     "Read": "file_path",
     "Edit": "file_path",

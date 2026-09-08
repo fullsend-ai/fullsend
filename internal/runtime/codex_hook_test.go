@@ -309,6 +309,46 @@ sys.exit(0)`)
 	assert.Equal(t, "output text", payload["tool_result"])
 }
 
+func TestCodexAdapter_ForwardsCwdOnBothPhases(t *testing.T) {
+	// codex's hook input carries its working directory — the checkout — and
+	// the wire protocol has adapters forward it as `cwd`, which the redact
+	// stage scopes its checkout-only bare-JWT skip on. Under codex nothing
+	// skips today anyway (apply_patch carries no file path; reads are shell
+	// output), so this pins the wire shape, not a behaviour change.
+	for _, phase := range []string{"PreToolUse", "PostToolUse"} {
+		t.Run(phase, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			seen := filepath.Join(h.dir, "seen.json")
+			h.script("record.py", `open(`+pyStr(seen)+`, "w").write(json.dumps(payload))`)
+			in := codexBashInput("ls")
+			in["hook_event_name"] = phase
+			in["tool_response"] = "output text"
+			got := h.run(phase, in, "record.py")
+			require.Equal(t, 0, got.exitCode, got.stderr)
+			data, err := os.ReadFile(seen)
+			require.NoError(t, err)
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal(data, &payload))
+			assert.Equal(t, "/sandbox/workspace/repo", payload["cwd"], "the scripts must receive codex's cwd")
+		})
+	}
+	t.Run("non-string cwd is dropped", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		seen := filepath.Join(h.dir, "seen.json")
+		h.script("record.py", `open(`+pyStr(seen)+`, "w").write(json.dumps(payload))`)
+		in := codexBashInput("ls")
+		in["cwd"] = 42
+		got := h.run("PreToolUse", in, "record.py")
+		require.Equal(t, 0, got.exitCode, got.stderr)
+		data, err := os.ReadFile(seen)
+		require.NoError(t, err)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(data, &payload))
+		_, present := payload["cwd"]
+		assert.False(t, present, "a cwd that is not a path string must not be forwarded")
+	})
+}
+
 func TestCodexAdapter_MisconfigurationFailsClosed(t *testing.T) {
 	h := newCodexAdapterHarness(t)
 	h.script("allow.py", "sys.exit(0)")
