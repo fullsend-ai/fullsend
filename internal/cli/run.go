@@ -1337,7 +1337,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		profilesToImport, skippedProfiles := filterProfilesByDirIDs(result.Profiles, dirProfileIDs)
 		for _, rp := range skippedProfiles {
 			printer.StepWarn(fmt.Sprintf(
-				"Skipping URL-resolved profile %q: overridden by profiles/ directory copy",
+				"Skipping harness-resolved profile %q: overridden by profiles/ directory copy",
 				rp.ID))
 		}
 		for _, rp := range profilesToImport {
@@ -1350,15 +1350,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Defensive check: warn if any imported URL-resolved profile still
-		// overlaps with a profiles/ directory copy. filterProfilesByDirIDs
-		// already removes all ID-based overlaps from profilesToImport, so
-		// this should not fire in normal operation. The directory copy is
-		// the deterministic winner (#6971, #6977).
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
-		for _, sp := range shadowedProfiles(dirProfileIDs, profilesToImport, profilesDir, generatedProfileIDs) {
-			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); the directory copy takes precedence — keep them in sync or remove the directory copy", sp.ID, profilesDir, sp.LocalPath))
-		}
 
 		// Import provider profiles (if profiles/ directory exists).
 		dirProfileStart := time.Now()
