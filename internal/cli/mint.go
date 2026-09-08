@@ -1766,7 +1766,9 @@ Two modes of operation:
 
 When --mint-url is provided, --project is ignored and the API-based
 path is used. When --mint-url is not provided and FULLSEND_MINT_URL
-is set, the API-based path is used.
+is set, the API-based path is used unless --project is also provided,
+in which case the command returns an error to prevent silent mode
+ambiguity.
 
 Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
 repos, and overall health status. If an org argument is provided in
@@ -1791,7 +1793,7 @@ Required IAM roles on the mint project (--project mode only):
 			// Route to API-based or GCP-based path.
 			if mintURL != "" {
 				if mintURLFromEnv && cmd.Flags().Changed("project") {
-					fmt.Fprintf(os.Stderr, "WARNING: --project is ignored because FULLSEND_MINT_URL is set; unset the env var or pass --mint-url=\"\" to use GCP-based mode\n")
+					return fmt.Errorf("ambiguous mode: FULLSEND_MINT_URL is set and --project was provided; unset the env var to use GCP-based mode, or omit --project to use the API-based mode")
 				}
 				if len(args) > 0 {
 					return fmt.Errorf("org argument is not supported with --mint-url")

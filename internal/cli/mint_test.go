@@ -4064,37 +4064,18 @@ func TestMintStatusCmd_MintURLFlagOverridesProject(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestMintStatusCmd_EnvURLWarnsIgnoredProject(t *testing.T) {
-	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
-	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
-
-	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/status" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"roles": []string{"coder"},
-		})
-	}))
-	defer statusSrv.Close()
-
-	t.Setenv("FULLSEND_MINT_URL", statusSrv.URL)
-
-	oldResolve := mintStatusResolveToken
-	mintStatusResolveToken = func() (string, error) {
-		return "test-token", nil
-	}
-	defer func() { mintStatusResolveToken = oldResolve }()
+func TestMintStatusCmd_EnvURLRejectsExplicitProject(t *testing.T) {
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
 
 	// When FULLSEND_MINT_URL is set and --project is explicitly provided,
-	// the command should succeed via the API-based path (--project is
-	// ignored with a warning to stderr).
+	// the command should return an error to prevent silent mode ambiguity.
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "status", "--project=fake-project"})
 	err := cmd.Execute()
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous mode")
+	assert.Contains(t, err.Error(), "FULLSEND_MINT_URL")
+	assert.Contains(t, err.Error(), "--project")
 }
 
 func TestMintStatusCmd_MintURLEmptyEscapeHatch(t *testing.T) {
