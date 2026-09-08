@@ -75,7 +75,9 @@ fullsend
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
-│   │   └── --vendor                         #   Vendor binary and content into each repo for offline CI
+│   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
+│   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
+│   │   └── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes

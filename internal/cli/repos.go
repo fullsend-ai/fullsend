@@ -708,6 +708,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				opts.repoFilter = filtered
 				if len(filtered) == 0 {
+					if opts.gitlabURL != "" {
+						printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", opts.gitlabURL))
+					}
 					printer.Blank()
 					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
 						len(newlyAdded)))
@@ -720,18 +723,20 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// When --gitlab-url is provided, populate the manifest's GitLab URL.
 	// This enables bootstrapping a new manifest with GitLab repos in a
 	// single command without a prior set-default step.
-	if opts.gitlabURL != "" && manifest.GitLab != nil {
-		if opts.dryRun {
-			printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", opts.gitlabURL))
-		} else {
-			manifest.GitLab.URL = opts.gitlabURL
-			if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
-				return fmt.Errorf("writing gitlab.url to manifest: %w", err)
+	if opts.gitlabURL != "" {
+		if manifest.GitLab != nil {
+			if opts.dryRun {
+				printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", opts.gitlabURL))
+			} else {
+				manifest.GitLab.URL = opts.gitlabURL
+				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
+					return fmt.Errorf("writing gitlab.url to manifest: %w", err)
+				}
+				printer.StepDone(fmt.Sprintf("Set gitlab.url=%s in manifest", opts.gitlabURL))
 			}
-			printer.StepDone(fmt.Sprintf("Set gitlab.url=%s in manifest", opts.gitlabURL))
+		} else {
+			printer.StepWarn("--gitlab-url was provided but no GitLab repos are in the manifest; flag had no effect")
 		}
-	} else if opts.gitlabURL != "" && manifest.GitLab == nil {
-		printer.StepWarn("--gitlab-url was provided but no GitLab repos are in the manifest; flag had no effect")
 	}
 
 	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {

@@ -2129,6 +2129,30 @@ gitlab:
 		"dry-run should not modify the manifest URL on disk")
 }
 
+func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap dry-run: new manifest + --forge gitlab + --gitlab-url + --dry-run.
+	// The function should return without error and NOT write the manifest to disk.
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		repoFilter:  []string{"group/project"},
+		forge:       repos.ForgeGitLab,
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+
+	// In dry-run mode the manifest should not be written to disk.
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"dry-run bootstrap should not create the manifest file on disk")
+}
+
 func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 	tests := []struct {
 		name      string
