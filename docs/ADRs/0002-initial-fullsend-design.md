@@ -268,9 +268,8 @@ Trace IDs spanning issue → PR → checks → review for incident response and 
 
 **Data flow:** Agents receive **minimal** tokens (fine-scoped GitHub App). **Secrets** never appear in issue **`body`**, PR **`body`**, or **comments**. **Prompt injection** from those surfaces is assumed — see [security threat model](../problems/security-threat-model.md): **triage agent** and **review agent** prompts should treat **`body`** text and **comments** as **untrusted**, with tool allowlists and output validation.
 
-> **Trust mechanisms for agent-generated content.** Subsequent decisions
-> implement the defense-in-depth strategy for ensuring agent comments and
-> output can be trusted:
+> **Trust:** Subsequent decisions implement the defense-in-depth strategy
+> for ensuring agent comments and output can be trusted:
 > [ADR 0007](0007-per-role-github-apps.md) assigns per-role GitHub Apps
 > so every agent comment carries a verifiable bot identity;
 > [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md) isolates
