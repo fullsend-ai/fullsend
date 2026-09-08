@@ -2103,6 +2103,32 @@ gitlab:
 	assert.Equal(t, "https://new.gitlab.example.com", m.GitLab.URL)
 }
 
+func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
+	existingManifest := `version: 1
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// Dry-run with --gitlab-url should not modify the manifest on disk.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://old.gitlab.example.com", m.GitLab.URL,
+		"dry-run should not modify the manifest URL on disk")
+}
+
 func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 	tests := []struct {
 		name      string
