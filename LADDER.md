@@ -13,7 +13,10 @@ nomination process, and what maintainers do — see
 
 ### Vouched
 
-**What it means:** You have been approved to submit pull requests.
+**What it means:** You have been approved to submit pull requests from
+your own fork, including work produced manually or with tools outside
+Fullsend. The Write role is required to invoke Fullsend's mutation
+agents, which can push code to branches in the main repository.
 
 **What it unlocks:**
 
