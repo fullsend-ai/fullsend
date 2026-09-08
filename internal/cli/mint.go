@@ -2093,8 +2093,6 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	return nil
 }
 
-// runMintStatusAPI queries the mint's /v1/status endpoint using
-// auto-discovered GitHub-based authentication (OIDC → GH_TOKEN/gh).
 func runMintStatusAPI(ctx context.Context, printer *ui.Printer, mintURL string) error {
 	printer.Banner(Version())
 	printer.Blank()
