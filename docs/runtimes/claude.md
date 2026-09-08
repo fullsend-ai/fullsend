@@ -51,8 +51,7 @@ These are the places Claude Code differs from pi — useful when comparing a run
 - **The agent definition *replaces* the system prompt.** `--agent` makes the agent `.md` body the
   system prompt outright. pi appends it to its own default instead, so an agent that relies on
   Claude Code's exact framing can read differently there.
-- **Native sub-agents** via the `Agent` tool, which is why `review` and `retro` are Claude-only
-  today.
+- **Native sub-agents** via the `Agent` tool.
 - **A `CLAUDE.md` bridge is injected** when the repo has `AGENTS.md` but no `CLAUDE.md`, because
   Claude Code auto-loads only the former. pi reads `AGENTS.md` natively and needs no bridge.
 - **`tools:` is enforced unreliably** (≥ 2.1.119); pi enforces its `--tools` allowlist strictly. In

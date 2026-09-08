@@ -1451,6 +1451,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       id
+      title
       state
       blockedBy(first: 50) {
         nodes { number repository { nameWithOwner } }
@@ -1467,11 +1468,13 @@ query($owner: String!, $name: String!, $number: Int!) {
       __typename
       ... on Issue {
         id
+        title
         state
         assignees(first: 20) { nodes { login } }
       }
       ... on PullRequest {
         id
+        title
         state
         assignees(first: 20) { nodes { login } }
       }
@@ -1483,7 +1486,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 ISSUE_NODE_ID_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) { id state }
+    issue(number: $number) { id title state }
   }
 }
 """
@@ -2009,6 +2012,7 @@ def apply_trivial_actions(
             "repo": item["repo"],
             "number": item["number"],
             "status": item["status"],
+            "title": item.get("title") or "",
         }
 
         # Self-assign first (actionable unassigned side-action).
@@ -2105,13 +2109,17 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     node = (data or {}).get("repository", {}).get("issueOrPullRequest") if data else None
     if node is None:
         return {"ref": format_ref(repo, number), "action": "error", "detail": "ref not found"}
+    node_title = node.get("title") or ""
+    node_kind = "issue" if node["__typename"] == "Issue" else "pull"
     if node.get("state") != "OPEN":
         return {
             "ref": format_ref(repo, number),
+            "title": node_title,
+            "kind": node_kind,
             "action": "error",
             "detail": f"ref is not open (state={node.get('state')})",
         }
-    sub = "issue" if node["__typename"] == "Issue" else "pr"
+    sub = "issue" if node_kind == "issue" else "pr"
     if (
         run_gh_soft(
             [sub, "edit", str(number), "--repo", repo, "--add-assignee", user],
@@ -2121,6 +2129,8 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     ):
         return {
             "ref": format_ref(repo, number),
+            "title": node_title,
+            "kind": node_kind,
             "action": "error",
             "detail": f"failed to assign {user}",
         }
@@ -2140,6 +2150,8 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
         ):
             return {
                 "ref": format_ref(repo, number),
+                "title": node_title,
+                "kind": node_kind,
                 "action": "error",
                 "detail": f"assigned {user} but failed to remove {login}",
             }
@@ -2147,7 +2159,13 @@ def take_over(repo: str, number: int, user: str, *, quiet: bool = False) -> dict
     detail = f"assigned to {user}"
     if removed:
         detail += f"; removed {', '.join(removed)}"
-    return {"ref": format_ref(repo, number), "action": "assigned", "detail": detail}
+    return {
+        "ref": format_ref(repo, number),
+        "title": node_title,
+        "kind": node_kind,
+        "action": "assigned",
+        "detail": detail,
+    }
 
 
 def link_blocker(
@@ -2177,9 +2195,11 @@ def link_blocker(
             "action": "error",
             "detail": "dependent ref is not an Issue (GitHub blocked-by is issue-only)",
         }
+    dep_title = issue.get("title") or ""
     if issue.get("state") != "OPEN":
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
             "detail": "dependent Issue is not open",
@@ -2191,6 +2211,7 @@ def link_blocker(
     if (blk_repo, blk_number) in existing:
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "already_linked",
             "detail": "blockedBy link already exists",
@@ -2209,14 +2230,18 @@ def link_blocker(
     if blocker_issue is None or not blocker_issue.get("id"):
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
             "action": "error",
             "detail": "blocker ref is not an Issue (GitHub blocked-by is issue-only)",
         }
+    blk_title = blocker_issue.get("title") or ""
     if blocker_issue.get("state") != "OPEN":
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
+            "blk_title": blk_title,
             "action": "error",
             "detail": "blocker Issue is not open",
         }
@@ -2229,13 +2254,17 @@ def link_blocker(
     if mutation is None:
         return {
             "dependent": format_ref(dep_repo, dep_number),
+            "dep_title": dep_title,
             "blocker": format_ref(blk_repo, blk_number),
+            "blk_title": blk_title,
             "action": "error",
             "detail": "failed to create blockedBy link",
         }
     return {
         "dependent": format_ref(dep_repo, dep_number),
+        "dep_title": dep_title,
         "blocker": format_ref(blk_repo, blk_number),
+        "blk_title": blk_title,
         "action": "linked",
         "detail": "created blockedBy link",
     }
@@ -2252,6 +2281,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
     for item in items:
         if item.get("kind") != "pull":
             continue
+        item_title = item.get("title") or ""
         threads = item.get("unresolved_threads") or []
         for thread in threads:
             if not thread.get("bot_only"):
@@ -2262,6 +2292,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_path": thread.get("path") or "unknown",
                         "action": "error",
                         "detail": "thread id not available (pre-enrichment data)",
@@ -2279,6 +2310,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_id": thread_id,
                         "thread_path": path,
                         "action": "error",
@@ -2290,6 +2322,7 @@ def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list
                     {
                         "repo": item["repo"],
                         "number": item["number"],
+                        "title": item_title,
                         "thread_id": thread_id,
                         "thread_path": path,
                         "action": "resolved",
@@ -2408,10 +2441,63 @@ def format_json_output(
     return json.dumps(payload, indent=2)
 
 
-def _format_item_line(item: dict[str, Any]) -> str:
-    link = f"[{item['kind']}#{item['number']}]({item['url']})"
-    title = item["title"].replace("|", "\\|")
-    return f"- {link} {title} — _{item['status']}_: {item['reason']}"
+def _is_auto_apply_action(action: str) -> bool:
+    """Return True if ``action`` can be performed automatically by ``--apply``."""
+    return action.startswith(("assign:", "comment:", "remove-label:"))
+
+
+def _can_auto_apply(item: dict[str, Any]) -> bool:
+    """Return True when every suggested action on *item* is auto-apply-able."""
+    actions = item.get("suggested_actions") or []
+    return bool(actions) and all(_is_auto_apply_action(a) for a in actions)
+
+
+def _item_type_label(item: dict[str, Any]) -> str:
+    """Return ``Issue``, ``PR``, or ``Draft PR`` based on kind and draft status."""
+    if item["kind"] == "issue":
+        return "Issue"
+    if item.get("is_draft"):
+        return "Draft PR"
+    return "PR"
+
+
+def _item_type_sort_key(item: dict[str, Any]) -> int:
+    """Sort key for type-based ordering: PRs (0) → Issues (1) → Draft PRs (2)."""
+    if item["kind"] == "pull" and not item.get("is_draft"):
+        return 0
+    if item["kind"] == "issue":
+        return 1
+    return 2  # draft PR
+
+
+def _format_item_id(item: dict[str, Any], default_repo: str) -> str:
+    """Format typed item ID as a markdown link.
+
+    Same-repo: ``[PR #99](url)``; cross-repo: ``[Issue acme/other#7](url)``.
+    """
+    label = _item_type_label(item)
+    if item["repo"] == default_repo:
+        ref = f"#{item['number']}"
+    else:
+        ref = f"{item['repo']}#{item['number']}"
+    return f"[{label} {ref}]({item['url']})"
+
+
+def _format_item_table(items: list[dict[str, Any]], default_repo: str) -> list[str]:
+    """Render items as a markdown table sorted by type: PRs → Issues → Draft PRs."""
+    sorted_items = sorted(items, key=_item_type_sort_key)
+    lines = [
+        "| ID | Description | Next action |",
+        "|-----|-------------|-------------|",
+    ]
+    for item in sorted_items:
+        item_id = _format_item_id(item, default_repo)
+        title = item["title"].replace("|", "\\|")
+        reason = item["reason"].replace("|", "\\|")
+        if _can_auto_apply(item):
+            reason = f"{reason} [auto apply]"
+        lines.append(f"| {item_id} | {title} | {reason} |")
+    return lines
 
 
 def _format_mutation_line(entry: dict[str, Any]) -> str:
@@ -2419,20 +2505,41 @@ def _format_mutation_line(entry: dict[str, Any]) -> str:
     action = entry.get("action") or "?"
     detail = entry.get("detail")
     if "dependent" in entry and "blocker" in entry:
-        line = f"- {entry['dependent']} ← {entry['blocker']}: {action}"
+        # link-blocker: both sides are always issues (GitHub constraint).
+        dep_desc = f" — {entry['dep_title']}" if entry.get("dep_title") else ""
+        blk_desc = f" — {entry['blk_title']}" if entry.get("blk_title") else ""
+        dep = f"Issue {entry['dependent']}{dep_desc}"
+        blk = f"Issue {entry['blocker']}{blk_desc}"
+        line = f"- {dep} ← {blk}: {action}"
     elif "ref" in entry:
-        line = f"- {entry['ref']}: {action}"
+        kind = entry.get("kind")
+        if kind == "issue":
+            typed_ref = f"Issue {entry['ref']}"
+        elif kind == "pull":
+            typed_ref = f"PR {entry['ref']}"
+        else:
+            typed_ref = entry["ref"]
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- {typed_ref}{title_desc}: {action}"
     elif "thread_path" in entry:
+        # resolve-threads: always on PRs.
         repo = entry.get("repo") or "?"
         number = entry.get("number")
         path = entry["thread_path"]
-        line = f"- #{number} ({repo}) `{path}`: {action}"
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- PR #{number}{title_desc} ({repo}) `{path}`: {action}"
     else:
-        kind = entry.get("kind") or "item"
+        kind = entry.get("kind")
         number = entry.get("number")
         repo = entry.get("repo") or "?"
-        ref = f"{kind}#{number}" if number is not None else kind
-        line = f"- {ref} ({repo}): {action}"
+        if kind == "issue":
+            ref = f"Issue #{number}" if number is not None else "Issue"
+        elif kind == "pull":
+            ref = f"PR #{number}" if number is not None else "PR"
+        else:
+            ref = f"#{number}" if number is not None else "item"
+        title_desc = f" — {entry['title']}" if entry.get("title") else ""
+        line = f"- {ref}{title_desc} ({repo}): {action}"
     if detail:
         line = f"{line} — {detail}"
     return line
@@ -2458,7 +2565,7 @@ def format_markdown_output(
 
     lines = ["## Do now", ""]
     if do_now:
-        lines.extend(_format_item_line(i) for i in do_now)
+        lines.extend(_format_item_table(do_now, repo))
     else:
         lines.append("_Nothing actionable right now._")
     lines.append("")
@@ -2472,7 +2579,7 @@ def format_markdown_output(
             lines.append(f"## {title}")
             lines.append("")
             if group:
-                lines.extend(_format_item_line(i) for i in group)
+                lines.extend(_format_item_table(group, repo))
             else:
                 lines.append("_None._")
             lines.append("")

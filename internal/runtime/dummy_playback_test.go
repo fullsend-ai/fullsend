@@ -54,12 +54,38 @@ func TestDummyPlaybackRuntime_Bootstrap(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestDummyPlaybackRuntime_Bootstrap_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyPlaybackRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "sandbox not found", 1, nil
+	}}
+	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
+}
+
 func TestDummyPlaybackRuntime_ClearIterationArtifacts(t *testing.T) {
 	t.Parallel()
 
 	rt := DummyPlaybackRuntime{}
 	err := rt.ClearIterationArtifacts("nonexistent-sandbox")
 	require.Error(t, err)
+}
+
+func TestDummyPlaybackRuntime_ClearIterationArtifacts_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyPlaybackRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "rm -rf") {
+			return "", "sandbox not found", 1, nil
+		}
+		// clearStrayProcesses call succeeds
+		return "stray processes killed: 0\n", "", 0, nil
+	}}
+	err := rt.ClearIterationArtifacts("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 // ClearIterationArtifacts sweeps stray processes before removing files —

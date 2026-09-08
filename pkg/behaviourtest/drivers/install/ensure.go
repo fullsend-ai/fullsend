@@ -59,13 +59,14 @@ type ensurer interface {
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
 type repoEnsurer struct {
-	e2eCfg e2etest.EnvConfig
-	client forge.Client
-	token  string
-	binary string
-	logf   func(string, ...any)
-	runCLI CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
-	settle SettleFunc    // injectable; defaults to awaitWorkflowReady
+	e2eCfg    e2etest.EnvConfig
+	client    forge.Client
+	token     string
+	binary    string
+	logf      func(string, ...any)
+	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
+	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
+	setupOpts common.GitHubSetupOpts
 
 	mu       sync.Mutex
 	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
@@ -81,15 +82,29 @@ func newRepoEnsurer(
 	token, binary string,
 	logf func(string, ...any),
 ) ensurer {
+	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, common.DefaultGitHubSetupOpts(), logf)
+}
+
+// newRepoEnsurerWithOpts returns an ensurer like newRepoEnsurer but with
+// custom GitHubSetupOpts. Used by the STAGE driver for non-vendored
+// installs with a fullsend-ref.
+func newRepoEnsurerWithOpts(
+	e2eCfg e2etest.EnvConfig,
+	client forge.Client,
+	token, binary string,
+	opts common.GitHubSetupOpts,
+	logf func(string, ...any),
+) ensurer {
 	return &repoEnsurer{
-		e2eCfg:  e2eCfg,
-		client:  client,
-		token:   token,
-		binary:  binary,
-		logf:    logf,
-		runCLI:  e2etest.TryRunCLI,
-		settle:  awaitWorkflowReady,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2eCfg,
+		client:    client,
+		token:     token,
+		binary:    binary,
+		logf:      logf,
+		runCLI:    e2etest.TryRunCLI,
+		settle:    awaitWorkflowReady,
+		setupOpts: opts,
+		ensured:   make(map[string]struct{}),
 	}
 }
 
@@ -131,10 +146,13 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) erro
 }
 
 // doEnsure performs the actual create-if-missing + install work.
-// It always re-vendors the CLI binary so that pool repos run the
-// binary built from the current checkout. Without this, leased repos
-// that pass post-install validation keep a stale vendored binary from
-// a prior run, silently missing dispatch fixes on the current branch.
+// It always resets and reinstalls the repo so that pool repos use the
+// binary or ref from the current checkout. In vendored mode the
+// current binary is pushed to the pool repo; in non-vendored mode the
+// shim references the remote ref configured in setupOpts. Without
+// this reset, leased repos that pass post-install validation keep a
+// stale install from a prior run, silently missing dispatch fixes on
+// the current branch.
 func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error {
 	target := org + "/" + repoName
 
@@ -156,12 +174,18 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 	// install flow and settle for Actions readiness.
 	e.logf("[ensure] %s needs install (fresh repo)", target)
 
-	// Step 4: run github setup --vendor to install fullsend and push
-	// the current binary.
+	// Select the appropriate post-install validator based on install mode.
+	validate := ValidatePerRepoPostInstall
+	if !e.setupOpts.Vendor {
+		validate = ValidatePerRepoPostInstallNonVendored
+	}
+
+	// Step 4: run github setup to install fullsend and push the
+	// current binary/ref.
 	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
 		return err
 	}
-	if err := ValidatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
+	if err := validate(ctx, e.client, org, repoName); err != nil {
 		return fmt.Errorf("post-install validation for %s: %w", target, err)
 	}
 
@@ -326,7 +350,7 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 // installFullsend runs inference provision (when a GCP project is
 // configured) and fullsend github setup for the target repo.
 func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) error {
-	return common.RunGitHubSetup(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.runCLI, e.logf)
+	return common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, e.setupOpts, e.runCLI, e.logf)
 }
 
 // awaitWorkflowReady polls the forge's GetWorkflow API until the given

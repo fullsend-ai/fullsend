@@ -2204,20 +2204,20 @@ exit 0
 }
 
 // TestEnsureProvider_RetryCancelledByContext verifies that context
-// cancellation during the retry backoff sleep causes EnsureProvider to
-// return the context error instead of continuing to retry.
+// cancellation during a provider creation attempt returns the context error
+// instead of the process error produced when CommandContext kills openshell.
 func TestEnsureProvider_RetryCancelledByContext(t *testing.T) {
 	dir := t.TempDir()
 	markerDir := filepath.Join(dir, "markers")
 	require.NoError(t, os.MkdirAll(markerDir, 0o755))
 
-	// Fake openshell: always fails with the transient error so the
-	// retry loop never succeeds on its own.
+	// Fake openshell: record the attempt, then block until context cancellation
+	// kills the process. The busy loop uses only shell builtins so PATH can
+	// contain just this fake binary.
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$2" = "create" ]; then
   echo x > "%s/attempt.$$"
-  echo "Error: × unsupported provider type or profile: test" >&2
-  exit 1
+  while :; do :; done
 fi
 exit 0
 `, markerDir)
@@ -2225,17 +2225,28 @@ exit 0
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	// Cancel the context shortly after the first attempt so the select
-	// picks up ctx.Done() during the backoff sleep.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- EnsureProvider(ctx, "p", "custom", nil, nil, false)
+	}()
 
-	err := EnsureProvider(ctx, "p", "custom", nil, nil, false)
+	require.Eventually(t, func() bool {
+		entries, err := os.ReadDir(markerDir)
+		return err == nil && len(entries) == 1
+	}, 5*time.Second, 10*time.Millisecond, "provider creation should start")
+	cancel()
+
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("EnsureProvider did not return after cancellation")
+	}
 	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded, "should return context error when cancelled during retry sleep")
+	assert.ErrorIs(t, err, context.Canceled, "should return context error when creation is cancelled")
 
-	// Should have made only 1 attempt before the context expired during
-	// the backoff sleep.
 	entries, readErr := os.ReadDir(markerDir)
 	require.NoError(t, readErr)
 	assert.Len(t, entries, 1, "should stop retrying when context is cancelled")

@@ -570,7 +570,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 // sessions and the debug log so transcripts and output files are
 // per-iteration.
 func (r CodexRuntime) ClearIterationArtifacts(sandboxName string) error {
-	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s %s",
 		shellQuote(r.WorkspaceDir()),
 		shellQuote(r.codexSessionsDir()),

@@ -24,7 +24,8 @@ const killStrayProcessesTimeout = 15 * time.Second
 // kill_stray_processes_test.sh runs under a real shell.
 //
 // Why: pi's built-in bash tool spawns commands detached and kills that
-// process tree only on abort/timeout (pi 0.84.4, core/tools/bash.ts), so a
+// process tree only on abort/timeout (pi 0.84.4, core/tools/bash.ts;
+// killProcessTree call sites unchanged at 0.85.0), so a
 // backgrounded command such as `nohup python3 -c 'import time;
 // time.sleep(300)' &` survives the agent process's normal exit. Claude
 // Code's Bash tool is closed source, but the same symptom was observed:
@@ -225,20 +226,32 @@ func killStrayProcesses(execFn sandboxExecFunc, sandboxName string) (int, error)
 	return n, nil
 }
 
+// TerminateStrayProcesses sweeps the sandbox after the runner ended an
+// iteration at its budget. OpenShell's exec timeout drops the relay and
+// leaves the command running under PID 1, so without this the agent keeps
+// spending and writing until the sandbox is deleted (#7042). Warning-only,
+// like the between-iteration sweep.
+func TerminateStrayProcesses(sandboxName string, w io.Writer) {
+	clearStrayProcesses(terminateExecFn, sandboxName, w, "the timed-out iteration")
+}
+
+// terminateExecFn runs the sweep exec. Override in tests to avoid a sandbox.
+var terminateExecFn sandboxExecFunc = sandbox.Exec
+
 // clearStrayProcesses is the warning-only front of killStrayProcesses used
 // by ClearIterationArtifacts: a failed sweep must never fail the iteration,
 // and the file cleanup that follows must still run. Progress (with the
 // sweep's duration, which is the TERM grace period when something ignored
 // TERM) and warnings go to w (stderr in production).
-func clearStrayProcesses(execFn sandboxExecFunc, sandboxName string, w io.Writer) {
+func clearStrayProcesses(execFn sandboxExecFunc, sandboxName string, w io.Writer, origin string) {
 	start := time.Now()
 	n, err := killStrayProcesses(execFn, sandboxName)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
 	if err != nil {
-		fmt.Fprintf(w, "  Warning: could not terminate stray sandbox processes from the previous iteration (after %s): %v\n", elapsed, sanitizeOutput(err.Error()))
+		fmt.Fprintf(w, "  Warning: could not terminate stray sandbox processes from %s (after %s): %v\n", origin, elapsed, sanitizeOutput(err.Error()))
 		return
 	}
 	if n > 0 {
-		fmt.Fprintf(w, "  Terminated %d stray process(es) left running by the previous iteration (%s)\n", n, elapsed)
+		fmt.Fprintf(w, "  Terminated %d stray process(es) left running by %s (%s)\n", n, origin, elapsed)
 	}
 }

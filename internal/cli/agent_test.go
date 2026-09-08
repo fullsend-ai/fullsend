@@ -1432,6 +1432,30 @@ func TestAgentSetCmd_ExecutesAndTracksChangedFlags(t *testing.T) {
 	require.Error(t, cmd.Execute())
 }
 
+func TestRunAgentSet_PreserveSubagentTombstones(t *testing.T) {
+	dir := t.TempDir()
+	// Create a config with a tombstone (nil) subagent entry.
+	writePerRepoConfig(t, dir, `agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness:
+`)
+	// Setting the model (without --subagent) should copy the subagents map —
+	// including the tombstone — without panicking.
+	require.NoError(t, runAgentSet(dir, "review", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout)))
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	review, found := config.AgentSettingsFor(cfg.AgentEntries(), "review")
+	require.True(t, found)
+	assert.Equal(t, "sonnet", review.Model)
+	require.NotNil(t, review.Subagents)
+	assert.Equal(t, "haiku", *review.Subagents["default"])
+	val, exists := review.Subagents["correctness"]
+	assert.True(t, exists, "tombstone key should be preserved")
+	assert.Nil(t, val, "tombstone value should remain nil")
+}
+
 func TestRunAgentSet_RejectsOrgConfig(t *testing.T) {
 	dir := t.TempDir()
 	writeOrgConfig(t, dir, "")

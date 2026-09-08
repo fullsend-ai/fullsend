@@ -213,7 +213,7 @@ func TestCodexRuntimeBootstrap_UploadsSkillsAndWarnsOnPlugins(t *testing.T) {
 		agentPath:   writeAgentFile(t, codexTestAgentDef),
 		agentName:   "triage",
 		skillDirs:   []string{skillDir},
-		pluginDirs:  []string{"/plugins/example"},
+		plugins:     claudePlugins("/plugins/example"),
 	})
 	require.NoError(t, err)
 

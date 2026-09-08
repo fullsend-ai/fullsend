@@ -4,7 +4,7 @@ sidebar_label: Choose a Runtime
 
 # Choose an agent runtime
 
-> **Claude Code is the stable default.** The fleet agents have run on Claude Code in production for a long time; it is what a new installation gets unless you ask for something else. **pi and codex are experimental** — pi works end to end for `triage`, `prioritize`, `code` and `fix`, and codex runs OpenAI models through the same secretless credential path. Neither builds a sub-agent roster, so `review` and `retro` are best left on Claude Code — nothing stops a repo-wide `runtime:` applying to them, it is just not recommended. Neither has completed a fleet pilot. Unless you are taking part in one, keep the default.
+> **Claude Code is the stable default.** The fleet agents have run on Claude Code in production for a long time; it is what a new installation gets unless you ask for something else. **pi and codex are experimental** — pi works end to end for `triage`, `prioritize`, `code`, `fix` and `review`/`retro`; codex runs OpenAI models through the same secretless credential path but has no sub-agent roster yet, so `review`/`retro` are best left on Claude Code there. Neither runtime has completed a fleet pilot. Unless you are taking part in one, keep the default.
 
 This page explains what the choice means and where it is made. **You do not select anything on this page** — the selection happens in the next step, [Configuring GitHub](configuring-github.md), when `fullsend github setup` prompts for the runtime (press Enter for `claude`) or when you pass `--runtime`.
 
@@ -15,7 +15,7 @@ Fullsend supports multiple agent runtimes. A runtime is the program that runs in
 | Runtime | Status | Description | When to use |
 |---------|--------|-------------|-------------|
 | `claude` | **Stable (default)** | Claude Code on Vertex AI | Every production deployment — mature, full sub-agent support for `review`/`retro` |
-| `pi` | Experimental (enablement phase) | [Pi](https://github.com/earendil-works/pi) — Claude on Vertex by default; any provider pi supports by model name (e.g. Gemini on Vertex with the same credentials) | Opt-in pilots only; no sub-agent tool yet, so `review`/`retro` run single-context; see [Runtimes](../../runtimes.md) for known constraints |
+| `pi` | Experimental (enablement phase) | [Pi](https://github.com/earendil-works/pi) — Claude on Vertex by default; any provider pi supports by model name (e.g. Gemini on Vertex with the same credentials) | Opt-in pilots only; see [Runtimes](../../runtimes.md) for known constraints |
 | `codex` | Experimental | [Codex](https://github.com/openai/codex) — OpenAI models only, through the same secretless credential path | Opt-in pilots only, when you want GPT specifically. No sub-agent roster, so keeping `review`/`retro` on Claude Code is recommended; needs an OpenAI model named (`FULLSEND_CODEX_MODEL`) because the fleet harnesses ask for `opus`; see [Codex](../../runtimes/codex.md) |
 
 ## When and how the runtime is selected

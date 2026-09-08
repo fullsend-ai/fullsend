@@ -12,7 +12,7 @@ On this page:
 - [Adding a runtime: checklist](#adding-a-runtime-checklist)
 - [Security feature matrix](#security-feature-matrix) — what each runtime wires, and where
 - [Runtime interface contract](#runtime-interface-contract)
-- [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, Claude Code caveats
+- [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, the accepted shell dialect, Claude Code caveats
 - [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image)
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
@@ -39,6 +39,60 @@ On this page:
    profiles' `binaries:` globs match it — a runtime exec'd directly (no node
    wrapper) is not covered by `**/node`
    ([Egress binary identity](#egress-binary-identity-per-runtime)).
+
+### Consumer-completeness touchpoints
+
+After the core implementation above, walk through every file below. Each
+one contains a hardcoded list of valid runtimes or runtime-specific
+content that must be updated whenever a runtime is added or renamed.
+
+**Registration and config:**
+
+- [ ] `internal/runtime/registry.go` — add a `case` to `Resolve()` that
+  returns the new backend (mirrors step 1 above — listed here so the
+  walkthrough is self-contained).
+- [ ] `internal/config/config.go` — add the runtime name to the slice
+  returned by `ValidRuntimes()`.
+
+**Tests:**
+
+- [ ] `internal/runtime/registry_test.go` — add a `Resolve("<name>")`
+  assertion block to `TestResolve` (and to `TestResolveFromConfig` /
+  `TestResolveFromPerRepoConfig` if the runtime is user-selectable).
+- [ ] `internal/config/config_test.go` — update any assertion on
+  `ValidRuntimes()` to include the new name.
+
+**CLI:**
+
+- [ ] `internal/cli/runtime_prompt.go` — if the runtime is test-only
+  (e.g. `dummy`, `dummy-playback`), filter it from
+  `userRuntimeChoices()` so it does not appear in the interactive
+  prompt.
+- [ ] `internal/cli/run.go` — update the `--runtime` flag description
+  to list the new runtime name.
+- [ ] `internal/cli/admin.go` — update the `--runtime` flag description
+  in `newInstallCmd()` to include the new runtime name.
+- [ ] `internal/cli/github.go` — update the `--runtime` flag description
+  in `newGitHubSetupCmd()` to include the new runtime name.
+
+**Documentation:**
+
+- [ ] `docs/runtimes.md` — add a row to the
+  [harness config-keys table](../runtimes.md#harness-config-keys-per-runtime)
+  (item 4 above) and add the runtime to any prose lists of valid values.
+- [ ] `docs/architecture.md` — update the runtime selection diagram
+  (the Mermaid `CFG` node lists valid runtime names) and any prose
+  references.
+- [ ] `docs/cli/run.md` — update any `--runtime` flag description or
+  valid-values list if the page documents runtime flags.
+- [ ] `docs/cli/github.md` — same as `run.md` if this page documents
+  runtime flags.
+- [ ] `docs/guides/infrastructure/layered-config-reference.md` — update
+  the `runtime` field's valid values in the config-key table.
+
+Use this list as a mechanical walkthrough — check every box, even if the
+answer is "no change needed", so omissions are deliberate rather than
+accidental.
 
 ## Security feature matrix
 
@@ -92,7 +146,7 @@ flowchart TB
 | Feature | Where it runs | Claude Code | OpenCode (stub) | Pi | Codex | Notes for future runtimes |
 |---------|---------------|-------------|-----------------|----|-------|---------------------------|
 | **Host-side context injection scan** (unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | N/A — stub | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Harness `security.host_scanners`; heuristic scanners only — the DeBERTa ML model was removed from the sandbox in #6522 (its only consumer is the host-side `scan input`, not `scan context`) |
-| **Host-side runtime content scan** (agent def, SKILL.md, plugin JSON before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Uses `security.InputPipeline()`; not part of the `Runtime` interface |
+| **Host-side runtime content scan** (agent def, SKILL.md, and every text file of each declared plugin — `node_modules` included — before upload) | Host (`scanRuntimeContent`) | ✓ | N/A — stub | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Uses `security.InputPipeline()`; not part of the `Runtime` interface. Extension files over 1 MiB are noted and skipped, and a tree above 20k files is refused in either `fail_mode` |
 | **Prompt injection (DeBERTa)** | Host `fullsend scan input` only | ✓ in the runner image (built `CGO_ENABLED=1 -tags ORT` with `libtokenizers.a` + ONNX Runtime >= 1.28); ✗ in the release tarballs, which stay `CGO_ENABLED=0` and untagged (#6522) | N/A — stub | Same as Claude Code — host-side, not a runtime distinction | Same as Claude Code — host-side, not a runtime distinction | Shipped enabled only in `ghcr.io/fullsend-ai/fullsend-runner`; the release tarball the composite action downloads has it compiled out, so CI runs never reach it. **Not an active control on the `fullsend run` path either way**: `RunMLScan` is called only from `fullsend scan input`, which nothing in this repo or `fullsend-ai/agents` invokes. See #6506 (decision), #6522 (build constraints) |
 
 ### Sandbox tool hooks (per runtime)
@@ -129,14 +183,14 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | Interface | Responsibility |
 |-----------|----------------|
 | `runtime.Runtime` | Name, config dir, env exports, bootstrap, run loop, per-iteration cleanup, user processes cleanup |
-| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, and plugin dirs to upload |
+| `runtime.BootstrapInput` | Portable agent name/path, skill dirs, declared plugins (`Plugins() []PluginInput` — name, host path, format kind, env, pi args; ADR 0094) to upload, and the per-repo model alias overrides (`ModelAliases() map[string]string`, from `models.aliases`; nil when the repo sets none). A runtime loads the entries whose `Kind` it reads and must warn and skip the rest, never drop them silently, and the agent's per-persona sub-agent model map (`AgentSubagents() map[string]*string`, from `agents[].subagents`; a nil value is a tombstone; ADR 0104) |
 | `runtime.SandboxHooksBootstrap` | Optional `BootstrapInput` extension — runtime-neutral sandbox tool hook config (`security.SandboxHookConfig`); every runtime should honour it |
 | `runtime.TranscriptHandler` | Extract transcripts/debug logs; parse errors for CI annotations |
 | `runtime.DebugLogNamer` | Optional — names the per-iteration debug-log artifact (default `agent-debug.log`) |
 | `runtime.ContextBridger` | Optional — runtime auto-loads only `CLAUDE.md`, so the runner injects a `CLAUDE.md`→`AGENTS.md` pointer (Claude Code: yes; runtimes that read `AGENTS.md` natively: omit) |
 | `runtime.OpenAICredentialSeeder` | Optional — for a runtime that reaches OpenAI through the run-scoped provider (ADR 0092): names the in-sandbox credential file the agent re-reads per request and the `sh` fragment that writes the current placeholder into it, so a mid-run credential refresh reaches the running process. Omit when the runtime has no OpenAI path; a stub returning `""` means "no re-seed" and the provider is still created and refreshed |
 
-**Per-iteration cleanup contract.** When a validation retry reuses the sandbox, the runner calls `ClearIterationArtifacts` before the next iteration. Every runtime runs the shared `clearStrayProcesses` sweep first (it terminates the processes the previous iteration left running as the sandbox user, sparing the exec channel and the `sandbox.KeepAliveCommand` main process), then deletes the iteration's output, sessions and debug log. A failed sweep is reported as a warning and never fails the iteration. The runner holds its sandbox lock (`withSandboxLock` in `internal/cli/run.go`) across the call so the credential refreshers' uploads are never killed mid-write.
+**Per-iteration cleanup contract.** When a validation retry reuses the sandbox, the runner calls `ClearIterationArtifacts` before the next iteration. Every runtime runs the shared `clearStrayProcesses` sweep first (it terminates the processes the previous iteration left running as the sandbox user, sparing the exec channel and the `sandbox.KeepAliveCommand` main process), then deletes the iteration's output, sessions and debug log. A failed sweep is reported as a warning and never fails the iteration. The runner holds its sandbox lock (`withSandboxLock` in `internal/cli/run.go`) across the call so the credential refreshers' uploads are never killed mid-write. The same sweep runs as `TerminateStrayProcesses` right after an iteration ends at its budget: OpenShell's exec timeout drops the relay but leaves the agent's processes running, and a killed iteration is not followed by another `ClearIterationArtifacts` (see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline)).
 
 A runtime whose `Bootstrap` does not type-assert `SandboxHooksBootstrap` will **not** install Tirith, SSRF, canary, or the other hook scripts. The primary security boundary is the OpenShell sandbox, its L7 egress policy, and credential placeholders (ADR 0017, ADR 0025); the hooks are defense-in-depth that every runtime should wire rather than silently drop ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)). Fill in the matrix column above either way.
 
@@ -222,11 +276,72 @@ Every rewrite attaches `hookSpecificOutput.additionalContext` so the agent knows
 | Component | On malformed / oversized input (> 10 × 1024 × 1024 characters, text-mode stdin) | On its own error |
 |-----------|-------------------------------------------|------------------|
 | Blocking scripts (all PreToolUse, standalone `canary_posttool.py`) | fail **closed** — block | block |
-| `tirith_check.py` | block | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
+| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
 | Sanitizing scripts / each `posttool_chain.py` sanitizer stage | fail **open** — pass through unchanged (exit 0; the unicode hook logs an `input_truncated` finding) | pass through; recorded in `findings.jsonl` as `<stage>_stage_error` |
 | `posttool_chain.py` canary stage | fails **closed** whenever `FULLSEND_CANARY_TOKEN` is set: input the driver cannot read blocks (`exit 1`, `continue: false`) instead of skipping detection; with no canary token configured it stays fail-open | a scan that raises is treated as a hit; a hit whose redaction cannot be verified clean withholds the output entirely; `exit 1` is unconditional |
 
 Also: empty/whitespace-only stdin is treated as "no tool call" and allowed by every script; a payload without `tool_name` blocks only in the allowlist hook; adapters must not treat a sanitizer's empty stdout as an error; detection and redaction share one case-insensitive matcher (`hook_io.canary_pattern`), so a token that is detected is always one that can be redacted.
+
+### Tirith: accepted shell dialect
+
+Tirith blocks any Bash command it cannot parse, reporting `analysis_incomplete` at HIGH. Write sandbox commands in the dialect below and they never reach that path.
+
+The finding is not a downgradeable false positive. Tirith emits the same `rule_id`, severity and title whether it failed to parse an ordinary POSIX idiom or a deliberately obfuscated payload such as `sh -c "$PAYLOAD"`. Nothing distinguishes them, so the hook blocks both and puts the rewrite in the reason instead.
+
+#### What a block looks like
+
+Run the time-check snippet the code and fix agents document straight through the hook:
+
+```console
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "if [ -n \"${TIMEOUT_SECONDS:-}\" ]; then echo yes; fi"}}' \
+    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Nested executable body could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: `test -n \"$X\"` instead of `[ -n \"$X\" ]` or `[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
+```
+
+The reply is one line with no trailing newline, which is why `exit=1` is glued to it. Apply the rewrite it asks for and the command passes:
+
+```console
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "if test -n \"${TIMEOUT_SECONDS:-}\"; then echo yes; fi"}}' \
+    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+exit=0
+```
+
+#### The rewrites
+
+| Blocked | Write instead | What tirith cannot resolve |
+|---------|---------------|----------------------------|
+| `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
+| `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
+| `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
+| `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
+
+The last row is **deliberately missing from the block message**, which carries only the syntax rewrites. That text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
+
+Two notes on that row. Tirith reports it as `analysis_incomplete` too, titled `Could not resolve wrapped command for sensitive upload analysis`, so the block still carries the syntax hint even though the config file is the fix. Write that file under `umask 077`.
+
+What tirith keys on is a variable it cannot resolve inside a **header, data or form argument** — `-H`, `-d`, `-F`, `--data-binary` — whether or not it holds a credential. `curl -H "X-Trace: $ID" …` blocks; `curl -o "$OUT" …`, `curl --user "$U" …` and `curl "$URL"` all pass. So `-K` works here only because it removes the inline `-H` altogether: leave a variable in a `-d` or `--data-binary` argument and the command still blocks with `-K` present.
+
+#### Checking a pin bump
+
+`TestRealTirithBinary` in `internal/security/hooks/tirith_check_test.py` asserts the blocked forms above, their rewrites, and that applying each rewrite to an attacker shape still blocks. It skips unless the installed tirith matches `ARG TIRITH_VERSION` in `images/sandbox/Containerfile`.
+
+Run it after a bump and before rebuilding the image — **nothing runs it for you.** No CI job executes `internal/security/hooks/*_test.py`; the repo's only pytest invocation is `Makefile:204`, for `gitlint_rules_test.py`.
+
+Two traps when reproducing by hand:
+
+- A stray `~/.config/tirith/policy.yaml` changes verdicts. The sandbox image ships none, so point `HOME` and `XDG_CONFIG_HOME` at an empty directory first.
+- `uv run` does not reliably see a `tirith` you put on `PATH`. Check `tirith --version` from inside it, or run pytest from a venv directly.
+
+#### Troubleshooting
+
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `analysis_incomplete: Nested executable body could not be resolved` | a bracket test, a late glob `case` arm, or `$( )` inside `$(( ))` | rewrite per the table above |
+| `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis`, from a `-H` header | a variable expanded inside a header argument | move the header into a `curl -K` config file, so no `-H` remains |
+| the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
+| `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
+| `Hook error (fail-closed): <ExceptionName>` | an error with no specific guard | the traceback is on the hook's stderr and a `hook_error` finding is in `findings.jsonl`; file both with the command |
+| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is on `PATH` inside the sandbox |
 
 ### Environment
 
@@ -265,9 +380,9 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 | Binary | Pin | Re-check on bump |
 |--------|-----|------------------|
 | Claude Code | `ARG CLAUDE_CODE_VERSION` (npm, Renovate-tracked). The OpenShell base image ships its **own** unpinned Claude Code at `/usr/local/bin/claude` (whatever `curl claude.ai/install.sh` fetched when the base was built), and `/usr/local/bin` precedes npm's `/usr/bin` on the sandbox `PATH` — so the Containerfile replaces that file with a symlink to the npm install and fails the build unless `claude --version` equals the pin (#6612; before that fix the base image's 2.1.156 shadowed every pin). `TestSandboxImageClaudeCodePinWins` guards the step | the [tool-name vocabulary](#tool-name-vocabulary-608); the hook contract caveats above; the alias table — `opus`/`sonnet`/`haiku` resolve from the running version's built-in defaults on Vertex, and `ANTHROPIC_DEFAULT_*_MODEL` does not steer the request there, so a harness or `agents:` entry that needs a specific generation must name the id |
-| pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464) |
-| `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/anthropic-vertex` | its `sync/compat.json` against the pinned pi; the `@anthropic-ai/sdk` override vs pi's `packages/ai/package.json` |
-| `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals) |
+| pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464); `piGoogleVertexModels` in `pi_bootstrap.go`, which is the bundled `google-vertex` catalog verbatim and is what the `Agent` tool accepts as a Gemini id — diff `dist/providers/data/google-vertex.json` between the old and new pin, not the generated wrapper, and add any new id; a missed entry makes the `Agent` tool reject a model the running pi serves. `internal/runtime/testdata/pi/check-vertex-catalog.sh` runs exactly that diff against the pinned `PI_VERSION` |
+| `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/anthropic-vertex` | the extension's own CI matrix (pinned `PI_VERSION` + latest pi); no compat file or SDK override to check |
+| `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals; declared only — `--omit=peer` never installs it); `piXaiVertexModels` in `pi_bootstrap.go`, the ids it registers and what the `Agent` tool accepts as a Grok id |
 | Codex | `ARG CODEX_VERSION` (npm, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`). The OpenShell base image already installs `@openai/codex` under the same npm prefix (`/usr`, binary `/usr/bin/codex`) — 0.117.0 on the base pinned today — so the pinned install replaces it in place. `/usr/local/bin/codex` is then symlinked at the npm install and the build fails unless `codex --version` reports `codex-cli <pin>`: nothing shadows the pin there today, and the symlink plus assertion make sure nothing can start to, the way the base image's Claude Code did in #6612. `TestSandboxImageCodexPinWins` guards the step | the codex stream parser fixtures (#6920); the JSONL event and hook wire shapes the codex runtime depends on |
 
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
@@ -300,10 +415,14 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 │   ├── APPEND_SYSTEM.md                Agent definition body (appended to pi's default system prompt)
 │   ├── settings.json                   defaultProjectTrust: never, defaultTools (all built-ins), quietStartup, retry/compaction on
 │   ├── skills/<name>/SKILL.md          Harness skills (pi's native skill discovery)
+│   ├── extensions/<name>/              Declared harness extensions (ADR 0094; loaded with -e, tree-hash preflight)
 │   ├── hooks/*.py                      Security hook scripts (same files as claude-config/hooks/)
 │   ├── fullsend-hooks.js               Hook adapter extension (loaded with -e; --no-extensions otherwise)
-│   ├── fullsend-manifest.json          Agent tools/allowlist, HookPlan, pi version — read by Run and the extension
+│   ├── fullsend-agent.js               Agent/Task sub-agent extension (loaded with -e when the tool is enabled)
+│   ├── fullsend-manifest.json          Agent tools/allowlist, HookPlan, agent block, pi version — read by Run and the extensions
+│   ├── subagents/usage.jsonl           One line per sub-agent (model, usage, stop reason) — folded into metrics.json
 │   └── sessions/                       PI_CODING_AGENT_SESSION_DIR (session JSONL → transcripts)
+│       └── agent-<seq>/                One sub-agent's session (→ transcripts/<agent>-sub<seq>-…)
 │
 ├── codex-config/                    ← CODEX_HOME (codex runtime)
 │                                       Created by the sandbox image (codex will not start without it);
@@ -457,21 +576,24 @@ One iteration, end to end — the amber decision is what makes "hooks enabled" e
 ```mermaid
 flowchart TB
   B["Bootstrap (once per run)\nagent .md → APPEND_SYSTEM.md + --tools\nhook scripts + manifest + adapter\npi --version preflight"]
-  G{"shell guard, before .env (command -p):\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
-  X["exit 97\npi never starts unhooked\n(Run refuses earlier, exit -1,\nif the manifest has no hook plan)"]
-  E["source .env\nunset ANTHROPIC_*\npin GOOGLE_CLOUD_PROJECT"]
-  P["pi --print --mode json --no-approve\n--no-extensions [-e vertex, on Vertex] -e hooks\n--tools ... --model ... #lt;/dev/null"]
+  G{"shell guard, before .env (command -p):\nadapter present and SHA-256 = embedded copy?\nAgent extension SHA-256 = embedded copy?\nmanifest present and SHA-256 = the one Bootstrap wrote?"}
+  X["exit 97 (adapter)\nexit 94 (Agent extension)\nexit 95 (manifest)\npi never starts unhooked\n(Run refuses earlier, exit -1,\nif the manifest has no hook plan)"]
+  E["source .env\nunset ANTHROPIC_*\npin GOOGLE_CLOUD_PROJECT\nre-check manifest SHA-256"]
+  P["pi --print --mode json --no-approve\n--no-extensions [-e vertex, on Vertex] -e hooks [-e agent]\n--tools ... --model ... #lt;/dev/null"]
+  C["child pi per Agent call\nprompt on stdin · own session dir\nSIGTERM then SIGKILL\nusage.jsonl folded into metrics"]
   S["parsePiStream\nexactly one ResultEvent\nexit 0 + stream error ⇒ run fails"]
-  A["artifacts\noutput.jsonl · transcripts/\nmetrics.json (runtime: pi)"]
+  A["artifacts\noutput.jsonl · transcripts/ (incl. sub#lt;seq#gt;)\nmetrics.json (runtime: pi, per_model_usage)"]
   B --> G
   G -- no --> X
   G -- yes --> E --> P --> S --> A
+  P -. "Agent/Task tool" .-> C
+  C -. "final message" .-> P
   classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
   classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
   classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
   class G guard;
   class X bad;
-  class B,P,S opt;
+  class B,P,S,C opt;
 ```
 
 ### Posture
@@ -485,26 +607,28 @@ flowchart TB
 
 ### Runs unattended
 
-Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.84.2 source and empirically on the pinned build:
+Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.84.2 source and empirically on the then-pinned 0.84.2 build (not re-run against the current pin):
 
 - pi has no tool-approval layer at all (nothing in `core/tools/*` or `core/bash-executor.ts` prompts).
 - In `--print` mode extensions get a no-op UI context, so `ctx.ui.confirm/select/input/editor` resolve immediately (`modes/print-mode.ts`, `core/extensions/runner.ts`).
 - `--no-approve` sets the project-trust override, so the trust-gated project resources — `.pi/{settings.json,extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}` and `.agents/skills` (`core/trust-manager.ts`); `AGENTS.md` itself is still read as context — are ignored without a dialog (`cli/args.ts`, `main.ts`). `defaultProjectTrust: never` in the global settings covers the no-flag case (verified on the pinned build: a planted `.pi/extensions/evil.js` in the repo does not load under `--no-approve` and does under `--approve`).
 - First-run setup, theme selection, telemetry consent and the version check are interactive-only code paths (`PI_TELEMETRY=0`, `PI_SKIP_VERSION_CHECK=1`/`PI_OFFLINE=1` set anyway).
 - A missing credential raises `No API key found` and exits 1 — no `/login` prompt (`core/agent-session.ts`, `modes/print-mode.ts`); retries are bounded (`retry.maxRetries: 3`, 2/4/8 s) and compaction is automatic.
-- **The one blocker found:** print mode reads a non-TTY stdin to EOF before the first prompt, even with a positional message (`main.ts` `readPipedStdin`), so an exec that keeps stdin open with no writer hangs pi — `Run` therefore appends `</dev/null` to the `pi` invocation; an idle upstream pipe then exits immediately (verified: open pipe without the redirect → killed by timeout; with it → proceeds).
+- **The one blocker found:** print mode reads a non-TTY stdin to EOF before the first prompt, even with a positional message (`main.ts` `readPipedStdin`), so an exec that keeps stdin open with no writer hangs pi — `Run` therefore appends `</dev/null` to the `pi` invocation; an idle upstream pipe then exits immediately (verified: open pipe without the redirect → killed by timeout; with it → proceeds). The same behaviour is what the `Agent` extension *relies* on for its children: it writes the prompt to stdin and closes it, because argv cannot carry a prompt that starts with `-`, `--` or `@`, or one past the kernel's argv limit (see [Pi sub-agents](#pi-sub-agents-the-agent-tool-contract)).
 
 ### Process and exit codes
 
 - **Hardening levers in use**
-  - `Run` executes `pi --print --mode json --no-approve --no-extensions --no-prompt-templates --no-themes --session-dir /sandbox/pi-config/sessions [-e /usr/local/share/pi-extensions/anthropic-vertex | -e /usr/local/share/pi-extensions/xai-vertex] [-e /sandbox/pi-config/fullsend-hooks.js] [--tools ...] --model <provider/id> --thinking <effort|high> '<RunParams.Prompt, default "Run the agent task">' </dev/null [2>>/sandbox/workspace/pi-debug.log]`.
+  - `Run` executes `pi --print --mode json --no-approve --no-extensions --no-prompt-templates --no-themes --session-dir /sandbox/pi-config/sessions [-e /usr/local/share/pi-extensions/anthropic-vertex | -e /usr/local/share/pi-extensions/xai-vertex] [-e /sandbox/pi-config/fullsend-hooks.js] [-e /sandbox/pi-config/fullsend-agent.js] [--tools ...] --model <provider/id> --thinking <effort|high> '<RunParams.Prompt, default "Run the agent task">' </dev/null [2>>/sandbox/workspace/pi-debug.log]`.
   - `settings.json` sets `defaultProjectTrust: never` (repo-owned `.pi/` never loaded) and `defaultTools: [read, bash, edit, write, grep, find, ls]` — pi alone activates only the first four; `--tools`, when emitted, replaces the set. The `grep` and `find` tools shell out to `rg` and `fd` (pi's `utils/tools-manager.ts`), which the sandbox image ships because `PI_OFFLINE=1` and the egress policy both stop pi's own GitHub-release download.
-  - `PI_OFFLINE=1`/`PI_TELEMETRY=0`/`PI_SKIP_VERSION_CHECK=1` come from `EnvExports`. Context files (`AGENTS.md`) and skills stay on — they are the harness's own inputs.
+  - `PI_OFFLINE=1`/`PI_TELEMETRY=0`/`PI_SKIP_VERSION_CHECK=1`/`JITI_FS_CACHE=false` come from `EnvExports`. Context files (`AGENTS.md`) and skills stay on — they are the harness's own inputs.
+  - The loader environment (`JITI_FS_CACHE`, the `JITI_*`/`NODE_*` `unset` after `.env`) is pinned for the same reason the extension tree is hashed — see [Pi extensions](#pi-extensions-adr-0094).
   - `PI_CODING_AGENT_DIR/extensions/` is arbitrary TypeScript loaded at startup and the config dir is not a permission boundary, which is why only the explicit `-e` paths load (at most one vendored provider extension plus the hook adapter).
   - Right after `.env` is sourced, `Run` re-exports `EnvExports()` (`PI_CODING_AGENT_DIR`, the session dir, the offline switches) so a rewritten `.env` cannot relocate pi's config directory.
   - For the built-in `openai` provider (`openai/<id>`, [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)) no extension loads and no `--api-key` is passed; `Run` instead seeds `auth.json` under `PI_CODING_AGENT_DIR` with the placeholder the sandbox environment carries for `OPENAI_API_KEY` (`PiOpenAIAuthSeed`, before `.env` is sourced), because pi re-reads that file on every revision change and resolves the key per request. The runner re-runs the same seed through `sandbox exec` after each credential refresh, which is what lets a running iteration follow a refresh on OpenShell 0.0.115, where a revision-scoped placeholder stays pinned to its generation and the unrevisioned alias is refused (`--api-key` would outrank the file and pin the iteration).
   - `Run` unsets `OPENAI_BASE_URL`/`AZURE_OPENAI_API_KEY`/`OPENAI_API_KEY`/`NODE_OPTIONS`/`NODE_PATH` after `.env`, and fails the iteration with exit 1 when the environment holds anything but a gateway placeholder at seed time (before `.env`).
   - A config-dir integrity guard exits 98 when `models.json` exists or `auth.json` is anything but pi's own `{}` or exactly the seeded placeholder entry — `models.json` is the only way to move the provider's base URL, a redirect to another allowed REST host is the placeholder-leak path ADR 0025 describes, and pi itself writes an empty `auth.json` on every start so only its content counts. The guard runs before the agent-writable `.env` is sourced and again after it behind `unset -f test command grep tr sed printf`, whether or not hooks are enabled.
+  - When the agent's `tools:` allow sub-agents, `-e /sandbox/pi-config/fullsend-agent.js` is appended after the hook adapter and two more pre-`.env` guards join the block: the Agent extension must be byte-identical to the embedded copy (exit 94, its own code so `Run` names that extension rather than the hook adapter), and `fullsend-manifest.json` must be byte-identical to the one `Bootstrap` wrote (exit 95, re-checked after `.env` behind `unset -f test [ command sha256sum cut` — `[` is in that list because the guard uses it, and the sandbox's `sh` is dash, which accepts `unset -f [`). The digest is then exported as `FULLSEND_PI_MANIFEST_SHA256` so `fullsend-hooks.js` can re-verify the manifest whenever it loads, including inside a sub-agent started later in the iteration — see [Pi sub-agents](#pi-sub-agents-the-agent-tool-contract). Children are launched by that extension, not by `Run`: same flag set, prompt on stdin, own session dir, no `Agent` tool of their own.
 - **`--mode json` exits 0 on model error** — only text mode maps `stopReason: error|aborted` to exit 1. `parsePiStream` is the intended detector (assistant `stopReason` on `message_end.message` / last `agent_end.messages` entry) for the runner's exit-0-override (#2786/#5361). `Run` tees the stream to `output.jsonl`, `ParseTranscriptFile` reads it, and `Run` itself returns 1 on a stream-reported error, so the override and the runtime agree.
 - **Exit code** — `Run` returns 1 when pi exited 0 but the stream's single `ResultEvent` reports an error (model error, incomplete stream), so the runner's exit-0 override and this agree; `ParseTranscriptFile` gives the same verdict from the tee'd `output.jsonl`.
 
@@ -531,29 +655,193 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 - An unreadable manifest, or one without a hook plan, blocks every tool call.
 - Because pi silently skips a missing `-e` path, `Run` checks — before sourcing the agent-writable `.env`, with `command -p sha256sum` / `command -p cut` so nothing in the shell environment can stand in for them — that the adapter exists and matches the embedded copy's SHA-256 and that the manifest exists, failing closed (exit 97) otherwise; it refuses to start at all (exit -1) when security is enabled but the manifest carries no hook plan; and it decides whether to load the adapter from the runner's security signal rather than the manifest.
 - The manifest and the hook scripts themselves stay agent-writable between iterations — the same residue Claude Code has with `claude-config/hooks.json` and its scripts (both are written once at `Bootstrap`).
+- The pi-format entries of the harness's `plugins:` list ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment — uploaded at `Bootstrap`, re-hashed and preflighted before every iteration, appended with `-e` after the adapter so the sandbox hooks see every call first ([Pi extensions](#pi-extensions-adr-0094)). The adapter itself grants them nothing: it logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions, and that is all. No hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
 - Edit inputs keep pi's `edits[]` shape, with `path` mirrored to `file_path` and the first `oldText`/`newText` pair mirrored to `old_string`/`new_string`; no shipped script reads the latter.
 - pi fires `tool_result` for failed calls too, so — unlike Claude Code's `PostToolUse` — errored tool output is sanitized as well.
 - The `tool_call`/`tool_result` event shapes the adapter relies on (`toolName`, `input`, `content`, `isError`; `{block, reason}` and `{content, isError}` replies) are verified against pi v0.84.2 `src/extensions/types.ts`/`runner.ts`; the lifecycle run is the live confirmation.
 
-### Claude-on-Vertex via an interim extension
+### Pi extensions (ADR 0094)
 
-pi's `google-vertex` provider is Gemini-only and the upstream `anthropic-vertex` provider is an open PR (earendil-works/pi#5262, still open as of 2026-08-22). The sandbox image vendors [`twoGiants/pi-anthropic-vertex`](https://github.com/twoGiants/pi-anthropic-vertex) v0.1.13 (commit `d3c9d10d`, MIT; reviewed — a ~300-line entry point plus ~220 lines mirrored from pi's `streamSimple` helpers; it registers provider `anthropic-vertex` and delegates streaming to pi's built-in Anthropic provider through an `AnthropicVertex` client) under `/usr/local/share/pi-extensions/anthropic-vertex`, pinned by tag + tarball SHA256 (`PI_ANTHROPIC_VERTEX_VERSION`/`_SHA256`). It is root-owned and outside `PI_CODING_AGENT_DIR`, so pi never auto-loads it; for the `anthropic-vertex` provider `Run` passes it with `-e` (`runtime.piVertexExtensionPath`; providers without a vendored extension get pi's built-ins only).
+The pi-format entries of the harness's `plugins:` list
+([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). The walkthrough a harness author
+follows is [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions); this section
+keeps the rules' *reasons* and the provenance behind them (verified against pi 0.84.4 unless noted).
+At the pinned 0.85.0 the loader modules cited below — `core/pi-manifest.js` and
+`core/package-manager.js` — are byte-identical; `core/extensions/loader.js` and the bundled
+`cli.js` did change, but the `createJiti` call and the `isBundledNode` expression this section
+relies on are unchanged (`isBundledNode` merely moved to `config.js`).
+
+**Which entries are pi's is decided per directory.** `internal/pluginformat` is the leaf package
+both `internal/harness` and `internal/runtime` read: `Detect` (local directory) and `DetectTree`
+(fetched tree) return `KindClaude` for a `plugin.json` bundle and `KindPi` for a directory pi's
+loader resolves. `plugin.json` is checked first and settles it — a Claude plugin that bundles a Node
+MCP server ships a `package.json` whose `main` resolves, which would otherwise satisfy pi's rule as
+well. Everything below is the `KindPi` half of that verdict.
+
+**Validation mirrors pi's own loader.** `internal/pluginformat/pi.go` re-implements
+`-e <dir>` resolution so a harness never ships a directory pi would refuse — or, worse, accept and
+load nothing from. pi's rule is not the obvious one:
+
+- A `package.json` carrying a **`pi` object** decides the verdict alone: `readPiManifest` returns
+  non-null and pi loads only what `pi.extensions` names, never `index.*` and never `main`. So
+  `{"pi": {}}`, `{"pi": {"skills": [...]}}` and a `pi.extensions` whose entries all fail to resolve
+  load *nothing*, silently, with pi exiting 0 — the run simply has no extension and no message says
+  so. Validation refuses all three shapes, which is the only place that failure can be made loud.
+- Without a `pi` object, an `extensions/`, `prompts/`, `skills/` or `themes/` entry switches pi to
+  *package* layout: it collects those resource directories and stops treating `index.js` as an entry
+  point. pi probes the name with `existsSync`, so a plain **file** called `skills` has the same
+  effect (verified on 0.84.4 — `index.js` stopped loading). Only then do `main` and
+  `index.js`/`index.ts`/`index.mjs`/`index.cjs` apply.
+- There is deliberately no discovery branch beyond that: a bare top-level `tools.js`, or an
+  `index.js` one directory down, is not an entry point — pi exits 1 with
+  `Failed to load extension ... Cannot find module`. A directory reached *through* a `pi.extensions`
+  entry resolves more loosely (`extensionAutoEntries`): its own entry points, else any top-level
+  `.js`/`.ts` file, else an immediate subdirectory that itself resolves — and on that path only
+  `index.ts`/`index.js` count, not `.mjs`/`.cjs`. The two rules are different code paths in pi and
+  must not be collapsed.
+- **Containment.** pi resolves `pi.extensions` and `main` against the package root with **no**
+  containment check, so `../evil.js` would load code the sandbox preflight never hashes (verified on
+  0.84.4). Every listed entry is checked, not just the first that exists, and the check repeats one
+  level down: a `pi.extensions` entry naming a subdirectory sends pi to *that* `package.json`, whose
+  own entries are resolved against it with the same absence of a check. That nested problem is
+  returned to the caller rather than swallowed as "does not load".
+- **BOM.** `readPiManifest` strips a UTF-8 byte-order mark before parsing and `encoding/json` does
+  not, so validation strips it too — otherwise an editor that wrote one would hide the `pi` object
+  and send the verdict down the `index.js` branch pi never takes.
+- **Globs.** pi's `hasGlobPattern` is `s.includes("*") || s.includes("?")`, so a bracket-only entry
+  such as `[ab].js` is a literal file name to pi, not a pattern, and is treated literally here. Real
+  globs go through Node's `globSync`, which expands braces and crosses separators on `**` — neither
+  of which `path.Match` can express — so a pattern containing `**` or `{}` is accepted unevaluated
+  rather than guessed at. A wrong refusal would block a harness pi would have loaded; the accepting
+  direction is harmless, because the tree hash still covers whatever ends up loading.
+- **`!` entries** are pi's *disable* form: they remove an entry other patterns brought in and can
+  never contribute one. A `pi.extensions` made only of `!` patterns is refused; `["*.js",
+  "!main.js"]` is accepted because `*.js` matches, even though pi would then disable the only match.
+  Mirroring pi exactly matters more here than second-guessing it.
+- **Tree admissibility** (`ExtensionEntryProblem`) is one definition shared by validation, the tree
+  hash and the injection scan: regular files and directories only, and no name containing a newline,
+  carriage return or backslash. GNU `sha256sum` escapes all three and prefixes the line with `\`,
+  which the Go side does not mirror, so the host and sandbox implementations could not agree on such
+  a name. Symlinks are refused because pi *follows* them when resolving an entry point while the
+  sandbox-side `find . ! -type f ! -type d` probe prints nothing — a symlink left in the verdict
+  would be a way to swap an extension's code without moving its hash. Forge-fetched trees cannot
+  carry symlinks anyway, so nothing legitimate is lost; the extension *root* may still be one, since
+  cache paths are named symlinks into the content-addressed store and callers `EvalSymlinks` before
+  walking. The whole tree is walked — `node_modules` and dotted directories included — so a planted
+  symlink is named at validation rather than failing anonymously at Bootstrap; only the entry-point
+  *listing* skips those directories, which cannot hold an entry point pi would resolve.
+- **Source and naming.** `npm:`/`git:`/`ssh:` sources and `..` segments are rejected: pi would
+  install `npm:`/`git:` sources from the network at startup, which the sandbox cannot do. A URL
+  entry follows the `skills:` rule — a forge `/tree/` directory pinned with `#sha256=` — and is
+  format-checked after `resolve.Resolve` has fetched it, so it is held to exactly the same rules as
+  a local path. Names are limited to `a-z A-Z 0-9 _ -`; duplicate basenames are refused because
+  `sandbox.UploadDir` replaces its destination wholesale and one entry would silently drop the
+  other; and `pluginformat.PiReservedExtensionNames` (`fullsend-hooks`, `anthropic-vertex`,
+  `xai-vertex`) is refused for a pi-format entry because an upload under one of those would shadow
+  runner-owned code.
+- **`env` and `pi:` are code-family options.** They are valid on an entry a runtime loads as code;
+  on a Claude plugin they would be silently dropped, so `ValidateFilesExist` refuses them there
+  rather than accepting configuration that does nothing.
+- **Scan limits.** Extensions take the same injection scan as `skills:`/`plugins:`/`scripts:`, over
+  every text file including `node_modules`. Files over 1 MiB are noted on stderr and skipped, and a
+  tree over 20 000 files is refused in either `fail_mode` — scanning a vendored dependency graph is
+  the cost that would make the gate unusable, not a finding. Treat scan output as a prompt to look:
+  the heuristics run over third-party JavaScript and prose, so minified bundles and README examples
+  produce false positives.
+
+Validation runs wherever the harness is loaded. The syntax checks (path shape, duplicates, `env`
+key syntax, `pi.args`) are in `Harness.Validate`, which touches no disk; the format verdict and the
+checks that depend on it are in `ValidateFilesExist`, which runs after URL entries have been
+fetched to local paths — `fullsend run`'s "File validation failed" step. `fullsend lock` and base
+composition apply the same rule to a fetched tree through `pluginformat.DetectTree`.
+
+**Upload and the tree-hash preflight.** `Bootstrap` uploads each directory to
+`/sandbox/pi-config/extensions/<name>/` — a runner-owned path pi does not auto-discover — and
+records name, sandbox path, tree hash, `pi.args` and `env` in `fullsend-manifest.json` (whose
+`extensions` field keeps its name: it is pi's own vocabulary, not the harness key's). `Run` re-hashes
+the *host* directory (`piExtensionTreeHash`, one definition implemented in Go and as a POSIX
+`find | LC_ALL=C sort | sha256sum` pipeline, equivalence-tested under `sh` and `dash`) and emits a
+preflight in the same pre-`.env` block as the hook-adapter guard, exiting 96 when a sandbox copy is
+missing or differs. The expected hash is never read back from the manifest: the manifest lives in
+the agent-writable config dir, so a value read from it could be rewritten together with the
+extension between iterations. The hash covers regular files **and** the directory set, because pi
+reacts to directory *names* — an added empty `skills/` would silently turn the extension into a
+package pi loads nothing from. Declared extensions are appended with `-e` after the provider
+extension and the adapter, so `tool_call` handlers still reach the sandbox hooks first: pi runs them
+in `-e` order and the first `block` wins.
+
+**The loader environment is pinned too, because a hash over the source only binds what the loader
+reads.**
+
+- `JITI_FS_CACHE=false` comes from `EnvExports`. It is jiti's option, not pi's: pi imports every
+  `-e` module through jiti and passes no `fsCache`, so jiti resolves it from `JITI_FS_CACHE`, then
+  `JITI_CACHE`, then `true`, and writes transpiled bodies next to the module that created the jiti
+  instance (`<pi>/dist/bundle/chunks/node_modules/.cache/jiti` in the published package) or, when
+  that directory does not exist, to `$TMPDIR/jiti` — the image ships no such directory, so it is
+  `/tmp/jiti`, agent-writable and persistent across iterations. jiti accepts a cache entry on a
+  ` /* v9-<hash of the source> */` trailer alone, so a body rewritten with that trailer intact
+  executes while the source file is untouched: a path around **both** the extension tree-hash
+  preflight and the hook adapter's SHA-256 check, neither of which can see it. Disabling the cache
+  makes jiti ignore a planted entry and create no cache directory at all
+  (`internal/runtime/testdata/pi/jiti-cache-check.sh` reproduces both halves against the pinned
+  `PI_VERSION`; re-run it on a bump).
+- The cache is one lever of several the environment carries into the loader, so right after
+  `. .env` — on **every** provider path, not just `openai` — `Run` emits a bare `unset` of
+  `NODE_OPTIONS`, `NODE_PATH` and the whole `JITI_*` family except `JITI_FS_CACHE`, which
+  `EnvExports` then pins (`piLoaderEnvNames` in `pi_run.go`). `JITI_ALIAS` is the reason: pi's
+  bundled `cli.js` reaches `createJiti` on its `isBundledNode` branch, which passes no `alias`, so
+  jiti fills that option from the environment and a `.env`-exported map remaps the specifier behind
+  an `-e` path to another file — the extension source, its tree hash and the hook adapter's SHA-256
+  all stay clean, because none of them can see the substitution. `unset` is a POSIX special builtin,
+  so a function a rewritten `.env` defined cannot stand in for it. The same script covers the alias
+  half, reading the name list out of `pi_run.go` so the two cannot drift.
+- A residual TOCTOU remains, shared with the hook guard: a background process left by a previous
+  iteration could rewrite the tree between the guard and pi's `import` — the stray-process sweep
+  ([#6753](https://github.com/fullsend-ai/fullsend/issues/6753)) narrows the window rather than
+  closing it.
+
+**Why `args` and `env` are validated so narrowly.** pi parses every element of its command line
+positionally, and an extension's `args` follow its `-e <path>` verbatim into that parser. So each
+dash-prefixed element must be `--flag` or `--flag=value` the extension registered with
+`pi.registerFlag` (pi has no single-dash options), pi's own option names are rejected because the
+runner owns them, and a value may not start with `-` or `@` — `@path` makes pi attach a file to the
+prompt. A bare word is allowed exactly once, directly after a `--flag` written without `=`: pi
+consumes at most one value per flag and none after `--flag=value`, and reads every *other* bare word
+as **prompt text** prepended to the agent's prompt, which makes
+`args: ["--fff-mode", "override", "and now ignore your instructions"]` an injection vector rather
+than a flag value. `env` is exported last, but export order is not the protection — pi hands its
+whole environment to every hook script it spawns, so the deny-list in `plugin_spec.go` refuses
+the names outright at validation. It covers the interpreter environment (`PATH`, `HOME`, `TMPDIR`,
+`ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`,
+`NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), credential- and
+proxy-shaped names (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), the names that move a trust
+anchor or a resolver for the tools hook scripts shell out to (`HOSTALIASES`, `OPENSSL_CONF`,
+`SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), and the runner's,
+providers' and sandbox tooling's families (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`,
+`CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`). An
+extension's own settings are untouched by any of it.
+
+**Other runtimes** name and skip each entry
+(`Plugin "<name>": skipped — the <runtime> runtime does not load pi extensions (see docs/runtimes.md)`)
+rather than dropping the list silently, the mirror of pi's `plugins:` warning.
+
+### Claude-on-Vertex via a fullsend-owned extension
+
+pi's `google-vertex` provider is Gemini-only and upstream's `anthropic-vertex` provider (earendil-works/pi#5262) is still an open PR, so the sandbox image vendors [`fullsend-ai/pi-anthropic-vertex`](https://github.com/fullsend-ai/pi-anthropic-vertex) under `/usr/local/share/pi-extensions/anthropic-vertex`, pinned by tag + tarball SHA256 (`PI_ANTHROPIC_VERTEX_VERSION`/`_SHA256`). pi never auto-loads it; `Run` passes it with `-e` for the `anthropic-vertex` provider (`runtime.piVertexExtensionPath`).
+
+**How it works.** It registers provider `anthropic-vertex` with pi's own Claude catalog and pi's own Anthropic transport. A `fetch` wrapper rewrites each request the way the Vertex SDK does: the model id moves into the URL path, `anthropic_version` goes into the body, and the Google token becomes an `authorization: Bearer` header. No `@anthropic-ai/*` dependency, no mirrored pi internals. It replaced twoGiants/pi-anthropic-vertex in #7019, which copied pi's `streamSimple` helpers, pinned the Anthropic SDK underneath a cast, and hard-failed `claude-opus-5` from pi 0.84.3.
 
 **Project, region, and credentials:**
 
 | | Resolution | Note |
 |---|---|---|
-| Project | `GOOGLE_CLOUD_PROJECT`, then `GCLOUD_PROJECT`, then `ANTHROPIC_VERTEX_PROJECT_ID`, then `GOOGLE_CLOUD_PROJECT_ID` | The fleet env exports both the first and the third; `Run` pins `GOOGLE_CLOUD_PROJECT` to `ANTHROPIC_VERTEX_PROJECT_ID` when that is set, so the extension's first-wins order cannot diverge from Claude Code |
-| Region | `CLOUD_ML_REGION`, then `GOOGLE_CLOUD_LOCATION`, default `us-east5` | |
-| Auth | Google's `google-auth-library` reading `GOOGLE_APPLICATION_CREDENTIALS` | In CI that is the Workload Identity Federation `external_account` config the runner delivers via `host_files` (ADR 0025 tier 4), whose `credential_source.file` is the OIDC token at `/sandbox/workspace/.gcp-oidc-token` that the runner refreshes every 4 minutes; the library exchanges it at `sts.googleapis.com` for a short-lived access token (direct federated identity, no impersonation) — exactly the path Claude Code uses, under the same `*.googleapis.com` egress allowlist and `**/node` binary rule |
+| Project | `GOOGLE_CLOUD_PROJECT`, then `GCLOUD_PROJECT`, then `ANTHROPIC_VERTEX_PROJECT_ID`, then `GOOGLE_CLOUD_PROJECT_ID` | `Run` pins `GOOGLE_CLOUD_PROJECT` to `ANTHROPIC_VERTEX_PROJECT_ID` when that is set, so pi cannot diverge from Claude Code |
+| Region | `CLOUD_ML_REGION`, then `GOOGLE_CLOUD_LOCATION`, default `us-east5` | Interpolated into the endpoint host (`{region}-aiplatform.googleapis.com`, or the `global`/`us`/`eu` hosts) |
+| Auth | `google-auth-library` reading `GOOGLE_APPLICATION_CREDENTIALS` | In CI: the WIF `external_account` config the runner delivers via `host_files` (ADR 0025), whose OIDC token file the runner refreshes every 4 minutes — the same path Claude Code uses, under the same `*.googleapis.com` egress allowlist |
 
-**Credential hygiene:** the bundled Vertex client (`@anthropic-ai/vertex-sdk` 0.14.4 over `@anthropic-ai/sdk` 0.91.1) honours `ANTHROPIC_VERTEX_BASE_URL` as its endpoint and would send a stray `ANTHROPIC_API_KEY` to Google as `X-Api-Key`; `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are overridden by the Google bearer and the explicit Vertex base URL, but pi's built-in `anthropic` provider reads `ANTHROPIC_AUTH_TOKEN` and the SDK would read `ANTHROPIC_BASE_URL` for any provider that leaves `baseURL` unset. So `Run` unsets `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_VERTEX_BASE_URL` after sourcing `.env` for the `anthropic-vertex` provider (matched case-insensitively, as pi resolves provider prefixes) and keeps them for a direct `anthropic` provider, which needs the key.
+**Credential hygiene — keep the unset.** The extension reads no `ANTHROPIC_*` variable except `ANTHROPIC_VERTEX_PROJECT_ID`, but pi's built-in `anthropic` provider runs in the same process and resolves `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` from the environment. So `Run` (and `childEnv` in `fullsend-agent.js` for sub-agents) still unsets `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_VERTEX_BASE_URL` for the `anthropic-vertex` provider and keeps them for a direct `anthropic` provider. `ANTHROPIC_OAUTH_TOKEN` is not scrubbed yet (#7029).
 
-**Known risks — re-check on every `PI_VERSION` or extension bump:**
-
-- v0.1.13 was synced against pi 0.81.1 (upstream sync issue twoGiants/pi-anthropic-vertex#24 is open) and its mirrored option mapping can drift.
-- The extension pins `@anthropic-ai/sdk` via `overrides`, and that must match the SDK version in pi's `packages/ai/package.json` (both 0.91.1 today) because the Vertex client is cast to pi's Anthropic client type.
-- It copies pi's first-party Anthropic `compat` flags (strict tools, eager input streaming, adaptive thinking) onto the Vertex models — the Run PR must smoke an adaptive and a non-adaptive model against Vertex and, if Vertex rejects any of these, override them in `PI_CODING_AGENT_DIR/models.json` rather than patching the extension.
+**On a `PI_VERSION` or extension bump.** The extension's own CI matrix runs its suite against fullsend's pinned `PI_VERSION` and the latest pi, so a green tag is the compatibility check — there is no `sync/compat.json` and no SDK override. Order: move the matrix's older entry to the new pin, then bump here. Two things the matrix cannot see: a compat key a new pi adds reaches Vertex only if the extension's `VERTEX_COMPAT_KEYS` allowlist names it (in v0.1.0 an undecided key is dropped silently; from v0.1.1 the extension's own build fails on it), and Vertex may reject a request shape a new pi introduces — smoke an adaptive and a non-adaptive model on a bump and override in `PI_CODING_AGENT_DIR/models.json` rather than patching the extension.
 
 Replace with the upstream provider once #5262 ships in a pinned release.
 
@@ -561,7 +849,7 @@ Replace with the upstream provider once #5262 ships in a pinned release.
 
 pi's built-in `xai` provider targets xAI's native API (`api.x.ai`, needs `XAI_API_KEY`) and `google-vertex` is Gemini-only, so neither reaches Grok on Vertex, which speaks the OpenAI-completions protocol. The sandbox image vendors [`fullsend-ai/pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) (MIT) under `/usr/local/share/pi-extensions/xai-vertex`, pinned by tag + tarball SHA256 (`PI_XAI_VERTEX_VERSION`/`_SHA256`, Renovate-tracked like the Anthropic one) and registering provider `xai-vertex` with model `xai/grok-4.6`.
 
-- **No mirrored internals.** Unlike the Anthropic extension it registers `openAICompletionsApi()` and lets pi do streaming, tools and usage — so there is no `sync/compat.json` drift to re-check on a `PI_VERSION` bump; confirm its `peerDependencies` floor instead.
+- **No mirrored internals.** Like the Anthropic extension it registers a public pi API (`openAICompletionsApi()`) and lets pi do streaming, tools and usage — so there is no `sync/compat.json` drift to re-check on a `PI_VERSION` bump; confirm its `peerDependencies` floor instead (declared only — it installs with `--omit=peer` too, so nothing enforces it at build time).
 - **Auth** is ambient ADC through `google-auth-library` reading `GOOGLE_APPLICATION_CREDENTIALS`, the same WIF `external_account` path as Claude-on-Vertex and under the same `*.googleapis.com` egress allowlist, so no new credential plumbing.
 - **Endpoint** is fixed to the **global** location (`/locations/global/endpoints/openapi`) because Vertex serves this model only there — regional endpoints answer `FAILED_PRECONDITION` — so `CLOUD_ML_REGION`/`GOOGLE_CLOUD_LOCATION` are deliberately ignored for this provider.
 - **`Run`** passes it with `-e` (`runtime.piXaiVertexExtensionPath`), unsets `XAI_API_KEY` after sourcing `.env` so pi's built-in `xai` provider cannot shadow it, and defaults `XAI_VERTEX_PROJECT_ID` to `ANTHROPIC_VERTEX_PROJECT_ID` (then `GOOGLE_CLOUD_PROJECT`) **only when the runner has not set it**, so the fleet's Vertex project is the default without becoming a ceiling. Each Vertex provider resolves its own project variable, so one pi process can serve Grok, Claude and Gemini from different GCP projects; overriding an explicit value would collapse that and leave no way to point Grok at a project where it is actually enabled in Model Garden (the call then fails 403 `PERMISSION_DENIED`, and the extension does not warn because it did have a project — just the wrong one).
@@ -575,10 +863,110 @@ The pinned `pi` CLI and the vendored Vertex extensions ship in every sandbox ima
 
 `runtime: pi` is selectable, but no fleet lifecycle run on Vertex has been recorded yet:
 
-- The Vertex model ids and the copied `compat` flags have not been exercised against Vertex — smoke an adaptive and a non-adaptive model first; override with `--model`/`FULLSEND_MODEL` if an id is rejected.
+- The Vertex model ids and pi's own first-party `compat` flags (the extension re-points pi's catalog rather than copying flags onto it) have not been exercised against Vertex on a fleet run — smoke an adaptive and a non-adaptive model first; override with `--model`/`FULLSEND_MODEL` if an id is rejected.
 - Parser fixtures are hand-authored to the v0.84.2 wire docs — re-record with `internal/runtime/testdata/pi/regen.sh` once a run exists; `extension_error` events are not mapped.
 - The behaviour scenario `features/runtime/pi.feature` (a real haiku run on Vertex of a minimal tool-using agent, asserting `metrics.json` `runtime: pi`, a `toolCall` in the pi session transcript and token usage) is gated on `BEHAVIOUR_CAPABILITIES=runtime-pi` until `fullsend-sandbox:latest` carries `PI_VERSION`; `features/triage/triage.feature` asserts the runtime selected from the repo config on every run.
-- Pilot on a disposable org with `triage`/`prioritize` (no sub-agent assumptions) before `code`/`fix`. `review`/`retro` rely on Claude sub-agent rosters and are not supported: pi v0.84.2 has no sub-agent tool or `agents/*.md` concept in core — only the bundled example extension (`examples/extensions/subagent/`, spawns `pi -p --mode json` children without our hook adapter, Vertex provider, `--no-approve` or session dir) and the SDK route (`createAgentSession()` per child; parent extensions do not fire for children). A fullsend-owned sub-agent extension with the full child flag set is a follow-up tracked on #6527 (runtime parity backlog); until then `Bootstrap` appends a runtime note telling the agent no sub-agent tool exists and to execute sub-agent definitions itself, in order.
+- Pilot on a disposable test repository with `triage`/`prioritize` before `code`/`fix` ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md): per-repo is the only supported installation model). `review`/`retro` now run their real sub-agent roster through the runner-owned `Agent` tool (see [pi: Pi sub-agents](#pi-sub-agents-the-agent-tool-contract)), but that roster has been exercised locally, not on a fleet lifecycle run — watch the wall clock on the first one, and note that children default to `--thinking medium` for that reason. pi has no sub-agent tool or `agents/*.md` concept in core — fullsend supplies one as an extension; the bundled example extension (`examples/extensions/subagent/`) spawns children without the hook adapter, Vertex provider, `--no-approve` or a session dir, which is why fullsend ships its own.
+
+### Pi sub-agents: the Agent tool contract
+
+`Bootstrap` writes an `agent` block into `fullsend-manifest.json` and uploads the embedded
+`fullsend-agent.js`, which registers Claude Code's `Agent` tool (and its legacy alias `Task`) so the
+fleet's sub-agent skills dispatch unchanged. The block is written — and `Run` loads the extension
+with `-e`, after the hook adapter — when the agent definition has no `tools:` frontmatter or lists
+`Agent`/`Task`; otherwise the older "no sub-agent tool" runtime note is appended instead.
+
+| Manifest field | Meaning |
+|---|---|
+| `enabled` | The tool is registered. `Run` also gates the `-e` and the integrity guard on it |
+| `piBin` | The `pi` binary children run, resolved in the sandbox at `Bootstrap` (`command -v pi`); `pi` when the probe found nothing |
+| `sessionsDir` | Parent's session dir; child `<seq>` gets `--session-dir <sessionsDir>/agent-<seq>` |
+| `extensions` | The `-e` list every child gets, in order: the vendored provider extensions actually present in the image (`test -d` at `Bootstrap`) then the hook adapter when security is on. Never `fullsend-agent.js` itself |
+| `extensionDigests` | SHA-256 (hex) of each `extensions` entry `Bootstrap` itself wrote under the config dir — today only the hook adapter, and the same bytes the launch guard checks. Re-hashed before every dispatch. The vendored provider extensions are absent on purpose: root-owned and read-only in the image, outside anything the agent can write. Omitted when hooks are off, because then nothing in the list came from `Bootstrap` |
+| `models` | `default` (the agent's model, translated) plus the Claude aliases on the Anthropic Vertex provider. The extension resolves a call's `model` through this table and **rejects** anything it cannot serve |
+| `providerModels` | Per provider a run can serve with no `models` entry, the model ids it can serve: `google-vertex` verbatim from the catalog the pinned pi bundles (`@earendil-works/pi-ai` `dist/providers/data/google-vertex.json`), and `xai-vertex` from the ids the vendored extension registers (`xai/grok-4.6`, the publisher-qualified wire form). A `provider/id` call is accepted only when the full spec is in `models`, is the parent's own spec, or is listed here — a provider prefix alone is not enough, or an invented id would reach the API. A Grok spec is normalized to `xai-vertex/xai/<id>` first, exactly as `normalizeXaiVertexModel` does for the parent, and then goes through this same set |
+| `thinking` | Children's `--thinking`; `FULLSEND_PI_SUBAGENT_THINKING` (validated) else `medium` |
+| `tools` / `exploreTools` | The child `--tools` allowlist: the parent's built-ins minus `Agent`/`Task`, or — for `subagent_type: Explore` — the read-only set **intersected with** the parent's, so a child never reaches past its parent. An empty result becomes `--no-builtin-tools`, as it does for the parent |
+| `personas` | Per-persona model/tools table, keyed by persona name. Present when `sub-agents/*.md` files were discovered under skill roots. The extension dispatches a `subagent_type` that names a persona using its resolved model and tool set; an unknown non-empty type is rejected when personas are registered. Model resolution: repo `subagents.<persona>` > frontmatter `model:` > `subagents.default` > the parent's live model. An entry carries **no** `model` for that last case, so the extension inherits the parent the same way an anonymous child does — writing the agent definition's model here instead would split the two apart whenever config or a flag overrode the parent. A persona's `tools` are intersected with the parent's at dispatch; a present-but-empty array means no tools, and Bootstrap refuses such a persona rather than letting it fall back to the parent's set. Each spec is canonicalised and checked against the trusted set before it enters the manifest, so a persona never widens the set that admits it (#7031) |
+| `subagentDefault` | The canonicalised `agents[].subagents.default` spec, carried separately from `personas` because it applies to children that name **no** persona — `retro` dispatches nothing else. It fills an empty `model` argument and outranks the parent's live model; an explicit argument still wins. A registered persona never reads it: its own frontmatter model comes first (#7031) |
+| `skippedPersonas` | Persona files that did not register, by name, with the reason. A dispatch naming one is rejected with that reason rather than run as an anonymous child (#7031) |
+| `maxConcurrent`, `timeoutSeconds` | Semaphore and per-child deadline (4, 900 s) |
+| `usageFile` | Where the extension appends one line per child; `Run` folds it into `RunMetrics` and `ExtractTranscripts` downloads it. A persona dispatch's line carries `persona`; aggregation stays keyed by model (#7031) |
+
+- Children run with `FULLSEND_SUBAGENT_DEPTH=1` and the extension refuses to register when that
+  variable is already set, so recursion is impossible even if the `-e` list were tampered with.
+- The extension's code is SHA-256-checked against the embedded copy in the same pre-`.env` guard
+  block as the hook adapter, under its own exit 94 so `Run` can name the artifact that actually
+  failed, and **the manifest it reads is checked the same way**
+  (exit 95, both before and after `.env` — `.env` is agent-writable and could rewrite it between
+  the two, the same reason `piOpenAIConfigGuard` runs twice). Those are launch checks, so the
+  manifest is re-verified twice more during the iteration: by the Agent extension against the
+  bytes it loaded, immediately before each dispatch, and by `fullsend-hooks.js` against
+  `FULLSEND_PI_MANIFEST_SHA256` whenever it loads — which in a sub-agent is long after the
+  launch guard ran. Both are security controls: the
+  manifest names the binary children run, their `-e` list, their tool allowlists and where their
+  usage is recorded, and the config dir is agent-writable between iterations — so an unchecked
+  manifest would let an agent with `Write` but no `Bash` (which cannot start `pi` itself) launch
+  children of its own choosing.
+- **The hook adapter gets the same per-dispatch treatment**, through `agent.extensionDigests`.
+  The launch guard checks it once; a parent with `write` can replace it mid-iteration, and a
+  rewritten adapter simply drops its own `FULLSEND_PI_MANIFEST_SHA256` check, so verifying only
+  the manifest would leave the adapter unprotected and every later child unhooked. `Bootstrap`
+  therefore records the SHA-256 of each `agent.extensions` entry it wrote under the config dir
+  (today just the adapter, the same bytes `piHooksGuard` checks) into the manifest, and the Agent
+  extension re-hashes them alongside the manifest before every dispatch, inside the slot the
+  dispatch holds, refusing with `hook adapter changed since load; refusing to dispatch`. The map
+  is part of the manifest, so the manifest digest covers it. The vendored provider extensions
+  under `/usr/local/share/pi-extensions` need no digest — the image installs them root-owned and
+  read-only outside the config dir.
+- **`Bootstrap` and `Run` must run in one process** for any of the manifest guards to exist. The
+  digest lives in a package-level map keyed by sandbox name (`piManifestHashes`), recorded by
+  `Bootstrap` and read by `Run`; the CLI's `run` path does both in one process. A caller that
+  bootstrapped elsewhere gets no entry, and then neither the shell guard nor the
+  `FULLSEND_PI_MANIFEST_SHA256` export is emitted — silently, because failing closed there would
+  break every such caller. The per-dispatch checks above are unaffected: they compare against
+  bytes the extension read itself.
+- The hook adapter's `*` PreToolUse groups therefore see `Agent` calls, and the manifest's
+  `hooks.toolNames` carries `Agent`/`Task` verbatim (they are already Claude vocabulary). Claude
+  Code runs the same hooks on its own `Agent` tool.
+- The prompt is delivered on the child's **stdin**, never as a positional argument. Unterminated,
+  pi's argv parser reads a leading `-` as an unknown option (a startup error), a leading `--` as an
+  unknown flag that swallows the next word and a leading `@` as a file argument. pi *does* honour a
+  `--` end-of-options terminator (`dist/cli/args.js`), but that is not a way out: after it an
+  `@`-prefixed positional is still taken as a file argument, and argv is capped by the kernel
+  either way (`spawn E2BIG` past ~128 KiB), which a context package exceeds. In `--print` mode pi
+  reads a non-TTY stdin to EOF and uses it as the initial message (`dist/main.js`
+  `readPipedStdin`, `dist/cli/initial-message.js` `buildInitialMessage`, 0.84.4).
+- Children get `--append-system-prompt` with a short sub-agent role note. They share the parent's
+  `PI_CODING_AGENT_DIR`, and pi only discovers `APPEND_SYSTEM.md` there when no
+  `--append-system-prompt` was passed (`dist/core/resource-loader.js`), so without the flag every
+  child would inherit the parent's orchestrator persona — including its "make several `Agent` calls
+  in one message" dispatch note, for a tool it does not have.
+- Children are spawned with the parent's process group (**not** `detached`), so a killed parent
+  cannot leave them spending tokens. A child that times out, is aborted, or is caught by
+  `session_shutdown` gets **`SIGTERM` first**, escalated to `SIGKILL` after a 3 s grace. `SIGTERM`
+  is what makes the child clean up after itself: pi's own bash tool spawns commands `detached` in
+  their own process groups and reaps them from its `SIGTERM` handler before exiting 143
+  (`dist/modes/print-mode.js` → `killTrackedDetachedChildren`). Signalling the child's process group
+  with `SIGKILL` instead would leave those grandchildren running.
+- The child's environment is rebuilt per resolved provider with the same rules `buildPiRunCommand`
+  applies to the parent (`ANTHROPIC_*` cleared and `GOOGLE_CLOUD_PROJECT` pinned for
+  `anthropic-vertex`; `XAI_API_KEY` cleared and `XAI_VERTEX_PROJECT_ID` pinned for `xai-vertex`).
+  The shell hygiene only ever matched the *parent's* provider, so without this a Claude child under
+  a Grok parent would run with a stray `ANTHROPIC_API_KEY`.
+- The usage file is **consumed as it is read**: the in-sandbox command renames it to
+  `<usageFile>.read` before printing it (`piSubagentUsageReadCommand`), so folding it into
+  `RunMetrics` is idempotent per iteration and a retry whose `ClearIterationArtifacts` failed cannot
+  count the same children twice. The read is capped at 1 MiB (~4k child records) because the file
+  sits under the agent-reachable config dir, and a truncated tail surfaces as a skipped malformed
+  line rather than an unbounded allocation in the runner.
+- **`.env` is the same trust class here as everywhere else.** A rewritten
+  `/sandbox/workspace/.env` that exports `FULLSEND_SUBAGENT_DEPTH` disables the tool for that
+  iteration: the extension reads it as "this process is a child" and registers nothing. That is the
+  same exposure as any other `.env`-settable knob, and it fails in the safe direction. What `.env`
+  cannot do is change the manifest, the Agent extension or the hook adapter — all three are
+  SHA-256-checked before `.env` is sourced, the manifest again after it, and the manifest and the
+  adapter again before every dispatch.
 
 ### OpenAI via Workload Identity Federation
 

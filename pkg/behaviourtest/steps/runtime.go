@@ -228,7 +228,7 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		if st.Effort != "" {
 			effort = st.Effort
 		}
-		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort)
+		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort, nil)
 	}
 	cfg.SetAgents(agents)
 	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {

@@ -140,9 +140,24 @@ func TestClearStrayProcesses_ReportsKilledWithDuration(t *testing.T) {
 
 	var calls []string
 	var out bytes.Buffer
-	clearStrayProcesses(recordingExec(&calls, "stray processes killed: 2\n", "", 0, nil), "sb", &out)
+	clearStrayProcesses(recordingExec(&calls, "stray processes killed: 2\n", "", 0, nil), "sb", &out, "the previous iteration")
 	assert.Contains(t, out.String(), "2 stray process")
 	assert.Regexp(t, `\([0-9.]+(m|µ|n)?s\)`, out.String(), "the sweep duration is logged")
+}
+
+// TerminateStrayProcesses is the same sweep run right after an iteration
+// was ended at its budget (#7042); only the origin wording differs.
+func TestTerminateStrayProcesses_NamesTheTimedOutIteration(t *testing.T) {
+	var calls []string
+	orig := terminateExecFn
+	terminateExecFn = recordingExec(&calls, "stray processes killed: 4\n", "", 0, nil)
+	t.Cleanup(func() { terminateExecFn = orig })
+
+	var out bytes.Buffer
+	TerminateStrayProcesses("sb", &out)
+	require.Len(t, calls, 1)
+	assert.Equal(t, killStrayProcessesScript(), calls[0])
+	assert.Contains(t, out.String(), "Terminated 4 stray process(es) left running by the timed-out iteration")
 }
 
 func TestClearStrayProcesses_SilentWhenNothingKilled(t *testing.T) {
@@ -150,7 +165,7 @@ func TestClearStrayProcesses_SilentWhenNothingKilled(t *testing.T) {
 
 	var calls []string
 	var out bytes.Buffer
-	clearStrayProcesses(recordingExec(&calls, "stray processes killed: 0\n", "", 0, nil), "sb", &out)
+	clearStrayProcesses(recordingExec(&calls, "stray processes killed: 0\n", "", 0, nil), "sb", &out, "the previous iteration")
 	assert.Empty(t, out.String())
 }
 
@@ -162,7 +177,7 @@ func TestClearStrayProcesses_WarnsOnFailure(t *testing.T) {
 
 	var calls []string
 	var out bytes.Buffer
-	clearStrayProcesses(recordingExec(&calls, "", "boom", 124, errors.New("command timed out after 15s")), "sb", &out)
+	clearStrayProcesses(recordingExec(&calls, "", "boom", 124, errors.New("command timed out after 15s")), "sb", &out, "the previous iteration")
 	assert.Contains(t, out.String(), "Warning")
 	assert.Contains(t, out.String(), "stray")
 	assert.Contains(t, out.String(), "timed out")
@@ -174,7 +189,7 @@ func TestClearStrayProcesses_WarnsOnPsFailure(t *testing.T) {
 
 	var calls []string
 	var out bytes.Buffer
-	clearStrayProcesses(recordingExec(&calls, "", "stray processes: ps failed\n", 3, nil), "sb", &out)
+	clearStrayProcesses(recordingExec(&calls, "", "stray processes: ps failed\n", 3, nil), "sb", &out, "the previous iteration")
 	assert.Contains(t, out.String(), "Warning")
 	assert.Contains(t, out.String(), "ps failed")
 }

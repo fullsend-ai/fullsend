@@ -2507,7 +2507,7 @@ func TestValidModelRef(t *testing.T) {
 		{"sonnet", true},
 		{"claude-opus-4-6", true},
 		{"claude-sonnet-4-6@20250514", true},
-		{"google-vertex/gemini-3.7-flash", true},
+		{"google-vertex/gemini-3.8-flash", true},
 		{"xai-vertex/xai/grok-4.6", true},
 		{"anthropic-vertex/claude-opus-4-6", true},
 		{"", false},
@@ -2617,7 +2617,7 @@ func TestAgentSettings_Validate(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
-	for _, model := range []string{"opus", "claude-haiku-4-5@20251001", "google-vertex/gemini-3.7-flash", "xai-vertex/xai/grok-4.6"} {
+	for _, model := range []string{"opus", "claude-haiku-4-5@20251001", "google-vertex/gemini-3.8-flash", "xai-vertex/xai/grok-4.6"} {
 		cfg := parseAgentSettingsConfig(t, "agents:\n  - name: triage\n    model: "+model+"\n")
 		assert.NoError(t, cfg.(ConfigWriter).Validate(), model)
 	}
@@ -2626,8 +2626,8 @@ func TestAgentSettings_Validate(t *testing.T) {
 func TestAgentSettings_MarshalRoundTrip(t *testing.T) {
 	t.Parallel()
 	cfg := NewPerRepoConfig([]string{"triage"}, "")
-	cfg.SetAgents(UpsertAgentSettings(nil, "code", "claude", "sonnet", "high"))
-	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "triage", "", "xai-vertex/xai/grok-4.6", ""))
+	cfg.SetAgents(UpsertAgentSettings(nil, "code", "claude", "sonnet", "high", nil))
+	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "triage", "", "xai-vertex/xai/grok-4.6", "", nil))
 	require.NoError(t, cfg.Validate())
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
@@ -2643,7 +2643,7 @@ func TestAgentSettings_MarshalRoundTrip(t *testing.T) {
 	assert.Equal(t, AgentEntry{Name: "code", Runtime: "claude", Model: "sonnet", Effort: "high"}, code)
 
 	// Upsert replaces settings on the existing entry; empty clears.
-	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "CODE", "", "haiku", ""))
+	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "CODE", "", "haiku", "", nil))
 	code, _ = AgentSettingsFor(cfg.AgentEntries(), "code")
 	assert.Equal(t, AgentEntry{Name: "code", Model: "haiku"}, code)
 	assert.Len(t, cfg.AgentEntries(), 2)
@@ -2957,6 +2957,191 @@ func TestModelsAliases_SetterAndGetter(t *testing.T) {
 	pw.SetModelAliases(nil)
 	assert.Nil(t, pr.ConfigModelAliases())
 }
+
+// --- Subagent config tests (#7031) ---
+
+func TestValidSubagentKey(t *testing.T) {
+	t.Parallel()
+	valid := []string{"default", "correctness", "security", "style-conventions", "a1-b2-c3"}
+	for _, k := range valid {
+		assert.True(t, ValidSubagentKey(k), "expected valid: %s", k)
+	}
+	invalid := []string{"", "A", "Correctness", "has_underscore", "-leading", "trailing-", "a--b", strings.Repeat("a", 65)}
+	for _, k := range invalid {
+		assert.False(t, ValidSubagentKey(k), "expected invalid: %q", k)
+	}
+}
+
+func TestValidateAgentSettings_SubagentKeys(t *testing.T) {
+	t.Parallel()
+	// Valid subagent entries.
+	good := AgentEntry{
+		Name: "review",
+		Subagents: map[string]*string{
+			"default":     strPtr("haiku"),
+			"correctness": strPtr("opus"),
+		},
+	}
+	assert.NoError(t, validateAgentSettings(0, good))
+
+	// Invalid key.
+	bad := AgentEntry{
+		Name: "review",
+		Subagents: map[string]*string{
+			"Bad-Key": strPtr("opus"),
+		},
+	}
+	err := validateAgentSettings(0, bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Bad-Key")
+
+	// Invalid value (not a valid model ref).
+	badVal := AgentEntry{
+		Name: "review",
+		Subagents: map[string]*string{
+			"correctness": strPtr("not a valid ref!"),
+		},
+	}
+	err = validateAgentSettings(0, badVal)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "correctness")
+
+	// Nil value (tombstone) is valid.
+	tombstone := AgentEntry{
+		Name: "review",
+		Subagents: map[string]*string{
+			"correctness": nil,
+		},
+	}
+	assert.NoError(t, validateAgentSettings(0, tombstone))
+}
+
+func TestUpsertAgentSettings_Subagents(t *testing.T) {
+	t.Parallel()
+	subs := map[string]*string{
+		"default":     strPtr("haiku"),
+		"correctness": strPtr("opus"),
+	}
+	entries := UpsertAgentSettings(nil, "review", "", "", "", subs)
+	require.Len(t, entries, 1)
+	assert.Equal(t, subs, entries[0].Subagents)
+}
+
+func TestHasSettings_IncludesSubagents(t *testing.T) {
+	t.Parallel()
+	empty := AgentEntry{Name: "review"}
+	assert.False(t, empty.HasSettings())
+
+	withSubs := AgentEntry{
+		Name: "review",
+		Subagents: map[string]*string{
+			"default": strPtr("haiku"),
+		},
+	}
+	assert.True(t, withSubs.HasSettings())
+}
+
+func TestSubagentsMerge_PerKeyOverlay(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      correctness: sonnet
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	entries := cfg.AgentEntries()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "review", entries[0].Name)
+	require.NotNil(t, entries[0].Subagents)
+	// "default" inherited from base.
+	assert.Equal(t, "haiku", *entries[0].Subagents["default"])
+	// "correctness" overridden by overlay.
+	assert.Equal(t, "sonnet", *entries[0].Subagents["correctness"])
+}
+
+func TestSubagentsMerge_Idempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      correctness: sonnet
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	// Writing into a merged result must not reach the parent layer's own
+	// map. Comparing two merged results cannot detect that: the mutation
+	// writes exactly the value the second merge would compute anyway, so
+	// the guard has to mutate and then re-read.
+	entries1 := cfg.AgentEntries()
+	require.Len(t, entries1, 1)
+	require.NotNil(t, entries1[0].Subagents)
+	entries1[0].Subagents["default"] = strPtrCfg("mutated")
+
+	entries2 := cfg.AgentEntries()
+	require.Len(t, entries2, 1)
+	assert.Equal(t, "haiku", *entries2[0].Subagents["default"],
+		"the base layer's map was mutated through the merged result")
+	assert.Equal(t, "sonnet", *entries2[0].Subagents["correctness"])
+}
+
+func strPtrCfg(s string) *string { return &s }
+
+func TestSubagentsMerge_TombstonePreserved(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      default: haiku
+      correctness: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: review
+    subagents:
+      correctness: ~
+`), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	entries := cfg.AgentEntries()
+	require.Len(t, entries, 1)
+	require.NotNil(t, entries[0].Subagents)
+	// "default" inherited from base.
+	assert.Equal(t, "haiku", *entries[0].Subagents["default"])
+	// "correctness" tombstoned by overlay (nil pointer).
+	val, exists := entries[0].Subagents["correctness"]
+	assert.True(t, exists, "tombstone key should be present")
+	assert.Nil(t, val, "tombstone value should be nil")
+}
+
+func strPtr(s string) *string { return &s }
 
 func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {
 	t.Parallel()

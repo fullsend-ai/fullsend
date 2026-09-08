@@ -67,7 +67,13 @@ Environment variables set by the pre-script:
 
 - `MY_INPUT_FILE` — path to input data JSON
 - `TARGET_REPO_DIR` — path to target repository checkout
+
+Environment variables set by the runner, present in every agent's shell:
+
 - `FULLSEND_OUTPUT_DIR` — where to write your result
+- `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
+- `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
+  write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
 
 ## Process
 
