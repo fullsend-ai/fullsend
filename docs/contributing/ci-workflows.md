@@ -41,7 +41,26 @@ GitHub Actions contexts describe different parts of an invocation. Do not treat 
 | Repository containing the workflow file that defines the current job | `job.workflow_repository` |
 | Commit containing the workflow file that defines the current job | `job.workflow_sha` |
 
-In a reusable workflow, `github.*` remains associated with the caller workflow, while `job.workflow_repository` and `job.workflow_sha` identify the workflow that defines the called job. In a composite action, `github.action_repository` and `github.action_ref` are the action identity values; expose them through the `env` context when using them in a `run` step. The `job.workflow_*` identity properties are also unavailable on GitHub Enterprise Server, so they are not portable fallbacks for action identity.
+In a reusable workflow, the caller-scoped subset of `github.*` — including
+`github.repository`, `github.sha`, `github.ref`, `github.workflow`, and
+`github.token` — remains associated with the caller workflow. The
+`github.action_*` properties are an exception: they identify the action
+currently executing, not the caller workflow. In a composite action, expose
+these action-identity values through the `env` context when using them in a
+`run` step.
+
+For remote actions invoked with `owner/repo@ref`, `github.action_repository`
+and `github.action_ref` identify the referenced action. For local composite
+actions invoked with `uses: ./...`, those two properties are empty; pass an
+explicit input or environment value when the action needs its repository or
+revision identity.
+
+`job.workflow_repository` and `job.workflow_sha` identify the repository and
+commit containing the workflow file that defines the current job. They are
+workflow-definition context, not action-execution context, and must never
+substitute for `github.action_repository` or `github.action_ref`, even on
+GitHub.com. They are also unavailable on GitHub Enterprise Server, so they
+cannot serve as a documented fallback across platforms.
 
 When refactoring between action types, audit every `job.*` and `github.*` reference for its execution context. Add an explicit input or fallback only when the action supports invocation modes where the preferred context can be absent, and validate that the fallback refers to the same repository and revision intended by the operation.
 
