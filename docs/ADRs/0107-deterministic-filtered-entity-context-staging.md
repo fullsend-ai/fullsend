@@ -63,19 +63,20 @@ or review body. No runner-clock timestamp enters the staged tree. Given the
 same forge state and filter version, implementations produce the same paths
 and bytes; breaking that guarantee requires a new major specification.
 
-Each comment and review is a self-contained attributed record. Fullsend also
-renders the initial body and records into canonical whole-conversation and
-per-thread Markdown views. New replies append without rewriting an unchanged
-prefix, so runtimes can place conversation bytes before mutable state in the
-agent context and preserve provider prompt-cache eligibility.
+Each comment and review is a self-contained attributed record whose filename
+sorts chronologically. The initial body uses the same record format and sorts
+first. Whole-conversation assembly is a glob concatenation; per-thread order
+files contain paths to the same records rather than copied content. New replies
+append without rewriting an unchanged prefix, preserving prompt-cache
+eligibility when runtimes concatenate records before mutable state.
 
 The pre-script may inspect the host snapshot and skip the run. It cannot mutate
 the agent's view: Fullsend verifies the manifest digests before upload and
 restores or rejects changed files. The sandbox copy is read-only to the agent.
-Agent prompts should lead with the canonical conversation view and place
-mutable state after that stable prefix; `summary.md` remains the navigation aid
-for selective reads. Runtime forge reads are an explicit fallback for data
-outside the snapshot, not the default way to obtain it.
+Agent prompts should concatenate conversation records first and place mutable
+state after that stable prefix; `summary.md` remains the navigation aid for
+selective reads. Runtime forge reads are an explicit fallback for data outside
+the snapshot, not the default way to obtain it.
 
 The host snapshot uses a mode-`0700` directory and mode-`0600` files. Fullsend
 removes the sandbox copy after its last sandbox consumer and the host copy after

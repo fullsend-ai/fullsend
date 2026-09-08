@@ -64,10 +64,10 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^(summary[.]md|conversation[.]md|entity/(metadata[.]json|body[.]md)|comments/[0-9a-f]{64}[.]md|reviews/[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]md|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
+          "pattern": "^(summary[.]md|entity/metadata[.]json|records/([0-9]{8}T[0-9]{15}Z)-[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]order|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
         },
         "role": {
-          "enum": ["summary", "conversation", "thread_conversation", "entity_metadata", "entity_body", "comment_body", "review_body", "diff", "commits", "check_metadata", "check_log", "thread_state"]
+          "enum": ["summary", "entity_metadata", "entity_record", "comment_record", "review_record", "thread_order", "diff", "commits", "check_metadata", "check_log", "thread_state"]
         },
         "media_type": { "type": "string", "minLength": 1 },
         "bytes": { "type": "integer", "minimum": 0 },
@@ -80,10 +80,10 @@
       "type": "object",
       "required": ["kind", "id", "record_key", "author_id", "author", "created_at", "filter"],
       "properties": {
-        "kind": { "enum": ["comment", "review", "check"] },
+        "kind": { "enum": ["entity", "comment", "review", "check"] },
         "id": { "type": "string", "minLength": 1 },
         "record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "content_path": { "type": "string", "pattern": "^(comments|reviews)/[0-9a-f]{64}[.]md$" },
+        "content_path": { "type": "string", "pattern": "^records/[0-9]{8}T[0-9]{15}Z-[0-9a-f]{64}[.]md$" },
         "metadata_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/metadata[.]json$" },
         "log_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/log[.]txt$" },
         "source_url": { "type": "string", "format": "uri" },
