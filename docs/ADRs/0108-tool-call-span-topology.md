@@ -1,5 +1,5 @@
 ---
-title: "102. Tool-call span topology"
+title: "108. Tool-call span topology"
 status: Accepted
 relates_to:
   - operational-observability
@@ -9,7 +9,7 @@ topics:
   - opentelemetry
 ---
 
-# 102. Tool-call span topology
+# 108. Tool-call span topology
 
 Date: 2026-09-03
 
