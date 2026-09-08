@@ -29,6 +29,22 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
+## Context-variable scoping
+
+GitHub Actions contexts describe different parts of an invocation. Do not treat similarly named properties as interchangeable when moving logic between inline workflow steps, reusable workflows, and composite actions. See the [GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts) for the complete availability matrix.
+
+| Need | Use |
+|---|---|
+| Repository that triggered the workflow | `github.repository` |
+| Repository containing the action currently being executed | `github.action_repository` |
+| Ref used to invoke the action currently being executed | `github.action_ref` |
+| Repository containing the workflow file that defines the current job | `job.workflow_repository` |
+| Commit containing the workflow file that defines the current job | `job.workflow_sha` |
+
+In a reusable workflow, `github.*` remains associated with the caller workflow, while `job.workflow_repository` and `job.workflow_sha` identify the workflow that defines the called job. In a composite action, `github.action_repository` and `github.action_ref` are the action identity values; expose them through the `env` context when using them in a `run` step. The `job.workflow_*` identity properties are also unavailable on GitHub Enterprise Server, so they are not portable fallbacks for action identity.
+
+When refactoring between action types, audit every `job.*` and `github.*` reference for its execution context. Add an explicit input or fallback only when the action supports invocation modes where the preferred context can be absent, and validate that the fallback refers to the same repository and revision intended by the operation.
+
 ## Timeout policy
 
 - Every non-reusable workflow job must set `timeout-minutes`.
