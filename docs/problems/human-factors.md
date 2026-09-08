@@ -159,7 +159,7 @@ These aren't solutions — they're directions worth exploring:
 - **Autonomy spectrum** defines what agents can do. Human factors asks what the experience is like for the humans on the other side of that boundary.
 - **Code review** designs the agent review process. Human factors asks what it's like for humans when code review — traditionally a core engineering activity — is no longer something they do.
 - **[Contributor guidance](contributor-guidance.md)** focuses on making contribution rules clear to both humans and agents. Human factors explores whether the resulting workflow remains rewarding enough to sustain human participation.
-- **[Trustworthiness evidence](trustworthiness-evidence.md)** builds trust in agent actions through structured evidence. The [voice concern](#trust-erosion-from-agent-generated-voice) here is the complementary problem: trust in agent communication.
+- **Trustworthiness evidence** builds trust in agent actions through structured evidence. The [voice concern](#trust-erosion-from-agent-generated-voice) here is the complementary problem: trust in agent communication.
 
 ## Open questions
 

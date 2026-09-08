@@ -102,7 +102,7 @@ Governance should consider whether agent-authored communications require attribu
 - **Security threat model** identifies the threats. Governance defines the policies that mitigate them and who can modify those policies.
 - **Autonomy spectrum** describes the graduation model. Governance defines who evaluates readiness and makes the graduation decision.
 - **Agent architecture** defines the agent roles and permissions. Governance defines who assigns those permissions and under what constraints.
-- **Human factors** explores what happens to the people alongside the system. The [adoption anti-patterns](#adoption-anti-patterns) above have direct human-factors consequences — mandates and shaming affect contributor motivation, and anthropomorphization distorts the trust relationships that community participation depends on.
+- **Human factors** explores what happens to the people alongside the system. The adoption anti-patterns above have direct consequences for contributor motivation and community trust.
 
 ## Open questions
 
