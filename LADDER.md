@@ -39,7 +39,9 @@ repository.
 **What it unlocks:**
 
 - `/fs-triage` and `/fs-review` slash commands (observation agents)
-- Ability to label, close, and reopen issues
+- Ability to label, close, and reopen issues. A triage user can apply
+  labels such as `ready-to-code`, but that label only dispatches the code
+  agent when applied by a user with `write` access or by an agent bot.
 - Automatic e2e CI triggering on your PRs (no maintainer label needed)
 
 **Criteria:**
