@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.sh/schemas/entity-context/v1/commits.schema.json",
+  "title": "Fullsend entity-context commits v1",
+  "type": "object",
+  "required": ["commits"],
+  "properties": {
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sha", "subject", "committed_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+          "subject": { "type": "string" },
+          "author": { "type": "string" },
+          "committed_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

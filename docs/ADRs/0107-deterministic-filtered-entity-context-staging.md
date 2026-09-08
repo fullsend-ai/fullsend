@@ -47,42 +47,21 @@ content.
 
 The snapshot is written outside the repository clone. Host-side pre- and
 post-scripts receive `FULLSEND_CONTEXT_DIR` pointing to
-`<run-dir>/context`; inside the sandbox the same variable points to
+an access-restricted temporary directory outside the retained run-output
+tree; inside the sandbox the same variable points to
 `/sandbox/workspace/context`. Fullsend uploads that directory after sandbox
 creation and before repository/runtime execution. Consumers therefore use the
 same variable and relative paths on both sides of the sandbox boundary, and
 the context cannot be staged or committed accidentally with repository files.
 
-The v1 directory is optimized for selective agent reads:
-
-```text
-context/
-├── index.json
-├── summary.md
-├── entity.json
-├── body.md
-├── comments/
-│   ├── 0001-<stable-id>.md
-│   └── 0002-<stable-id>.md
-├── reviews/
-│   └── 0001-<stable-id>.md
-├── changes/
-│   ├── diff.patch
-│   └── commits.json
-└── checks/
-    └── <stable-id>/
-        ├── metadata.json
-        └── log.txt
-```
-
-`index.json` is the authoritative, versioned manifest. It identifies the forge,
-repository, entity kind and ID, snapshot time/revision, schema version, and an
-ordered entry for every staged file with source ID and URL, author, timestamps,
-media type, byte count, SHA-256 digest, and filtering/truncation status.
-`summary.md` is a generated navigation aid containing bounded metadata and
-links, not a second copy of bodies. Collections and files that do not apply are
-omitted. Entries use canonical ordering and zero-padded ordinals plus
-forge-stable IDs, so identical forge responses produce byte-identical trees.
+The exact tree, schemas, canonical serialization, stable record-key derivation,
+filter statuses, and compatibility rules are the versioned
+[entity-context v1 specification](../normative/entity-context/v1/README.md).
+Content records and mutable observation state are separate: resolving or
+reordering a thread changes its state/index files, never an unchanged comment
+or review body. No runner-clock timestamp enters the staged tree. Given the
+same forge state and filter version, implementations produce the same paths
+and bytes; breaking that guarantee requires a new major specification.
 
 The pre-script may inspect the host snapshot and skip the run. It cannot mutate
 the agent's view: Fullsend verifies the manifest digests before upload and
@@ -91,10 +70,18 @@ Agent prompts should point to `summary.md` and instruct the agent to open only
 the files needed for its task; runtime forge reads remain an explicit fallback
 for data outside the entity snapshot, not the default way to obtain it.
 
+The host snapshot uses a mode-`0700` directory and mode-`0600` files. Fullsend
+removes the sandbox copy after its last sandbox consumer and the host copy after
+the post-script, on success, failure, skip, or handled cancellation; startup
+also scavenges orphaned context directories after abnormal termination. Context
+is excluded from retained run artifacts by construction. Diagnostics may retain
+only bounded counts, digests, and filtering findings, never bodies, diffs, or
+logs.
+
 ## Consequences
 
 - Agents start with a consistent, filtered view of entity content and need fewer forge tool calls and prompt tokens.
 - Pre-scripts, agents, validation, and post-scripts share one versioned relative-path contract without putting generated input in Git.
-- Snapshot assembly adds startup latency and storage, bounded by per-entry and total-size limits.
+- Snapshot assembly adds startup latency and ephemeral storage, bounded by per-entry and total-size limits.
 - A snapshot can become stale during a run, so outputs that mutate forge state must still validate relevant revisions in deterministic post-processing.
 - Forge adapters must expose the snapshot inputs through `forge.Client`; platform-specific gaps are explicit manifest errors rather than silent omissions.

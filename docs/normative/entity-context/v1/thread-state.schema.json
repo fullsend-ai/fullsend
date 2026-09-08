@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.sh/schemas/entity-context/v1/thread-state.schema.json",
+  "title": "Fullsend entity-context thread state v1",
+  "type": "object",
+  "required": ["threads"],
+  "properties": {
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "comment_ids", "resolved", "outdated"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "comment_ids": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "resolved": { "type": "boolean" },
+          "outdated": { "type": "boolean" },
+          "minimized": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

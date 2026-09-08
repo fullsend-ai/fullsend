@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.sh/schemas/entity-context/v1/index.schema.json",
+  "title": "Fullsend entity-context index v1",
+  "type": "object",
+  "required": ["schema_version", "filter_version", "source", "entity", "files", "records"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "filter_version": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "required": ["forge", "repository"],
+      "properties": {
+        "forge": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "entity": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["issue", "change_proposal"] },
+        "id": { "type": "string", "minLength": 1 },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" }
+      },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "filter": {
+      "type": "object",
+      "required": ["status", "findings"],
+      "properties": {
+        "status": { "enum": ["unchanged", "modified", "truncated", "rejected"] },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "count"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "role", "media_type", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(summary[.]md|entity/(metadata[.]json|body[.]md)|comments/[0-9a-f]{64}[.]md|reviews/[0-9a-f]{64}[.]md|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
+        },
+        "role": {
+          "enum": ["summary", "entity_metadata", "entity_body", "comment_body", "review_body", "diff", "commits", "check_metadata", "check_log", "thread_state"]
+        },
+        "media_type": { "type": "string", "minLength": 1 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "filter": { "$ref": "#/$defs/filter" }
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": ["kind", "id", "record_key", "created_at", "filter"],
+      "properties": {
+        "kind": { "enum": ["comment", "review", "check"] },
+        "id": { "type": "string", "minLength": 1 },
+        "record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content_path": { "type": "string", "pattern": "^(comments|reviews)/[0-9a-f]{64}[.]md$" },
+        "metadata_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/metadata[.]json$" },
+        "log_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/log[.]txt$" },
+        "source_url": { "type": "string", "format": "uri" },
+        "author": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "filter": { "$ref": "#/$defs/filter" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "filter": { "properties": { "status": { "const": "rejected" } } } } },
+          "then": { "not": { "anyOf": [{ "required": ["content_path"] }, { "required": ["metadata_path"] }, { "required": ["log_path"] }] } },
+          "else": {
+            "oneOf": [
+              { "required": ["content_path"] },
+              { "required": ["metadata_path"] }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

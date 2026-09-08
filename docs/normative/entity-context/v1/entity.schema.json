@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.sh/schemas/entity-context/v1/entity.schema.json",
+  "title": "Fullsend entity metadata v1",
+  "type": "object",
+  "required": ["kind", "id", "number", "title", "state", "source_url", "created_at", "updated_at", "labels"],
+  "properties": {
+    "kind": { "enum": ["issue", "change_proposal"] },
+    "id": { "type": "string", "minLength": 1 },
+    "number": { "type": ["integer", "string"] },
+    "title": { "type": "string" },
+    "state": { "type": "string", "minLength": 1 },
+    "source_url": { "type": "string", "format": "uri" },
+    "author": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "labels": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+    "head_ref": { "type": "string" },
+    "base_ref": { "type": "string" }
+  },
+  "additionalProperties": false
+}
