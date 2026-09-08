@@ -22,7 +22,7 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 - <a id="reusable-workflow-concurrency"></a>**Exception — `workflow_call`-only workflows:** workflows whose *only* trigger is `workflow_call` must use a hardcoded role-specific prefix with `inputs.*`-based suffixes instead of `${{ github.workflow }}`, because in `workflow_call` context `github.workflow` resolves to the *caller's* workflow name, not the reusable workflow's own name. Using it would produce incorrect concurrency scoping and could cancel the caller's runs. The suffix should derive from `inputs.*` (not `github.event.*`), since the caller's event context may not match the underlying PR/issue. See `reusable-code.yml` for the canonical pattern:
   ```yaml
   concurrency:
-    group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+    group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number || github.run_id }}
   ```
   Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`, `functional-tests.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
