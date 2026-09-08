@@ -203,10 +203,45 @@ func TestToolSpanTracker_CapsSpansPerIteration(t *testing.T) {
 	tr.Handle(agentruntime.ToolResultEvent{ID: "toolu_orphan"})
 
 	dropped := tr.Finish()
-	assert.Equal(t, 6, dropped, "five calls and one orphan past the cap")
+	assert.Equal(t, 5, dropped, "five calls past the cap; the result with no open span past the cap is not charged")
 	assert.Len(t, endedToolSpans(rec), maxToolSpansPerIteration)
-	assert.Equal(t, 6, tr.Finish(), "the count is stable across calls")
+	assert.Equal(t, 5, tr.Finish(), "the count is stable across calls")
 	assert.Equal(t, 0, newToolSpanTracker(nil, context.Background()).Finish())
+}
+
+func TestToolSpanTracker_DroppedCountsEachCallOnce(t *testing.T) {
+	// A call rejected past the cap is one dropped call, however many events
+	// it produces: its later result must not be counted a second time as an
+	// orphan. Past the cap a result with no open span is not charged
+	// either: its call may already have been counted, and telling that
+	// apart from an orphan would need a set of rejected ids of
+	// agent-controlled size.
+	tr, rec, _ := toolSpanFixture(t)
+	const extra = 7
+	for i := 0; i < maxToolSpansPerIteration+extra; i++ {
+		id := fmt.Sprintf("toolu_%05d", i)
+		tr.Handle(agentruntime.ToolUseEvent{ID: id, Name: "Bash"})
+		tr.Handle(agentruntime.ToolResultEvent{ID: id})
+	}
+	tr.Handle(agentruntime.ToolResultEvent{ID: "toolu_orphan"})
+
+	assert.Equal(t, extra, tr.Finish(), "seven rejected calls, each once; the result with no open span past the cap is not charged")
+	assert.Len(t, endedToolSpans(rec), maxToolSpansPerIteration)
+}
+
+func TestToolSpanTracker_OrphanResultsCountTowardTheCap(t *testing.T) {
+	// An unmatched result under the cap gets a span and spends one slot,
+	// so a burst of results with no open span cannot exceed the cap either.
+	tr, rec, _ := toolSpanFixture(t)
+	for i := 0; i < maxToolSpansPerIteration-1; i++ {
+		tr.Handle(agentruntime.ToolUseEvent{ID: fmt.Sprintf("toolu_%05d", i), Name: "Bash"})
+	}
+	for i := 0; i < 3; i++ {
+		tr.Handle(agentruntime.ToolResultEvent{ID: fmt.Sprintf("orphan_%d", i)})
+	}
+
+	assert.Equal(t, 0, tr.Finish(), "results with no open span past the cap are not charged")
+	assert.Len(t, endedToolSpans(rec), maxToolSpansPerIteration, "one orphan fits, two do not")
 }
 
 func TestToolSpanTracker_NameIsRedactedAndBounded(t *testing.T) {

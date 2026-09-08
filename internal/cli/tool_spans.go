@@ -99,9 +99,14 @@ func (t *toolSpanTracker) Handle(evt agentruntime.AgentEvent) {
 		if ok {
 			delete(t.open, id)
 		} else {
-			if !t.allow() {
+			// Past the cap a result is not charged: its call was already
+			// counted at its use event, and telling that apart from an
+			// orphan would need a set of rejected ids of agent-controlled
+			// size.
+			if t.created >= maxToolSpansPerIteration {
 				return
 			}
+			t.created++
 			span = t.start(id, "")
 			span.SetAttributes(attribute.Bool("fullsend.tool.unmatched", true))
 		}
@@ -110,8 +115,9 @@ func (t *toolSpanTracker) Handle(evt agentruntime.AgentEvent) {
 }
 
 // Finish ends every call still open as unanswered and returns how many
-// calls got no span because the iteration passed maxToolSpansPerIteration;
-// call it before the agent span ends. A nil tracker is inert.
+// calls got no span because the iteration passed maxToolSpansPerIteration —
+// one per rejected tool_use event, whatever its result later does; call it
+// before the agent span ends. A nil tracker is inert.
 func (t *toolSpanTracker) Finish() int {
 	if t == nil {
 		return 0
@@ -123,7 +129,8 @@ func (t *toolSpanTracker) Finish() int {
 	return t.dropped
 }
 
-// allow reports whether one more span may be created this iteration.
+// allow reports whether one more span may be created for a tool_use event
+// this iteration, charging the overflow once per rejected tool_use event.
 func (t *toolSpanTracker) allow() bool {
 	if t.created >= maxToolSpansPerIteration {
 		t.dropped++

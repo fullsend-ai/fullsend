@@ -199,7 +199,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes (content and ids) removed by the size budget |
 | `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
 | `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
-| `fullsend.tool_spans.dropped` | `agent` | Present when the iteration reported more than 1,024 tool calls: the number of calls past the cap that got no `execute_tool` span |
+| `fullsend.tool_spans.dropped` | `agent` | Present when the iteration reported more than 1,024 tool calls: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
 
 ### Common attributes
 
