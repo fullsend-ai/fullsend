@@ -384,7 +384,7 @@ func (m *Manifest) Validate() error {
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return fmt.Errorf("github.url must be a valid HTTPS URL, got %q", githubURL)
 		}
-		if err := rejectExtraneousURLParts(u, "github.url"); err != nil {
+		if err := RejectExtraneousURLParts(u, "github.url"); err != nil {
 			return err
 		}
 
@@ -433,7 +433,7 @@ func (m *Manifest) Validate() error {
 			if err != nil || u.Scheme != "https" || u.Host == "" {
 				return fmt.Errorf("gitlab.url must be a valid HTTPS URL, got %q", m.GitLab.URL)
 			}
-			if err := rejectExtraneousURLParts(u, "gitlab.url"); err != nil {
+			if err := RejectExtraneousURLParts(u, "gitlab.url"); err != nil {
 				return err
 			}
 		}
@@ -542,7 +542,10 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 	return nil
 }
 
-func rejectExtraneousURLParts(u *url.URL, field string) error {
+// RejectExtraneousURLParts validates that a parsed URL contains only
+// scheme and host — no path, userinfo, query, or fragment. The field
+// parameter is used in error messages to identify the source.
+func RejectExtraneousURLParts(u *url.URL, field string) error {
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("%s must not contain a path component, got %q", field, u.String())
 	}

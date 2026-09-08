@@ -428,6 +428,7 @@ type reposInstallConfig struct {
 	inferenceRegion        string
 
 	// GitLab-specific
+	gitlabURL      string
 	gitlabBotToken string
 
 	// Per-repo overrides
@@ -495,6 +496,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
+	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest when bootstrapping GitLab repos")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
@@ -523,6 +525,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		mu, muErr := url.Parse(opts.mintURL)
 		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
 			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
+	if opts.gitlabURL != "" {
+		gu, guErr := url.Parse(opts.gitlabURL)
+		if guErr != nil || gu.Scheme != "https" || gu.Host == "" {
+			return fmt.Errorf("--gitlab-url must be a valid HTTPS URL, got %q", opts.gitlabURL)
+		}
+		if err := repos.RejectExtraneousURLParts(gu, "--gitlab-url"); err != nil {
+			return err
 		}
 	}
 
@@ -704,6 +715,17 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 			}
 		}
+	}
+
+	// When --gitlab-url is provided, populate the manifest's GitLab URL.
+	// This enables bootstrapping a new manifest with GitLab repos in a
+	// single command without a prior set-default step.
+	if opts.gitlabURL != "" && manifest.GitLab != nil {
+		manifest.GitLab.URL = opts.gitlabURL
+		if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
+			return fmt.Errorf("writing gitlab.url to manifest: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Set gitlab.url=%s in manifest", opts.gitlabURL))
 	}
 
 	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
