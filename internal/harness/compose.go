@@ -407,9 +407,26 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving containment root: %w", err)
 		}
 		absWorkspace = filepath.Clean(absWorkspace)
+		absWorkspace, err = filepath.EvalSymlinks(absWorkspace)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving containment root symlinks: %w", err)
+		}
+		// Resolve existing paths before comparing so workspace aliases such as
+		// macOS's /var and /private/var forms compare consistently.
+		resolvedBasePath, resolveErr := filepath.EvalSymlinks(absBasePath)
+		if resolveErr != nil {
+			// Keep rejecting lexical escapes before returning a missing-path
+			// error, preserving the containment error for traversal attempts.
+			rel, err := filepath.Rel(absWorkspace, absBasePath)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			}
+			return nil, nil, fmt.Errorf("resolving base path symlinks: %w", resolveErr)
+		}
+		absBasePath = resolvedBasePath
 		rel, err := filepath.Rel(absWorkspace, absBasePath)
 		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			return nil, nil, fmt.Errorf("base path %q escapes workspace root via symlink", baseRef)
 		}
 
 		if visited[absBasePath] {

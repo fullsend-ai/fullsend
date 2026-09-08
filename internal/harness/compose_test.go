@@ -537,6 +537,46 @@ base: ../outside.yaml
 	assert.Contains(t, err.Error(), "escapes workspace root")
 }
 
+func TestLoadWithBase_LocalBase_WorkspaceRootSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	writeTestHarness(t, realDir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.NoError(t, err)
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	linkedDir := filepath.Join(dir, "linked")
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root")
+}
+
 func TestLoadWithBase_DepthExceeded(t *testing.T) {
 	dir := t.TempDir()
 
