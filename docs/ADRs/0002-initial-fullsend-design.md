@@ -468,7 +468,7 @@ This ADR’s **normative** workflow ends when the PR is ready to merge and merge
 - [Code review](../problems/code-review.md)
 - [Governance](../problems/governance.md)
 - [ADR 0001 — Use ADRs for decision making](./0001-use-adrs-for-decision-making.md)
-- [ADR 0007 — Per-role GitHub Apps](./0007-per-role-github-apps.md) — verifiable bot identities for agent comments
-- [ADR 0017 — Credential isolation for sandboxed agents](./0017-credential-isolation-for-sandboxed-agents.md) — post-scripts write comments outside sandbox
-- [ADR 0022 — Harness-level output schema enforcement](./0022-harness-level-output-schema-enforcement.md) — structural validation of agent output
-- [ADR 0054 — Require authorization on all dispatch paths](./0054-require-authorization-on-all-agent-dispatch-paths.md) — prevents unauthorized agent triggering
+- [ADR 0007 — Per-role GitHub Apps](./0007-per-role-github-apps.md)
+- [ADR 0017 — Credential isolation for sandboxed agents](./0017-credential-isolation-for-sandboxed-agents.md)
+- [ADR 0022 — Harness-level output schema enforcement](./0022-harness-level-output-schema-enforcement.md)
+- [ADR 0054 — Require authorization on all dispatch paths](./0054-require-authorization-on-all-agent-dispatch-paths.md)
