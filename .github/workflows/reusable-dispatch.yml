@@ -1097,7 +1097,7 @@ jobs:
 
           INSTRUCTION="none"
           if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
-            COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
+            COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty' | tr -d '\r')"
             if [[ -n "${COMMENT_BODY}" ]]; then
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
               INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"

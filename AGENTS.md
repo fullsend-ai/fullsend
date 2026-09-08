@@ -43,6 +43,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
 | [Harness Composition](docs/contributing/harness-composition.md) | Changing merge functions in `internal/harness/` — covers the invariant between compose and forge merge functions |
 | [Harness Field Reference](docs/contributing/harness-fields.md) | Adding or modifying fields in `Harness` or `ForgeConfig` — covers field classifications, merge rules, and the `ForgeConfig` struct |
+| [Per-repo AgentEntry fields](docs/contributing/harness-composition.md) | Adding or modifying fields in `AgentEntry` — covers layered merge handling, tests, documentation, and override-only semantics |
 | [Normative Event Specification](docs/normative/normalized-event/v1/README.md) | Adding or modifying fields in `event_payload` (`buildEventPayload`), normalized-event structures under `internal/normevent/`, or adapters — covers the projection table, transition vocabulary, adapter contracts, and CEL trigger examples |
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |

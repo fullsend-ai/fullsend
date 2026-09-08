@@ -317,12 +317,14 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
+	var priorReviews []forge.PullRequestReview
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
 		printer.StepInfo("Could not determine authenticated user, skipping stale review cleanup")
 	} else if reviews, err := client.ListPullRequestReviews(ctx, owner, repo, pr); err != nil {
 		printer.StepInfo("Could not list reviews, skipping stale review cleanup")
 	} else {
+		priorReviews = reviews
 		dismissStaleRequestChanges(ctx, client, owner, repo, pr, event, user, reviews, printer)
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
 	}
@@ -372,6 +374,9 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// a COMMENT review is submitted so the findings appear on the
 	// relevant code lines.
 	if event == "COMMENT" && len(inlineComments) == 0 {
+		// There is no replacement formal review to succeed, so remove stale
+		// approvals after the sticky verdict has been prepared.
+		dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
 		return nil
 	}
@@ -401,12 +406,14 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 				logAPIErrorDetails(retryErr, printer)
 				return fmt.Errorf("submitting review (fallback without inline comments also failed): %w", retryErr)
 			}
+			dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 			printer.StepDone("Review submitted (inline comments omitted due to 422)")
 			return nil
 		}
 		logAPIErrorDetails(err, printer)
 		return fmt.Errorf("submitting review: %w", err)
 	}
+	dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 	printer.StepDone("Review submitted")
 	return nil
 }
@@ -682,6 +689,24 @@ func dismissStaleRequestChanges(ctx context.Context, client forge.Client, owner,
 			printer.StepInfo(fmt.Sprintf("Warning: could not dismiss review %d: %v", r.ID, err))
 		} else {
 			printer.StepDone("Stale review dismissed")
+		}
+	}
+}
+
+// dismissStaleApprovals dismisses all APPROVED reviews by the authenticated
+// user before a new verdict is posted. This prevents an approval for an older
+// commit from remaining active when the latest verdict is comment-only or
+// requests changes.
+func dismissStaleApprovals(ctx context.Context, client forge.Client, owner, repo string, pr int, user string, reviews []forge.PullRequestReview, printer *ui.Printer) {
+	for _, r := range reviews {
+		if r.User != user || r.State != "APPROVED" {
+			continue
+		}
+		printer.StepStart(fmt.Sprintf("Dismissing stale APPROVED review %d", r.ID))
+		if err := client.DismissPullRequestReview(ctx, owner, repo, pr, r.ID, "Superseded by updated review"); err != nil {
+			printer.StepInfo(fmt.Sprintf("Warning: could not dismiss review %d: %v", r.ID, err))
+		} else {
+			printer.StepDone("Stale approval dismissed")
 		}
 	}
 }

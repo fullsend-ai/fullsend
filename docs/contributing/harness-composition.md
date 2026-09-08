@@ -97,6 +97,33 @@ structs:
    - Merge and inheritance rules table
    - `ForgeConfig` struct definition
 
+## Checklist for `AgentEntry` field changes
+
+`AgentEntry` is also merged field by field, in
+`internal/config/interfaces.go`. A field added to
+`internal/config/config.go` is not automatically preserved when a per-repo
+configuration overlays a parent configuration.
+
+When adding or modifying a field in `AgentEntry`:
+
+1. **Determine the field's merge semantics.** Document whether an omitted,
+   empty, false, or nil value inherits the parent, replaces it, or explicitly
+   clears it. Pay particular attention to pointer and map fields.
+2. **Update `perRepoConfig.AgentEntries()`** in
+   `internal/config/interfaces.go` so matching entries merge the new field.
+   Preserve the existing keyed merge by `DerivedName()` and last-overlay-wins
+   behavior.
+3. **Add layered-merge test coverage** in
+   `internal/config/interfaces_test.go` or `internal/config/load_test.go`.
+   Test both the overriding value and the inheritance or clearing behavior.
+4. **Update the [layered configuration reference](../guides/infrastructure/layered-config-reference.md)**
+   with the field's YAML name, type, and merge rule.
+5. **Recheck `HasSettings()` and `IsOverrideOnly()`** in
+   `internal/config/config.go` when the field affects whether an entry is an
+   override-only agent.
+6. **Check all other consumers** of the field, including validation,
+   serialization, update commands, and runtime readers.
+
 ## When reviewing PRs
 
 **When reviewing PRs that touch merge functions:**
