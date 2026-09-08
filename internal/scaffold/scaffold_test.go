@@ -718,6 +718,37 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "issues: write")
 }
 
+// TestConcurrencyGroupRunIDFallback verifies that every agent workflow's
+// concurrency group expression includes github.run_id as a terminal fallback
+// so a malformed payload without a number cannot collapse the group to a
+// prefix-only string that would cancel unrelated runs. See issue #339.
+func TestConcurrencyGroupRunIDFallback(t *testing.T) {
+	workflows := []string{
+		".github/workflows/code.yml",
+		".github/workflows/triage.yml",
+		".github/workflows/review.yml",
+		".github/workflows/fix.yml",
+		".github/workflows/prioritize.yml",
+		".github/workflows/retro.yml",
+	}
+	for _, wf := range workflows {
+		t.Run(wf, func(t *testing.T) {
+			content, err := FullsendRepoFile(wf)
+			require.NoError(t, err)
+
+			var doc struct {
+				Concurrency struct {
+					Group string `yaml:"group"`
+				} `yaml:"concurrency"`
+			}
+			require.NoError(t, yaml.Unmarshal(content, &doc),
+				"failed to parse %s", wf)
+			assert.Contains(t, doc.Concurrency.Group, "github.run_id",
+				"%s concurrency group must include github.run_id as a terminal fallback", wf)
+		})
+	}
+}
+
 func TestValidateSourceRepoContent(t *testing.T) {
 	content, err := FullsendRepoFile("scripts/validate-source-repo.sh")
 	require.NoError(t, err)

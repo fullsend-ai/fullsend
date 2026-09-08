@@ -24,7 +24,7 @@ on:
         type: string
 
 concurrency:
-  group: fullsend-code-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
+  group: fullsend-code-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
