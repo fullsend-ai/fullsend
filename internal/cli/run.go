@@ -1350,14 +1350,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Warn when a profiles/ directory copy and a harness-resolved profile
-		// share an id. The directory import below runs after the harness
-		// import, but each has its own hash cache, so either copy can end up
-		// live on the gateway; a stale directory copy can silently undo a fix
-		// the harness already carries (#6971). Per-repo customization relies
-		// on the override, so this only makes it visible.
+		// Warn when a profiles/ directory copy and an imported URL-resolved
+		// profile share an id. filterProfilesByDirIDs already skips URL
+		// profiles that have a directory counterpart, so this only fires
+		// for edge cases not caught by the filter (e.g., local-path entries
+		// in profilesDir). Per-repo customization relies on the directory
+		// override, so this only makes it visible (#6971).
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
-		for _, sp := range shadowedProfiles(dirProfileIDs, result.Profiles, profilesDir, generatedProfileIDs) {
+		for _, sp := range shadowedProfiles(dirProfileIDs, profilesToImport, profilesDir, generatedProfileIDs) {
 			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); whichever copy was imported most recently is live — delete the directory copy or keep it in sync", sp.ID, profilesDir, sp.LocalPath))
 		}
 
