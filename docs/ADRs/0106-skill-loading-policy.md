@@ -35,9 +35,10 @@ bootstrap. Repo skills in `.claude/skills/` (or `.agents/skills/` symlinked
 to `.claude/skills/`) are discovered by the agent runtime from the working
 directory at project level. Claude Code's precedence rule — personal > project
 — means built-in skills win on name collisions, and repo skills with novel
-names extend the agent's capabilities. The `scanRuntimeContent` function
-runs the `InputPipeline` (heuristic injection detection) on all SKILL.md
-files before the agent starts
+names extend the agent's capabilities. Two scan paths guard skill content
+before the agent starts: `scanRuntimeContent` runs `InputPipeline` on
+harness-declared (built-in) skills, and `scanRepoContextFiles` runs the
+same `InputPipeline` on repo-level context files including SKILL.md
 (see [security-threat-model.md](../problems/security-threat-model.md)).
 
 This ADR formalizes the implemented policy.
@@ -67,15 +68,23 @@ override" model:
    conventions, deployment checklists, architecture constraints) without
    requiring any fullsend configuration change.
 
+   Org-level skills (`.fullsend/skills/`) are not yet implemented. Issue #237
+   raised them as a distinct tier, but the codebase currently has no loading
+   path for org-level skills. When org-level skills are added, their
+   precedence tier (e.g., personal > org > project) and scanning posture
+   will need a follow-up decision.
+
 3. **Precedence prevents override.** Personal > project precedence means a
-   repo skill whose directory name matches a built-in skill is silently
+   repo skill whose directory name matches a built-in skill is
    shadowed — the built-in version wins. The runner logs a warning naming
    the shadowed skill. This prevents untrusted repo content from replacing
    trusted agent behavior.
 
-4. **Injection scanning guards repo skills.** `scanRuntimeContent` runs the
-   heuristic `InputPipeline` on every SKILL.md before the agent starts. Critical
-   findings block the skill in `fail_mode: closed` (default) or warn in
+4. **Injection scanning guards repo skills.** Two scan paths run before the
+   agent starts: `scanRuntimeContent` runs `InputPipeline` on harness-declared
+   (built-in) skills, and `scanRepoContextFiles` runs the same `InputPipeline`
+   on repo-level context files (CLAUDE.md, AGENTS.md, SKILL.md, etc.). Critical
+   findings abort the agent launch in `fail_mode: closed` (default) or warn in
    `fail_mode: open`. This is the same pipeline applied to agent definitions
    and plugins.
 
@@ -87,10 +96,12 @@ override" model:
    [ADR 0064](0064-deprecate-customized-directory-overlay.md)). This is an
    org-sanctioned operation subject to CODEOWNERS review.
 
-No `allow_repo_skills` / `disable_repo_skills` toggle exists. Repo skills
-are always available if they pass scanning. The harness `skills:` list
-declares built-in skills to provision but does not act as a whitelist that
-blocks project-level skill discovery.
+No `allow_repo_skills` / `disable_repo_skills` toggle exists. A per-harness
+toggle was rejected because it would create two code paths for the injection
+scanner and make the security posture configuration-dependent rather than
+invariant. Repo skills are always available if they pass scanning. The
+harness `skills:` list declares built-in skills to provision but does not
+act as a whitelist that blocks project-level skill discovery.
 
 ## Consequences
 
