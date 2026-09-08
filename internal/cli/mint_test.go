@@ -3971,7 +3971,7 @@ func TestRunMintStatusAPI_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	output := out.String()
-	assert.Contains(t, output, "github")
+	assert.Contains(t, output, "GitHub")
 	assert.Contains(t, output, "acme")
 	assert.Contains(t, output, "bigcorp")
 	assert.Contains(t, output, "coder")

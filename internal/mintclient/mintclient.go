@@ -291,7 +291,7 @@ const (
 	StatusAuthOIDC StatusAuthMethod = "oidc"
 	// StatusAuthGitHub indicates authentication via a GitHub user token
 	// (GH_TOKEN, GITHUB_TOKEN, or gh auth token).
-	StatusAuthGitHub StatusAuthMethod = "github"
+	StatusAuthGitHub StatusAuthMethod = "GitHub"
 )
 
 // hasOIDCEnv reports whether the GitHub Actions OIDC environment
