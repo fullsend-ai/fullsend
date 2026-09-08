@@ -54,10 +54,12 @@ lifecycle rules — fullsend does not enforce retention itself.
 
 | Artifact | Default | Rationale |
 |---|---|---|
-| Level 1/2 metadata traces (`run-telemetry.jsonl`, OTLP metadata spans) | 180 days | Low sensitivity (no content); sufficient for trend analysis and most incident investigations. |
-| Level 3 content traces (OTLP spans with prompt/completion content) | 30 days | High sensitivity (proprietary code, PII); short window limits exposure while covering active incident response. |
+| Level 1/2 metadata traces (`run-telemetry.jsonl`¹, OTLP metadata spans) | 180 days | Low sensitivity (no content); sufficient for trend analysis and most incident investigations. |
+| Level 3 content traces (OTLP spans and `run-telemetry.jsonl`¹ when content capture is enabled) | 30 days | High sensitivity (proprietary code, PII); short window limits exposure while covering active incident response. |
 | JSONL reasoning transcripts ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)) | 90 days | High content sensitivity (contains a superset of Level 3 content — full prompts, completions, tool calls, and reasoning); exposure risk reduced by owner-scoped access and credential scanning ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)). Balances debugging, session resumption, and retro analysis needs against storage cost. |
 | Eval measurement scores (`eval-measurements.jsonl`) | 365 days | Minimal sensitivity (numeric scores, no content); long retention supports trend analysis across model and prompt changes. |
+
+¹ `run-telemetry.jsonl` is the sole local trace artifact ([ADR 0050](0050-distributed-tracing-instrumentation.md)). At Levels 1/2 it contains only metadata spans. When Level 3 content capture is enabled (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`), the same file also contains full prompt/completion content. Administrators who enable Level 3 should apply the 30-day content trace retention to `run-telemetry.jsonl` instead of the 180-day metadata default.
 
 **Tunability mechanism:** Fullsend documents these defaults but does not
 implement retention enforcement. Retention is enforced at the storage
