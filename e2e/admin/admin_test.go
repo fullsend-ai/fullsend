@@ -497,7 +497,7 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	// (#2636).
 	issue, err := createIssueWithRetry(ctx, func() (*forge.Issue, error) {
 		return env.client.CreateIssue(ctx, env.org, e2etest.TestRepo, issueTitle, issueBody)
-	}, time.After)
+	}, time.After, t.Logf)
 	require.NoError(t, err, "creating test issue")
 	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
 	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, e2etest.TestRepo, "ready-for-triage"))
@@ -656,6 +656,7 @@ func createIssueWithRetry(
 	ctx context.Context,
 	create func() (*forge.Issue, error),
 	after func(time.Duration) <-chan time.Time,
+	logf func(string, ...any),
 ) (*forge.Issue, error) {
 	for attempt := range 3 {
 		issue, err := create()
@@ -668,6 +669,7 @@ func createIssueWithRetry(
 		}
 
 		delay := time.Duration(attempt+1) * 10 * time.Second
+		logf("Create issue attempt %d failed with status %d, retrying in %s...", attempt+1, apiErr.StatusCode, delay)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -36,6 +37,7 @@ func TestCreateIssueWithRetry_RetriesUnauthorizedThenSucceeds(t *testing.T) {
 			ready <- time.Time{}
 			return ready
 		},
+		t.Logf,
 	)
 
 	require.NoError(t, err)
@@ -60,6 +62,7 @@ func TestCreateIssueWithRetry_DoesNotRetryOtherErrors(t *testing.T) {
 			t.Fatal("unexpected retry delay")
 			return nil
 		},
+		t.Logf,
 	)
 
 	require.Nil(t, issue)
@@ -84,9 +87,44 @@ func TestCreateIssueWithRetry_StopsAfterThreeUnauthorizedErrors(t *testing.T) {
 			ready <- time.Time{}
 			return ready
 		},
+		t.Logf,
 	)
 
 	require.Nil(t, issue)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, 3, attempts)
+}
+
+func TestCreateIssueWithRetry_RetriesWrappedUnauthorizedError(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	waits := make([]time.Duration, 0, 1)
+	want := &forge.Issue{Number: 42}
+
+	issue, err := createIssueWithRetry(
+		context.Background(),
+		func() (*forge.Issue, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, fmt.Errorf("create issue: %w", &gh.APIError{
+					StatusCode: http.StatusUnauthorized,
+					Message:    "Bad credentials",
+				})
+			}
+			return want, nil
+		},
+		func(delay time.Duration) <-chan time.Time {
+			waits = append(waits, delay)
+			ready := make(chan time.Time, 1)
+			ready <- time.Time{}
+			return ready
+		},
+		t.Logf,
+	)
+
+	require.NoError(t, err)
+	require.Same(t, want, issue)
+	require.Equal(t, 2, attempts)
+	require.Equal(t, []time.Duration{10 * time.Second}, waits)
 }
