@@ -80,13 +80,13 @@ Deploying autonomous agents creates organizational dynamics that governance shou
 
 Requiring repositories or teams to adopt agent autonomy undermines the voluntary participation that makes open-source collaboration work. If a project mandates agent use — or makes non-agent workflows so inconvenient that they are effectively required — contributors who prefer manual workflows are penalized.
 
-Governance should explicitly address whether repos can decline agent autonomy without penalty. The [autonomy spectrum](autonomy-spectrum.md) defines graduation criteria for increasing autonomy, but it should also support an opt-out path. A repo maintainer who judges that their codebase is better served by human-driven development should be able to make that choice without organizational friction.
+Governance should explicitly address whether repos can decline agent autonomy without penalty. The [autonomy spectrum](autonomy-spectrum.md) defines graduation criteria for increasing autonomy, but whether it should also support an opt-out path is an open question. A repo maintainer who judges that their codebase is better served by human-driven development may need a way to make that choice — but what "without organizational friction" looks like in practice, and whether it conflicts with org-wide consistency goals, is unresolved.
 
 ### Agent shaming
 
 The informal counterpart of mandates. In organizations deploying fullsend, contributors who prefer manual workflows should not be treated as obstacles to productivity. This is particularly relevant when agents demonstrably increase throughput — the pressure to adopt becomes implicit even without explicit mandates.
 
-This intersects with the [human-factors](human-factors.md#contributor-motivation-in-open-source) concern about contributor motivation: if the culture shifts to treat non-agent contributors as slower or less valuable, the community loses contributors who bring exactly the deep expertise that [guarded-path approval](human-factors.md#is-the-two-point-model-enough) depends on.
+This intersects with the [human factors](human-factors.md#contributor-motivation-in-open-source) concern about contributor motivation: if the culture shifts to treat non-agent contributors as slower or less valuable, the community loses contributors who bring exactly the deep expertise that [guarded-path approval](human-factors.md#is-the-two-point-model-enough) depends on.
 
 ### Agent anthropomorphization
 

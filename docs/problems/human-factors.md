@@ -35,7 +35,7 @@ This is still fatiguing, in different ways:
 
 - **Volume.** Agents can generate and process changes faster than humans can evaluate whether the results match what they wanted. The bottleneck moves from "review this diff" to "verify this outcome aligns with what I meant."
 - **Abstraction gap.** Reviewing intent alignment is harder than reviewing code. With code, you can trace logic. With intent, you're asking "did the agent understand what I meant?" — a fuzzier question that requires holding both the intent document and the implementation in mind.
-- **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research (see [evidence section below](#evidence-from-automation-and-ai-research)) — humans are poor monitors of mostly-correct automated systems, and this complacency cannot be trained away. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
+- **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research (see [evidence section below](#supporting-research-and-frameworks)) — humans are poor monitors of mostly-correct automated systems, and this complacency cannot be trained away. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
 
 ## Contributor motivation in open source
 
@@ -82,7 +82,7 @@ Most contributors in many target organizations are paid engineers. For them, the
 
 This doesn't mean autonomous agents are wrong. But pretending this concern doesn't exist will generate resistance that looks like technical objections but is actually about something deeper.
 
-## Evidence from automation and AI research
+## Supporting research and frameworks
 
 The concerns above are not speculative. There is a substantial body of research — from decades of automation studies and from recent AI-specific work — that supports them.
 
