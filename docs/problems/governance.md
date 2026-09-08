@@ -84,7 +84,7 @@ Governance should explicitly address whether repos can decline agent autonomy wi
 
 ### Agent shaming
 
-The inverse of mandates. In organizations deploying fullsend, contributors who prefer manual workflows should not be treated as obstacles to productivity. This is particularly relevant when agents demonstrably increase throughput — the pressure to adopt becomes implicit even without explicit mandates.
+The informal counterpart of mandates. In organizations deploying fullsend, contributors who prefer manual workflows should not be treated as obstacles to productivity. This is particularly relevant when agents demonstrably increase throughput — the pressure to adopt becomes implicit even without explicit mandates.
 
 This intersects with the [human-factors](human-factors.md#contributor-motivation-in-open-source) concern about contributor motivation: if the culture shifts to treat non-agent contributors as slower or less valuable, the community loses contributors who bring exactly the deep expertise that [guarded-path approval](human-factors.md#is-the-two-point-model-enough) depends on.
 
@@ -102,7 +102,7 @@ Governance should consider whether agent-authored communications require attribu
 - **Security threat model** identifies the threats. Governance defines the policies that mitigate them and who can modify those policies.
 - **Autonomy spectrum** describes the graduation model. Governance defines who evaluates readiness and makes the graduation decision.
 - **Agent architecture** defines the agent roles and permissions. Governance defines who assigns those permissions and under what constraints.
-- **[Human factors](human-factors.md)** explores what happens to the people alongside the system. The [adoption anti-patterns](#adoption-anti-patterns) above have direct human-factors consequences — mandates and shaming affect contributor motivation, and anthropomorphization distorts the trust relationships that community participation depends on.
+- **Human factors** explores what happens to the people alongside the system. The [adoption anti-patterns](#adoption-anti-patterns) above have direct human-factors consequences — mandates and shaming affect contributor motivation, and anthropomorphization distorts the trust relationships that community participation depends on.
 
 ## Open questions
 
