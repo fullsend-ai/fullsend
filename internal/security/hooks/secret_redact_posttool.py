@@ -46,13 +46,15 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("stripe_key", re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}")),
     ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}")),
     ("gitlab_pat", re.compile(r"gl(?:pat|rt|ptt|dt|ft|soat|cs)-[A-Za-z0-9_-]{20,}")),
-    # Mirrors the Go redactor: the literal c. alternative covers
-    # service-account tokens, whose one-char first segment would
-    # otherwise defeat the length quantifier.
+    # Mirrors the pattern #6603 adds to the Go redactor (main's has no
+    # ya29 shape yet): the literal c. alternative covers service-account
+    # tokens, whose one-char first segment would otherwise defeat the
+    # length quantifier.
     ("google_oauth_token", re.compile(r"ya29\.(?:c\.)?[A-Za-z0-9_-]{20,}")),
     # Bare three-segment JWTs (and OIDC/WIF STS tokens) carry no
-    # surrounding context for the structural patterns to anchor on.
-    # Skipped for file content inside the checkout — see content_skips.
+    # surrounding context for the structural patterns to anchor on; the
+    # Go side of this shape is likewise in #6603, not on main. Skipped for
+    # file content inside the checkout — see content_skips.
     ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("aws_sts_key", re.compile(r"ASIA[A-Z0-9]{16}")),
     ("hf_token", re.compile(r"hf_[A-Za-z0-9]{20,}")),
