@@ -55,7 +55,7 @@ lifecycle rules — fullsend does not enforce retention itself.
 |---|---|---|
 | Level 1/2 metadata traces (`run-telemetry.jsonl`, OTLP metadata spans) | 180 days | Low sensitivity (no content); sufficient for trend analysis and most incident investigations. |
 | Level 3 content traces (OTLP spans with prompt/completion content) | 30 days | High sensitivity (proprietary code, PII); short window limits exposure while covering active incident response. |
-| JSONL reasoning transcripts ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)) | 90 days | Medium sensitivity (owner-scoped, credential-scanned); balances debugging, session resumption, and retro analysis needs against storage cost. |
+| JSONL reasoning transcripts ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)) | 90 days | High content sensitivity (contains a superset of Level 3 content — full prompts, completions, tool calls, and reasoning); exposure risk reduced by owner-scoped access and credential scanning ([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)). Balances debugging, session resumption, and retro analysis needs against storage cost. |
 | Eval measurement scores (`eval-measurements.jsonl`) | 365 days | Minimal sensitivity (numeric scores, no content); long retention supports trend analysis across model and prompt changes. |
 
 **Tunability mechanism:** Fullsend documents these defaults but does not
