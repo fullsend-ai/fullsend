@@ -27,7 +27,7 @@ For field-by-field `config.yaml` documentation, see the
    ```
 
 3. If it does not have that header, it is yours (or a vendor preset you
-   treat as read-through — see [config.base.yaml](#config-base-yaml-vendor-preset) below).
+   treat as read-through — see [config.base.yaml](#configbaseyaml-vendor-preset) below).
 
 The `Upstream:` URL points at the scaffold inside the fullsend project.
 Adopters customize through `config.yaml` and harness overlays, not by
