@@ -1053,11 +1053,11 @@ class TestEgressAllowlistParsing:
     def test_leading_wildcard_entries_accepted(self, hook):
         with mock.patch.dict(
             os.environ,
-            {"FULLSEND_EGRESS_ALLOWLIST": "*.internal:443,exact.host:8443"},
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443,exact.host:8443"},
         ):
             result = hook._parse_egress_allowlist()
             assert len(result) == 2
-            assert ("*.internal", 443) in result
+            assert ("*.atlassian.net", 443) in result
             assert ("exact.host", 8443) in result
 
     def test_bare_wildcard_rejected(self, hook, capsys):
@@ -1102,16 +1102,17 @@ class TestEgressAllowlistParsing:
             captured = capsys.readouterr()
             assert "wildcard entry '*..:443'" in captured.err
 
-    def test_overly_broad_wildcard_warns(self, hook, capsys):
-        """*.com (label depth < 2) is accepted but emits a warning."""
+    def test_overly_broad_wildcard_rejected(self, hook, capsys):
+        """*.com (label depth < 2) is rejected with a warning."""
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*.com:443,*.atlassian.net:443"},
         ):
             result = hook._parse_egress_allowlist()
-            # Both entries are accepted
-            assert ("*.com", 443) in result
+            # Only the specific pattern is accepted; *.com is rejected
+            assert ("*.com", 443) not in result
             assert ("*.atlassian.net", 443) in result
+            assert len(result) == 1
             captured = capsys.readouterr()
             assert "overly broad" in captured.err
             assert "*.com:443" in captured.err
