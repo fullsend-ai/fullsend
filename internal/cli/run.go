@@ -1340,6 +1340,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, rp := range result.Profiles {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
+			// Never trust ImportProfile's content cache here: a cache hit
+			// only means these bytes were sent once, not that the gateway
+			// still holds them now. Before #7095, a stale profiles/
+			// directory copy could become the live gateway profile for
+			// this id after this loop's cache was already written,
+			// leaving a persistent gateway silently poisoned. Forgetting
+			// the cache ensures this run re-sends the harness-listed file
+			// at least once, healing any gateway a prior run poisoned.
+			sandbox.ForgetProfileCache(rp.ID)
 			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
 				printer.StepFail("Failed to import profile " + rp.ID)
 				return fmt.Errorf("importing profile %q: %w", rp.ID, err)

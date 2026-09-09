@@ -757,6 +757,71 @@ openshell:
 	assert.NotContains(t, err.Error(), "creating sandbox")
 }
 
+// TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
+// fix: an unlisted file under the fullsend dir's profiles/ directory must
+// never be scanned or imported, even when it shares an id with a profile
+// the harness does resolve via openshell.profiles. Before #7095, the
+// now-removed sandbox.ImportProfiles(profilesDir) call imported every file
+// in profiles/ regardless of harness listing, so a stale unlisted copy
+// could become the live gateway profile for a shared id. This test uses
+// recordingProvidersStub to record every openshell invocation and asserts
+// the unlisted file's path is never referenced.
+func TestRunAgent_UnlistedProfileDirectoryFileIsNotImported(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "profiles"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// listed.yaml is the only profile the harness references; unlisted.yaml
+	// shares its id but sits in profiles/ without being named anywhere on
+	// the harness, so it must be inert.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "listed.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Listed\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "unlisted.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Unlisted-Poison\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nopenshell:\n  profiles:\n    - profiles/listed.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nagents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the run
+	// must get past the profile-import step without error.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "importing profile")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	listedPath := filepath.Join(dir, "profiles", "listed.yaml")
+	unlistedPath := filepath.Join(dir, "profiles", "unlisted.yaml")
+	assert.Contains(t, log, "provider profile import --file "+listedPath, "the harness-listed profile must be imported")
+	assert.NotContains(t, log, unlistedPath, "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "unlisted.yaml", "the unlisted directory file must never be referenced")
+}
+
 func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 	useFakeOpenshell(t)
 	// Harness with a URL base but config.yaml has no allowed_remote_resources
