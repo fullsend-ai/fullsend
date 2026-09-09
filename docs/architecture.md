@@ -375,12 +375,14 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
   > **Planned:** portable remote score export via the same OTLP configuration as agent traces ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). Not yet implemented.
 
+- Trace retention policy: default retention periods per artifact category (metadata traces 180 days, content traces 30 days, JSONL transcripts 90 days, eval scores 365 days) with enforcement delegated to the adopter's storage layer — no retention logic in the fullsend CLI ([ADR 0109](ADRs/0109-trace-retention-policy.md)).
+
 **Open questions:**
 
 - What signals matter most — cost, latency, token usage, action logs, decision traces, or something else?
 - ~~How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?~~ Decided in [ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md): instrument all lifecycle steps comprehensively; volume is managed by backends not by suppressing data at the source.
 - ~~How do we score wild agent traces for trends without a second export stack?~~ Decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md): eval measurements write local JSONL beside telemetry when at least one new score row is produced (including `label: skip`); portable remote export uses the same OTLP config as traces (planned). The JSONL is absent (not empty) when telemetry/manifest is missing, no traces match, or every candidate is already in the ledger.
-- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy and broader log access remain open.)
+- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy decided in [ADR 0109](ADRs/0109-trace-retention-policy.md); broader log access remains open.)
 - How does observability interact with the security requirement that "every action is logged, attributable, and reviewable"? (See [security-threat-model.md](problems/security-threat-model.md).)
 - Is there a real-time monitoring requirement (agent is stuck, agent is behaving anomalously), or is observability primarily forensic?
 

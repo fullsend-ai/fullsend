@@ -169,3 +169,10 @@ beside telemetry when at least one new score is produced (tool-agnostic). Distin
 spans only; the root span keeps `fullsend.cost_usd` and `fullsend.tool_calls`
 (custom-namespaced, not auto-summed by MLflow). This prevents MLflow from
 double-counting token usage across the trace.
+
+**2026-09-08 — Trace retention policy ([ADR 0109](0109-trace-retention-policy.md)):**
+default retention periods decided per artifact category (metadata traces
+180 days, content traces 30 days, JSONL transcripts 90 days, eval scores
+365 days). Enforcement is delegated to the adopter's storage layer — no
+retention logic in the fullsend CLI. This resolves the retention component
+of [#294](https://github.com/fullsend-ai/fullsend/issues/294).
