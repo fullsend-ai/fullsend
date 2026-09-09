@@ -20,9 +20,8 @@ in this repo — see [Tier Conventions](tier-conventions.md).
 
 | Status | Meaning |
 |--------|---------|
-| **Prototype** | Custom agent, baking in a consumer repo. May become first-class. |
 | **First-class** | Ships in `fullsend-ai/agents` as part of the default catalog. |
-| **Custom** | Not in the default catalog (includes dogfood, toolchain-specific, and not-yet-baked candidates). |
+| **Custom** | Not in the default catalog (includes dogfood, toolchain-specific, and not-yet-baked candidates). A custom agent may be a **prototype** — baking in a consumer repo, working toward first-class — or simply stay custom; prototype is a phase of custom, not a separate status. |
 
 Lifecycle: prototype as a custom agent → bake in production → promote, or
 remain custom. How to build and register the prototype is
@@ -32,8 +31,17 @@ experimental files live during prototyping is tracked in
 
 ## Discover the current catalog
 
-The agents repo is the source of truth. Do not copy harness names into docs
-as a living inventory — they go stale.
+Do not copy harness names into docs as a living inventory — they go stale.
+
+The single membership oracle for the first-class set (and the 15-agent cap
+count) is
+[`ValidAgentNames()`](../../internal/config/config.go) in this repo — the
+built-in names `fullsend run <agent>` dispatches and the agents-repo runtime
+fallback checks against. The table in
+[`docs/agents/README.md`](../agents/README.md) and the shipped-role list in
+[escalation-ladder.md](../agents/topics/escalation-ladder.md) are documented
+projections of `ValidAgentNames()` and must stay in sync with it (see the
+promotion checklist below).
 
 ```bash
 # List the YAML harness files in fullsend-ai/agents
@@ -43,15 +51,11 @@ gh api repos/fullsend-ai/agents/contents/harness \
 
 A local clone works the same way: `ls harness/*.yaml` at the agents-repo
 root (strip the `.yaml` suffix). Both commands enumerate harness files, not
-the first-class set directly — a harness file existing does not by itself
-confirm catalog-fit, and the harness directory can contain dogfood-only or
-otherwise non-catalog harnesses (see `scribe` in the snapshot below). Filter
-the raw listing against the documented default catalog — the table in
-[`docs/agents/README.md`](../agents/README.md) and the shipped-role list in
-[escalation-ladder.md](../agents/topics/escalation-ladder.md) — to get the
-current first-class set. See the
-[`author-fullsend-augmentations`](../../skills/author-fullsend-augmentations/SKILL.md)
-skill for the full discovery pattern.
+the first-class set — a harness file existing does not by itself confirm
+catalog-fit, and the harness directory can contain dogfood-only or
+otherwise non-catalog harnesses (see `scribe` in the snapshot below). Use
+the harness listing only to spot agents that might be missing from
+`ValidAgentNames()`, never as the cap count itself.
 
 ## Promotion checklist
 
@@ -83,9 +87,10 @@ just because the prototype is reliable.
 
 ## Classification snapshot (2026-09-09)
 
-Snapshot of applying ADR 0111, not a living roster. Re-run the discovery
-command above and filter it against the documented default catalog (as
-described above) for the current first-class set.
+Snapshot of applying ADR 0111, not a living roster. Check
+[`ValidAgentNames()`](../../internal/config/config.go) for the current
+first-class set; re-run the discovery command above only to spot harnesses
+that might be missing from it.
 
 | Agent | Status | Notes |
 |-------|--------|-------|
@@ -104,7 +109,7 @@ Roles described in [agent-architecture.md](../problems/agent-architecture.md)
 that have no harness (for example quality/drift detection) are not catalog
 entries. Building one would start as a prototype and need this checklist.
 
-As of this snapshot the catalog has 6 of the 15-agent soft cap.
+As of this snapshot the catalog has 6 of the 15-agent cap.
 
 ## How to propose a promotion
 
@@ -118,13 +123,17 @@ As of this snapshot the catalog has 6 of the 15-agent soft cap.
    scripts, docs) only after maintainer sign-off. The functional test case
    itself lands in fullsend's `eval/` tree
    ([ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md)), not
-   in the agents repo.
-5. In the same change, update this repo's catalog-membership references —
-   the table in [`docs/agents/README.md`](../agents/README.md) and the
-   shipped-role list in
-   [escalation-ladder.md](../agents/topics/escalation-ladder.md) — so the
-   discovery filter above and the documented catalog stay in sync with the
-   new first-class agent.
+   in the agents repo. This is a separate repo, so it is its own PR.
+5. Open a linked PR in this repo (fullsend) that adds the new name to
+   [`ValidAgentNames()`](../../internal/config/config.go) — the runtime
+   allowlist that drives the `fullsend-ai/agents` fallback and sourceless
+   `agents:` config tuning — and updates the catalog-membership
+   references: the table in [`docs/agents/README.md`](../agents/README.md)
+   and the shipped-role list in
+   [escalation-ladder.md](../agents/topics/escalation-ladder.md). Merge
+   this alongside the `fullsend-ai/agents` PR from step 4 — until it
+   lands, `fullsend run <agent>` cannot resolve the new agent without an
+   explicit sourced config entry.
 
 ## See also
 

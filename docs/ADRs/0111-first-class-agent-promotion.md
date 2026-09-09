@@ -36,7 +36,8 @@ grows without a shared definition of "first-class."
 
 **B. Criteria, maturity bar, and a memorability cap.** Promote only
 agents that expand the SDLC (or are broadly useful regardless of
-toolchain), have baked in production, and fit under a soft cap.
+toolchain), have baked in production, and fit under a hard cap with
+replacement.
 
 **C. Freeze the catalog.** Protects memorability absolutely, but
 blocks expanding into new SDLC stages.
@@ -59,8 +60,8 @@ Experimental directory layout is tracked separately in
 **Catalog fit.** All of: (1) expands fullsend into an SDLC stage most
 adopters will want, **or** is broadly useful regardless of a specific
 vendor toolchain; (2) is not a team-internal workflow; (3) does not
-push the catalog past the soft cap unless an existing first-class
-agent is retired or merged in the same change.
+push the catalog past the cap unless an existing first-class agent is
+retired or merged in the same change.
 
 **Maturity bar.** Production bake in at least one non-eval repository
 covering the claimed triggers, with no open class of failure that
@@ -73,12 +74,13 @@ sandbox scoped to the agent's responsibility
 ([ADR 0020](0020-composable-single-responsibility-agents-with-individual-sandboxes.md));
 maintainer sign-off that catalog fit still holds.
 
-**Soft cap.** The default catalog stays at or below **15** first-class
-agents. Users should be able to name them from memory; each entry
-carries a harness, identity, docs, evals, and support cost. Exceeding
-15 requires retiring or merging an existing entry in the same change,
-per catalog-fit criterion (3) above — there is no other path past the
-cap.
+**Hard cap, 1-in-1-out.** The default catalog stays at or below **15**
+first-class agents. Users should be able to name them from memory; each
+entry carries a harness, identity, docs, evals, and support cost.
+Adding a 16th first-class agent is forbidden; at 15, a promotion must
+retire or merge an existing entry in the same change, per catalog-fit
+criterion (3) above, so the post-change count remains at or below 15 —
+there is no other path past the cap.
 
 The operational checklist and a point-in-time classification live in
 [first-class-agents.md](../contributing/first-class-agents.md).

@@ -109,7 +109,7 @@ See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md), [Eval Measu
 
 ### First-Class Agent
 
-An agent that ships in `fullsend-ai/agents` as part of the default catalog. This is catalog membership, distinct from the [configured default agent](#configured-default-agent) / [derived agent](#derived-agent) / [custom agent](#custom-agent) axis, which describes customization depth — a custom agent can still be a candidate for first-class promotion. Promotion requires meeting catalog-fit and maturity criteria and keeping the catalog at or below a soft cap of 15 first-class agents.
+An agent that ships in `fullsend-ai/agents` as part of the default catalog. This is catalog membership, distinct from the [configured default agent](#configured-default-agent) / [derived agent](#derived-agent) / [custom agent](#custom-agent) axis, which describes customization depth — a custom agent can still be a candidate for first-class promotion. Promotion requires meeting catalog-fit and maturity criteria and keeping the catalog at or below a hard cap of 15 first-class agents (1-in-1-out once at the cap).
 See [ADR 0111](ADRs/0111-first-class-agent-promotion.md) and [First-class agent promotion](contributing/first-class-agents.md).
 
 ### Flapping
