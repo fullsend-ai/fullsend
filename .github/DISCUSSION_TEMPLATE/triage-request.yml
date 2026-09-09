@@ -1,0 +1,48 @@
+title: "Triage request: [your GitHub username]"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Triage Role Request
+
+        Use this form to request triage access. See
+        [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md)
+        for the full role definition, criteria, and approval requirements.
+
+        **Write in your own words.** Do not have an AI generate this request.
+
+  - type: textarea
+    id: contributions
+    attributes:
+      label: Contribution history
+      description: >
+        Link to at least 2 merged PRs or substantive reviews
+        demonstrating familiarity with the project's conventions and
+        review etiquette.
+      placeholder: |
+        - https://github.com/fullsend-ai/fullsend/pull/NNN
+        - https://github.com/fullsend-ai/fullsend/pull/NNN
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why do you need triage access?
+      description: >
+        Explain what you plan to do with triage capabilities
+        (e.g., labeling issues, using observation agents, reviewing PRs).
+      placeholder: "I want to help triage incoming issues and..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I wrote this request myself (not AI-generated)
+          required: true
+        - label: I have read [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md) and meet the criteria for triage access
+          required: true
