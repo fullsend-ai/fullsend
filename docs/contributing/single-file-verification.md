@@ -13,17 +13,23 @@ full-tree invocations, not single-file checks.
 
 ## Go
 
-```bash
-go vet ./path/to/file.go
-golangci-lint run ./path/to/file.go
-```
-
-Package-scoped is also valid and often more accurate when siblings share the
-package:
+Prefer the package-scoped form. It matches `make go-vet` / `go vet ./...`
+semantics and works whether or not siblings share the package:
 
 ```bash
 go vet ./path/to/pkg/
 golangci-lint run ./path/to/pkg/
+```
+
+The file-path form is only reliable for single-file packages (for example
+`cmd/fullsend/main.go`). In multi-file packages — most of `internal/` and
+`cmd/` — passing just the changed file makes Go synthesize a package from
+that file alone, omitting siblings, which spuriously reports
+undefined-symbol errors:
+
+```bash
+go vet ./path/to/file.go
+golangci-lint run ./path/to/file.go
 ```
 
 ## Python
