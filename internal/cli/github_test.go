@@ -1768,9 +1768,9 @@ func TestBuildPresetOverlay_OpenAI(t *testing.T) {
 
 // --- Layered config install tests (ADR 0069 / #4913) ---
 
-// presetWithInference returns a valid preset YAML containing
+// newPresetFileWithInference returns a valid preset YAML containing
 // mint/inference values for layered config tests.
-func presetWithInference(t *testing.T) string {
+func newPresetFileWithInference(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	presetPath := filepath.Join(dir, "preset.yaml")
@@ -1796,7 +1796,7 @@ func TestRunGitHubSetupPerRepo_ConfigDriven_NoFlagsNeeded(t *testing.T) {
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	printer := ui.New(&discardWriter{})
-	preset := presetWithInference(t)
+	preset := newPresetFileWithInference(t)
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:       "acme/widget",
@@ -1842,7 +1842,7 @@ func TestRunGitHubSetupPerRepo_ConfigDriven_FlagOverridesPreset(t *testing.T) {
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.TokenScopes = []string{"repo", "workflow"}
 	printer := ui.New(&discardWriter{})
-	preset := presetWithInference(t)
+	preset := newPresetFileWithInference(t)
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:               "acme/widget",
@@ -1894,7 +1894,7 @@ func TestRunGitHubSetupPerRepo_ConfigDriven_DryRun(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
-	preset := presetWithInference(t)
+	preset := newPresetFileWithInference(t)
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:       "acme/widget",
@@ -2102,7 +2102,7 @@ inference:
 	}
 
 	// New preset (preset B) with different values.
-	newPreset := presetWithInference(t)
+	newPreset := newPresetFileWithInference(t)
 
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
 		target:       "acme/widget",
