@@ -1765,3 +1765,338 @@ func TestBuildPresetOverlay_OpenAI(t *testing.T) {
 	assert.Equal(t, config.OpenAIWIFConfig{Audience: "fullsend://acme", IdentityProviderID: "idp_1", ServiceAccountID: "sa_1"}, o.ConfigInferenceOpenAI())
 	assert.True(t, setupConfigFlagsChanged(cfg), "the openai flags turn a re-run into a config change")
 }
+
+// --- Layered config install tests (ADR 0069 / #4913) ---
+
+// presetWithInference returns a valid preset YAML containing
+// mint/inference values for layered config tests.
+func presetWithInference(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "preset.yaml")
+	content := `# fullsend per-repo configuration
+version: "1"
+mint_url: https://preset-mint.example.com
+inference:
+  provider: vertex
+  project: preset-project
+  region: us-west1
+  wif_provider: projects/111222333/locations/global/workloadIdentityPools/preset-pool/providers/preset-oidc
+`
+	require.NoError(t, os.WriteFile(presetPath, []byte(content), 0o644))
+	return presetPath
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_NoFlagsNeeded(t *testing.T) {
+	// When a preset provides inference-project and inference-wif-provider,
+	// no flags are needed — the installer reads from the preset's values.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+	preset := presetWithInference(t)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: preset,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+
+	// Verify config.base.yaml was committed.
+	_, basePresent := committedScaffoldFile(client, ".fullsend/config.base.yaml")
+	assert.True(t, basePresent, "preset should be committed as config.base.yaml")
+
+	// Verify dual-write vars use preset values.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://preset-mint.example.com", varNames["FULLSEND_MINT_URL"],
+		"dual-write mint URL should come from preset")
+	assert.Equal(t, "us-west1", varNames["FULLSEND_GCP_REGION"],
+		"dual-write region should come from preset")
+	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"],
+		"per-repo install marker should be set")
+
+	// Verify dual-write secrets use preset values.
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "preset-project", secretNames["FULLSEND_GCP_PROJECT_ID"],
+		"dual-write project should come from preset")
+	assert.Contains(t, secretNames["FULLSEND_GCP_WIF_PROVIDER"], "preset-pool",
+		"dual-write WIF should come from preset")
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_FlagOverridesPreset(t *testing.T) {
+	// When both preset and flags are present, flag values win for the
+	// dual-write vars/secrets and go into the overlay config.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+	preset := presetWithInference(t)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:         preset,
+		inferenceProject:     "flag-project",
+		inferenceWIFProvider: "projects/999888777/locations/global/workloadIdentityPools/flag-pool/providers/flag-oidc",
+		mintURL:              "https://flag-mint.example.com",
+		inferenceRegion:      "europe-west1",
+		changedFlags: map[string]bool{
+			"config":                 true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"mint-url":               true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify dual-write vars use flag values (not preset values).
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://flag-mint.example.com", varNames["FULLSEND_MINT_URL"],
+		"flag-specified mint URL should override preset")
+	assert.Equal(t, "europe-west1", varNames["FULLSEND_GCP_REGION"],
+		"flag-specified region should override preset")
+
+	// Verify dual-write secrets use flag values.
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "flag-project", secretNames["FULLSEND_GCP_PROJECT_ID"],
+		"flag-specified project should override preset")
+	assert.Contains(t, secretNames["FULLSEND_GCP_WIF_PROVIDER"], "flag-pool",
+		"flag-specified WIF should override preset")
+
+	// Verify overlay config contains flag-specified values.
+	cfgContent, present := committedScaffoldFile(client, ".fullsend/config.yaml")
+	require.True(t, present)
+	s := string(cfgContent)
+	assert.Contains(t, s, "flag-mint.example.com")
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_DryRun(t *testing.T) {
+	// Dry run with preset: should show preset values without writing.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+	preset := presetWithInference(t)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: preset,
+		dryRun:       true,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+
+	// Nothing should be written.
+	assert.Empty(t, client.CommittedFiles)
+	assert.Empty(t, client.Variables)
+	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_PartialPreset(t *testing.T) {
+	// Preset provides only mint/region; inference-project and WIF are
+	// provided via flags (the "partial config" scenario).
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "partial.yaml")
+	content := `# fullsend per-repo configuration
+version: "1"
+mint_url: https://partial-mint.example.com
+inference:
+  region: asia-east1
+`
+	require.NoError(t, os.WriteFile(presetPath, []byte(content), 0o644))
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:         presetPath,
+		inferenceProject:     "flag-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		changedFlags: map[string]bool{
+			"config":                 true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+		},
+	})
+	require.NoError(t, err)
+
+	// Vars: mint from preset, region from preset, project/WIF from flags.
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://partial-mint.example.com", varNames["FULLSEND_MINT_URL"],
+		"mint URL from preset")
+	assert.Equal(t, "asia-east1", varNames["FULLSEND_GCP_REGION"],
+		"region from preset")
+
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "flag-project", secretNames["FULLSEND_GCP_PROJECT_ID"],
+		"project from flag (not in partial preset)")
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_InvalidPresetWIF(t *testing.T) {
+	// When a preset provides an invalid WIF provider, the installer should
+	// reject it with a "preset config:" prefixed error.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "bad-wif.yaml")
+	content := `# fullsend per-repo configuration
+version: "1"
+mint_url: https://preset-mint.example.com
+inference:
+  provider: vertex
+  project: preset-project
+  region: us-west1
+  wif_provider: not-a-valid-wif-format
+`
+	require.NoError(t, os.WriteFile(presetPath, []byte(content), 0o644))
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preset config:")
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_InvalidPresetMintURL(t *testing.T) {
+	// When a preset provides a non-HTTPS mint URL, the installer should
+	// reject it with a "preset config:" prefixed error.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "bad-mint.yaml")
+	content := `# fullsend per-repo configuration
+version: "1"
+mint_url: http://insecure-mint.example.com
+inference:
+  provider: vertex
+  project: preset-project
+  region: us-west1
+  wif_provider: projects/111222333/locations/global/workloadIdentityPools/preset-pool/providers/preset-oidc
+`
+	require.NoError(t, os.WriteFile(presetPath, []byte(content), 0o644))
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preset config:")
+}
+
+func TestRunGitHubSetupPerRepo_ConfigDriven_InvalidPresetWIFWithFlagOverride(t *testing.T) {
+	// When a preset provides an invalid WIF provider AND a valid
+	// --inference-wif-provider flag overrides it, the installer should
+	// still reject the preset because config.base.yaml is committed
+	// with the invalid value (it could surface if the overlay is later
+	// removed). This is the asymmetric-validation scenario.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	dir := t.TempDir()
+	presetPath := filepath.Join(dir, "bad-wif-with-override.yaml")
+	content := `# fullsend per-repo configuration
+version: "1"
+mint_url: https://preset-mint.example.com
+inference:
+  provider: vertex
+  project: preset-project
+  region: us-west1
+  wif_provider: not-a-valid-wif-format
+`
+	require.NoError(t, os.WriteFile(presetPath, []byte(content), 0o644))
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:         presetPath,
+		inferenceWIFProvider: "projects/999888777/locations/global/workloadIdentityPools/valid-pool/providers/valid-oidc",
+		changedFlags: map[string]bool{
+			"config":                 true,
+			"inference-wif-provider": true,
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preset config:")
+}
+
+func TestRunGitHubSetupPerRepo_LayeredReader_DualWrite(t *testing.T) {
+	// Verify that dual-write vars/secrets are read through the layered
+	// config reader (overlay → base → defaults) rather than ad-hoc
+	// flag resolution.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+	preset := presetWithInference(t)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: preset,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+
+	// Dual-write vars should match the preset values read through
+	// the layered reader (not resolved independently).
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://preset-mint.example.com", varNames["FULLSEND_MINT_URL"],
+		"layered reader should resolve mint URL from base layer")
+	assert.Equal(t, "us-west1", varNames["FULLSEND_GCP_REGION"],
+		"layered reader should resolve region from base layer")
+}

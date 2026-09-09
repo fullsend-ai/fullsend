@@ -217,35 +217,95 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
 	}
 
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Setting up per-repo fullsend for " + cfg.target)
+	printer.Blank()
+
+	// --- Preset loading ---
+	// Runs before inference validation so preset values can satisfy the
+	// --inference-project / --inference-wif-provider requirement without
+	// requiring flags (ADR 0069 Decision 1).
+	var presetData []byte
+	var presetReader config.PerRepoConfigReader
+	if cfg.configPreset != "" {
+		printer.StepStart("Fetching preset from " + cfg.configPreset)
+		var fetchErr error
+		presetData, fetchErr = fetchPreset(cfg.configPreset)
+		if fetchErr != nil {
+			printer.StepFail("Failed to fetch preset")
+			return fmt.Errorf("fetching preset from %s: %w", cfg.configPreset, fetchErr)
+		}
+		printer.StepDone(fmt.Sprintf("Fetched preset (%d bytes)", len(presetData)))
+		if cfg.configHash != "" {
+			printer.StepStart("Validating preset hash")
+			if hashErr := validatePresetHash(presetData, cfg.configHash); hashErr != nil {
+				printer.StepFail("Preset hash validation failed")
+				return hashErr
+			}
+			printer.StepDone("Preset hash validated")
+		}
+		if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
+			printer.StepFail("Preset YAML validation failed")
+			return yamlErr
+		}
+		parsed, parseErr := config.ParsePerRepoConfig(presetData)
+		if parseErr != nil {
+			return fmt.Errorf("parsing preset config: %w", parseErr)
+		}
+		presetReader = parsed
+
+		// Validate the preset's mint URL and WIF provider the same way
+		// the flag values are validated in newGitHubSetupCmd — preset
+		// values bypass the flag-level checks, so we must apply them
+		// here unconditionally (even when flags override these values)
+		// to prevent an invalid preset from being committed as
+		// config.base.yaml.
+		if v := presetReader.ConfigMintURL(); v != "" {
+			if err := validateMintURLHTTPS(v); err != nil {
+				return fmt.Errorf("preset config: %w", err)
+			}
+		}
+		if v := presetReader.ConfigInferenceWIFProvider(); v != "" {
+			if err := validateWIFProvider(v); err != nil {
+				return fmt.Errorf("preset config: %w", err)
+			}
+		}
+	}
+
 	// On re-run, allow skipping --inference-project and --inference-wif-provider
 	// if the corresponding secrets already exist on the repo (matching per-org
-	// fallback behavior). Each flag is checked independently so the user can
-	// update one while keeping the other.
+	// fallback behavior), or if the layered config (preset base layer)
+	// provides the value. Each field is checked independently so the user
+	// can update one while keeping the other.
 	reuseProject := false
 	reuseWIF := false
-	if cfg.inferenceProject == "" {
+	presetProvidesProject := cfg.inferenceProject == "" && presetReader != nil && presetReader.ConfigInferenceProject() != ""
+	presetProvidesWIF := cfg.inferenceWIFProvider == "" && presetReader != nil && presetReader.ConfigInferenceWIFProvider() != ""
+	if cfg.inferenceProject == "" && !presetProvidesProject {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
 		if err != nil {
 			return fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
 		}
 		if !exists {
-			return fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found)")
+			return fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found and no preset config provides it)")
 		}
 		reuseProject = true
 	}
-	if cfg.inferenceWIFProvider == "" {
+	if cfg.inferenceWIFProvider == "" && !presetProvidesWIF {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER")
 		if err != nil {
 			return fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
 		}
 		if !exists {
-			return fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found)")
+			return fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found and no preset config provides it)")
 		}
 		reuseWIF = true
 	}
 
-	// Validate format only when a new value is provided; reused secrets were
-	// validated on first write.
+	// Validate format when a new flag value is provided; reused secrets
+	// were validated on first write, and preset values are validated
+	// unconditionally in the preset-loading block above.
 	if cfg.inferenceWIFProvider != "" {
 		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
 			return err
@@ -260,45 +320,21 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return err
 	}
 
-	printer.Banner(Version())
-	printer.Blank()
-	printer.Header("Setting up per-repo fullsend for " + cfg.target)
-	printer.Blank()
-
 	if reuseProject {
 		printer.StepInfo("Reusing existing FULLSEND_GCP_PROJECT_ID from " + cfg.target)
 	}
 	if reuseWIF {
 		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
 	}
+	if presetProvidesProject {
+		printer.StepInfo("Using inference project from layered config")
+	}
+	if presetProvidesWIF {
+		printer.StepInfo("Using WIF provider from layered config")
+	}
 
-	// --- Preset handling (--config / --config-hash) ---
-	var presetData []byte
-	if cfg.configPreset != "" {
-		printer.StepStart("Fetching preset from " + cfg.configPreset)
-		var fetchErr error
-		presetData, fetchErr = fetchPreset(cfg.configPreset)
-		if fetchErr != nil {
-			printer.StepFail("Failed to fetch preset")
-			return fetchErr
-		}
-		printer.StepDone(fmt.Sprintf("Fetched preset (%d bytes)", len(presetData)))
-
-		if cfg.configHash != "" {
-			printer.StepStart("Validating preset hash")
-			if hashErr := validatePresetHash(presetData, cfg.configHash); hashErr != nil {
-				printer.StepFail("Preset hash validation failed")
-				return hashErr
-			}
-			printer.StepDone("Preset hash validated")
-		} else if isRemotePreset(cfg.configPreset) {
-			printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
-		}
-
-		if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
-			printer.StepFail("Preset YAML validation failed")
-			return yamlErr
-		}
+	if cfg.configPreset != "" && isRemotePreset(cfg.configPreset) && cfg.configHash == "" {
+		printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
 	}
 
 	// --- Existing per-repo config (re-run) ---
@@ -332,9 +368,17 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		cfg.runtime = choice
 	}
+	// Runtime resolution order: flag → existing config → preset.
+	// This intentionally differs from resolveEffectiveValue (flag →
+	// preset → code default) because on a re-run the existing config's
+	// runtime selection should be authoritative — a preset carrying a
+	// default runtime must not override an operator's explicit choice.
 	effectiveRuntime := cfg.runtime
 	if effectiveRuntime == "" && existingCfg != nil {
 		effectiveRuntime = existingCfg.ConfigRuntime()
+	}
+	if effectiveRuntime == "" && presetReader != nil {
+		effectiveRuntime = presetReader.ConfigRuntime()
 	}
 	if cfg.runtime == "pi" {
 		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
@@ -363,27 +407,28 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		printer.StepInfo("Updating existing .fullsend/config.yaml: " + strings.Join(changed, ", ") + " (other keys kept; comments are not preserved)")
 	case presetData == nil:
-		// No preset: generate a per-repo config.yaml. Only
-		// explicitly-set flags are written to the overlay; unset
-		// values fall through overlay → base → code defaults
-		// (ADR 0069 Decision 1, same pattern as buildPresetOverlay).
+		// No preset: generate a per-repo config.yaml. Flag values are
+		// written to config.yaml so the layered reader resolves them;
+		// a value is written when the flag was explicitly changed OR
+		// when a non-empty value was provided directly (the latter
+		// covers callers that set struct fields without changedFlags).
 		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 		if cfg.runtime != "" {
 			perRepoCfg.SetRuntime(cfg.runtime)
 		}
-		if cfg.changedFlags["mint-url"] {
+		if cfg.changedFlags["mint-url"] || cfg.mintURL != "" {
 			perRepoCfg.SetMintURL(cfg.mintURL)
 		}
-		if cfg.changedFlags["inference-provider"] {
+		if cfg.changedFlags["inference-provider"] || cfg.inferenceProvider != "" {
 			perRepoCfg.SetInferenceProvider(cfg.inferenceProvider)
 		}
-		if cfg.changedFlags["inference-region"] {
+		if cfg.changedFlags["inference-region"] || cfg.inferenceRegion != "" {
 			perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
 		}
-		if cfg.changedFlags["inference-project"] {
+		if cfg.changedFlags["inference-project"] || cfg.inferenceProject != "" {
 			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
 		}
-		if cfg.changedFlags["inference-wif-provider"] {
+		if cfg.changedFlags["inference-wif-provider"] || cfg.inferenceWIFProvider != "" {
 			perRepoCfg.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
 		}
 		if openaiFlagsChanged(cfg) {
@@ -445,6 +490,23 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		})
 	}
 
+	// Construct a layered reader from the config files we just built.
+	// All subsequent value resolution (dual-write vars/secrets) reads
+	// through this reader so dual-write values match the layered config
+	// the repo reads at runtime (ADR 0069 Decision 1).
+	var layeredReader config.PerRepoConfigReader
+	if existingCfg != nil {
+		// Re-run: existing config was kept or modified in-place and
+		// already has the parent chain (overlay → base → defaults).
+		layeredReader = existingCfg
+	} else if cfgYAML != nil {
+		lr, lrErr := config.ParsePerRepoConfigWriterLayered(cfgYAML, presetData)
+		if lrErr != nil {
+			return fmt.Errorf("constructing layered config reader: %w", lrErr)
+		}
+		layeredReader = lr
+	}
+
 	// Mint/inference values are stored in config.yaml (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
 	// compatibility — existing workflow templates still reference
@@ -452,19 +514,8 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// ${{ secrets.FULLSEND_GCP_PROJECT_ID }}, and
 	// ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}.
 	// See #5870 / #4977 for the migration to config-only reads.
-	//
-	// Resolve effective values: use the flag value when explicitly
-	// set, otherwise fall back to code defaults so first-time
-	// installs still get working vars/secrets without polluting
-	// the overlay (ADR 0069).
-	effectiveMintURL := cfg.mintURL
-	if effectiveMintURL == "" {
-		effectiveMintURL = config.DefaultPerRepoMintURL
-	}
-	effectiveRegion := cfg.inferenceRegion
-	if effectiveRegion == "" {
-		effectiveRegion = config.DefaultPerRepoInferenceRegion
-	}
+	effectiveMintURL := layeredReader.ConfigMintURL()
+	effectiveRegion := layeredReader.ConfigInferenceRegion()
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   effectiveMintURL,
 		"FULLSEND_GCP_REGION": effectiveRegion,
@@ -481,10 +532,16 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	repoSecrets := make(map[string]string)
 	if !reuseProject {
-		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
+		// !reuseProject => cfg.inferenceProject != "" || presetProvidesProject,
+		// so layeredReader.ConfigInferenceProject() always returns a
+		// non-empty string here (flag value in overlay or preset in base).
+		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = layeredReader.ConfigInferenceProject()
 	}
 	if !reuseWIF {
-		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
+		// !reuseWIF => cfg.inferenceWIFProvider != "" || presetProvidesWIF,
+		// so layeredReader.ConfigInferenceWIFProvider() always returns a
+		// non-empty string here (flag value in overlay or preset in base).
+		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = layeredReader.ConfigInferenceWIFProvider()
 	}
 
 	// Resolve Signed-off-by trailer when --signoff is set.
