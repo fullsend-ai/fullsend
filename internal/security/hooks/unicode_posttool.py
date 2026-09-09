@@ -33,6 +33,17 @@ MAX_DECODED_LOG = 200
 # caps pathological adjacent reconstructed sequences (see #445).
 MAX_SANITIZE_PASSES = 64
 
+# Fail-closed backstop for _sanitize_fixpoint. A single non-overlapping
+# `pattern.sub` pass on an adjacent-ESC run (e.g. ESC*65 + "["*130, where
+# "[" is itself a valid ECMA-48 CSI final byte) removes only one
+# reconstructed CSI per pass, so a large enough run outruns
+# MAX_SANITIZE_PASSES. Both the ANSI and OSC patterns require a leading
+# ESC (0x1B); stripping every ESC and C1 control byte (0x80-0x9F)
+# unconditionally therefore guarantees neither can remain, regardless of
+# how the surrounding bytes are shaped.
+_ESC_C1_RE = re.compile("[\x1b\x80-\x9f]")
+_ESC_C1_STRIP_RE = re.compile("[\x1b\x80-\x9f]+")
+
 # --- Unicode categories to detect ---
 # Aligned with Go UnicodeNormalizer (internal/security/unicode.go).
 
@@ -187,6 +198,30 @@ def _sanitize_fixpoint(text: str) -> tuple[str, list[dict]]:
         if nxt == result:
             return result, findings
         result = nxt
+
+    # Exhausted the pass budget without reaching a fixpoint. A pathological
+    # run of adjacent ESC bytes (optionally reconstructed from fullwidth
+    # brackets by NFKC) can make each pass remove only one CSI, outrunning
+    # any fixed cap (#445). Returning the residual text here would fail
+    # open — it can still contain a live CSI/OSC sequence. Fail closed
+    # instead: strip every remaining ESC (0x1B) and C1 control byte
+    # (0x80-0x9F) outright. ansi_escape and osc_escape both require a
+    # leading ESC byte, so this guarantees neither survives.
+    if _ESC_C1_RE.search(result):
+        stripped = _ESC_C1_STRIP_RE.sub("", result)
+        removed = len(result) - len(stripped)
+        findings.append(
+            {
+                "name": "ansi_escape",
+                "severity": "high",
+                "detail": (
+                    f"{removed} escape/control byte(s) force-stripped after exceeding "
+                    f"{MAX_SANITIZE_PASSES} sanitize passes (fail-closed)"
+                ),
+            }
+        )
+        result = stripped
+
     return result, findings
 
 

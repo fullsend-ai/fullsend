@@ -175,6 +175,31 @@ func TestUnicodeNormalizer(t *testing.T) {
 		assert.Equal(t, "\u00e9", r.Sanitized)
 		assert.True(t, hasFinding(r, "fullwidth"))
 	})
+
+	t.Run("pass cap exceeded fails closed on ASCII bracket run", func(t *testing.T) {
+		// 65 ESC + 130 "[": each pass's non-overlapping match only
+		// consumes the last ESC plus two brackets (since "[" 0x5B is a
+		// valid ECMA-48 CSI final byte), so full convergence needs 65
+		// passes -- one more than maxSanitizePasses (64). The residual
+		// after exactly 64 passes is still "ESC[[", a live CSI. The
+		// fail-closed backstop must remove it anyway.
+		payload := strings.Repeat("\x1b", 65) + strings.Repeat("[", 130)
+		r := n.Scan(payload)
+		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("pass cap exceeded fails closed on fullwidth bracket run", func(t *testing.T) {
+		// Same shape, but the brackets are fullwidth "[" (U+FF3B) so the
+		// pre-NFKC pass is a no-op and only the post-NFKC fixpoint hits
+		// the pass cap.
+		payload := strings.Repeat("\x1b", 65) + strings.Repeat("\uff3b", 130)
+		r := n.Scan(payload)
+		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
 }
 
 func TestContextInjectionScanner(t *testing.T) {

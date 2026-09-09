@@ -11,7 +11,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).parent
 HOOK = str(HOOKS_DIR / "unicode_posttool.py")
 sys.path.insert(0, str(HOOKS_DIR))
-from unicode_posttool import scan_text  # noqa: E402
+from unicode_posttool import MAX_SANITIZE_PASSES, scan_text  # noqa: E402
 
 _ANSI_RE = re.compile(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]")
 _OSC_RE = re.compile(r"\x1b[\]P_^][^\x1b\x07]*(?:\x1b\\|\x07)")
@@ -295,6 +295,36 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         for f in findings:
             if f["name"] == "tag_char":
                 self.assertIn("decoded hidden text", f["detail"])
+
+    def test_pass_cap_exceeded_fails_closed_on_ascii_bracket_run(self):
+        """#445 follow-up: the pass cap itself must not fail open.
+
+        MAX_SANITIZE_PASSES + 1 ESC bytes followed by 2 * (MAX_SANITIZE_PASSES + 1)
+        "[" bytes: "[" (0x5B) is itself a valid ECMA-48 CSI final byte, so
+        each non-overlapping sub() pass only consumes the last ESC plus two
+        brackets at the boundary. Full convergence needs one more pass than
+        the cap allows, so the naive loop returns "ESC[[" — still a live
+        CSI — after exhausting MAX_SANITIZE_PASSES.
+        """
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("[" * (2 * n))
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_pass_cap_exceeded_fails_closed_on_fullwidth_bracket_run(self):
+        """Same shape as above, but via fullwidth "[" (U+FF3B) so only the
+        post-NFKC fixpoint (not the pre-NFKC one) hits the pass cap."""
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("［" * (2 * n))
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        self.assertIn("fullwidth", names)
+        assert_no_recognized_payload(self, result)
 
 
 class TestOSCPerformance(unittest.TestCase):

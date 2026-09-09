@@ -59,6 +59,16 @@ var (
 
 	// BMP variation selectors (VS1-VS16).
 	reVariation = regexp.MustCompile("[\uFE00-\uFE0F]+")
+
+	// reESCOrC1 is the fail-closed backstop for stripUntilStable. A single
+	// non-overlapping ReplaceAllStringFunc pass on an adjacent-ESC run
+	// (e.g. ESC*65 + "["*130, where "[" is itself a valid ECMA-48 CSI
+	// final byte) removes only one reconstructed CSI per pass, so a large
+	// enough run outruns maxSanitizePasses. reANSI and reSTTerminated both
+	// require a leading ESC (0x1B); stripping every ESC and C1 control
+	// byte (0x80-0x9F) unconditionally therefore guarantees neither can
+	// remain, regardless of how the surrounding bytes are shaped.
+	reESCOrC1 = regexp.MustCompile("[\x1b\u0080-\u009F]+")
 )
 
 // stripTerminalEscapes removes ANSI CSI and OSC sequences from text.
@@ -208,14 +218,35 @@ func stripControlCharacters(text, detailSuffix string) (string, []Finding) {
 func stripUntilStable(text, detailSuffix string) (string, []Finding) {
 	current := text
 	var findings []Finding
+	stabilized := false
 	for range maxSanitizePasses {
 		next, extra := stripControlCharacters(current, detailSuffix)
 		findings = append(findings, extra...)
 		if next == current {
+			stabilized = true
 			break
 		}
 		current = next
 	}
+
+	if !stabilized && reESCOrC1.MatchString(current) {
+		// Exhausted the pass budget without reaching a fixpoint. A
+		// pathological run of adjacent ESC bytes (optionally reconstructed
+		// from fullwidth brackets by NFKC) can make each pass remove only
+		// one CSI, outrunning any fixed cap (#445). Returning the residual
+		// text here would fail open — it can still contain a live CSI/OSC
+		// sequence copied into Sanitized. Fail closed instead: strip every
+		// remaining ESC (0x1B) and C1 control byte (0x80-0x9F) outright.
+		// reANSI and reSTTerminated both require a leading ESC byte, so
+		// this guarantees neither survives.
+		before := current
+		current = reESCOrC1.ReplaceAllString(current, "")
+		removed := utf8.RuneCountInString(before) - utf8.RuneCountInString(current)
+		findings = appendFinding(findings, "ansi_escape", "high",
+			fmt.Sprintf("%d escape/control byte(s) force-stripped after exceeding %d sanitize passes (fail-closed)", removed, maxSanitizePasses),
+			detailSuffix)
+	}
+
 	return current, findings
 }
 
