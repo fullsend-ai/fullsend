@@ -64,11 +64,11 @@ You do not need to write a GitHub Actions workflow file for each custom agent. T
 
 For local development and debugging, you can also run an agent directly with `fullsend run my-agent` — see [Testing locally](#testing-locally).
 
-**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
+**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the fleet's shared `policies/base.yaml` (from [fullsend-ai/agents](https://github.com/fullsend-ai/agents)) contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
 
 ## Minimum viable agent
 
-You need a harness, an agent definition, and supporting scaffold files. Setup does **not** copy `policies/`, `providers/`, or `profiles/` into `.fullsend/` — those directories are layered defaults that built-in agents load at runtime. For a custom agent, copy the files you need from the [scaffold](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo) or reference trusted URLs, then add `harness/my-agent.yaml` and `agents/my-agent.md`:
+You need a harness, an agent definition, and supporting scaffold files. Setup does **not** copy `policies/`, `providers/`, or `profiles/` into `.fullsend/` — those directories are layered defaults that built-in agents load at runtime. For a custom agent, copy `providers/`, `profiles/`, and `scripts/` files from the [scaffold](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo) (the scaffold has no `policies/` directory), copy `policies/base.yaml` from [fullsend-ai/agents](https://github.com/fullsend-ai/agents) or write your own, or reference trusted URLs — then add `harness/my-agent.yaml` and `agents/my-agent.md`:
 
 ```
 .fullsend/
@@ -76,7 +76,7 @@ You need a harness, an agent definition, and supporting scaffold files. Setup do
 +-- agents/my-agent.md                     # Agent prompt (you create)
 +-- providers/vertex-ai.yaml               # Provider definition (from scaffold)
 +-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold)
-+-- policies/base.yaml                     # Sandbox policy (from scaffold)
++-- policies/base.yaml                     # Sandbox policy (from fullsend-ai/agents)
 ```
 
 **`harness/my-agent.yaml`:**

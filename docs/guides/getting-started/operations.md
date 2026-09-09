@@ -48,12 +48,10 @@ header, plus GitLab `.gitlab/ci/fullsend-*.yml`) refresh on re-run.
 `.fullsend/config.yaml` is kept unless you pass a config-targeting flag.
 See [Working with the `.fullsend` directory](../user/fullsend-directory.md).
 
-After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
+After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo. Omit config-targeting flags (`--inference-project`, `--inference-wif-provider`, `--runtime`, `--agents`, and similar) for a workflow-only sync — the existing `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` secrets are reused:
 
 ```bash
-fullsend github setup "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>" \
-  --inference-wif-provider "<WIF_PROVIDER>"
+fullsend github setup "$OWNER/$REPO"
 ```
 
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):

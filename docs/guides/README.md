@@ -35,7 +35,7 @@ Advanced guides for platform operators who deploy and manage the GCP-side infras
 
 Guides for developers working in repositories where fullsend is active.
 
-- [The `.fullsend` directory](user/fullsend-directory.md) — Generated files after setup: which are installer-managed plumbing and which are safe to edit
+- [Working with the `.fullsend` directory](user/fullsend-directory.md) — Generated files after setup: which are installer-managed plumbing and which are safe to edit
 - [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents

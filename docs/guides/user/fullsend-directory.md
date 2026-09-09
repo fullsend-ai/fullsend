@@ -117,7 +117,8 @@ when you are customizing or building a new agent.
 | `.agents/skills/<name>/SKILL.md` | Domain knowledge or extra capabilities. Prefer `.agents/skills/` over a copy under `.fullsend/`. | [Configuring with Skills](customizing-with-skills.md) |
 | `.fullsend/harness/<agent>.yaml` | Thin `base:` overlay: change model, timeout, skills, env, or image for an existing agent. | [Configuring Agent Behavior](customizing-agents.md) |
 | `.fullsend/agents/<agent>.md` | Prompt and tools for a **new** agent. | [Bring Your Own Agent](bring-your-own-agent.md) |
-| `.fullsend/policies/`, `providers/`, `profiles/`, `scripts/` | Supporting files for a custom agent. Copy from the [scaffold](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo) or reference trusted URLs — setup does **not** install these. | [Bring Your Own Agent](bring-your-own-agent.md#minimum-viable-agent) |
+| `.fullsend/providers/`, `profiles/`, `scripts/` | Supporting files for a custom agent. Copy from the [scaffold](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo) or reference trusted URLs — setup does **not** install these. | [Bring Your Own Agent](bring-your-own-agent.md#minimum-viable-agent) |
+| `.fullsend/policies/` | Sandbox policy for a custom agent. Not in the fullsend scaffold — copy `policies/base.yaml` from [fullsend-ai/agents](https://github.com/fullsend-ai/agents) or write your own. | [Bring Your Own Agent](bring-your-own-agent.md#minimum-viable-agent) |
 
 Register local harnesses in `config.yaml`:
 
@@ -188,7 +189,9 @@ GitHub release:
 - Reusable workflow copies under `.github/workflows/`
 
 Do not edit these. They refresh on the next vendored install. Without
-`--vendor`, a later setup removes a stale `.fullsend/bin/fullsend`.
+`--vendor`, a later setup removes every safe path recorded in the vendor
+manifest — the vendored binary, `.defaults/`, the reusable workflow copies,
+and the vendor manifest itself — not just the binary.
 
 ## Files that are not source
 
