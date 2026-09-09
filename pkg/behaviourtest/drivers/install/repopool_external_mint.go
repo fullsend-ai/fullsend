@@ -44,7 +44,11 @@ func NewRepoPoolExternalMint(
 		GCPProjectID: gcpProjectID,
 	}
 	ens := newRepoEnsurer(ensCfg, client, token, binary, logf)
-	return newComposedDriver(org, md, ens, poolSize, logf)
+	d, err := newComposedDriver(org, md, ens, poolSize, logf)
+	if err != nil {
+		return nil, err
+	}
+	return withRateLimitReporter(d, client), nil
 }
 
 // Compile-time check: NewRepoPoolExternalMint satisfies Factory.

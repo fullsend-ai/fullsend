@@ -291,6 +291,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					printer.StepInfo(fmt.Sprintf("Forge variant %q has no remote dependencies", platform))
 				}
 			}
+			// Base-composed plugins are already local here; hold them to
+			// the same on-disk checks fullsend run applies.
+			if err := h.ValidatePluginDirs(); err != nil {
+				printer.StepFail("Plugin validation failed")
+				return nil, err
+			}
 			continue
 		}
 
@@ -334,7 +340,6 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepFail("Resolution failed")
 			return nil, fmt.Errorf("resolving remote resources: %w", resolveErr)
 		}
-
 		for _, dep := range result.Deps {
 			if dep.Warning != "" {
 				printer.StepWarn(dep.Warning)
@@ -346,6 +351,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 
 		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(result.Deps)))
+
+		// URL plugins are only format-checked once fetched; run the same
+		// on-disk plugin checks fullsend run applies so a lock never
+		// records an entry run would refuse.
+		if err := h.ValidatePluginDirs(); err != nil {
+			printer.StepFail("Plugin validation failed")
+			return nil, err
+		}
 	}
 
 	if len(allDeps) == 0 {
@@ -875,8 +888,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	for _, d := range deps {
 		resolvedURLs[d.URL] = d.LocalPath
 	}
-	for i, p := range h.Plugins {
-		if harness.IsURL(p) {
+	for i, e := range h.Plugins {
+		if p := e.Path; harness.IsURL(p) {
 			cleanURL, _, _ := harness.ParseIntegrityHash(p)
 			if cleanURL == "" {
 				cleanURL = p
@@ -967,7 +980,9 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			var idx int
 			// Index was validated during collection; Sscanf is safe here.
 			fmt.Sscanf(m.field, "plugins[%d]", &idx)
-			h.Plugins[idx] = m.localPath
+			// Only the path is replaced: the entry's env and pi options are
+			// the harness author's and survive resolution.
+			h.Plugins[idx].Path = m.localPath
 			urlResolvedPlugins[m.localPath] = true
 		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".skills["):
 			// Forge-scoped skills are resolved during LoadWithBase and merged
@@ -1030,13 +1045,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	// Resolve plugins that still hold URLs because the lock file
 	// deduplicated them under another field (e.g. skills[0]).
 	// URL entries were pre-validated above; lookups are guaranteed to succeed.
-	for i, p := range h.Plugins {
-		if harness.IsURL(p) {
+	for i, e := range h.Plugins {
+		if p := e.Path; harness.IsURL(p) {
 			cleanURL, _, _ := harness.ParseIntegrityHash(p)
 			if cleanURL == "" {
 				cleanURL = p
 			}
-			h.Plugins[i] = resolvedURLs[cleanURL]
+			h.Plugins[i].Path = resolvedURLs[cleanURL]
 			urlResolvedPlugins[resolvedURLs[cleanURL]] = true
 		}
 	}
@@ -1044,25 +1059,32 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	// Remove any remaining URL entries from plugins, mirroring skills above.
 	filteredPlugins := h.Plugins[:0]
 	for _, p := range h.Plugins {
-		if !harness.IsURL(p) {
+		if !harness.IsURL(p.Path) {
 			filteredPlugins = append(filteredPlugins, p)
 		}
 	}
 	h.Plugins = filteredPlugins
 
 	// De-duplicate plugins by resolved path and set executable permissions.
-	seen := make(map[string]bool, len(h.Plugins))
+	// Two entries on one tree with different env/pi options are a conflict
+	// (resolve.ResolveHarness refuses them); here the lock replay keeps the
+	// first and warns rather than silently dropping the second's options.
+	seen := make(map[string]int, len(h.Plugins))
 	deduped := h.Plugins[:0]
 	for _, p := range h.Plugins {
-		if !seen[p] {
-			seen[p] = true
-			deduped = append(deduped, p)
+		if prev, ok := seen[p.Path]; ok {
+			if kept := deduped[prev]; !kept.SameOptions(p) {
+				fmt.Fprintf(os.Stderr, "WARNING: plugin %q is listed twice with different env/pi options; keeping the first entry\n", p.Path)
+			}
+			continue
 		}
+		seen[p.Path] = len(deduped)
+		deduped = append(deduped, p)
 	}
 	h.Plugins = deduped
 	for _, p := range h.Plugins {
-		if urlResolvedPlugins[p] {
-			if err := chmodDirFiles(p); err != nil {
+		if urlResolvedPlugins[p.Path] {
+			if err := chmodDirFiles(p.Path); err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("setting plugin permissions: %w", err)
 			}
 		}

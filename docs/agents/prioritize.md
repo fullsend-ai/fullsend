@@ -1,3 +1,7 @@
+---
+description: How the fullsend prioritize agent scores GitHub issues with the RICE framework and produces ranked, reasoned priority scores.
+---
+
 # Prioritize Agent
 
 ![Prioritize agent icon](icons/prioritize.png)

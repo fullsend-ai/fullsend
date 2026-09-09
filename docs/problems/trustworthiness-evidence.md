@@ -93,6 +93,49 @@ The question is how these signals compose:
 
 **Tiered requirements.** Different autonomy levels require different evidence portfolios. Auto-triaging issues (low risk) requires only static analysis and basic behavioral tests. Auto-merging code (high risk) requires all five evidence types with strict thresholds. This aligns with the autonomy spectrum's per-repo, per-path granularity. However, defining and maintaining per-tier evidence portfolios adds complexity: who decides the tier boundaries, and how do you prevent agents from gaming the system by targeting the minimum tier? Tier definitions must also evolve as new evidence types emerge.
 
+## A concrete artifact: the trust scorecard
+
+The composition models above describe *how* to decide. They do not describe *what the decision is recorded as*. A trust scorecard is a serialized record that carries the evidence and the resulting decision, so a trust decision is auditable and portable across the dispatch pipeline instead of living only in a reviewer's head.
+
+Serializing trust signals into a record is not new: OpenSSF Scorecard emits per-check results and scores as a JSON document, and supply-chain attestation formats (in-toto, SLSA provenance) bind evidence to a subject and record what produced it and when. As an illustration, the same idea applied to agent trust composes the five evidence types above into a single record bound to the configuration hash they were measured against (per "Configuration drift detection", evidence is only valid for one configuration):
+
+```json
+{
+  "schema_version": "0.1.0",
+  "subject": {
+    "repo": "owner/name",
+    "agent_role": "review",
+    "config_hash": "sha256:...",
+    "generated_at": "2026-08-26T00:00:00Z"
+  },
+  "evidence": {
+    "config_health":   { "status": "pass",    "score": 0.94, "source": "static-analysis",   "as_of": "..." },
+    "behavioral_eval": { "status": "pass",    "score": 0.88, "source": "eval-suite@rev",    "as_of": "..." },
+    "audit_integrity": { "status": "pass",                   "source": "hash-chain-verify", "as_of": "..." },
+    "track_record":    { "status": "partial", "score": 0.98, "source": "merge-history",    "as_of": "...", "sample_size": 42, "revert_rate": 0.02 },
+    "drift":           { "status": "pass",                   "source": "config-hash-diff", "as_of": "...", "baseline_config_hash": "sha256:..." }
+  },
+  "composition": {
+    "model": "tiered",
+    "target_tier": "auto-merge",
+    "decision": "insufficient",
+    "blocking": ["track_record"],
+    "rationale": "track record sample size below the auto-merge threshold"
+  }
+}
+```
+
+What a record like this captures:
+
+- **Every signal carries its own provenance and freshness** (`source`, `as_of`), so a stale or missing signal is visible rather than silently treated as a pass. This gives the "how often must evidence be refreshed" open question a place to live: freshness is per-signal, not global.
+- **The whole card is bound to a `config_hash`.** A configuration change invalidates the signals measured against the prior hash, matching the drift-detection requirement above.
+- **The composition block records the decision and what blocked it**, so an `insufficient` outcome names the missing evidence (`blocking`) instead of returning an opaque no. That is what makes a graduated trust decision reviewable.
+- **`status` is separate from `score`.** A signal can be present-but-weak (`partial`) versus absent; collapsing the two loses the distinction between "we measured and it is low" and "we never measured it".
+
+**Other representations, and their trade-offs.** A single bound record is one shape among several, each with a different cost. A flat map of signal to score is simpler to emit, but it cannot carry per-signal provenance or the `status`-versus-`score` distinction, so a stale or never-measured signal becomes indistinguishable from a genuinely low one, the exact failure this problem area is trying to avoid. One record per signal (rather than a single bound card) makes independent refresh easier, but it pushes the `config_hash` binding and the composition outcome into a separate join, losing the "one decision, one artifact" property that makes an autonomy call auditable after the fact. The single record bound to a config hash trades that extra coupling for auditability and portability; if per-signal refresh cadence later dominates, splitting evidence into per-signal records behind the same `config_hash` is the natural evolution. Which representation fits is left to whoever adopts one; the point here is that the shape is a choice with consequences, not a settled schema.
+
+The record does not decide the weights or thresholds; those belong to the composition model and to [governance.md](governance.md). It only makes the inputs and the outcome explicit, attributable, and portable.
+
 ## Relationship to other problem areas
 
 - **[Testing Agents](testing-agents.md)** — Behavioral evaluation is one type of trustworthiness evidence. The testing-agents doc covers CI for prompts; this doc frames testing as part of a broader trust portfolio.
@@ -110,3 +153,4 @@ The question is how these signals compose:
 - Should evidence be portable across organizations? If an agent configuration is shared (via a module or template), does the evidence travel with it?
 - How do we prevent evidence gaming? An agent that is optimized to pass trust checks but behaves differently on real tasks is a sophisticated adversary.
 - Can static analysis of agent configurations be integrated as a preflight step in the dispatch pipeline, so that trust checks run automatically before every agent execution?
+- Where does a trust scorecard live and how long is it valid: attached to the run record, cached per config hash, or regenerated on demand before each autonomy decision?

@@ -111,8 +111,8 @@ like production dispatch: first whitespace token of the first comment line.
 | `close_or_plan` | Has sub-issues and all are closed → close the parent, or plan further work / open new sub-issues | Decision |
 | `trigger_code` | Stale `ready-to-code` / `/fs-code` / stuck Code start → `/fs-code` | Yes |
 | `trigger_review` | Stale review launch/start, or newer commits since last Review → `/fs-review` | Yes |
-| `trigger_fix` | Unresolved threads all from the review bot and launch/start is stale (or ready to run) → `/fs-fix` | Yes |
-| `needs_info_self` | `needs-info` and you're the author → provide info | Decision |
+| `trigger_fix` | Unresolved threads all from a review bot and launch/start is stale (or ready to run) → `/fs-fix` | Yes |
+| `needs_info_self` | `needs-info` and you're the author → provide info, then `/fs-triage` | Decision |
 | `needs_review_decision` | Manual-review labels, human unresolved threads, failed CI (`FAILURE`/`ERROR`), or `mergeStateStatus=BLOCKED` under `ready-for-merge` | Decision |
 | `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
@@ -177,6 +177,14 @@ like production dispatch: first whitespace token of the first comment line.
 6. Present the result:
    - Default: actionable items. Add blocked/waiting/assigned-elsewhere detail
      only if the user asked, or pass `--show-blocked`.
+   - When referencing items in prose summaries, use typed prefixes
+     (`Issue #N`, `PR #N`, `Draft PR #N`) and include the item title.
+     Items within each section are ordered PRs, then Issues, then
+     Draft PRs. Match the script's `--format markdown` table layout.
+   - When listing next actions, append `[auto apply]` to actions that
+     `--apply` can perform automatically (assign, slash-command comment,
+     label removal). Omit the indicator for actions that require a human
+     decision or manual intervention.
    - Remaining `assign:self` and `remove-label:blocked` suggestions (after
      step 4) are trivial side-actions — include them when offering apply.
    - "Decisions only": re-run with `--apply --confirmed --decisions-only` —

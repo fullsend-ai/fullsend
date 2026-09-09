@@ -96,6 +96,9 @@ output reaches the pipeline or downstream consumers. The mechanism:
 4. If retries are exhausted, the agent fails. No unvalidated output is
    emitted. The pipeline receives a failure signal, not silently bad data.
 
+> An iteration the runner killed at `timeout_minutes` is not retried
+> ([ADR 0105](0105-timed-out-iteration-ends-the-run.md)).
+
 Schema definitions are part of the harness configuration — governed by
 CODEOWNERS and immutable from the runtime per ADR 0016. Specific per-agent
 schemas are deferred to normative specs

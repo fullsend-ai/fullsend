@@ -98,9 +98,19 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
-			// Rate limits are per-user, not per-org — trying more orgs
-			// just burns quota and delays recovery. Break immediately.
+			// Rate-limit scope depends on the credential: installation
+			// tokens are minted per org, a shared PAT is limited per user.
 			if gh.IsRateLimitError(err) {
+				if cfg.useMint {
+					// Installation tokens are minted per org, so the
+					// limit is per org too: another org's token still
+					// has its own budget.
+					logf("[org-pool] %s installation token is rate limited, trying the next org", org)
+					sawRateLimit = true // still back off if every org turns out limited
+					continue
+				}
+				// A shared PAT is limited per user: trying more orgs
+				// just burns quota and delays recovery.
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
 				sawRateLimit = true
 				break
@@ -166,6 +176,16 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
 				if gh.IsRateLimitError(err) {
+					if cfg.useMint {
+						// Installation tokens are minted per org, so the
+						// limit is per org too: another org's token still
+						// has its own budget.
+						logf("[org-pool] %s installation token is rate limited, trying the next org", org)
+						roundRateLimited = true // still back off if every org turns out limited
+						continue
+					}
+					// A shared PAT is limited per user: trying more orgs
+					// just burns quota and delays recovery.
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
 					roundRateLimited = true
 					break

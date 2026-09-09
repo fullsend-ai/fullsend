@@ -1,3 +1,7 @@
+---
+description: How the fullsend retro agent runs retrospectives on agent workflows and proposes improvements as structured GitHub issues.
+---
+
 # Retro Agent
 
 ![Retro agent icon](icons/retro.png)

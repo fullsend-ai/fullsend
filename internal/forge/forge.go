@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // ConfigRepoName is the conventional name for the org-level fullsend
@@ -331,6 +332,41 @@ type ReviewComment struct {
 type PullRequestFileDiff struct {
 	Path  string
 	Patch string
+}
+
+// RateLimit is the most recent GitHub REST rate-limit state a client
+// observed, taken from the X-RateLimit-* response headers.
+type RateLimit struct {
+	Limit     int
+	Remaining int
+	Reset     time.Time
+	Resource  string
+	Observed  time.Time
+}
+
+// String renders the state for log lines and error messages. Fields
+// the response did not carry are rendered as unknown rather than as
+// plausible-looking zero values.
+func (r RateLimit) String() string {
+	remaining := fmt.Sprintf("remaining=%d", r.Remaining)
+	if r.Limit > 0 {
+		remaining += fmt.Sprintf("/%d", r.Limit)
+	}
+	reset := "unknown"
+	if !r.Reset.IsZero() {
+		reset = r.Reset.UTC().Format(time.RFC3339)
+	}
+	resource := r.Resource
+	if resource == "" {
+		resource = "unknown"
+	}
+	return fmt.Sprintf("%s reset=%s resource=%s", remaining, reset, resource)
+}
+
+// RateLimitReporter is implemented by clients that track RateLimit.
+// ok is false until the client has seen a response carrying the headers.
+type RateLimitReporter interface {
+	RateLimit() (state RateLimit, ok bool)
 }
 
 // Installation represents an app installation on an org.

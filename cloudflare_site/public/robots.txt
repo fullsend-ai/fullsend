@@ -1,3 +1,5 @@
+Sitemap: https://fullsend.sh/docs/sitemap.xml
+
 # Training crawlers — blocked site-wide
 User-agent: ClaudeBot
 Disallow: /

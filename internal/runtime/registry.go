@@ -14,9 +14,16 @@ func Resolve(name string) (Backend, error) {
 	case "", "claude":
 		r := ClaudeRuntime{}
 		return Backend{Runtime: r, Transcripts: r}, nil
+	case "codex":
+		r := CodexRuntime{}
+		return Backend{Runtime: r, Transcripts: r}, nil
 	case "dummy":
 		// Selected only via explicit per-repo/org config (behaviour test orgs).
 		r := DummyRuntime{}
+		return Backend{Runtime: r, Transcripts: r}, nil
+	case "dummy-playback":
+		// Replays canned results from a playlist (behaviour test orgs).
+		r := DummyPlaybackRuntime{}
 		return Backend{Runtime: r, Transcripts: r}, nil
 	case "opencode":
 		r := OpenCodeRuntime{}
@@ -90,9 +97,9 @@ func ResolveForAgent(agents []config.AgentEntry, repoRuntime, agent string) (Bac
 }
 
 // validateConfigRuntime checks that rt is in the set of user-facing
-// runtimes allowed in config files.  Stub runtimes (e.g. "opencode")
-// are intentionally excluded from [config.ValidRuntimes] so they
-// cannot be activated through org or per-repo config.
+// runtimes allowed in config files.  Stub runtimes (e.g. "opencode") are
+// intentionally excluded from [config.ValidRuntimes] so they cannot be
+// activated through per-repo config or an agents: entry.
 func validateConfigRuntime(rt string) error {
 	valid := config.ValidRuntimes()
 	if !slices.Contains(valid, rt) {

@@ -87,8 +87,9 @@ architecture constraints — without modifying any fullsend configuration.
 
 Repo skills **extend** the agent's skill set. They do not replace built-in
 skills. If a repo skill has the same name as a built-in skill, the built-in
-version takes precedence and the repo version is silently ignored. Use a
-unique name to ensure your skill is discoverable.
+version takes precedence and the repo version is ignored. Fullsend warns about
+the collision before the agent starts. Use a unique name to extend the agent,
+or intentionally replace it through [`base:` harness composition](#overriding-built-in-skills).
 
 ### Skill precedence
 
@@ -104,7 +105,8 @@ Personal (CLAUDE_CONFIG_DIR/skills/)  >  Project (.claude/skills/)
 
 A repo skill with a novel name (no collision) is always available. A repo
 skill with a name matching a built-in skill is shadowed — the agent never
-sees it.
+sees it. Fullsend logs a warning naming the shadowed skill and the supported
+extension and override paths.
 
 ### Extension points
 

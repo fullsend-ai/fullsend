@@ -36,6 +36,16 @@ const forkReadyMaxAttempts = 30
 // forkReadyPoll is the delay between GetBranchRef polls.
 const forkReadyPoll = 2 * time.Second
 
+// createBranchMaxAttempts is how many times createForkBranch
+// retries CreateBranch when it fails with a replication error
+// (409/422). Even after awaitForkReady passes, GitHub's
+// eventually-consistent fork replication can cause transient
+// failures when creating a branch.
+const createBranchMaxAttempts = 5
+
+// createBranchPoll is the delay between CreateBranch retries.
+const createBranchPoll = 2 * time.Second
+
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
@@ -162,6 +172,57 @@ func resolveForkName(w *world.World, logicalName string) string {
 	return w.RepoName + suffix
 }
 
+// isReplicationError reports whether err looks like a GitHub fork
+// replication race — a 409 "Git Repository is empty" or a 422
+// "Object does not exist" / "Tree SHA does not exist". These are
+// transient: the underlying Git objects have not been replicated
+// to the fork yet, but they will be shortly.
+func isReplicationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "409") ||
+		(strings.Contains(msg, "422") &&
+			(strings.Contains(msg, "does not exist") ||
+				strings.Contains(msg, "empty")))
+}
+
+// createForkBranch wraps CreateBranch with retry logic for transient
+// replication errors (409/422). Even after awaitForkReady confirms the
+// default-branch ref is readable, GitHub's eventually-consistent fork
+// replication can cause the ref to become temporarily unavailable again
+// when CreateBranch re-fetches it. This retry closes that gap.
+//
+// maxAttempts and poll are explicit parameters so that unit tests can
+// pass small values to avoid real sleeps.
+func createForkBranch(ctx context.Context, w *world.World, owner, repo, branch string, maxAttempts int, poll time.Duration) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = w.SCM.CreateBranch(ctx, owner, repo, branch)
+		if lastErr == nil {
+			return nil
+		}
+		if !isReplicationError(lastErr) {
+			return lastErr
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf(
+					"context cancelled retrying CreateBranch on %s/%s: %w",
+					owner, repo, ctx.Err(),
+				)
+			case <-time.After(poll):
+			}
+		}
+	}
+	return fmt.Errorf(
+		"fork %s/%s branch creation failed after %d attempts: %w",
+		owner, repo, maxAttempts, lastErr,
+	)
+}
+
 // whenForkPullRequestOpened commits a file to a new branch on the fork
 // and opens a cross-fork pull request against the base repository.
 func whenForkPullRequestOpened(w *world.World) error {
@@ -174,10 +235,12 @@ func whenForkPullRequestOpened(w *world.World) error {
 
 	ctx := context.Background()
 
-	// Create the branch on the fork first — GitHub's Contents API
-	// (used by CommitFileToFork → CreateOrUpdateFileOnBranch) requires
-	// the target branch to already exist.
-	if err := w.SCM.CreateBranch(ctx, w.ForkOwner, w.ForkRepo, branch); err != nil {
+	// Create the branch on the fork with retry for replication
+	// errors. awaitForkReady confirmed the default-branch ref was
+	// readable, but GitHub's eventually-consistent replication can
+	// cause transient 409/422 failures when CreateBranch re-fetches
+	// the ref moments later.
+	if err := createForkBranch(ctx, w, w.ForkOwner, w.ForkRepo, branch, createBranchMaxAttempts, createBranchPoll); err != nil {
 		return fmt.Errorf("creating fork branch: %w", err)
 	}
 	// Record the branch immediately so CleanupScenario can delete it

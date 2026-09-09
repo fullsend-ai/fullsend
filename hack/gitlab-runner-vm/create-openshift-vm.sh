@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 #
-# create-vm.sh — Create and provision a GitLab Runner VM in one command.
+# create-openshift-vm.sh — Create and provision a GitLab Runner VM on OpenShift Virtualization.
 #
 # This script:
 #   1. Auto-numbers the VM (fullsend-gitlab-runner-01, -02, ...)
 #   2. Creates the VM on OpenShift Virtualization from vm.yaml
 #   3. Waits for it to boot and accept SSH (~2 minutes)
-#   4. Registers a new project runner via the GitLab API
+#   4. Registers a new runner (project-scoped or group-scoped) via the GitLab API
 #   5. Copies setup files and runs setup.sh to configure the custom
 #      executor, OpenShell gateway, and pre-pull images
 #
 # When done, the runner is online and accepting jobs tagged with RUNNER_TAG.
 #
 # Required environment variables:
-#   GL_TOKEN     — GitLab personal access token (Owner role on PROJECT_ID,
-#                  scopes: create_runner + manage_runner + api)
-#   PROJECT_ID   — GitLab project ID to register the runner against
+#   GL_TOKEN     — GitLab personal access token (Owner role on the target
+#                  group or project, scopes: create_runner + manage_runner + api)
+#   PROJECT_ID   — GitLab project ID (mutually exclusive with GROUP_ID)
+#   GROUP_ID     — GitLab group ID  (mutually exclusive with PROJECT_ID)
+#                  Exactly one of PROJECT_ID or GROUP_ID must be set.
+#                  GROUP_ID is recommended for platform-service deployments.
 #   GITLAB_URL   — GitLab instance URL (e.g. https://gitlab.example.com)
 #   NAMESPACE    — OpenShift namespace for the VM
 #   RUNNER_IMAGE — image pre-pulled as warm cache (e.g. ghcr.io/org/runner:v1.2.3)
@@ -33,15 +36,20 @@
 #   [NUMBER]  — optional runner number (e.g. 01, 03). Auto-increments if omitted.
 #
 # Examples:
-#   # Auto-numbers the VM:
+#   # Group-scoped runner (recommended):
+#   GL_TOKEN=glpat-xxx GROUP_ID=12345 \
+#     GITLAB_URL=https://gitlab.example.com NAMESPACE=my-namespace \
+#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-openshift-vm.sh
+#
+#   # Project-scoped runner:
 #   GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
 #     GITLAB_URL=https://gitlab.example.com NAMESPACE=my-namespace \
-#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-vm.sh
+#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-openshift-vm.sh
 #
 #   # Explicit runner number:
-#   GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
+#   GL_TOKEN=glpat-xxx GROUP_ID=12345 \
 #     GITLAB_URL=https://gitlab.example.com NAMESPACE=my-namespace \
-#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-vm.sh 01
+#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-openshift-vm.sh 01
 #
 set -euo pipefail
 
@@ -54,7 +62,7 @@ RUNNER_IMAGE="${RUNNER_IMAGE:-}"
 VM_USER="${VM_USER:-fedora}"
 # ref_protected restricts the runner to jobs on protected branches and tags.
 # Merge-request pipelines run on the (unprotected) source ref, so the default
-# is not_protected; scoping comes from runner_type=project_type + locked=true.
+# is not_protected; scoping comes from runner_type + locked/run_untagged settings.
 RUNNER_ACCESS_LEVEL="${RUNNER_ACCESS_LEVEL:-not_protected}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source the central gitlab-runner version pin (shared with setup.sh).
@@ -74,32 +82,23 @@ OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
 TEMPLATE="${SCRIPT_DIR}/vm.yaml"
 PREFIX="fullsend-gitlab-runner"
 
-# Wrap curl with GL_TOKEN passed via a temp config file to avoid
-# exposing the token in /proc/<pid>/cmdline.
-gl_curl() {
-  local config old_umask rc
-  old_umask=$(umask)
-  umask 077
-  config=$(mktemp)
-  umask "${old_umask}"
-  printf 'header = "PRIVATE-TOKEN: %s"\n' "${GL_TOKEN}" > "${config}"
-  rc=0
-  curl --max-time 30 --connect-timeout 10 -sf -K "${config}" "$@" || rc=$?
-  rm -f "${config}"
-  return "${rc}"
-}
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
 
 # ----------------------------------------------------------------------
 # Validate inputs
 # ----------------------------------------------------------------------
 usage() {
-  echo "Usage: GL_TOKEN=glpat-xxx PROJECT_ID=<id> $0 [NUMBER]"
+  echo "Usage: GL_TOKEN=glpat-xxx {GROUP_ID=<id>|PROJECT_ID=<id>} $0 [NUMBER]"
   echo ""
   echo "Run '$0' with --help for details."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  head -44 "$0" | tail -42 | sed 's/^# \?//'
+  # Extract the comment block after the shebang until the first non-comment
+  # line, stripping the leading "# " prefix.  This is immune to header edits
+  # (no hardcoded line numbers).
+  awk 'NR==1{next} /^[^#]/{exit} {sub(/^# ?/, ""); print}' "$0"
   exit 0
 fi
 
@@ -113,8 +112,7 @@ if ! [[ "${GL_TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 1
 fi
 
-if [ -z "${PROJECT_ID:-}" ]; then
-  echo "ERROR: PROJECT_ID is required (GitLab project ID)" >&2
+if ! validate_runner_scope; then
   usage >&2
   exit 1
 fi
@@ -163,7 +161,7 @@ for tool in oc virtctl python3 curl timeout sha256sum; do
     _missing=1
   fi
 done
-for _f in setup.sh create-vm.sh vm.yaml gitlab-runner-version.sh \
+for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
   executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh; do
   if [ ! -f "${SCRIPT_DIR}/${_f}" ]; then
     echo "ERROR: required file not found: ${SCRIPT_DIR}/${_f}" >&2
@@ -249,7 +247,7 @@ print(template.replace('__VM_NAME__', sys.argv[1]).replace('__SSH_PUBLIC_KEY__',
 
 cleanup_vm() {
   echo "  NOTE: VM ${vm_name} was created — to clean up run:" >&2
-  echo "    NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-vm.sh ${vm_name}" >&2
+  echo "    NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-openshift-vm.sh ${vm_name}" >&2
 }
 trap cleanup_vm ERR
 # ERR does not fire on Ctrl-C; the boot and cloud-init waits below can take
@@ -291,17 +289,18 @@ echo "  OK: cloud-init complete"
 # ----------------------------------------------------------------------
 # 4. Register a runner via the GitLab API
 # ----------------------------------------------------------------------
-echo "==> Registering runner with ${GITLAB_URL} (project ${PROJECT_ID})"
+echo "==> Registering runner with ${GITLAB_URL} (${RUNNER_SCOPE} ${SCOPE_ID})"
 
+build_scope_args
+
+# shellcheck disable=SC2154  # scope_args set by build_scope_args
 runner_json=$(gl_curl -X POST \
   "${GITLAB_URL}/api/v4/user/runners" \
-  --data-urlencode "runner_type=project_type" \
-  --data-urlencode "project_id=${PROJECT_ID}" \
+  "${scope_args[@]}" \
   --data-urlencode "tag_list=${RUNNER_TAG}" \
   --data-urlencode "description=${NAMESPACE}/${vm_name}" \
   --data-urlencode "run_untagged=false" \
-  --data-urlencode "access_level=${RUNNER_ACCESS_LEVEL}" \
-  --data-urlencode "locked=true" 2>&1) || {
+  --data-urlencode "access_level=${RUNNER_ACCESS_LEVEL}" 2>&1) || {
   echo "ERROR: GitLab runner registration failed. Response: ${runner_json}" >&2
   cleanup_vm
   exit 1
@@ -319,7 +318,7 @@ runner_id=""
 cleanup_runner() {
   if [ -z "${runner_id}" ]; then
     echo "ERROR: provisioning failed — runner may have been created but ID is unknown" >&2
-    echo "  Check ${GITLAB_URL} for orphaned runners in project ${PROJECT_ID}" >&2
+    echo "  Check ${GITLAB_URL} for orphaned runners in ${RUNNER_SCOPE} ${SCOPE_ID}" >&2
   else
     echo "ERROR: provisioning failed — deregistering runner ${runner_id}" >&2
     if gl_curl -X DELETE "${GITLAB_URL}/api/v4/runners/${runner_id}" >/dev/null 2>&1; then
@@ -328,7 +327,7 @@ cleanup_runner() {
       echo "  WARN: failed to deregister runner ${runner_id} — remove it manually at ${GITLAB_URL}" >&2
     fi
   fi
-  echo "  NOTE: VM ${vm_name} was not cleaned up — run: NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-vm.sh ${vm_name}" >&2
+  echo "  NOTE: VM ${vm_name} was not cleaned up — run: NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-openshift-vm.sh ${vm_name}" >&2
 }
 trap cleanup_runner ERR
 # ERR does not fire on Ctrl-C, and the window below spans a ~20-minute setup
@@ -337,8 +336,16 @@ trap cleanup_runner ERR
 trap 'cleanup_runner; exit 130' INT
 trap 'cleanup_runner; exit 143' TERM
 
-REGISTRATION_TOKEN=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-runner_id=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+REGISTRATION_TOKEN=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>&1) || {
+  echo "ERROR: failed to parse registration token from API response (length: ${#runner_json})" >&2
+  cleanup_runner
+  exit 1
+}
+runner_id=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>&1) || {
+  echo "ERROR: failed to parse runner ID from API response (length: ${#runner_json})" >&2
+  cleanup_runner
+  exit 1
+}
 
 echo "  OK: runner ID ${runner_id} created"
 
@@ -351,7 +358,7 @@ virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
   -c "mkdir -p ~/gitlab-runner-vm/executor ~/gitlab-runner-vm/.github/scripts"
 
-for file in setup.sh create-vm.sh vm.yaml gitlab-runner-version.sh; do
+for file in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh; do
   virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "cat > ~/gitlab-runner-vm/${file}" < "${SCRIPT_DIR}/${file}"
@@ -372,14 +379,14 @@ done
 
 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
-  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-vm.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
+  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-openshift-vm.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
 
 # `cat > file` exits 0 on a short write, so a dropped SSH channel can leave a
 # truncated setup.sh that then executes an arbitrary prefix of provisioning.
 # Verify every copy against a locally computed manifest before running it.
 echo "==> Verifying copied files"
 {
-  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-vm.sh vm.yaml gitlab-runner-version.sh \
+  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
     executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh)
   (cd "${REPO_ROOT}/.github/scripts" \
     && sha256sum install-openshell.sh openshell-version.sh \
@@ -402,8 +409,8 @@ echo "==> Running setup.sh on ${vm_name}"
 # Write env vars to a file on the VM to avoid exposing secrets in the process list.
 # Values are single-quoted to prevent interpretation of special characters.
 for val in "${REGISTRATION_TOKEN}" "${GITLAB_URL}" "${RUNNER_TAG}" "${RUNNER_IMAGE}" "${OPENSHELL_VERSION}" "${GITLAB_RUNNER_VERSION}"; do
-  if [[ "${val}" == *"'"* ]]; then
-    echo "ERROR: environment variable values must not contain single quotes" >&2
+  if [[ "${val}" == *"'"* ]] || [[ "${val}" == *\\* ]] || [[ "${val}" =~ [[:cntrl:]] ]]; then
+    echo "ERROR: environment variable values must not contain single quotes, backslashes, or control characters" >&2
     cleanup_runner
     exit 1
   fi

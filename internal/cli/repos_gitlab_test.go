@@ -125,7 +125,7 @@ func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 
 	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "creating slash poll schedule")
+	assert.Contains(t, err.Error(), "creating fullsend slash poll schedule")
 }
 
 func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testing.T) {
@@ -140,7 +140,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 
 		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "creating event poll schedule")
+		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		require.Len(t, fake.CreatedSchedules, 1, "only slash schedule should have been created")
 		assert.Equal(t, []int64{1}, fake.DeletedScheduleIDs, "should roll back the slash schedule")
 	})
@@ -155,8 +155,8 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 
 		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "creating event poll schedule")
-		assert.Contains(t, buf.String(), "Failed to clean up slash poll schedule")
+		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
+		assert.Contains(t, buf.String(), "Failed to clean up schedule")
 	})
 }
 

@@ -1,6 +1,6 @@
 [submodule "experiments"]
 	path = experiments
-	url = git@github.com:fullsend-ai/experiments.git
+	url = https://github.com/fullsend-ai/experiments.git
 	branch = main
 [submodule "eval/.agent-eval-harness"]
 	path = eval/.agent-eval-harness

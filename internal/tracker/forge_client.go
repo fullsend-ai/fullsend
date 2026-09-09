@@ -97,6 +97,68 @@ func (c *ForgeClient) UpdateComment(ctx context.Context, project string, number 
 	return wrapNotFound(c.forge.UpdateIssueComment(ctx, owner, repo, id, string(body)))
 }
 
+// DeleteComment implements Client by splitting project into owner/repo for
+// the underlying forge call.
+func (c *ForgeClient) DeleteComment(ctx context.Context, project string, number int, commentID string) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return wrapNotFound(c.forge.DeleteIssueComment(ctx, owner, repo, id))
+}
+
+// AddIssueReaction implements Reactor by splitting project into owner/repo
+// for the underlying forge call.
+func (c *ForgeClient) AddIssueReaction(ctx context.Context, project string, number int, content string) (int64, error) {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return 0, err
+	}
+	return c.forge.AddIssueReaction(ctx, owner, repo, number, content)
+}
+
+// DeleteIssueReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) DeleteIssueReaction(ctx context.Context, project string, number int, reactionID int64) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	return c.forge.DeleteIssueReaction(ctx, owner, repo, number, reactionID)
+}
+
+// AddCommentReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) AddCommentReaction(ctx context.Context, project string, number int, commentID string, content string) (int64, error) {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return 0, err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return 0, fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return c.forge.AddIssueCommentReaction(ctx, owner, repo, id, content)
+}
+
+// DeleteCommentReaction implements Reactor by splitting project into
+// owner/repo for the underlying forge call.
+func (c *ForgeClient) DeleteCommentReaction(ctx context.Context, project string, number int, commentID string, reactionID int64) error {
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return err
+	}
+	id, err := strconv.Atoi(commentID)
+	if err != nil {
+		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
+	}
+	return c.forge.DeleteIssueCommentReaction(ctx, owner, repo, id, reactionID)
+}
+
 // wrapNotFound translates a forge.ErrNotFound-satisfying error into one
 // that also satisfies tracker.ErrNotFound, so ForgeClient upholds the
 // Client interface's NotFound contract without leaking forge as part of

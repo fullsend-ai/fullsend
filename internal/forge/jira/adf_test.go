@@ -469,13 +469,12 @@ func TestMarkdownToADF_ImageRejectsDangerousScheme(t *testing.T) {
 func TestMarkdownToADF_UnknownBlockFallsBackToPlainText(t *testing.T) {
 	// convertBlockNode's default case previously returned nil for any
 	// block-level node outside its supported vocabulary (e.g. a raw HTML
-	// block), silently dropping the content with no trace. This repo's
-	// own convention (internal/sticky, postcomment.go, postreview.go) of
-	// wrapping output in <details><summary>...</summary>...</details>
-	// HTML blocks would vanish entirely if posted to Jira. Mirror
+	// block), silently dropping the content with no trace. Mirror
 	// walkInline's own default case, which falls back to plain text
-	// rather than losing readable content.
-	doc := mustADF(t, "before\n\n<details><summary>x</summary>\ny\n</details>\n\nafter")
+	// rather than losing readable content. (<details> blocks are no
+	// longer "unknown" — they convert to ADF expand nodes — so this
+	// test uses <div> to exercise the generic fallback.)
+	doc := mustADF(t, "before\n\n<div>some content</div>\n\nafter")
 
 	content := asSlice(t, doc["content"])
 	var sawFallbackText bool
@@ -487,7 +486,7 @@ func TestMarkdownToADF_UnknownBlockFallsBackToPlainText(t *testing.T) {
 		for _, n := range asSlice(t, block["content"]) {
 			node := asMap(t, n)
 			text, _ := node["text"].(string)
-			if strings.Contains(text, "<details>") {
+			if strings.Contains(text, "<div>") {
 				sawFallbackText = true
 			}
 		}
@@ -1342,10 +1341,11 @@ func TestADFToMarkdown_HardBreak(t *testing.T) {
 }
 
 func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.T) {
-	// Unknown ADF container types (panel, table, expand, taskList) wrap
+	// Unknown ADF container types (panel, table, taskList) wrap
 	// block-level content (paragraphs, tableRows, ...), not inline text.
 	// adfMarkdownInline alone can't see any of it, since it only reads
-	// direct children's top-level "text" fields.
+	// direct children's top-level "text" fields. (expand is no longer
+	// unknown — it has dedicated <details>/<summary> handling.)
 	for _, tc := range []struct {
 		name string
 		node map[string]any
@@ -1378,17 +1378,6 @@ func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.
 				},
 			},
 			want: "a\n\nb",
-		},
-		{
-			name: "expand",
-			node: map[string]any{
-				"type":  "expand",
-				"attrs": map[string]any{"title": "Click to expand"},
-				"content": []any{
-					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "hidden content"}}},
-				},
-			},
-			want: "hidden content",
 		},
 		{
 			name: "taskList",
@@ -1830,5 +1819,461 @@ func TestADFToMarkdown_RoundTripsThroughMarkdownToADF(t *testing.T) {
 		if got != src {
 			t.Errorf("ADFToMarkdown(MarkdownToADF(%q)) = %q, want the original markdown back unchanged", src, got)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MarkdownToADF — <details> → expand
+// ---------------------------------------------------------------------------
+
+func TestMarkdownToADF_DetailsToExpandNode(t *testing.T) {
+	// A <details><summary>…</summary>…</details> HTML block should
+	// convert to an ADF expand node, not fall back to raw text.
+	doc := mustADF(t, "text\n\n<details><summary>Prior run</summary>\n- item one\n- item two\n</details>\n\nmore text")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3 (paragraph, expand, paragraph)", len(content))
+	}
+
+	// First block: paragraph "text"
+	para := asMap(t, content[0])
+	if para["type"] != "paragraph" {
+		t.Errorf("block 0 type = %v, want %q", para["type"], "paragraph")
+	}
+
+	// Second block: expand
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "Prior run" {
+		t.Errorf("expand attrs.title = %v, want %q", attrs["title"], "Prior run")
+	}
+	expandContent := asSlice(t, expand["content"])
+	if len(expandContent) != 1 {
+		t.Fatalf("expand content len = %d, want 1 (bulletList)", len(expandContent))
+	}
+	list := asMap(t, expandContent[0])
+	if list["type"] != "bulletList" {
+		t.Errorf("expand content[0] type = %v, want %q", list["type"], "bulletList")
+	}
+
+	// Third block: paragraph "more text"
+	para2 := asMap(t, content[2])
+	if para2["type"] != "paragraph" {
+		t.Errorf("block 2 type = %v, want %q", para2["type"], "paragraph")
+	}
+}
+
+func TestMarkdownToADF_DetailsWithStickySentinelsStripped(t *testing.T) {
+	// Sticky history sentinels (<!-- sticky:history-start/end -->) are
+	// parser metadata used by sticky.BuildUpdatedBody for history
+	// reconstruction. They must be consumed during the <details> →
+	// expand conversion and must not appear as visible text inside the
+	// rendered expansion.
+	input := "text\n\n<details><summary>Prior run</summary>\n" +
+		"<!-- sticky:history-start -->\n- item one\n- item two\n" +
+		"<!-- sticky:history-end -->\n</details>\n\nmore text"
+	doc := mustADF(t, input)
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3", len(content))
+	}
+
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+
+	// Walk the entire expand subtree and verify no text node contains
+	// the sentinel marker strings.
+	var walk func(any)
+	walk = func(v any) {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		if text, ok := m["text"].(string); ok {
+			if strings.Contains(text, "sticky:history-start") || strings.Contains(text, "sticky:history-end") {
+				t.Errorf("expand subtree contains sentinel text %q; sentinels should be stripped", text)
+			}
+		}
+		if c, ok := m["content"].([]any); ok {
+			for _, child := range c {
+				walk(child)
+			}
+		}
+	}
+	walk(expand)
+}
+
+func TestMarkdownToADF_DetailsMultiBlock(t *testing.T) {
+	// When sticky.BuildUpdatedBody produces <details> blocks with blank
+	// lines inside (between <summary> and the sentinel, and between the
+	// sentinel and </details>), goldmark splits the markup across
+	// multiple AST siblings. tryDetailsExpand must collect them all into
+	// a single expand node.
+	input := "text\n\n" +
+		"<details>\n<summary>Previous run</summary>\n\n" +
+		"<!-- sticky:history-start -->\n" +
+		"- item one\n- item two\n" +
+		"<!-- sticky:history-end -->\n\n" +
+		"</details>\n\nmore text"
+	doc := mustADF(t, input)
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3 (paragraph, expand, paragraph)", len(content))
+	}
+
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "Previous run" {
+		t.Errorf("expand attrs.title = %v, want %q", attrs["title"], "Previous run")
+	}
+	expandContent := asSlice(t, expand["content"])
+	if len(expandContent) != 1 {
+		t.Fatalf("expand content len = %d, want 1 (bulletList)", len(expandContent))
+	}
+	if asMap(t, expandContent[0])["type"] != "bulletList" {
+		t.Errorf("expand content[0] type = %v, want %q", asMap(t, expandContent[0])["type"], "bulletList")
+	}
+
+	// Verify sentinels are stripped.
+	var walk func(any)
+	walk = func(v any) {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		if text, ok := m["text"].(string); ok {
+			if strings.Contains(text, "sticky:history") {
+				t.Errorf("expand subtree contains sentinel text %q", text)
+			}
+		}
+		if c, ok := m["content"].([]any); ok {
+			for _, child := range c {
+				walk(child)
+			}
+		}
+	}
+	walk(expand)
+}
+
+func TestMarkdownToADF_DetailsWithoutSummary(t *testing.T) {
+	// <details> with no <summary> tag should still produce an expand
+	// node, just without a title.
+	doc := mustADF(t, "before\n\n<details>\nbody text\n</details>\n\nafter")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3", len(content))
+	}
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+	if _, hasAttrs := expand["attrs"]; hasAttrs {
+		t.Errorf("expand has attrs %v, want no attrs (no summary)", expand["attrs"])
+	}
+}
+
+func TestMarkdownToADF_DetailsSingleBlockEmptyBody(t *testing.T) {
+	// When a single-block <details> has an empty body (or the body
+	// becomes empty after sentinel stripping), the function should emit
+	// an expand node with a single empty paragraph, consistent with
+	// the multi-block path's handling.
+	doc := mustADF(t, "before\n\n<details><summary>Title</summary></details>\n\nafter")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3 (paragraph, expand, paragraph)", len(content))
+	}
+
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "Title" {
+		t.Errorf("expand attrs.title = %v, want %q", attrs["title"], "Title")
+	}
+	expandContent := asSlice(t, expand["content"])
+	if len(expandContent) != 1 {
+		t.Fatalf("expand content len = %d, want 1 (empty paragraph)", len(expandContent))
+	}
+	para := asMap(t, expandContent[0])
+	if para["type"] != "paragraph" {
+		t.Errorf("expand content[0] type = %v, want %q", para["type"], "paragraph")
+	}
+}
+
+func TestMarkdownToADF_DetailsMultiBlockEmptyBody(t *testing.T) {
+	// When all siblings between <details> and </details> are sticky
+	// sentinels (producing no ADF content), the function should still
+	// emit an expand node with a single empty paragraph rather than
+	// falling through to raw-text processing.
+	input := "text\n\n" +
+		"<details>\n<summary>History</summary>\n\n" +
+		"<!-- sticky:history-start -->\n\n" +
+		"<!-- sticky:history-end -->\n\n" +
+		"</details>\n\nmore text"
+	doc := mustADF(t, input)
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 3 {
+		t.Fatalf("doc content len = %d, want 3 (paragraph, expand, paragraph)", len(content))
+	}
+
+	expand := asMap(t, content[1])
+	if expand["type"] != "expand" {
+		t.Fatalf("block 1 type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "History" {
+		t.Errorf("expand attrs.title = %v, want %q", attrs["title"], "History")
+	}
+	expandContent := asSlice(t, expand["content"])
+	if len(expandContent) != 1 {
+		t.Fatalf("expand content len = %d, want 1 (empty paragraph)", len(expandContent))
+	}
+	para := asMap(t, expandContent[0])
+	if para["type"] != "paragraph" {
+		t.Errorf("expand content[0] type = %v, want %q", para["type"], "paragraph")
+	}
+}
+
+func TestMarkdownToADF_NestedDetailsLimitation(t *testing.T) {
+	// Known limitation: in the multi-block path, isDetailsClose matches
+	// the first </details> HTMLBlock without tracking nesting depth. If
+	// an inner <details> block's closing tag is split into its own
+	// HTMLBlock (requires blank lines), the outer expand closes
+	// prematurely. In practice, goldmark keeps inner <details> blocks
+	// as a single HTMLBlock, so this does not arise with real-world
+	// input. This test documents the limitation with the single-block
+	// layout where nesting works correctly.
+	input := "<details><summary>Outer</summary>\n" +
+		"<details><summary>Inner</summary>\ninner body\n</details>\n" +
+		"outer body\n</details>"
+	doc := mustADF(t, input)
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 1 {
+		t.Fatalf("doc content len = %d, want 1 (expand)", len(content))
+	}
+	expand := asMap(t, content[0])
+	if expand["type"] != "expand" {
+		t.Fatalf("block type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "Outer" {
+		t.Errorf("expand attrs.title = %v, want %q", attrs["title"], "Outer")
+	}
+}
+
+func TestMarkdownToADF_DetailsExpandRoundTrips(t *testing.T) {
+	// Verify that <details> → expand → <details> round-trips stably.
+	src := "<details><summary>Prior run</summary>\n- item one\n- item two\n</details>"
+	doc := mustADF(t, src)
+
+	// Should be an expand node, not fallback text.
+	content := asSlice(t, doc["content"])
+	if len(content) != 1 {
+		t.Fatalf("doc content len = %d, want 1 (expand)", len(content))
+	}
+	expand := asMap(t, content[0])
+	if expand["type"] != "expand" {
+		t.Fatalf("block type = %v, want %q", expand["type"], "expand")
+	}
+
+	// Render back to Markdown.
+	md := ADFToMarkdown(doc)
+
+	// Re-parse: should produce the same ADF structure.
+	doc2 := mustADF(t, md)
+	content2 := asSlice(t, doc2["content"])
+	if len(content2) != 1 {
+		t.Fatalf("round-trip doc content len = %d, want 1", len(content2))
+	}
+	expand2 := asMap(t, content2[0])
+	if expand2["type"] != "expand" {
+		t.Fatalf("round-trip block type = %v, want %q", expand2["type"], "expand")
+	}
+
+	// Render again: should be identical to the first render.
+	md2 := ADFToMarkdown(doc2)
+	if md != md2 {
+		t.Errorf("round-trip is not stable:\n  first:  %q\n  second: %q", md, md2)
+	}
+}
+
+func TestMarkdownToADF_DetailsSummaryWithHTMLEntities(t *testing.T) {
+	// A summary containing pre-existing HTML entities (e.g. &amp;)
+	// must not be double-encoded on the round-trip. extractSummary
+	// decodes entities so the ADF title is plain text, and
+	// adfMarkdownBlock re-encodes with html.EscapeString.
+	doc := mustADF(t, "<details><summary>A &amp; B</summary>\nbody\n</details>")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 1 {
+		t.Fatalf("doc content len = %d, want 1 (expand)", len(content))
+	}
+	expand := asMap(t, content[0])
+	if expand["type"] != "expand" {
+		t.Fatalf("block type = %v, want %q", expand["type"], "expand")
+	}
+	attrs := asMap(t, expand["attrs"])
+	if attrs["title"] != "A & B" {
+		t.Errorf("expand attrs.title = %v, want %q (decoded)", attrs["title"], "A & B")
+	}
+
+	// Round-trip: the rendered Markdown should re-encode the & as &amp;.
+	md := ADFToMarkdown(doc)
+	want := "<details><summary>A &amp; B</summary>\nbody\n</details>"
+	if md != want {
+		t.Errorf("ADFToMarkdown = %q, want %q", md, want)
+	}
+
+	// Re-parse should produce the same decoded title.
+	doc2 := mustADF(t, md)
+	expand2 := asMap(t, asSlice(t, doc2["content"])[0])
+	attrs2 := asMap(t, expand2["attrs"])
+	if attrs2["title"] != "A & B" {
+		t.Errorf("round-trip attrs.title = %v, want %q", attrs2["title"], "A & B")
+	}
+}
+
+func TestMarkdownToADF_DetailsSummaryStripsHTMLTags(t *testing.T) {
+	// A <summary> containing nested HTML tags (e.g. <b>, <a>, <img>,
+	// <script>) must have those tags stripped so the ADF expand title is
+	// plain text. Without stripping, HTML tags in the summary would be
+	// stored verbatim in the ADF title attribute, creating an injection
+	// risk if the consuming renderer interprets the title as HTML.
+	tests := []struct {
+		name  string
+		input string
+		title string
+	}{
+		{
+			name:  "bold tag",
+			input: "<details><summary><b>Bold</b> Title</summary>\nbody\n</details>",
+			title: "Bold Title",
+		},
+		{
+			name:  "anchor tag",
+			input: "<details><summary>Click <a href=\"http://example.com\">here</a></summary>\nbody\n</details>",
+			title: "Click here",
+		},
+		{
+			name:  "img tag with onerror",
+			input: "<details><summary>Title<img src=x onerror=alert(1)></summary>\nbody\n</details>",
+			title: "Title",
+		},
+		{
+			name:  "script tag",
+			input: "<details><summary><script>alert(1)</script></summary>\nbody\n</details>",
+			title: "alert(1)",
+		},
+		{
+			name:  "entity-encoded tags decoded then stripped",
+			input: "<details><summary>&lt;script&gt;alert(1)&lt;/script&gt;</summary>\nbody\n</details>",
+			title: "alert(1)",
+		},
+		{
+			name:  "mixed text and tags",
+			input: "<details><summary>Hello <em>world</em> &amp; <strong>friends</strong></summary>\nbody\n</details>",
+			title: "Hello world & friends",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := mustADF(t, tc.input)
+			content := asSlice(t, doc["content"])
+			if len(content) != 1 {
+				t.Fatalf("doc content len = %d, want 1", len(content))
+			}
+			expand := asMap(t, content[0])
+			if expand["type"] != "expand" {
+				t.Fatalf("block type = %v, want %q", expand["type"], "expand")
+			}
+			attrs := asMap(t, expand["attrs"])
+			if attrs["title"] != tc.title {
+				t.Errorf("expand attrs.title = %v, want %q", attrs["title"], tc.title)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ADFToMarkdown — expand → <details>
+// ---------------------------------------------------------------------------
+
+func TestADFToMarkdown_ExpandNodeEscapesTitle(t *testing.T) {
+	// A title containing HTML special characters (especially
+	// </summary>) must be escaped to prevent breaking the output.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "expand",
+				"attrs": map[string]any{"title": "a</summary>b"},
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "body"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "<details><summary>a&lt;/summary&gt;b</summary>\nbody\n</details>"
+	if got != want {
+		t.Errorf("ADFToMarkdown(expand with HTML title) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_ExpandNode(t *testing.T) {
+	// An ADF expand node should render as <details><summary>…</summary>
+	// with the body content inside, providing round-trip fidelity with
+	// MarkdownToADF's <details> → expand conversion.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":  "expand",
+				"attrs": map[string]any{"title": "Click to expand"},
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "hidden content"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "<details><summary>Click to expand</summary>\nhidden content\n</details>"
+	if got != want {
+		t.Errorf("ADFToMarkdown(expand) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_ExpandNodeWithoutTitle(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "expand",
+				"content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "content"}}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "<details>\ncontent\n</details>"
+	if got != want {
+		t.Errorf("ADFToMarkdown(expand without title) = %q, want %q", got, want)
 	}
 }

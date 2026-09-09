@@ -51,18 +51,22 @@ MOCKEOF
 }
 
 # make_comment_json builds the JSON that gh api would return after
-# jq filtering. The body field is set to $1.
+# jq filtering. The body field is set to $1. Optional $2 overrides
+# the user login (defaults to the org-specific bot). Optional $3
+# overrides the app client_id (defaults to Iv1.abc123).
 make_comment_json() {
   local body="$1"
+  local login="${2:-test-org-review[bot]}"
+  local client_id="${3:-Iv1.abc123}"
   # Escape the body for JSON embedding.
   local escaped_body
   escaped_body="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
   cat <<ENDJSON
 {
   "id": 12345,
-  "user": {"login": "test-org-review[bot]"},
+  "user": {"login": "${login}"},
   "body": ${escaped_body},
-  "performed_via_github_app": {"client_id": "Iv1.abc123"}
+  "performed_via_github_app": {"client_id": "${client_id}"}
 }
 ENDJSON
 }
@@ -175,6 +179,49 @@ No SHA in this section.
 
 run_test "sha-only-in-history-section" \
   "$(make_comment_json "${BODY_SHA_IN_HISTORY}")" \
+  "" \
+  0
+
+# 6. Shared vendor bot identity (fullsend-ai-review[bot]) is recognized
+#    when ORG_NAME differs. This is the core regression covered by #5550.
+BODY_SHARED_BOT="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** beef123
+
+Review from the shared vendor App."
+
+run_test "shared-vendor-bot-identity" \
+  "$(make_comment_json "${BODY_SHARED_BOT}" "fullsend-ai-review[bot]")" \
+  "beef123" \
+  0
+
+# 7. Unrelated bot login should NOT match — only the org-specific or
+#    shared vendor identity should be recognized.
+BODY_WRONG_BOT="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** bad0bad
+
+This review is from the wrong bot."
+
+run_test "unrelated-bot-no-match" \
+  "$(make_comment_json "${BODY_WRONG_BOT}" "other-org-review[bot]")" \
+  "" \
+  0
+
+# 8. Shared vendor bot with a mismatched client ID should be discarded
+#    by provenance validation (wrong-app path). This verifies that the
+#    dual-identity matching does not bypass the provenance check.
+BODY_MISMATCHED_APP="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** cafe456
+
+Review from a bot with the wrong app client_id."
+
+run_test "shared-vendor-bot-wrong-app" \
+  "$(make_comment_json "${BODY_MISMATCHED_APP}" "fullsend-ai-review[bot]" "Iv1.WRONG")" \
   "" \
   0
 

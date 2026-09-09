@@ -41,20 +41,33 @@ type ConvergeConfig struct {
 
 	// InferenceProject is the GCP project ID for inference.
 	InferenceProject string
-	// InferenceProjectNumber is the numeric GCP project number.
+	// InferenceProjectNumber is the numeric GCP project number,
+	// auto-derived from InferenceProject when WIFProvider is not set.
 	InferenceProjectNumber string
 	// InferenceRegion is the GCP region for inference.
 	InferenceRegion string
 
+	// WIFProvider, when set, is used as the WIF provider resource name
+	// for all repos instead of constructing per-repo provider IDs via
+	// BuildRepoProviderID. This supports org-scoped WIF providers
+	// (e.g., assertion.repository_owner == 'acme').
+	WIFProvider string
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App.
 	ReviewAppClientID string
+
+	// VendorOverride, when non-nil, overrides the manifest's resolved
+	// vendor setting for all repos in this convergence run. This lets
+	// `repos install --vendor` take effect without modifying the
+	// manifest. When nil, the per-repo resolved Vendor field is used.
+	VendorOverride *bool
 }
 
 // ComponentAction describes an action taken (or planned) on a single
 // installation component during convergence.
 type ComponentAction struct {
-	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "ref"
+	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "schedule:<name>", "ref"
 	Action    string // "none", "add", "update", "upgrade", "orphan", "error"
 	Detail    string // human-readable detail
 }
@@ -222,34 +235,52 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return &ConvergeBatchResult{}, nil
 	}
 
-	// Validate inference flags.
-	inferenceFlags := []struct{ name, val string }{
-		{"--inference-project", cfg.InferenceProject},
-		{"--inference-project-number", cfg.InferenceProjectNumber},
-		{"--inference-region", cfg.InferenceRegion},
-	}
-	var inferenceSet, inferenceMissing []string
-	for _, f := range inferenceFlags {
-		if f.val != "" {
-			inferenceSet = append(inferenceSet, f.name)
-		} else {
-			inferenceMissing = append(inferenceMissing, f.name)
+	// Validate inference flags. When --inference-wif-provider is set,
+	// --inference-project-number is not required (the project number is
+	// embedded in the provider path).
+	if cfg.WIFProvider != "" {
+		// --inference-project and --inference-region are required
+		// alongside --inference-wif-provider because the secret-writing
+		// paths gate on InferenceProject to decide whether to write
+		// FULLSEND_GCP_PROJECT_ID and FULLSEND_GCP_WIF_PROVIDER.
+		if cfg.InferenceProject == "" {
+			return nil, fmt.Errorf("--inference-project is required when --inference-wif-provider is set")
 		}
-	}
-	if len(inferenceSet) > 0 && len(inferenceMissing) > 0 {
-		return nil, fmt.Errorf("incomplete inference flags: %s set but %s missing — all three are required when any is specified",
-			strings.Join(inferenceSet, ", "), strings.Join(inferenceMissing, ", "))
-	}
-
-	if cfg.InferenceProject != "" {
 		if !IsValidGCPProjectID(cfg.InferenceProject) {
 			return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
 		}
 		if !IsValidGCPRegion(cfg.InferenceRegion) {
 			return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
 		}
-		if !IsNumeric(cfg.InferenceProjectNumber) {
-			return nil, fmt.Errorf("--inference-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
+	} else {
+		inferenceFlags := []struct{ name, val string }{
+			{"--inference-project", cfg.InferenceProject},
+			{"--inference-project-number", cfg.InferenceProjectNumber},
+			{"--inference-region", cfg.InferenceRegion},
+		}
+		var inferenceSet, inferenceMissing []string
+		for _, f := range inferenceFlags {
+			if f.val != "" {
+				inferenceSet = append(inferenceSet, f.name)
+			} else {
+				inferenceMissing = append(inferenceMissing, f.name)
+			}
+		}
+		if len(inferenceSet) > 0 && len(inferenceMissing) > 0 {
+			return nil, fmt.Errorf("incomplete inference flags: %s set but %s missing — all three are required when any is specified",
+				strings.Join(inferenceSet, ", "), strings.Join(inferenceMissing, ", "))
+		}
+
+		if cfg.InferenceProject != "" {
+			if !IsValidGCPProjectID(cfg.InferenceProject) {
+				return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+			}
+			if !IsValidGCPRegion(cfg.InferenceRegion) {
+				return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+			}
+			if !IsNumeric(cfg.InferenceProjectNumber) {
+				return nil, fmt.Errorf("--inference-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
+			}
 		}
 	}
 
@@ -351,6 +382,10 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		var wif string
 		if !hasSecrets {
 			switch {
+			case cfg.WIFProvider != "":
+				// Explicit WIF provider — use it verbatim for all repos.
+				// No per-repo derivation or collision check needed.
+				wif = cfg.WIFProvider
 			case d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "":
 				providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
 				wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
@@ -378,7 +413,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 
 			// Validate inference flags for repos without existing secrets.
-			if cfg.InferenceProject == "" {
+			if cfg.InferenceProject == "" && cfg.WIFProvider == "" {
 				repoFullName := d.repo.Owner + "/" + d.repo.Repo
 				result.Results[i] = ConvergeResult{
 					Owner: d.repo.Owner,
@@ -476,6 +511,15 @@ func convergeRepo(ctx context.Context,
 		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
 
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if vendor && resolved.Forge == ForgeGitLab {
+			progress(rr.Owner+"/"+rr.Repo, "vendor",
+				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
+		}
+
 		installCfg := InstallConfig{
 			Owner:             rr.Owner,
 			Repo:              rr.Repo,
@@ -492,13 +536,18 @@ func convergeRepo(ctx context.Context,
 			Runtime:           resolved.Runtime,
 			Direct:            cfg.Direct,
 			ReuseSecrets:      hasSecrets,
+			VendorBinary:      vendor,
 		}
 
-		if manifestRef != "" && refResolver != nil {
+		// When vendored, the running binary's embedded templates match the
+		// binary being committed to the repo — no version-skew concern, so
+		// skip the remote fetch to avoid unnecessary API calls.
+		if manifestRef != "" && refResolver != nil && !vendor {
 			scaffoldFiles, fetchErr := FetchRemoteScaffold(
 				ctx, refResolver.client,
 				manifestRef, ref, resolved.Forge,
 				gitlabRunnerTags(cfg.Manifest),
+				vendor,
 			)
 			if fetchErr == nil {
 				installCfg.PrebuiltScaffoldFiles = scaffoldFiles
@@ -537,7 +586,13 @@ func convergeRepo(ctx context.Context,
 		wifProvider, cfg, progress)
 	cr.Actions = append(cr.Actions, secretActions...)
 
-	// Bail out before scaffold commit if variable or secret writes failed.
+	// 2c: Converge pipeline schedules (GitLab only).
+	if resolved.Forge == ForgeGitLab {
+		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, progress)
+		cr.Actions = append(cr.Actions, schedActions...)
+	}
+
+	// Bail out before scaffold commit if variable, secret, or schedule writes failed.
 	var earlyErrors []string
 	for _, a := range cr.Actions {
 		if a.Action == "error" {
@@ -549,7 +604,7 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 
-	// 2c: Collect all scaffold file changes (ref upgrade + missing
+	// 2d: Collect all scaffold file changes (ref upgrade + missing
 	// components + content drift) and commit as a single atomic
 	// operation.
 	var allScaffoldFiles []forge.TreeFile
@@ -603,7 +658,7 @@ func convergeRepo(ctx context.Context,
 		}
 	}
 
-	// 2c-ii: Content drift — detect scaffold files that exist but
+	// 2d-ii: Content drift — detect scaffold files that exist but
 	// whose content differs from the current template (e.g., template
 	// structure changed between releases while the ref stayed the
 	// same). This is the gap that caused #6576: converge only checked
@@ -631,7 +686,7 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
 
-	// 2d: Commit all scaffold file changes in one atomic commit.
+	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
 	// the next Converge run self-heals (writes become no-ops, commit retries).
 	if len(allScaffoldFiles) > 0 && !cfg.DryRun {
@@ -829,6 +884,104 @@ func convergeSecrets(ctx context.Context,
 			Detail:    fmt.Sprintf("set %s", secretName),
 		})
 		progress(repoFullName, "sync", fmt.Sprintf("Set secret %s", secretName))
+	}
+
+	return actions
+}
+
+// convergeSchedules checks for missing pipeline schedules on GitLab
+// repos and creates them. This repairs the gap where a partial install
+// committed scaffold and variables but failed before schedule creation.
+func convergeSchedules(ctx context.Context,
+	resolved ResolvedConfig,
+	components []ComponentStatus,
+	dryRun bool,
+	progress ProgressFunc) []ComponentAction {
+
+	var actions []ComponentAction
+
+	var missingSchedules []string
+	for _, c := range components {
+		if !strings.HasPrefix(c.Name, "schedule:") {
+			continue
+		}
+		if c.Match {
+			actions = append(actions, ComponentAction{
+				Component: c.Name,
+				Action:    "none",
+				Detail:    fmt.Sprintf("%s exists", DriftFieldName(c.Name)),
+			})
+			continue
+		}
+		missingSchedules = append(missingSchedules, c.Name)
+	}
+
+	if len(missingSchedules) == 0 {
+		return actions
+	}
+
+	owner, repo := resolved.Owner, resolved.Repo
+	client := resolved.ForgeConfig.Client
+	repoFullName := owner + "/" + repo
+
+	if dryRun {
+		for _, name := range missingSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "add",
+				Detail:    fmt.Sprintf("would add %s", DriftFieldName(name)),
+			})
+		}
+		progress(repoFullName, "dry-run",
+			fmt.Sprintf("Would create %d pipeline schedule(s)", len(missingSchedules)))
+		return actions
+	}
+
+	// Need the default branch for the schedule ref.
+	repoInfo, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		for _, name := range missingSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to get repo info for schedule creation: %v", err),
+			})
+		}
+		return actions
+	}
+	defaultBranch := repoInfo.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+
+	for _, name := range missingSchedules {
+		spec := scheduleSpecByComponent(name)
+		if spec == nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("unrecognized schedule component %s", DriftFieldName(name)),
+			})
+			continue
+		}
+
+		_, createErr := client.CreatePipelineSchedule(
+			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, spec.Variables)
+		if createErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to create %s: %v", DriftFieldName(name), createErr),
+			})
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "add",
+			Detail:    fmt.Sprintf("created %s", DriftFieldName(name)),
+		})
+		progress(repoFullName, "sync",
+			fmt.Sprintf("Created pipeline schedule %s", DriftFieldName(name)))
 	}
 
 	return actions
@@ -1140,23 +1293,33 @@ func convergeScaffoldFiles(ctx context.Context,
 	rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 	ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
 
-	installCfg := InstallConfig{
-		Owner:       resolved.Owner,
-		Repo:        resolved.Repo,
-		Forge:       resolved.Forge,
-		Roles:       defaultRoles(cfg.Roles),
-		MintURL:     resolved.MintURL,
-		UpstreamRef: ref,
-		UpstreamTag: tag,
-		RunnerTags:  gitlabRunnerTags(cfg.Manifest),
-		Runtime:     resolved.Runtime,
+	repairVendor := resolved.Vendor
+	if cfg.VendorOverride != nil {
+		repairVendor = *cfg.VendorOverride
 	}
 
-	if manifestRef != "" && refResolver != nil {
+	installCfg := InstallConfig{
+		Owner:        resolved.Owner,
+		Repo:         resolved.Repo,
+		Forge:        resolved.Forge,
+		Roles:        defaultRoles(cfg.Roles),
+		MintURL:      resolved.MintURL,
+		UpstreamRef:  ref,
+		UpstreamTag:  tag,
+		RunnerTags:   gitlabRunnerTags(cfg.Manifest),
+		Runtime:      resolved.Runtime,
+		VendorBinary: repairVendor,
+	}
+
+	// When vendored, the running binary's embedded templates match the
+	// binary being committed to the repo — no version-skew concern, so
+	// skip the remote fetch to avoid unnecessary API calls.
+	if manifestRef != "" && refResolver != nil && !repairVendor {
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
 			gitlabRunnerTags(cfg.Manifest),
+			repairVendor,
 		)
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
@@ -1270,12 +1433,19 @@ func convergeContentDriftFiles(ctx context.Context,
 	installCfg.Roles = defaultRoles(cfg.Roles)
 	installCfg.UpstreamRef = ref
 	installCfg.UpstreamTag = tag
+	if cfg.VendorOverride != nil {
+		installCfg.VendorBinary = *cfg.VendorOverride
+	}
 
-	if manifestRef != "" && refResolver != nil {
+	// When vendored, the running binary's embedded templates match the
+	// binary being committed to the repo — no version-skew concern, so
+	// skip the remote fetch to avoid unnecessary API calls.
+	if manifestRef != "" && refResolver != nil && !installCfg.VendorBinary {
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
 			gitlabRunnerTags(cfg.Manifest),
+			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles

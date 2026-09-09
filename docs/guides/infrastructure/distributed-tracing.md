@@ -161,6 +161,9 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
 | `fullsend.security_trace_id` | `run` | Security scanner trace correlation ID |
+| `fullsend.harness.url` | `run` | Source URL the harness was fetched from; omitted for local-path harnesses |
+| `fullsend.harness.path` | `run` | Local path of the resolved harness file; omitted when empty |
+| `fullsend.harness.content_sha` | `run` | SHA-256 of the resolved harness file; absent when the file cannot be read |
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |

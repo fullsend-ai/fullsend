@@ -1,6 +1,6 @@
 # Documentation site
 
-The documentation site is built with **[VitePress](https://vitepress.dev/)**. Markdown source and site configuration both live in `docs/` (config in `docs/.vitepress/config.ts`), and build output goes to `docs/.vitepress/dist/`.
+The documentation site is built with **[VitePress](https://vitepress.dev/)** and **[VitePress Theme +](https://vitepress-theme-default-plus.lando.dev/)**. Markdown source and site configuration both live in `docs/` (config in `docs/.vitepress/config.ts`), and build output goes to `docs/.vitepress/dist/`.
 
 ## Local development
 
@@ -17,15 +17,22 @@ The dev server starts on `http://localhost:5173/docs/`. Submodules (e.g. `experi
 npm run docs:build
 ```
 
-The `docs:build` script runs `git submodule update --init` before the VitePress build, matching CI behavior.
+The `docs:build` script runs `git submodule update --init` and then `mvb docs`, which builds versioned documentation for each qualifying git tag plus a `dev` build from the current tree. Before each sub-build, `mvb` writes that version's semantic version into `package.json` in a temp checkout; `config.ts` reads `.version` for the sidebar switcher label (falling back to `"dev"` when the field is absent, as in a local `vitepress` run). CI sets `VPL_MVB_BRANCH` to the current commit SHA so `mvb` knows which ref to treat as the development head.
+
+```bash
+npm run docs:preview
+```
 
 ## How it works
 
 - `docs/` contains all markdown content, organized by section (agents, guides, ADRs, etc.)
-- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing
+- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing. See [`site-deployment.md`](site-deployment.md).
 - `getMarkdownFiles()` auto-discovers markdown files and subdirectory READMEs for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans)
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
+- `multiVersionBuild` at `docs/.vitepress/config.ts` controls which versions are to be built. `sidebarEnder` sets up the version switcher with a few versions and the page `/v/index.md` contains a more comprehensive list of versions.
+- Multi-word search queries use **AND** semantics — all terms must appear on a page for it to match. Wrapping words in double quotes (e.g. `"eval scenario"`) enables exact-phrase matching: only pages containing the quoted words adjacent and in order are returned.
+- VitePress always emits `404.html` (synthetic `404.md`; not configurable). Cloudflare serves the nearest `404.html`, so that file is used for misses under `/docs/`. See [`site-deployment.md`](site-deployment.md).
 
 ## Submodules
 
@@ -35,7 +42,7 @@ Some doc content lives in separate repositories linked as git submodules:
 |-----------|------|-------------|
 | [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` -> `../experiments` |
 
-The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI uses `submodules: true` on `actions/checkout` in `.github/workflows/site-build.yml`.
+The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step.
 
 ## CI/CD
 
@@ -43,39 +50,3 @@ The `docs:dev` and `docs:build` scripts in the root `package.json` handle submod
 - **`.github/workflows/site-deploy.yml`** — deploys the built artifact to Cloudflare Workers on `main` pushes, uploads preview versions on PRs
 
 For Cloudflare Worker setup and troubleshooting, see [`site-deployment.md`](site-deployment.md).
-
-## Documentation versioning (investigation)
-
-Users on older fullsend releases may encounter docs that describe features or
-behaviors not present in their version. Versioned docs would let users view
-documentation matching their installed release. This section captures the
-feasibility investigation for future implementation.
-
-### Options evaluated
-
-| Approach | How it works | Effort | Trade-offs |
-|----------|-------------|--------|------------|
-| **VitePress multi-version** | Build docs from each release tag into a versioned path (e.g., `/docs/v0.21/`, `/docs/v0.22/`). Add a version switcher dropdown in the nav bar. | Medium–high | Requires CI changes to build and deploy per-tag. Storage grows linearly with releases. VitePress does not have built-in versioning — it must be implemented via custom config and multi-build CI. |
-| **Branch-based versioning** | Maintain a `docs-vN` branch per major/minor release. Deploy each branch to a path prefix. | Medium | Backport burden — fixes to docs must be cherry-picked to each active branch. Works well for projects with long-lived release branches. |
-| **Git tag snapshots** | At release time, snapshot `docs/` into a versioned archive or static build. Serve from a `/docs/archive/vN.N/` path. | Low–medium | Read-only archives — no live editing of old versions. Simple to implement but less polished than a version switcher. |
-| **Deprecation notices only** (current approach) | Label deprecated features inline; do not version the docs. Users read one set of docs with deprecation markers. | Low (done) | Sufficient when the deprecation surface is small and migration paths are clear. Does not help users find docs for removed features. |
-
-### Recommendation
-
-The current approach — deprecation notices with migration guidance — is
-sufficient for the near term. The project has a small number of deprecated
-features, all with clear replacements and migration tooling
-(`env.runner` migration). Versioned
-docs add ongoing maintenance cost (per-release builds, backport burden) that
-is not yet justified.
-
-**When to revisit:** If a future release removes deprecated features entirely
-(e.g., `runner_env` removal), users on older versions will lose reference
-material. The `customized/` directory has already been removed (#5697, #5836,
-#5866); `runner_env` deprecation remains the primary candidate. At that point,
-the git tag snapshot approach offers the best effort-to-value ratio: snapshot
-the docs at the last release before removal and serve them as a read-only
-archive.
-
-See [#4886](https://github.com/fullsend-ai/fullsend/issues/4886) for the
-original discussion.

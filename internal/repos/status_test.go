@@ -1549,3 +1549,66 @@ func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
 		}
 	}
 }
+
+func TestStatus_GitLab_MissingSchedules_ReportsDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+
+	// Fully installed GitLab repo (workflow, variables, secrets) but
+	// no pipeline schedules — simulates a partial install failure.
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+	if !result.Repos[0].Installed {
+		t.Error("repo should be installed")
+	}
+
+	// Verify schedule drift entries.
+	slashDrift, eventDrift := false, false
+	for _, d := range result.Repos[0].Drifts {
+		switch d.Field {
+		case "slash-poll":
+			slashDrift = true
+			if d.Expected != "present" || d.Actual != "missing" {
+				t.Errorf("slash-poll drift: Expected=%q Actual=%q, want present/missing",
+					d.Expected, d.Actual)
+			}
+		case "event-poll":
+			eventDrift = true
+			if d.Expected != "present" || d.Actual != "missing" {
+				t.Errorf("event-poll drift: Expected=%q Actual=%q, want present/missing",
+					d.Expected, d.Actual)
+			}
+		}
+	}
+	if !slashDrift {
+		t.Errorf("expected slash-poll drift in status, got drifts: %v", result.Repos[0].Drifts)
+	}
+	if !eventDrift {
+		t.Errorf("expected event-poll drift in status, got drifts: %v", result.Repos[0].Drifts)
+	}
+}

@@ -1,3 +1,7 @@
+---
+description: How the fullsend review agent evaluates pull requests for correctness, security, intent alignment, style, and documentation currency.
+---
+
 # Review Agent
 
 ![Review agent icon](icons/review.png)

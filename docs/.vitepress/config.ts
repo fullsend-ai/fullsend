@@ -1,17 +1,23 @@
-import { defineConfig } from "vitepress";
+import { defineConfig } from "@lando/vitepress-theme-default-plus/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  DOCS_URL_BASE,
+  globalSeoHead,
+  isIndexablePage,
+  isNonContentPath,
+  isSitemapUrl,
+  pageRobotsHead,
+  pageSeoHead,
+} from "./seo";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..");
 
-/** Non-content entry: template placeholder or repo-metadata (ALL-CAPS) name. */
-function isNonContent(entry: string): boolean {
-  if (/^0000-.*-template/.test(entry)) return true;
-  const base = entry.replace(/\.md$/, "");
-  return /^[A-Z][A-Z0-9_-]*$/.test(base);
-}
+const version =
+  JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf-8"))
+    .version ?? "dev";
 
 function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
   const fullDir = path.resolve(docsDir, dir);
@@ -19,7 +25,7 @@ function getMarkdownFiles(dir: string, base: string): { text: string; link: stri
   const items: { text: string; link: string }[] = [];
   for (const entry of fs.readdirSync(fullDir).sort()) {
     const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContent(entry)) {
+    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContentPath(entry)) {
       const slug = entry.replace(/\.md$/, "");
       const content = fs.readFileSync(entryPath, "utf-8");
       const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
@@ -28,7 +34,7 @@ function getMarkdownFiles(dir: string, base: string): { text: string; link: stri
     } else if (
       fs.statSync(entryPath).isDirectory() &&
       !entry.startsWith(".") &&
-      !isNonContent(entry)
+      !isNonContentPath(entry)
     ) {
       const readme = path.resolve(entryPath, "README.md");
       if (fs.existsSync(readme)) {
@@ -135,6 +141,12 @@ export default defineConfig({
   description: "Autonomous SDLC agents for your codebase",
 
   base: "/docs/",
+  // Required for SEO correctness, not cosmetic: Cloudflare Workers serves the
+  // extensionless URL with a 200 and 307-redirects the `.html` form. With
+  // cleanUrls the canonical/og:url/sitemap URLs match the 200-serving shape
+  // instead of pointing at redirecting `.html` URLs (search engines discard
+  // canonicals that redirect).
+  cleanUrls: true,
 
   rewrites: {
     "README.md": "index.md",
@@ -158,16 +170,39 @@ export default defineConfig({
         href: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap",
       },
     ],
+    // Site-wide SEO metadata (Open Graph type/site name/image + Twitter card).
+    ...globalSeoHead,
   ],
 
-  srcExclude: ["**/agents/icons/**", "**/testing/**"],
+  // Emit sitemap.xml for the docs. The hostname carries the /docs/ base (and a
+  // trailing slash) because VitePress resolves base-less page paths against it.
+  sitemap: {
+    hostname: DOCS_URL_BASE,
+    transformItems: (items) => items.filter((item) => isSitemapUrl(item.url)),
+  },
 
+  // Per-page canonical + Open Graph tags derived from the resolved page data.
+  transformHead({ page, title, description, siteConfig }) {
+    const robotsHead = pageRobotsHead(page);
+    if (!isIndexablePage(page)) return robotsHead;
+    return [
+      ...robotsHead,
+      ...pageSeoHead({ page, title, description, cleanUrls: siteConfig.cleanUrls }),
+    ];
+  },
+
+  srcExclude: ["**/agents/icons/**", "**/testing/**"],
   ignoreDeadLinks: true,
 
   themeConfig: {
     logo: "/img/logo.png",
     logoLink: { link: "https://fullsend.sh", target: "_self" },
     siteTitle: "Fullsend",
+
+    multiVersionBuild: {
+      satisfies: ">=0.37.0",
+      build: "stable",
+    },
 
     nav: [
       { text: "Docs", link: "/guides/getting-started/", activeMatch: "^/(?!cli/)" },
@@ -210,6 +245,7 @@ export default defineConfig({
           items: [
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
+            { text: "Codex", link: "/runtimes/codex" },
           ],
         },
         {
@@ -232,6 +268,7 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Issue Commands", link: "/guides/user/issues-commands" },
             {
@@ -253,6 +290,7 @@ export default defineConfig({
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
                 },
+                { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
                 {
@@ -280,6 +318,7 @@ export default defineConfig({
           text: "Reference",
           collapsed: true,
           items: [
+            { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
           ],
         },
@@ -296,8 +335,12 @@ export default defineConfig({
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
+            { text: "Gate Binaries", link: "/guides/infrastructure/gate-binaries" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
-            { text: "OpenAI Workload Identity", link: "/guides/infrastructure/openai-workload-identity" },
+            {
+              text: "OpenAI Workload Identity",
+              link: "/guides/infrastructure/openai-workload-identity",
+            },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",
@@ -355,6 +398,26 @@ export default defineConfig({
       ],
     },
 
+    sidebarEnder: {
+      text: version,
+      collapsed: true,
+      items: [
+        {
+          text: "Other Doc Versions",
+          items: [
+            { rel: "mvb", text: "stable", target: "_blank", link: "/stable/" },
+            { rel: "mvb", text: "edge", target: "_blank", link: "/edge/" },
+            { rel: "mvb", text: "dev", target: "_blank", link: "/dev/" },
+            { text: "<strong>see all versions</strong>", link: "/v/" },
+          ],
+        },
+        {
+          text: "Other Releases",
+          link: "https://github.com/fullsend-ai/fullsend/releases",
+        },
+      ],
+    },
+
     socialLinks: [{ icon: "github", link: "https://github.com/fullsend-ai/fullsend" }],
 
     editLink: {
@@ -366,7 +429,16 @@ export default defineConfig({
       provider: "local",
       options: {
         scopes: [
-          { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"] },
+          {
+            label: "Guides",
+            prefixes: [
+              "/docs/guides/",
+              "/docs/agents/",
+              "/docs/cli/",
+              "/docs/runtimes",
+              "/docs/reference/",
+            ],
+          },
           {
             label: "Design Docs",
             prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
@@ -431,15 +503,15 @@ export default defineConfig({
     shikiSetup: async (shiki) => {
       await shiki.loadLanguage("toml");
     },
+
     preConfig: (md) => {
       const defaultParse = md.parse.bind(md);
       md.parse = (src: string, env: Record<string, unknown>) => {
+        const rel = (env?.relativePath as string) ?? "";
+        if (rel === "v/index.md") return defaultParse(src, env);
         return defaultParse(escapeVueSyntax(src), env);
       };
     },
-    // Auto-add v-pre to inline code so `{{ }}` inside backticks is safe.
-    // Recommended by VitePress maintainer brc-dd:
-    // https://github.com/vuejs/vitepress/discussions/3724
     config: (md) => {
       const defaultCodeInline = md.renderer.rules.code_inline!;
       md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {

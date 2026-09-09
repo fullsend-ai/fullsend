@@ -12,13 +12,16 @@ set -euo pipefail
 
 PRIOR_FILE=${GITHUB_WORKSPACE:-/tmp}/prior-review.txt
 REVIEW_BOT="${ORG_NAME}-review[bot]"
+SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
 PROVENANCE="none"
 
-# Fetch full comment object (not just body) for provenance validation
+# Fetch full comment object (not just body) for provenance validation.
+# Match either the org-specific bot or the shared vendor App identity
+# (see ADR 0029/0059/0068 and #5550).
 COMMENT_JSON=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUM}/comments" \
   --paginate --jq '.[]' \
-  | jq --arg bot "${REVIEW_BOT}" -s \
-    '[.[] | select(.user.login == $bot
+  | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" -s \
+    '[.[] | select((.user.login == $bot or .user.login == $shared_bot)
       and (.body | contains("<!-- fullsend:review-agent -->")))] | last // empty' \
   2>/dev/null || echo "")
 
@@ -93,8 +96,14 @@ echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
 if [[ "${BYTE_COUNT}" -gt 1 ]]; then
     # Extract SHA from current section only (before sticky history sentinels)
     CURRENT_SECTION="$(awk '/<!-- sticky:history-start -->/{exit} {print}' "${PRIOR_FILE}")"
+    # sed -nE, not grep -oP: BSD grep (macOS) has no -P, so the PCRE
+    # lookbehind exited with "invalid option" and the `|| true` swallowed
+    # it — PRIOR_SHA came back empty and the two SHA tests failed on every
+    # macOS checkout. sed -nE is the same expression in POSIX ERE and works
+    # on both. A no-match prints nothing and still exits 0, so this keeps
+    # the no-SHA case off pipefail too (body-without-sha-no-crash).
     PRIOR_SHA="$(echo "${CURRENT_SECTION}" \
-        | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1 || true)"
+        | sed -nE 's/.*\*\*Head SHA:\*\* ([0-9a-f]{7,64}).*/\1/p' | head -1)"
     echo "prior_sha=${PRIOR_SHA}" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "Prior review SHA: ${PRIOR_SHA:-none}"
 else

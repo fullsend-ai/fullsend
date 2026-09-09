@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import EnlargeDialog from './EnlargeDialog.vue'
+import { ref, onMounted, onUnmounted } from "vue";
+import EnlargeDialog from "./EnlargeDialog.vue";
 
 const props = defineProps<{
-  graph: string
-  id: string
-}>()
+  graph: string;
+  id: string;
+}>();
 
-const svg = ref<string | null>(null)
-const error = ref<string | null>(null)
-const naturalWidth = ref<number | null>(null)
-const enlarge = ref<InstanceType<typeof EnlargeDialog> | null>(null)
-let observer: MutationObserver | null = null
-let lastTheme: string | null = null
-let rendering = false
-let renderSeq = 0
+const svg = ref<string | null>(null);
+const error = ref<string | null>(null);
+const naturalWidth = ref<number | null>(null);
+const enlarge = ref<InstanceType<typeof EnlargeDialog> | null>(null);
+let observer: MutationObserver | null = null;
+let lastTheme: string | null = null;
+let rendering = false;
+let renderSeq = 0;
 
 // The inline diagram is scaled to the content column (mermaid sets
 // width: 100%; max-width: <viewBox width>), which makes wide flowcharts
@@ -23,35 +23,35 @@ let renderSeq = 0
 // click anywhere on the figure opens it too, and the diagram text stays
 // selectable because the figure itself is not a button.
 async function renderChart() {
-  if (rendering) return
-  rendering = true
-  const seq = ++renderSeq
+  if (rendering) return;
+  rendering = true;
+  const seq = ++renderSeq;
   try {
-    const mermaid = (await import('mermaid')).default
-    const isDark = document.documentElement.classList.contains('dark')
-    const theme = isDark ? 'dark' : 'default'
+    const mermaid = (await import("mermaid")).default;
+    const isDark = document.documentElement.classList.contains("dark");
+    const theme = isDark ? "dark" : "default";
     if (theme !== lastTheme) {
       mermaid.initialize({
-        securityLevel: 'strict',
+        securityLevel: "strict",
         startOnLoad: false,
         theme,
-      })
-      lastTheme = theme
+      });
+      lastTheme = theme;
     }
     const { svg: rendered } = await mermaid.render(
       `${props.id}-${seq}`,
       decodeURIComponent(props.graph),
-    )
-    svg.value = rendered
-    error.value = null
-    const viewBox = rendered.match(/viewBox="([^"]+)"/)
-    const width = viewBox ? parseFloat(viewBox[1].split(/\s+/)[2]) : NaN
-    naturalWidth.value = Number.isFinite(width) ? width : null
+    );
+    svg.value = rendered;
+    error.value = null;
+    const viewBox = rendered.match(/viewBox="([^"]+)"/);
+    const width = viewBox ? parseFloat(viewBox[1].split(/\s+/)[2]) : NaN;
+    naturalWidth.value = Number.isFinite(width) ? width : null;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to render diagram'
-    svg.value = null
+    error.value = e instanceof Error ? e.message : "Failed to render diagram";
+    svg.value = null;
   } finally {
-    rendering = false
+    rendering = false;
   }
 }
 
@@ -67,12 +67,12 @@ function onFigureClick(e: MouseEvent) {
 }
 
 onMounted(async () => {
-  await renderChart()
-  observer = new MutationObserver(() => renderChart())
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-})
+  await renderChart();
+  observer = new MutationObserver(() => renderChart());
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+});
 
-onUnmounted(() => observer?.disconnect())
+onUnmounted(() => observer?.disconnect());
 </script>
 
 <template>

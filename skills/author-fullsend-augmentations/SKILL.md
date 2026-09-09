@@ -112,8 +112,9 @@ Read the current wording in fullsend:
 
 **Same name as a built-in:** If your repo skill directory matches a built-in
 skill name (for example `retro-analysis`), the agent **never loads your
-version** — the built-in wins with no error. Use a **unique directory name**
-(for example `my-org-retro`, not `retro-analysis`).
+version** — the built-in wins and Fullsend logs a warning. Use a **unique
+directory name** (for example `my-org-retro`, not `retro-analysis`) to extend
+the agent, or use `base:` harness composition for an intentional override.
 
 **Different name:** Your skill loads **next to** built-ins. To change behavior,
 be **more specific** than the default — exact fields, word limits, templates.
@@ -509,7 +510,7 @@ Primary docs to re-read every run:
 | Adding a sub-agent file the parent never dispatches | Read parent roster/selection; update parent or upstream it |
 | User asked for sub-agent; you created `<name>/SKILL.md` | Use `sub-agents/<name>.md` + parent roster edits; no wrapper skill |
 | Redefining default procedures | Constrain outputs; don't replace steps |
-| Same directory name as a built-in | Rename — built-in shadows silently |
+| Same directory name as a built-in | Rename to extend, or override through `base:` harness composition; Fullsend warns that the repo skill is shadowed |
 | Suggesting `customized/` or overlay dirs for overrides | Use harness mechanisms from current docs (file-level when available) |
 | Hardcoding "org fork" as the only sub-agent path | Re-discover shipping families each run |
 | Writing into discovery or test cwd | Ask target repo; draft in chat until user names path |

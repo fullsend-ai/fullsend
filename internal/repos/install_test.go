@@ -36,6 +36,47 @@ func (f *fakeScaffoldCommit) fn() ScaffoldCommitFunc {
 	}
 }
 
+type spyScaffoldCommit struct {
+	mu    sync.Mutex
+	files []forge.TreeFile
+}
+
+func (s *spyScaffoldCommit) fn() ScaffoldCommitFunc {
+	return func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		s.mu.Lock()
+		s.files = append(s.files, files...)
+		s.mu.Unlock()
+		return nil
+	}
+}
+
+func (s *spyScaffoldCommit) assertVendoredWorkflow(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.files {
+		if strings.HasSuffix(f.Path, ".yaml") || strings.HasSuffix(f.Path, ".yml") {
+			if strings.Contains(string(f.Content), "./.github/workflows/reusable-") {
+				return
+			}
+		}
+	}
+	t.Error("scaffold files do not contain vendored local workflow references (./.github/workflows/reusable-*)")
+}
+
+func (s *spyScaffoldCommit) assertNonVendoredWorkflow(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.files {
+		if strings.HasSuffix(f.Path, ".yaml") || strings.HasSuffix(f.Path, ".yml") {
+			if strings.Contains(string(f.Content), "./.github/workflows/reusable-") {
+				t.Errorf("scaffold file %s contains vendored local workflow reference but should not", f.Path)
+			}
+		}
+	}
+}
+
 const (
 	fakeWIFProvider  = "projects/100000/locations/global/workloadIdentityPools/fake-pool/providers/fake-provider"
 	fakeWIFProvider2 = "projects/999999/locations/global/workloadIdentityPools/fake-pool/providers/fake-provider"
@@ -633,6 +674,10 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
 	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
 	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {

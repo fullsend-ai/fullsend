@@ -49,6 +49,20 @@ type Comment struct {
 	UpdateAuthor User   `json:"updateAuthor"`
 	Created      string `json:"created"`
 	Updated      string `json:"updated"`
+	// Properties holds entity properties when the comment was fetched
+	// with ?expand=properties. Each property has a key and an arbitrary
+	// JSON value. Properties are invisible to users in the Jira UI, so
+	// they are used for sticky-comment marker storage instead of
+	// embedding markers in visible ADF body text.
+	Properties []CommentProperty `json:"properties,omitempty"`
+}
+
+// CommentProperty represents an entity property on a Jira comment.
+// Properties are opaque key/value pairs stored alongside a comment
+// that do not appear in the Jira UI.
+type CommentProperty struct {
+	Key   string          `json:"key"`
+	Value json.RawMessage `json:"value"`
 }
 
 // CommentPage is a paginated list of comments.

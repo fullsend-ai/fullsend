@@ -390,6 +390,98 @@ func TestAwaitForkReady_ContextCancelledDuringBranchNamePoll(t *testing.T) {
 	assert.Contains(t, err.Error(), "context cancelled")
 }
 
+// --- isReplicationError unit tests ---
+
+func TestIsReplicationError_409(t *testing.T) {
+	err := fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422ObjectDoesNotExist(t *testing.T) {
+	err := fmt.Errorf("create branch: github api: 422 Object does not exist")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422TreeSHADoesNotExist(t *testing.T) {
+	err := fmt.Errorf("create tree: github api: 422 Tree SHA does not exist")
+	assert.True(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_NilError(t *testing.T) {
+	assert.False(t, isReplicationError(nil))
+}
+
+func TestIsReplicationError_NonReplicationError(t *testing.T) {
+	err := fmt.Errorf("permission denied")
+	assert.False(t, isReplicationError(err))
+}
+
+func TestIsReplicationError_422WithoutObjectMessage(t *testing.T) {
+	// 422 without "does not exist" or "empty" is not replication.
+	err := fmt.Errorf("github api: 422 Validation Failed (field=sha, code=invalid)")
+	assert.False(t, isReplicationError(err))
+}
+
+// --- createForkBranch unit tests ---
+
+func TestCreateForkBranch_ImmediateSuccess(t *testing.T) {
+	scmDriver := &fakeForkSCM{}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, scmDriver.createBranchCalls)
+}
+
+func TestCreateForkBranch_RetriesThenSucceeds(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   2,
+		createBranchReplicaErr: fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, scmDriver.createBranchCalls,
+		"CreateBranch should be called 2 failures + 1 success = 3 times")
+}
+
+func TestCreateForkBranch_ExhaustsRetries(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   -1,
+		createBranchReplicaErr: fmt.Errorf("get ref for default branch: github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch creation failed after 3 attempts")
+	assert.Contains(t, err.Error(), "409")
+	assert.Equal(t, 3, scmDriver.createBranchCalls)
+}
+
+func TestCreateForkBranch_NonReplicationErrorNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{SCM: scmDriver}
+	err := createForkBranch(context.Background(), w, "org", "repo-fork", "test-branch", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, scmDriver.createBranchCalls,
+		"non-replication errors should not be retried")
+}
+
+func TestCreateForkBranch_ContextCancelled(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createBranchFailures:   -1,
+		createBranchReplicaErr: fmt.Errorf("github api: 409 Git Repository is empty"),
+	}
+	w := &world.World{SCM: scmDriver}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := createForkBranch(ctx, w, "org", "repo-fork", "test-branch", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
 // fakeForkSCM implements scm.Driver for fork step unit tests.
 type fakeForkSCM struct {
 	forkRepo           string
@@ -420,6 +512,14 @@ type fakeForkSCM struct {
 	// means GetBranchRef always fails.
 	getBranchRefFailures int
 	getBranchRefCalls    int
+
+	// createBranchFailures controls how many times CreateBranch
+	// returns a replication error before succeeding. Each call
+	// decrements the counter; when it reaches 0, CreateBranch
+	// returns success. A value of -1 means CreateBranch always fails.
+	createBranchFailures   int
+	createBranchCalls      int
+	createBranchReplicaErr error // error to return on replication failures
 }
 
 type addedLabelRecord struct {
@@ -491,8 +591,19 @@ func (f *fakeForkSCM) CommitFile(context.Context, string, string, string, string
 
 func (f *fakeForkSCM) CreateBranch(_ context.Context, _, _, _ string) error {
 	f.createBranchCalled = true
+	f.createBranchCalls++
 	if f.createBranchErr != nil {
 		return f.createBranchErr
+	}
+	// Support counted replication failures for retry tests.
+	if f.createBranchReplicaErr != nil {
+		if f.createBranchFailures == -1 {
+			return f.createBranchReplicaErr
+		}
+		if f.createBranchFailures > 0 {
+			f.createBranchFailures--
+			return f.createBranchReplicaErr
+		}
 	}
 	return nil
 }

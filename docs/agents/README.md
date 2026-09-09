@@ -1,3 +1,7 @@
+---
+description: Reference for the agents fullsend ships and how to register custom agents — resolved at runtime from the fullsend-ai/agents repository or your org and repo config.
+---
+
 # Agents
 
 Reference documentation for the agents shipped by fullsend.

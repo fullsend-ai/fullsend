@@ -234,11 +234,14 @@ type stubBootstrapInput struct {
 	sandboxName string
 }
 
-func (s stubBootstrapInput) SandboxName() string  { return s.sandboxName }
-func (s stubBootstrapInput) AgentPath() string    { return "" }
-func (s stubBootstrapInput) AgentName() string    { return "test" }
-func (s stubBootstrapInput) SkillDirs() []string  { return nil }
-func (s stubBootstrapInput) PluginDirs() []string { return nil }
+func (s stubBootstrapInput) SandboxName() string                { return s.sandboxName }
+func (s stubBootstrapInput) AgentPath() string                  { return "" }
+func (s stubBootstrapInput) AgentName() string                  { return "test" }
+func (s stubBootstrapInput) SkillDirs() []string                { return nil }
+func (s stubBootstrapInput) Plugins() []PluginInput             { return nil }
+func (s stubBootstrapInput) ModelAliases() map[string]string    { return nil }
+func (s stubBootstrapInput) AgentSubagents() map[string]*string { return nil }
+func (s stubBootstrapInput) ParentModel() string                { return "" }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
 	t.Parallel()
@@ -246,6 +249,17 @@ func TestDummyRuntime_Bootstrap(t *testing.T) {
 	rt := DummyRuntime{}
 	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent-sandbox"})
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_Bootstrap_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "sandbox not found", 1, nil
+	}}
+	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 func TestDummyRuntime_RunMissingScript(t *testing.T) {
@@ -268,6 +282,21 @@ func TestDummyRuntime_ClearIterationArtifacts(t *testing.T) {
 	rt := DummyRuntime{}
 	err := rt.ClearIterationArtifacts("nonexistent-sandbox")
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_ClearIterationArtifacts_NonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "rm -rf") {
+			return "", "sandbox not found", 1, nil
+		}
+		// clearStrayProcesses call succeeds
+		return "stray processes killed: 0\n", "", 0, nil
+	}}
+	err := rt.ClearIterationArtifacts("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
 func TestExecuteBehaviourOp_ReadFileExecFailure(t *testing.T) {
@@ -747,4 +776,38 @@ func TestExecuteBehaviourOp_CheckoutBranchExecError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checkout_branch exec")
+}
+
+// ClearIterationArtifacts sweeps stray processes before removing files, so
+// nothing from iteration N keeps writing into what iteration N+1 reads.
+func TestDummyRuntime_ClearIterationArtifacts_SweepsStraysBeforeFiles(t *testing.T) {
+	t.Parallel()
+
+	var cmds []string
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "stray processes killed: 0\n", "", 0, nil
+	}}
+	require.NoError(t, rt.ClearIterationArtifacts("sb"))
+	require.Len(t, cmds, 2)
+	assert.Equal(t, killStrayProcessesScript(), cmds[0])
+	assert.Contains(t, cmds[1], "rm -rf")
+}
+
+// A failed sweep (exit 124 is the only exec failure sandbox.Exec reports)
+// is warning-only: the file cleanup still runs and the result is nil.
+func TestDummyRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	var cmds []string
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		if len(cmds) == 1 {
+			return "", "boom", 124, errors.New("command timed out after 15s")
+		}
+		return "", "", 0, nil
+	}}
+	require.NoError(t, rt.ClearIterationArtifacts("sb"))
+	require.Len(t, cmds, 2)
+	assert.Contains(t, cmds[1], "rm -rf")
 }

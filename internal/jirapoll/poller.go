@@ -107,6 +107,18 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.roleGroups = make(map[string][]string)
 	p.roleGroupsChecked = make(map[string]bool)
 
+	// Auth preflight: verify credentials before any discovery, lock, or
+	// checkpoint operations. Without this, bad credentials cause Jira to
+	// treat the request as unauthenticated and return empty results —
+	// indistinguishable from a genuinely quiet project.
+	myself, err := p.client.GetMyself(ctx)
+	if err != nil {
+		return fmt.Errorf("authentication preflight failed: %w", err)
+	}
+	if !myself.Active {
+		return fmt.Errorf("authentication preflight failed: account %q is inactive", myself.AccountID)
+	}
+
 	// Step 1: Execute JQL to get candidate issues.
 	candidates, err := p.searchCandidates(ctx)
 	if err != nil {

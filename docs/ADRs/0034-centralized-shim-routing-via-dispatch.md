@@ -101,7 +101,7 @@ a stage name:
 
 - `issue_comment` with `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
   commands → corresponding stage
-- `issue_comment` on `needs-info` issue from non-bot → `triage`
+- ~~`issue_comment` on `needs-info` issue from non-bot → `triage`~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use `/fs-triage` instead
 - `issues` + `labeled` with `ready-to-code` → `code`
 - `pull_request_target` opened/synchronize/ready_for_review → `review`
 - `pull_request_target` closed → `retro`

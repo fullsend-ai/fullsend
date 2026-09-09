@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a06300-0000-7000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Starting the requested change."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"make build","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"make build","aggregated_output":"go: build failed\nexit status 1\n","exit_code":1,"status":"failed"}}
+{"type":"turn.failed","error":{"message":"stream error: exceeded retry limit, last status: 429"}}

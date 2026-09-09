@@ -304,6 +304,7 @@ func writeManifest(path string, m *Manifest) error {
 var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
 	"defaults.runtime",
+	"defaults.vendor",
 	"github.url",
 	"github.mint_url",
 	"github.mint_mode",
@@ -358,6 +359,13 @@ func SetDefault(manifestPath, key, value string) error {
 	switch key {
 	case "defaults.runtime":
 		m.Defaults.Runtime = value
+	case "defaults.vendor":
+		if value == "" {
+			m.Defaults.Vendor = nil
+		} else {
+			v := value == "true"
+			m.Defaults.Vendor = &v
+		}
 	case "defaults.allowed_remote_resources":
 		if value == "" {
 			m.Defaults.AllowedRemoteResources = nil
@@ -445,6 +453,10 @@ func validateDefaultValue(key, value string) error {
 	case "defaults.runtime":
 		if err := validateRuntimeValue(key, value); err != nil {
 			return err
+		}
+	case "defaults.vendor":
+		if value != "true" && value != "false" {
+			return fmt.Errorf("defaults.vendor must be \"true\" or \"false\", got %q", value)
 		}
 	case "defaults.allowed_remote_resources":
 		for _, raw := range strings.Split(value, ",") {

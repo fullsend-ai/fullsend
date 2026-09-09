@@ -73,29 +73,11 @@ func (r *HarnessRouter) routeComment(event *NormalizedEvent) ([]string, error) {
 		return []string{"fix"}, nil
 	}
 
-	// Non-command issue comment on a needs-info issue → triage.
-	// ADR 0067 §"needs-info re-triage": entity authors bypass the triage
-	// role gate so issue reporters (who may only have read access) can
-	// respond to needs-info requests without elevated permissions.
-	if event.Entity.Kind == "work_item" && hasLabel(event.State.Labels, "needs-info") {
-		if !HasRole(event.Actor.Role, "triage") && !event.Actor.IsEntityAuthor {
-			return nil, nil
-		}
-		if !r.validAgents["triage"] {
-			return nil, nil
-		}
-		return []string{"triage"}, nil
-	}
-
 	return nil, nil
 }
 
 func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([]string, error) {
 	if !strings.HasPrefix(cmd, "/fs-") {
-		return nil, nil
-	}
-
-	if !HasRole(event.Actor.Role, "write") {
 		return nil, nil
 	}
 
@@ -112,7 +94,29 @@ func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([
 		return nil, nil
 	}
 
+	// Observation stages (triage, review) accept the triage role;
+	// mutation stages (code, fix, etc.) require write per ADR 0054.
+	minRole := "write"
+	if isObservationStage(stage) {
+		minRole = "triage"
+	}
+
+	if !HasRole(event.Actor.Role, minRole) {
+		// Entity-author bypass: issue reporters can trigger observation
+		// stages on their own work_item entities even with read-only
+		// access. Does not apply to change_proposal entities.
+		if !(isObservationStage(stage) && event.Entity.Kind == "work_item" && event.Actor.IsEntityAuthor) {
+			return nil, nil
+		}
+	}
+
 	return []string{stage}, nil
+}
+
+// isObservationStage reports whether stage is a read-only observation
+// stage that accepts the triage role per ADR 0054.
+func isObservationStage(stage string) bool {
+	return stage == "triage" || stage == "review"
 }
 
 func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
@@ -159,13 +163,4 @@ func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 // per the State doc comment in event.go).
 func isForkOrUnknown(s State) bool {
 	return s.ChangeProposal == nil || s.ChangeProposal.IsFork
-}
-
-func hasLabel(labels []string, name string) bool {
-	for _, l := range labels {
-		if l == name {
-			return true
-		}
-	}
-	return false
 }

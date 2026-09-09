@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -458,8 +459,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "pull_request_target")
 	assert.Contains(t, s, "pull_request_review")
 	assert.Contains(t, s, "changes_requested")
-	assert.Contains(t, s, "needs-info")
-	assert.Contains(t, s, `! has_label "feature"`)
+	assert.NotContains(t, s, "needs-info")
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
@@ -473,9 +473,8 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, `is_authorized triage`)
 	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
 	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
-	assert.Contains(t, s, `COMMENT_AUTHOR_ASSOC`)
-	// Auto-triage requires assoc != NONE or issue author
-	assert.Contains(t, s, "is_issue_author")
+	assert.NotContains(t, s, `COMMENT_AUTHOR_ASSOC`)
+	assert.NotContains(t, s, "is_issue_author")
 	// Bot filtering
 	assert.Contains(t, s, `COMMENT_USER_TYPE`)
 	assert.Contains(t, s, `!= "Bot"`)
@@ -751,7 +750,7 @@ func TestSetupAgentEnvContent(t *testing.T) {
 	assert.Contains(t, s, "GITHUB_ENV")
 	// Per-run override passthrough from repository variables (#6526).
 	assert.Contains(t, s, "FULLSEND_REPO_VARS")
-	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL"} {
+	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL"} {
 		assert.Contains(t, s, key)
 	}
 }
@@ -802,6 +801,130 @@ func TestReconcileReposContent(t *testing.T) {
 		"reconcile-repos.sh should not parse dispatch mode")
 	assert.Contains(t, s, "private repos cannot be enrolled",
 		"reconcile-repos.sh should skip private repos to prevent log exposure")
+
+	// The "Getting started" slash-command catalog (#2165) must appear in both the
+	// enrollment and update PR bodies. The update path is the first touchpoint for
+	// already-enrolled repos, which is the scenario the original incident hit.
+	assert.Contains(t, s, "## Getting started",
+		"reconcile-repos.sh PR bodies should include the Getting started section")
+	assert.Contains(t, s, `GETTING_STARTED_SECTION`,
+		"Getting started block should be shared so it appears in both enroll and update PRs")
+	assert.Contains(t, s, `ENROLL_PR_BODY=`)
+	assert.Contains(t, s, `UPDATE_PR_BODY=`)
+	// Both PR bodies interpolate the shared block.
+	assert.Equal(t, 2, strings.Count(s, `${GETTING_STARTED_SECTION}`),
+		"shared Getting started block should be appended to both the enroll and update PR bodies")
+}
+
+// commandsNotInOnboardingCatalog lists slash commands that dispatch.yml routes
+// on but that are deliberately omitted from the user-facing onboarding catalog,
+// so the omission is a recorded decision rather than a regex accident. Anything
+// routed by dispatch.yml and not listed here must appear in the catalog.
+var commandsNotInOnboardingCatalog = map[string]bool{}
+
+// extractGettingStartedSection returns the body of the GETTING_STARTED_SECTION
+// shell assignment in reconcile-repos.sh — the exact block rendered into the
+// onboarding PR bodies. Assertions scope to this block rather than the whole
+// script so a command name appearing in an unrelated comment or code path cannot
+// satisfy the catalog guard.
+func extractGettingStartedSection(t *testing.T, scriptStr string) string {
+	t.Helper()
+	const marker = `GETTING_STARTED_SECTION="`
+	start := strings.Index(scriptStr, marker)
+	require.GreaterOrEqual(t, start, 0,
+		"expected GETTING_STARTED_SECTION assignment in reconcile-repos.sh")
+	rest := scriptStr[start+len(marker):]
+	// The block contains no embedded double quotes, so the next quote closes it.
+	end := strings.Index(rest, `"`)
+	require.GreaterOrEqual(t, end, 0,
+		"GETTING_STARTED_SECTION assignment should be closed with a double quote")
+	return rest[:end]
+}
+
+// dispatchCaseArmRE matches a case-arm label line in dispatch.yml's
+// `case "${COMMAND}"` switch, e.g. "                /fs-triage)".
+// Scoping route extraction to these lines keeps a command mentioned in a
+// comment, URL, or unrelated shell statement from being counted as routed.
+var dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/fs-[a-z0-9-]+(?:\|/fs-[a-z0-9-]+)*)\)`)
+
+// slashCommandRE matches a single /fs-* command token.
+var slashCommandRE = regexp.MustCompile(`/fs-[a-z0-9-]+`)
+
+// catalogBulletRE matches a rendered onboarding-catalog bullet, e.g.
+// "- `/fs-triage`". The optional leading backslash accommodates the shell
+// assignment (backticks are escaped as \` there); the per-repo Go catalog uses
+// bare backticks. Anchoring to the "- " bullet keeps a command mentioned in a
+// docs URL or prose from counting as documented.
+var catalogBulletRE = regexp.MustCompile("(?m)^- \\\\?`(/fs-[a-z0-9-]+)\\\\?`")
+
+// routedDispatchCommands returns the set of slash commands dispatch.yml routes
+// on, scoped to case-arm labels (see dispatchCaseArmRE).
+func routedDispatchCommands(dispatchStr string) map[string]bool {
+	cmds := map[string]bool{}
+	for _, arm := range dispatchCaseArmRE.FindAllStringSubmatch(dispatchStr, -1) {
+		for _, cmd := range slashCommandRE.FindAllString(arm[1], -1) {
+			cmds[cmd] = true
+		}
+	}
+	return cmds
+}
+
+// catalogCommands returns the set of slash commands documented as bullets in an
+// onboarding catalog block (see catalogBulletRE).
+func catalogCommands(catalog string) map[string]bool {
+	cmds := map[string]bool{}
+	for _, m := range catalogBulletRE.FindAllStringSubmatch(catalog, -1) {
+		cmds[m[1]] = true
+	}
+	return cmds
+}
+
+// TestReconcileReposSlashCommandCatalog guards against the onboarding PR body's
+// slash-command catalog drifting from dispatch.yml's routing, in both directions:
+//   - forward: every command dispatch.yml routes on (except deliberately-omitted
+//     aliases in commandsNotInOnboardingCatalog) must appear in the catalog, so a
+//     command added/renamed in dispatch.yml without updating the catalog fails CI.
+//   - reverse: every command documented in the catalog must actually be routed by
+//     dispatch.yml, so a command removed from dispatch.yml but left in the
+//     user-facing catalog also fails CI.
+//
+// Routed commands are extracted only from dispatch.yml's case-arm labels, and
+// documented commands only from rendered catalog bullets, so comments, URLs, or
+// prose on either side cannot spoof a match. Membership is compared as exact
+// tokens (via sets) rather than substring containment so a hyphenated command
+// (e.g. /fs-fix-stop) cannot satisfy the guard against an unrelated prefix
+// (/fs-fix). The omission allow-list is applied to the forward check only: a
+// command written into the catalog and later dropped from dispatch must fail even
+// if it is allow-listed.
+func TestReconcileReposSlashCommandCatalog(t *testing.T) {
+	dispatch, err := FullsendRepoFile(".github/workflows/dispatch.yml")
+	require.NoError(t, err)
+	script, err := FullsendRepoFile("scripts/reconcile-repos.sh")
+	require.NoError(t, err)
+
+	catalog := extractGettingStartedSection(t, string(script))
+
+	dispatchCmds := routedDispatchCommands(string(dispatch))
+	require.NotEmpty(t, dispatchCmds, "expected dispatch.yml to route on /fs-* commands")
+
+	catalogCmds := catalogCommands(catalog)
+	require.NotEmpty(t, catalogCmds, "expected the onboarding catalog to document /fs-* commands")
+
+	// Forward: dispatch.yml commands must be documented (unless deliberately omitted).
+	for cmd := range dispatchCmds {
+		if commandsNotInOnboardingCatalog[cmd] {
+			continue
+		}
+		assert.True(t, catalogCmds[cmd],
+			"dispatch.yml routes on %s but the onboarding catalog does not document it "+
+				"(add it to GETTING_STARTED_SECTION, or to commandsNotInOnboardingCatalog if intentional)", cmd)
+	}
+
+	// Reverse: every documented command must be routed by dispatch.yml.
+	for cmd := range catalogCmds {
+		assert.True(t, dispatchCmds[cmd],
+			"onboarding catalog documents %s but dispatch.yml does not route on it", cmd)
+	}
 }
 
 func TestPrioritizeWorkflowContent(t *testing.T) {
@@ -893,4 +1016,22 @@ func TestPrependManagedHeaderNoHeader(t *testing.T) {
 	content := []byte("# AGENTS.md\nSome content\n")
 	result := PrependManagedHeader("AGENTS.md", content)
 	assert.Equal(t, content, result, "files without headers should be returned unchanged")
+}
+
+func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-vertex-ai.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// Pin the whole list, not just the two entries #6971 added: this copy
+	// must stay in sync with profiles/fullsend-vertex-ai.yaml in
+	// fullsend-ai/agents (the fleet copy), which is what the sandbox
+	// actually enforces. Claude Code 2.1.2xx installs its native binary at
+	// bin/claude.exe even on Linux, so **/claude alone denies it STS access.
+	assert.ElementsMatch(t, []string{"**/claude", "**/claude.exe", "**/node", "**/pi"}, profile.Binaries,
+		"scaffold Vertex profile binaries drifted from the pinned allowlist; keep it in sync with the fullsend-ai/agents copy")
 }

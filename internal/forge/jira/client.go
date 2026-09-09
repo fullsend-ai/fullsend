@@ -442,13 +442,15 @@ func (c *LiveClient) GetStatus(ctx context.Context, idOrName string) (*Status, e
 const maxListPages = 100
 
 // ListComments fetches all comments on an issue, exhausting pagination up
-// to maxListPages pages.
+// to maxListPages pages. Comments include entity properties via
+// ?expand=properties so callers can match sticky markers stored as
+// comment properties instead of scanning body text.
 func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]Comment, error) {
 	var all []Comment
 	startAt := 0
 	truncated := true
 	for page := 0; page < maxListPages; page++ {
-		path := fmt.Sprintf("/issue/%s/comment?orderBy=created&maxResults=100&startAt=%d",
+		path := fmt.Sprintf("/issue/%s/comment?orderBy=created&maxResults=100&startAt=%d&expand=properties",
 			url.PathEscape(issueIDOrKey), startAt)
 		var result CommentPage
 		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
@@ -470,18 +472,29 @@ func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]C
 // commentRequest is the request body shape for creating or updating a
 // comment: Jira Cloud only accepts a comment body in ADF, not markdown.
 type commentRequest struct {
-	Body map[string]any `json:"body"`
+	Body       map[string]any    `json:"body"`
+	Properties []CommentProperty `json:"properties,omitempty"`
 }
 
 // CreateComment adds a new comment to an issue. body is markdown; it's
 // converted to ADF before being sent, since Jira Cloud doesn't accept
 // markdown directly.
 func (c *LiveClient) CreateComment(ctx context.Context, issueIDOrKey, body string) (*Comment, error) {
+	return c.CreateCommentWithProperties(ctx, issueIDOrKey, body, nil)
+}
+
+// CreateCommentWithProperties adds a new comment to an issue with
+// optional entity properties. body is markdown; it's converted to ADF
+// before being sent, since Jira Cloud doesn't accept markdown directly.
+// Properties are stored alongside the comment and are invisible in the
+// Jira UI; they are used for sticky-comment marker storage.
+func (c *LiveClient) CreateCommentWithProperties(ctx context.Context, issueIDOrKey, body string, properties []CommentProperty) (*Comment, error) {
 	adf, err := MarkdownToADF(body)
 	if err != nil {
 		return nil, fmt.Errorf("convert comment body to ADF: %w", err)
 	}
-	reqBody, err := json.Marshal(commentRequest{Body: adf})
+	req := commentRequest{Body: adf, Properties: properties}
+	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal create comment request: %w", err)
 	}
@@ -508,6 +521,44 @@ func (c *LiveClient) UpdateComment(ctx context.Context, issueIDOrKey, commentID,
 	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/comment/" + url.PathEscape(commentID)
 	if err := c.do(ctx, http.MethodPut, path, bytes.NewReader(reqBody), nil); err != nil {
 		return fmt.Errorf("update comment %s on %s: %w", commentID, issueIDOrKey, err)
+	}
+	return nil
+}
+
+// GetCommentProperty retrieves the value of an entity property on a
+// comment. Returns forge.ErrNotFound (wrapped) if the property does not
+// exist.
+func (c *LiveClient) GetCommentProperty(ctx context.Context, issueIDOrKey, commentID, propertyKey string) (json.RawMessage, error) {
+	path := fmt.Sprintf("/comment/%s/properties/%s",
+		url.PathEscape(commentID), url.PathEscape(propertyKey))
+	var prop EntityPropertyValue
+	if err := c.do(ctx, http.MethodGet, path, nil, &prop); err != nil {
+		return nil, fmt.Errorf("get comment property %s on comment %s of %s: %w", propertyKey, commentID, issueIDOrKey, err)
+	}
+	return prop.Value, nil
+}
+
+// SetCommentProperty sets (creates or updates) an entity property on a
+// comment. Used to store sticky-comment markers in a location invisible
+// to Jira users.
+func (c *LiveClient) SetCommentProperty(ctx context.Context, issueIDOrKey, commentID, propertyKey string, value any) error {
+	path := fmt.Sprintf("/comment/%s/properties/%s",
+		url.PathEscape(commentID), url.PathEscape(propertyKey))
+	body, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal comment property value: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPut, path, bytes.NewReader(body), nil); err != nil {
+		return fmt.Errorf("set comment property %s on comment %s of %s: %w", propertyKey, commentID, issueIDOrKey, err)
+	}
+	return nil
+}
+
+// DeleteComment removes a comment by ID from the given issue.
+func (c *LiveClient) DeleteComment(ctx context.Context, issueIDOrKey, commentID string) error {
+	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/comment/" + url.PathEscape(commentID)
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil); err != nil {
+		return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, err)
 	}
 	return nil
 }

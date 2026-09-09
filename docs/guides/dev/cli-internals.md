@@ -25,12 +25,26 @@ fullsend
 │   └── token                                # Mint a short-lived token via OIDC
 │       ├── --role <name>                    #   Agent role (triage, coder, review)
 │       ├── --repos <list>                   #   Comma-separated repo names
+│       ├── --level <name>                   #   Privilege level (read or write; default: write)
 │       ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │       └── --audience <string>              #   OIDC audience (default: fullsend-mint)
-├── inference                                # GCP: inference WIF management
+├── inference                                # Inference credentials (GCP Vertex, OpenAI)
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
-│   └── status       <org|owner/repo>        # Check WIF health, print config
+│   ├── status       <org|owner/repo>        # Check WIF health, print config
+│   └── openai                               # OpenAI WIF enrolment (GPT on pi or codex)
+│       ├── request  <owner/repo>[,...]      # Generate the provider/mapping request for an admin
+│       │   ├── --audience <string>          #   Provider audience (default: fullsend://<owner>)
+│       │   ├── --project <name|id>          #   OpenAI project to bill the runs to
+│       │   ├── --service-account <id>       #   Map an existing service account
+│       │   ├── --ref <ref>                  #   Tighten to a ref: emits this ref + refs/pull/*
+│       │   ├── --format <json|md>           #   Document format
+│       │   └── --out <file>                 #   Write to a file instead of stdout
+│       ├── import   [reply.json]            # Record the admin's reply in config.yaml
+│       │   ├── --audience/--identity-provider-id/--service-account-id
+│       │   ├── --variables                  #   Set FULLSEND_OPENAI_* repo variables instead
+│       │   └── --repo <owner/repo>          #   Select from a multi-repo reply; target for --variables
+│       └── status   <owner/repo>            # Resolved identifiers, and the exchange inside Actions
 ├── github                                   # GitHub-only configuration
 │   ├── setup        <org|owner/repo>        # Configure fullsend (no GCP needed)
 │   ├── enroll       <org> [repo...]         # Enable repos for agent workflows
@@ -55,12 +69,13 @@ fullsend
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   ├── --inference-project-number <num> #   Numeric GCP project number for WIF (auto-derived; install-time only)
+│   │   ├── --inference-wif-provider <path>  #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
 │   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
-│   │   └── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   └── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -120,7 +135,9 @@ fullsend
 │       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │       ├── --number <int>                   #     Issue number
-│       └── --marker <string>                #     Hidden HTML marker for idempotent updates
+│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 ├── post-review                              # Post PR/MR review comments to GitHub or GitLab
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -129,7 +146,9 @@ fullsend
 │   ├── --result <path>                      #   Path to review result file, or '-' for stdin
 │   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN or $GITLAB_TOKEN)
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
-│   └── --dry-run                            #   Print what would be posted without API calls
+│   ├── --dry-run                            #   Print what would be posted without API calls
+│   ├── --keep-history                       #   Append previous content as collapsed history (default true)
+│   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
 │   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (or --output-dir)
@@ -140,8 +159,8 @@ fullsend
 │   ├── --offline                            #   Reject network fetches (local manifest only)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
 └── reconcile-status                         # Finalize orphaned status comments
-    ├── --repo <owner/repo>                  #   Repository in owner/repo format
-    ├── --number <int>                       #   Issue/PR number
+    ├── --repo <owner/repo>                  #   Repository in owner/repo format (required for GitHub/GitLab)
+    ├── --number <int>                       #   Issue/PR number (required for GitHub/GitLab; derived from entity.key for Jira)
     ├── --run-id <string>                    #   Workflow run ID (marker key)
     ├── --run-url <url>                      #   Workflow run URL (optional)
     ├── --sha <string>                       #   Commit SHA (optional)
@@ -149,7 +168,7 @@ fullsend
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
     ├── --role <string>                      #   Agent role for minting (required with --mint-url)
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
-    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection)
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
     └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
 ```
@@ -422,7 +441,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
-│  │  └── sources .env.d/*.env files          │                   │
+│  │  ├── sources .env.d/*.env files          │                   │
+│  │  └── sources .fullsend/iteration.env     │                   │
+│  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
+│  │       FULLSEND_ITERATION_DEADLINE,       │                   │
+│  │       rewritten before every iteration)  │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
@@ -468,10 +491,17 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                                          │                   │
 │  │ Phase 1 — inline validation:             │                   │
 │  │ for i := 1; i <= max_iterations; i++ {   │                   │
-│  │   run agent → extract output             │                   │
+│  │   if i > 1: ClearIterationArtifacts      │                   │
+│  │     (sweep stray processes, clear output)│                   │
+│  │   write .fullsend/iteration.env deadline │                   │
+│  │   run agent                              │                   │
+│  │   if killed at timeout: sweep stray      │                   │
+│  │     processes (agent still runs, #7042)  │                   │
+│  │   extract output                         │                   │
 │  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
 │  │   if pass → break (early exit)           │                   │
+│  │   if killed at timeout → break (#7042)   │                   │
 │  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
 │  │                                          │                   │
@@ -525,6 +555,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 ```go
 SandboxWorkspace       = "/sandbox/workspace"
 SandboxClaudeConfig    = "/sandbox/claude-config"
+SandboxCodexConfig     = "/sandbox/codex-config"
 SandboxPiConfig        = "/sandbox/pi-config"
 SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
@@ -682,7 +713,8 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/root.go` | ~34 | CLI entry point, command registration |
 | `internal/cli/admin.go` | ~2415 | Install/uninstall/analyze/enable/disable |
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
-| `internal/cli/inference.go` | ~408 | Inference WIF provision/status |
+| `internal/cli/inference.go` | ~408 | Inference WIF provision/status (GCP) |
+| `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |

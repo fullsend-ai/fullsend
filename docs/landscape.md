@@ -91,6 +91,27 @@ Launched November 2025. The closest thing in the industry to autonomous merging.
 
 **Relevance to fullsend:** GitLab is solving the *mechanical* merge problem (conflict resolution, CI gating) but not the *judgment* problem (should this change exist?). Our problem is harder — we need the judgment layer. But GitLab's approach to adhering to existing branch protection rules while automating within them is a pattern worth studying.
 
+### OpenClaw
+
+[Website](https://openclaw.ai/) | [GitHub](https://github.com/openclaw/openclaw)
+
+An open-source personal AI assistant framework that runs on your own hardware and connects to 20+ messaging channels (Discord, Slack, Telegram, WhatsApp, iMessage, and others), plus native apps for macOS, iOS, Android, Windows, and Linux. Originally published as Warelay in November 2025, renamed to OpenClaw in January 2026. The fastest-growing open-source project in GitHub history: ~389K stars by mid-2026, surpassing React's 10-year record in roughly 60 days. Developed by the OpenClaw Foundation, an independent 501(c)(3), with infrastructure support from GitHub, NVIDIA, Vercel, and others.
+
+**Architecture:** A long-running Node.js service organized around a local-first Gateway — a WebSocket control plane managing sessions, presence, cron jobs, and webhooks through a single local port. A multi-channel inbox routes inbound messages to isolated agent workspaces, each with its own session history and tools. Skills are compiled to WebAssembly modules for sandboxed execution. Agents maintain persistent memory via a directed graph of memory nodes, allowing context to survive across sessions without context-window overflow. Model-agnostic: supports Anthropic, OpenAI, local models, and others.
+
+**Multi-agent model:** Multiple specialized agents can run within a single deployment, isolated by workspace (a security agent does not share tools with a help desk agent). This is *operational* isolation — reducing blast radius — not *trust* isolation; agents share the host machine's credentials and file system. The agent runtime uses a continuous ReAct (Reason + Act) loop, not a one-shot pipeline.
+
+**Security track record:** Rapid growth brought significant security challenges. The ClawHavoc supply-chain attack (January 2026) planted malware in hundreds of skills in the ClawHub registry, including credential-stealing payloads that persisted by writing to the agent's memory files. Between January and April 2026, 470 security advisories were filed across three disclosure waves. The project responded with mandatory cryptographic skill verification (v2026.4.12) and ongoing hardening. Academic analyses ([arXiv](https://arxiv.org/html/2603.12644v1)) have noted that self-hosted deployment inherits the host machine's full trust surface, making credential isolation a persistent architectural challenge.
+
+**Relevance to fullsend:** OpenClaw and fullsend occupy fundamentally different niches despite both involving AI agents. OpenClaw is a *personal assistant* platform — it connects LLMs to messaging channels and local tools so an individual user can automate tasks across their digital life. Fullsend is a *forge-native autonomous development* system — it connects agents to Git forge events (PRs, issues, merges) so an organization can automate software delivery with structured authority. The architectural differences follow from this purpose gap:
+
+- *Authority model:* OpenClaw agents act with the permissions of the host machine's user account — "whatever the OS account can do." Fullsend agents act through per-role forge identities constrained by CODEOWNERS, branch protection, and required checks, with explicit intent-authorization tiers.
+- *Coordination:* OpenClaw uses a centralized Gateway as the control plane. Fullsend uses the repository itself as coordinator — branch protection rules, status checks, and PR state drive agent behavior without a separate coordination service.
+- *Review and merge:* OpenClaw has no concept of code review, merge authority, or CI integration — it is not a software development tool. Fullsend's entire problem domain is the judgment layer: deciding whether agent-produced code should ship, with zero-trust review decomposition across independent sub-agents.
+- *Security posture:* OpenClaw inherits host-machine trust and has faced supply-chain attacks on its skill registry. Fullsend isolates agents in ephemeral sandboxes with controlled egress, credential isolation via L7 REST proxies, and pre-merge threat detection — treating the agent itself as an untrusted workload.
+
+OpenClaw's scale (389K+ stars, 3M+ active users) validates broad interest in AI agent frameworks, and its multi-channel routing and persistent memory are well-executed for the personal-assistant use case. But its architectural decisions — local-first deployment, host-trust inheritance, messaging-channel orientation — serve a different problem than forge-native autonomous merge. The two projects share terminology (agents, tools, skills, memory) while operating with incompatible trust models.
+
 ### Others
 
 - **Cursor Bugbot** — AI code review in the Cursor IDE and GitHub. Optimizes for catching hard-to-find bugs with low false positive rate.
@@ -166,6 +187,29 @@ Fullsend has design commitments that Forge does not appear to cover:
 
 **Cautions:** Jira label approval is too weak for high-intent-authorization-tier intent. A workflow engine can dispatch work, but should not become merge authority. Forge's Podman runner is a productivity sandbox, not a full zero-trust boundary. A single AI review stage is not enough for autonomous merge confidence. CI skip mechanisms need permission checks, policy, and auditability from day one.
 
+### OpenHands
+
+[GitHub](https://github.com/all-hands-ai/openhands) | [Website](https://www.all-hands.dev/) | [Docs](https://docs.all-hands.dev/)
+
+A model-agnostic AI coding agent platform (70k+ stars, $18.8M Series A from Oss Capital) that can take GitHub issues and produce draft PRs. OpenHands provides a web interface, a CLI, and a GitHub Actions resolver for autonomous issue-to-PR workflows. It also has a PR review capability. The platform supports multiple LLM backends (Claude, GPT, Gemini, local models via Ollama).
+
+**Architecture:** OpenHands runs agents inside sandboxed Docker containers with a runtime that provides shell access, a code editor, and a web browser. The agent operates in an event-driven loop — it receives an observation (file content, command output, browser state), plans an action, executes it, and repeats. The event stream is the primary audit surface. The GitHub Actions resolver packages this loop for CI: given an issue, it clones the repo into a container, runs the agent, and opens a PR with the result. OpenHands has since pivoted toward an "Agent Canvas" model — a self-hosted developer control center that can run external coding agents (Claude Code, Codex, Gemini) via the Agent Client Protocol (ACP). This makes the platform agent-agnostic at the coding-agent layer, though adoption still requires the OpenHands Agent Server for orchestration.
+
+**Licensing:** The entire project is MIT-licensed. Previously, the enterprise directory (`enterprise/`) was licensed under PolyForm Free Trial, restricting self-hosted cloud deployment via Kubernetes to paid licenses. That directory has since been removed and the project relicensed fully to MIT, eliminating the licensing constraint identified in earlier evaluations.
+
+**Security history:** OpenHands has disclosed prompt injection vulnerabilities. In 2025, security researcher Johann Rehberger demonstrated zero-click token exfiltration and remote code execution via injection in issue text processed by the agent. OpenHands describes its LLM security analyzer as "a soft block, not a hard one" — it flags suspicious content but does not hard-reject it. The vulnerabilities are representative of the broader class of injection attacks that any agent processing untrusted user input faces; see [security-threat-model.md](problems/security-threat-model.md) for the fullsend threat model and why external injection is the highest-priority threat.
+
+**What it doesn't address:** No zero-trust review decomposition — the agent trusts its own output without independent verification. No formal intent verification or intent-authorization tiering. No governance framework for controlling agent policies at the org level. No merge authority — PRs are opened as drafts for human review. The security analyzer is a single-pass check, not a layered defense.
+
+**Relevance to fullsend:** OpenHands' problem space overlaps with fullsend's on code generation and agent sandboxing, but it does not address the problems fullsend considers hard: review decomposition, governance, trust boundaries, and prompt injection defense. Four specific observations:
+
+- *Sandboxing model.* OpenHands' Docker-based sandbox provides process isolation and filesystem separation but does not implement credential isolation, egress filtering, or the kind of defense-in-depth that fullsend's [agent-infrastructure.md](problems/agent-infrastructure.md) and the credential isolation design ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)) require. The sandbox is a productivity boundary, not a zero-trust boundary.
+- *Injection surface.* The disclosed injection vulnerabilities confirm that agents processing untrusted issue text are vulnerable to the attacks fullsend's threat model prioritizes. OpenHands' "soft block" analyzer is not sufficient for autonomous merge — where a successful injection could land malicious code in production without human review. This is a concrete data point for the fullsend position that injection defense must be layered and that review agents must treat code-agent output as untrusted.
+- *Event stream as audit trail.* The resolver produces a structured event stream that could serve as an observability substrate, relevant to [operational-observability.md](problems/operational-observability.md). Whether it meets enterprise audit trail requirements is an open question — see [#260](https://github.com/fullsend-ai/fullsend/issues/260) for planned experiments evaluating the event stream against fullsend's observability needs.
+- *Orchestration vs. agent runtime.* OpenHands' ACP support means the platform is no longer locked to its own coding agent — it can run Claude Code, Codex, or Gemini as ACP subprocesses. This partially mitigates the over-specialization concern (depending on a single agent runtime means chasing innovations in other projects). However, adopting Agent Canvas still requires the OpenHands Agent Server for orchestration, creating a dependency on their orchestration layer even when the coding agent itself is external. The trade-off is agent-agnosticism at the coding layer in exchange for coupling at the orchestration layer.
+
+Concrete experiments against the resolver are tracked in [#260](https://github.com/fullsend-ai/fullsend/issues/260), covering prompt injection red-teaming, event stream audit evaluation, review quality scoring, and tiered intent experiments.
+
 ### Stripe Minions
 
 [Architecture blog post](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents) | [Part 2](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2)
@@ -186,7 +230,7 @@ One-shot coding agents that merge over 1,300 pull requests per week at Stripe. A
 
 [Gas Town GitHub](https://github.com/steveyegge/gastown) | [Gas City GitHub](https://github.com/gastownhall/gascity) | [Architecture overview](https://cloudnativenow.com/features/gas-town-what-kubernetes-for-ai-coding-agents-actually-looks-like/)
 
-Steve Yegge's multi-agent orchestration system, evolved from Gas Town (the original monolith) to Gas City (an orchestration-builder SDK, v0.13, Go, 1,600+ commits). Gas Town coordinates 20-30 parallel coding agents working on feature branches simultaneously. Gas City extracts the reusable infrastructure into composable primitives.
+Steve Yegge's multi-agent orchestration system, evolved from Gas Town (the original monolith) to Gas City (an orchestration-builder SDK, v1.4, Go, 5,900+ commits as of September 2026). Gas Town coordinates 20-30 parallel coding agents working on feature branches simultaneously. Gas City extracts the reusable infrastructure into composable primitives.
 
 **Architecture:** Gas Town uses a "Mayor" agent as coordinator, dispatching work to parallel coding agents ("Polecats"). A "Refinery" manages the merge queue. Git is the persistence layer — if the system crashes, it reads git history and resumes.
 
@@ -210,6 +254,30 @@ Gas City refactors this into 5 irreducible primitives (agent protocol, bead stor
 - *Exec providers across all seams* (beads, events, runtime, mail each accept script-backed implementations) make the system extensible without code changes — a pattern relevant to [agent infrastructure](problems/agent-infrastructure.md).
 
 **Vibe Maintainer workflow:** Yegge's ["Vibe Maintainer" (2026-03-31)](https://steve-yegge.medium.com/vibe-maintainer-a2273a841040) describes the maintainer-side problem: handling ~50 community PRs/day across Beads and Gas Town, most AI-generated by external contributors. His approach uses worker agents to triage and salvage incoming PRs rather than gatekeeping quality — he calls this "optimizing for community throughput." This is agents used defensively (processing incoming contributions), complementing fullsend's focus on agents used offensively (generating and merging internal contributions). See [contribution-volume.md](problems/contribution-volume.md) for the broader problem.
+
+### Goosetown
+
+[GitHub](https://github.com/aaif-goose/goosetown) | [Goose CLI](https://github.com/block/goose)
+
+A multi-agent orchestration layer built on Block's [Goose](https://github.com/block/goose) CLI (54k+ stars), explicitly inspired by Gas Town. Goosetown coordinates "flocks" of AI agents — researchers, writers, workers, reviewers — through an orchestrator/delegate pattern with parallel execution. JavaScript/Python, Apache 2.0, early-stage (149 stars, 7 commits as of September 2026).
+
+**Architecture:** An orchestrator session decomposes a request into phases (research → build → review) and dispatches parallel delegates. Twelve role-specific skills ship out of the box: an orchestrator, eight specialized researchers (arxiv, beads, GitHub, Jira, local files, Reddit, Slack, Stack Overflow), a reviewer, a worker, and a writer. Each delegate receives its role-specific skill at spawn time. Communication happens through two mechanisms:
+
+- **gtwall (Town Wall):** A broadcast channel backed by a position-tracked log file. Per-session walls allow multiple Goosetown instances to run simultaneously without interference. Delegates post discoveries, warnings, and progress; siblings read the wall to avoid duplicate work and conflicting edits. A tiered wrap-up protocol (5-min warning → 60-sec warning → force-cancel) gives delegates structured deadlines for completing and summarizing work.
+- **Telepathy:** Orchestrator → delegate push messages for urgent paging. The orchestrator writes to a shared file; delegates check their `<info-msg>` for pings. Scoped addressing (`@all`, `@name`) lets the orchestrator page specific delegates or the entire flock.
+
+A real-time dashboard (Python/uv, per-instance, port-isolated) visualizes flock activity by querying Goose's session database and the wall file. Knowledge management follows a structured local-first pattern: GUIDES/, PLANS/, RESEARCH/, and WORK_LOGS/ directories with YAML frontmatter, canonical tags, supersession tracking, and a catalog index.
+
+**Crossfire review:** The review phase uses "crossfire" — multi-model adversarial QA where multiple reviewer delegates (potentially backed by different LLM providers) independently evaluate the work. This is closer to an ensemble approach than a single-agent review pass.
+
+**Relationship to Gas Town:** Goosetown acknowledges Gas Town as direct inspiration but differs in implementation approach. Where Gas City enforces Zero Framework Cognition (no judgment in Go, no skills system, no MCP), Goosetown embraces a skills-and-tools model — twelve predefined skill files loaded into delegates, with Goose's MCP extension system and tool ecosystem available. Where Gas City builds reusable SDK primitives (bead store, event bus, agent protocol), Goosetown is a ready-to-use project scaffold: clone, run `./goose`, describe what to build. The trade-off is flexibility vs. immediacy — Gas City targets framework builders; Goosetown targets practitioners who want multi-agent coordination today.
+
+**Relevance to fullsend:** Three observations and one gap.
+
+- *Research-first phasing* validates the insight that codebase context gathering is a discrete, parallelizable phase that should complete before implementation begins — relevant to [codebase-context.md](problems/codebase-context.md). The eight specialized researcher roles (each querying a different source: GitHub, Jira, arxiv, local files, etc.) are a concrete decomposition of the context-gathering problem.
+- *gtwall as coordination primitive* is an interesting middle ground between fullsend's "repo as coordinator" (no inter-agent communication channel) and Gas City's full event bus. The broadcast-and-read-position model is simple enough to reason about but rich enough to prevent duplicate work across parallel delegates. The tiered wrap-up protocol is a practical answer to the session-timeout problem — delegates get structured notice rather than hard kills.
+- *Crossfire review* aligns with fullsend's zero-trust review decomposition more than most tools in this landscape — multiple independent reviewers evaluating the same work product. However, Goosetown's reviewers operate cooperatively within the same orchestrator session and trust each other's outputs, unlike fullsend's independent review sub-agents that treat each other's output as untrusted.
+- *The gap:* No security threat model, no discussion of prompt injection (delegate skills are loaded from local files, not validated against tampering), no merge authority (the orchestrator produces artifacts but does not merge), no governance framework, and no autonomy spectrum. The orchestrator is a cognitive coordinator — it makes judgment calls about phasing, delegation, and synthesis — which is the opposite of Gas City's ZFC discipline and orthogonal to fullsend's repo-as-coordinator position.
 
 ### Unbound Force
 
@@ -288,6 +356,32 @@ The agent harness has five layers: interface (Slack, GitHub, iOS, web, IDE), orc
 - *Stacked PRs as a native primitive* validates Graphite's insight (already noted [above](#graphite)) that smaller, focused changes are more tractable for agent review. Origin bakes this into the forge itself rather than layering it on top of GitHub — a structural advantage for agent-scale workflows where 10–20 agents may be producing PRs in parallel.
 - *The structural contrast* is the authority model. Origin is a productivity platform: agents do work, humans approve it. Fullsend is pursuing autonomous merge — agents doing work *and* making the judgment call about whether the work should ship. Origin's Auto-review dial moves autonomy along a spectrum within the IDE, but the spectrum ends at "create a PR." Fullsend's autonomy spectrum extends past the PR to the merge decision, which requires the zero-trust review decomposition, intent authorization, and governance layers that Origin does not attempt.
 
+### Vibe Kanban
+
+[GitHub](https://github.com/BloopAI/vibe-kanban) | [Website](https://vibekanban.com/)
+
+An open-source (Apache 2.0) kanban board for orchestrating AI coding agents, built by BloopAI. 26k+ GitHub stars, 30k+ users before the company shut down in April 2026. The core thesis: with agents now writing the code, the human bottleneck has shifted from implementation to planning and review — so the tool optimizes those two activities by giving each agent an isolated workspace behind a kanban-style task board.
+
+**Architecture:** Rust backend (Axum) with a React frontend, distributed as a single npm package (`npx vibe-kanban`). The backend orchestrates workspace lifecycle, git operations (via the `git2` crate), WebSocket event streaming (SQLite-backed), agent process management, and GitHub PR status polling. The frontend provides kanban issue management, inline diff review, and one-click PR creation.
+
+**Git worktree isolation:** The defining feature. Each kanban issue becomes a workspace, and each workspace is a git worktree — a separate working directory on a dedicated branch, sharing the underlying `.git` repository data. Five agents can work in parallel without file conflicts. A dedicated port-management daemon (`dev-manager-mcp`) assigns each workspace a free port for its dev server, so isolation extends to the network layer. When work is complete, the system rebases onto main, merges, and cleans up the worktree.
+
+**MCP dual role:** Vibe Kanban implements the [Model Context Protocol](https://modelcontextprotocol.io/introduction) in both directions. As an MCP *client*, it connects to external MCP servers (databases, search APIs) and exposes those tools to agents in each workspace. As an MCP *server*, it exposes the kanban board itself — external agents can create tasks, move cards, and read board status programmatically. A planning agent can decompose a feature into subtasks and populate the board without human intervention, then downstream agents pick up the generated cards.
+
+**Agent-agnostic orchestration:** The agent abstraction is deliberately thin — Vibe Kanban does not wrap or proxy agent commands. It assumes the developer has authenticated with their preferred agent and provides a terminal where the agent runs normally. Supports 10+ backends: Claude Code, Codex, Gemini CLI, GitHub Copilot, Amp, Cursor, OpenCode, Droid, CCR, and Qwen Code. This makes it an orchestration layer, not an agent framework.
+
+**Review workflow:** Mirrors pull request reviews. When an agent completes a task, the built-in diff tool displays changes. The developer can leave inline comments that feed directly back to the agent (the agent sees the comment and revises), then approve and merge or create a GitHub PR with an AI-generated description.
+
+**Current status:** BloopAI shut down in April 2026, citing inability to find a viable business model despite strong adoption ("the vast majority are free users"). The project transitioned to community maintenance under Apache 2.0. Cloud features were removed; the tool now runs on a fully local architecture. Active forks exist (e.g., [kanvibe](https://github.com/GroupLang/kanvibe)). The BloopAI shutdown is itself a data point about the viability of developer-facing agent tooling as a standalone product — the tool was popular but could not monetize.
+
+**Relevance to fullsend:** Vibe Kanban occupies a different niche from the CI-driven and platform-native systems elsewhere in this landscape. It is a developer productivity tool, not an autonomous merge system. Three patterns and two structural observations are relevant:
+
+- *Worktree-per-task isolation* is the most practical implementation of parallel agent execution in this survey. Each agent gets its own branch, directory, and port — the same isolation primitive that [agent-infrastructure.md](problems/agent-infrastructure.md) identifies as necessary for parallel agent work. Fullsend's sandbox model achieves stronger isolation (ephemeral containers with credential separation), but the worktree pattern is a lightweight alternative for trusted-environment scenarios and validates the requirement.
+- *MCP as a coordination API* is a concrete instance of using a standard protocol for inter-agent coordination, relevant to the discussion in [agent-architecture.md](problems/agent-architecture.md#how-agents-communicate). Instead of agents coordinating through git state or issue labels, they interact with the board programmatically — a planning agent creates cards, a coding agent picks them up, and the board state is the shared medium. This is a side-channel coordination pattern (agents talk through the board, not through the repository), which fullsend's repo-as-coordinator position deliberately avoids. The contrast is instructive: MCP coordination is lower-friction but harder to audit than repo-visible coordination.
+- *Inline review feedback loop* — the developer reviews diffs and leaves comments that the agent sees and acts on — is a concrete implementation of the review-feedback cycle that [production-feedback.md](problems/production-feedback.md) discusses. Vibe Kanban's version is human-in-the-loop (the developer leaves the comment), but the pattern of structured feedback flowing back to the implementing agent maps to fullsend's review loop, where the review agent's findings flow back to the code agent for revision.
+- *The shutdown as signal.* BloopAI's failure to monetize a popular agent orchestration tool suggests that developer-facing agent tooling may commoditize quickly — the value gets absorbed by the agents themselves (Claude Code, Codex) or by the platforms (GitHub, Cursor). This is relevant to fullsend's positioning: fullsend's value proposition is the autonomous merge judgment layer, not the agent orchestration surface, which aligns with the "what nobody is doing" gaps at the end of this document.
+- *No trust model.* Vibe Kanban assumes cooperative agents and a trusted developer. There is no inter-agent trust boundary, no injection defense, no intent verification, and no merge authority beyond the developer clicking "merge." This places it firmly on the human-supervised end of the [autonomy spectrum](problems/autonomy-spectrum.md) — useful for productivity but not a path toward autonomous merge confidence.
+
 ### Ambient Code Platform (ACP)
 
 [GitHub](https://github.com/ambient-code/platform)
@@ -355,6 +449,69 @@ Repository automation from GitHub Next and Microsoft Research, running coding ag
 Its integrity filtering system is particularly interesting — it implements a form of input trust tiering (`merged > approved > unapproved > none`) that addresses a subset of what fullsend explores in [autonomy-spectrum.md](problems/autonomy-spectrum.md), though applied to content visibility rather than merge authority. The content sanitization pipeline is a concrete implementation of pre-LLM injection defense, complementing the post-LLM threat detection scan. The orchestration pattern (`dispatch-workflow` / `call-workflow`) provides native multi-workflow coordination that fullsend builds custom infrastructure for.
 
 The comparison raises a structural question for fullsend: which problems in our implementation are inherent to the goal of autonomous development, and which are artifacts of building externally to the platform we're automating? See [platform-nativeness.md](problems/platform-nativeness.md) for the full analysis.
+
+## Security frameworks and threat taxonomies
+
+### SAFE-MCP
+
+[GitHub](https://github.com/safe-agentic-framework/safe-mcp) | [Website](https://www.safemcp.org/) | [Parent project](https://www.secureagenticframework.org/)
+
+A **threat knowledge framework** — not a runtime security tool — that catalogs adversary tactics, techniques, and procedures (TTPs) targeting MCP implementations and AI agent ecosystems. Initiated by [Astha.ai](https://www.astha.ai/) and now governed under the **Linux Foundation** and the **OpenID Foundation** via the OpenSSF SIG-SAFE-MCP working group, with contributions from engineers at Meta, Microsoft, Google, Red Hat, Intel, eBay, Okta, American Express, and others. Think of it as "MITRE ATT&CK for MCP."
+
+**Structure:** The framework defines **14 tactic categories** (mirroring ATT&CK: Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, Exfiltration, Impact, Command and Control, Resource Development, Reconnaissance) and **80+ documented techniques** (SAFE-T identifiers). Each technique includes severity ratings, detection strategies, and compliance crosswalks to NIST SP 800-53 and the EU AI Act. Mitigations (SAFE-M identifiers) are categorized as Architectural, Preventive, or Detective.
+
+**Notable techniques:**
+
+- **SAFE-T1001 — Tool Poisoning Attack.** Malicious instructions embedded in MCP tool descriptions that are invisible to users but parsed by LLMs. The MCPTox benchmark measured a 36.5% average attack success rate across 20 LLMs. Sub-techniques include full-schema poisoning and cross-tool poisoning.
+- **SAFE-T1102 — Prompt Injection.** Multi-vector exploitation of LLMs' inability to distinguish instructions from data across tool outputs, file contents, database queries, and API responses.
+- **SAFE-T1201 — MCP Rug Pull Attack.** Legitimate-appearing tools that undergo delayed malicious modification after gaining user trust, exploiting MCP's dynamic tool definitions.
+- **SAFE-T1002 — Supply Chain Compromise.** Distribution of backdoored MCP server packages through compromised repositories.
+
+**Architecture (three pillars):**
+
+1. **Identification and Intent** — OpenID Connect–backed identity, scoped tokens, least-privilege access.
+2. **Screening** — detection of prompt manipulation, suspicious tool behavior, poisoned responses.
+3. **Policy Enforcement** — context-aware authorization with real-time rule evaluation.
+
+The framework separates a **Control Plane** (signed policy distribution, authorization, sampling budgets) from a **Data Plane** (runtime enforcement of tool execution and resource access). All external inputs — tool descriptions, API responses — are treated as pure data in the Data Plane.
+
+**Notable mitigations:**
+
+- **SAFE-M-1 — Control/Data Flow Separation.** Architectural defense that separates trusted control flow from untrusted data flow. References Google's CaMeL system (77% task completion with provable security guarantees).
+- **SAFE-M-7 — Content Rendering Parity.** Ensures what users see matches what the LLM processes — addressing the same class of invisible-payload attacks as [steganographic injection](problems/security-threat-model.md#steganographic-injection-invisible-unicode-payloads), but framed as a general mitigation rather than a Unicode-specific defense.
+- **SAFE-M-21 — Output Context Isolation.** Delimiter-based separation preventing data interpretation as instructions.
+- **SAFE-M-23 — Tool Output Truncation.** Limiting output size to constrain injection surface area.
+
+**Mapping to fullsend's existing controls:**
+
+| SAFE-MCP concept | Fullsend equivalent | Coverage |
+|---|---|---|
+| SAFE-T1001 Tool Poisoning | [tool-call-risk-assessment.md](problems/tool-call-risk-assessment.md) (semantic risk beyond pattern matching) | Partial — fullsend identifies the gap between pattern matching and semantic understanding but has not shipped an LLM-as-judge pre-tool hook |
+| SAFE-T1102 Prompt Injection | [security-threat-model.md](problems/security-threat-model.md#threat-1-external-prompt-injection) (Threat 1, including steganographic variants) | Strong — fullsend's threat model covers visible injection, invisible Unicode payloads, indirect disclosure, and social pressure vectors |
+| SAFE-T1201 Rug Pull / dynamic tool modification | [mcp-config-drift.md](problems/mcp-config-drift.md) (Scenario 2: endpoint replacement, Approach 1: baseline and diff) | Partial — fullsend's mcp-config-drift.md addresses config-level endpoint replacement (Scenario 2), but SAFE-T1201 describes server-side behavioral changes (tools that modify their own definitions after gaining trust); Approach 1 explicitly acknowledges it "does not detect changes to what the MCP server *serves*" |
+| SAFE-T1002 Supply Chain Compromise | [security-threat-model.md](problems/security-threat-model.md#threat-4-supply-chain-attacks) (Threat 4, model-as-toolchain) | Strong — fullsend extends supply chain analysis beyond dependencies to the model itself as a Thompson-analog trust boundary |
+| Control/Data Plane separation | [ADR 0016](ADRs/0016-unidirectional-control-flow.md) (unidirectional control flow), [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) (credential isolation) | Strong — fullsend enforces this structurally: the harness (control plane) validates and constrains agent output (data plane) without the agent being able to influence the harness |
+| SAFE-M-1 Control/Data Flow Separation | [Cross-cutting principle 6 (immutable agent policy)](problems/security-threat-model.md#cross-cutting-security-principles), [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) (output schema enforcement) | Strong — fullsend's architecture enforces this at the sandbox boundary, not just as guidance |
+| Content Rendering Parity (SAFE-M-7) | [security-threat-model.md](problems/security-threat-model.md#steganographic-injection-invisible-unicode-payloads) (input sanitization for non-rendering Unicode) | Partial — fullsend addresses the Unicode-specific case but does not frame rendering parity as a general mitigation class |
+| 5-level privilege hierarchy | [intent-representation.md](problems/intent-representation.md) (intent authorization tiering) | Different framing — SAFE-MCP's levels (READ-ONLY through SYSTEM ADMIN) are static per-tool ACLs; fullsend's intent authorization tiers are per-change risk classifications that determine autonomy level |
+| Compliance crosswalks (NIST, EU AI Act) | Not addressed | Gap — fullsend has no explicit compliance mapping |
+
+**What SAFE-MCP offers that fullsend does not have:**
+
+- *A shared taxonomy for MCP threats.* Fullsend's [security-threat-model.md](problems/security-threat-model.md) is a thorough problem document, but it uses narrative descriptions rather than a structured, cross-referenceable taxonomy. SAFE-MCP's SAFE-T/SAFE-M identifier scheme gives security teams a common vocabulary for discussing and tracking MCP-specific threats.
+- *Compliance crosswalks.* Mapping specific attack techniques to NIST SP 800-53 controls and the EU AI Act is useful for organizations that need to demonstrate regulatory compliance of their agent infrastructure. Fullsend does not currently address regulatory framing.
+- *Quantified attack benchmarks.* The MCPTox benchmark's 36.5% average attack success rate across 20 LLMs provides an empirical baseline that fullsend's threat model does not have — its discussion of prompt injection effectiveness is qualitative ("fundamentally hard" to detect) rather than quantitative.
+
+**What fullsend covers that SAFE-MCP does not:**
+
+- *Zero-trust inter-agent composition.* SAFE-MCP catalogs threats to individual MCP sessions; fullsend's [Threat 5](problems/security-threat-model.md#threat-5-agent-to-agent-prompt-injection) addresses how agents in a multi-agent pipeline can compromise each other through their outputs.
+- *Autonomous merge authority.* SAFE-MCP's scope is the agent–tool boundary (what an agent can access and execute). Fullsend's security model extends past execution to the judgment layer: should the agent's output be merged without human review? This is the domain of [intent authorization tiering](problems/intent-representation.md), [review autonomy evidence](problems/review-autonomy-evidence.md), and [governance](problems/governance.md) — none of which SAFE-MCP attempts.
+- *Temporal attack patterns.* Fullsend's [temporal split-payload test poisoning](problems/security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning) and [agent drift](problems/security-threat-model.md#threat-3-agent-drift) address threats that unfold across multiple sessions and PRs. SAFE-MCP's per-session threat model does not capture multi-session attack chains.
+- *Agent self-report unreliability.* Fullsend's [cross-cutting concern](problems/security-threat-model.md#cross-cutting-concern-agent-self-report-unreliability) about agents misrepresenting their own actions is not in SAFE-MCP's scope.
+
+**Relevance to fullsend:** SAFE-MCP is a useful **reference taxonomy**, not an adoption candidate. Its structured TTP catalog validates fullsend's threat model coverage — the core MCP attack vectors (tool poisoning, prompt injection, rug pulls, supply chain compromise) are already identified and addressed in fullsend's problem documents, in most cases with deeper treatment. The main gaps it surfaces are presentation-level, not architectural: fullsend could benefit from a structured identifier scheme for its own threats (enabling cross-referencing and compliance mapping) and from quantitative benchmarks for attack success rates. The compliance crosswalks to NIST SP 800-53 and the EU AI Act are relevant for organizations using fullsend that need to demonstrate regulatory compliance — this is something fullsend's documentation does not currently address and could reference SAFE-MCP's crosswalks for.
+
+The framework does not address fullsend's core differentiators (zero-trust agent composition, autonomous merge judgment, intent authorization tiering), so it is complementary rather than competing. The recommended action is to reference SAFE-MCP's taxonomy when discussing MCP-specific threats in fullsend documentation, and to evaluate whether its compliance crosswalks are useful for the applied docs of organizations with regulatory requirements.
 
 ## Architectural patterns in the field
 

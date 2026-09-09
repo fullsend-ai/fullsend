@@ -38,7 +38,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
           COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
-          COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
@@ -93,11 +93,6 @@ jobs:
             has_repo_permission "${1:-}" "${2:-write}"
           }
 
-          # Helper: check if user is the PR/issue author
-          is_issue_author() {
-            [[ "${COMMENT_USER_LOGIN}" == "${ISSUE_USER_LOGIN}" ]]
-          }
-
           # Helper: check if a label is present in a comma-separated list.
           # Usage: has_label <name> [label_csv]  (defaults to ISSUE_LABELS)
           has_label() {
@@ -146,16 +141,9 @@ jobs:
                     fi
                   fi
                   ;;
-                /fs-retro|/fullsend)
+                /fs-retro)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}' | sed 's/[.,;:!?]*$//')"
-                      if [[ "${SECOND_WORD}" == "retro" ]]; then
-                        STAGE="retro"
-                      fi
-                    else
-                      STAGE="retro"
-                    fi
+                    STAGE="retro"
                   fi
                   ;;
                 /fs-prioritize)
@@ -164,17 +152,8 @@ jobs:
                   fi
                   ;;
                 *)
-                  # Intentionally weaker gate: allows external reporters to
-                  # re-trigger triage by providing clarification on needs-info
-                  # issues. Full write-permission check is not required here.
-                  if has_label "needs-info" && ! has_label "feature"; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
-                      if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
-                        STAGE="triage"
-                      fi
-                    fi
-                  fi
                   ;;
+
               esac
               ;;
 
@@ -226,7 +205,8 @@ jobs:
             pull_request_review)
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
-                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" ]]; then
+                SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" ]]; then
                   # Block fork PRs — fail closed if we cannot determine.
                   # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
@@ -332,7 +312,7 @@ jobs:
           TOKEN=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"role":"fullsend","repos":[".fullsend"]}' \
+            -d '{"role":"fullsend","level":"write","repos":[".fullsend"]}' \
             "${MINT_URL}/v1/token" | jq -r '.token')
           if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
             echo "::error::Token mint returned no token"

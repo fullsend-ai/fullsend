@@ -1,3 +1,7 @@
+---
+description: How the fullsend triage agent inspects new GitHub issues, assesses information sufficiency, asks clarifying questions, and produces a structured triage decision.
+---
+
 # Triage Agent
 
 ![Triage agent icon](icons/triage.png)
@@ -30,11 +34,11 @@ The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
 Triage also runs automatically when a new issue is opened or edited by a
-user with triage-level permission or higher, when the `ready-for-triage`
+user with triage-level permission or higher, and when the `ready-for-triage`
 label is applied to an issue (used by the [retro agent](retro.md) to
-route proposal issues into the triage pipeline), and when someone
-comments on an issue labeled `needs-info` (to re-evaluate after the
-reporter provides clarification).
+route proposal issues into the triage pipeline). To re-trigger triage
+after providing clarification on a `needs-info` issue, use the
+`/fs-triage` command.
 
 ## Control labels
 

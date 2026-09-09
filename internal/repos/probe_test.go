@@ -202,6 +202,10 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
 	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
 	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
@@ -219,6 +223,96 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 			if !c.Match {
 				t.Errorf("component %q not matched", c.Name)
 			}
+		}
+	}
+}
+
+func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	// No pipeline schedules — simulates a partial install.
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	if AllMatch(components) {
+		t.Error("expected AllMatch=false when schedules are missing")
+	}
+
+	slashFound, eventFound := false, false
+	for _, c := range components {
+		switch c.Name {
+		case "schedule:slash-poll":
+			slashFound = true
+			if c.Present {
+				t.Error("schedule:slash-poll should not be present")
+			}
+			if c.Match {
+				t.Error("schedule:slash-poll should not match")
+			}
+		case "schedule:event-poll":
+			eventFound = true
+			if c.Present {
+				t.Error("schedule:event-poll should not be present")
+			}
+			if c.Match {
+				t.Error("schedule:event-poll should not match")
+			}
+		}
+	}
+	if !slashFound {
+		t.Error("schedule:slash-poll component not found in probe results")
+	}
+	if !eventFound {
+		t.Error("schedule:event-poll component not found in probe results")
+	}
+}
+
+func TestProbeComponents_GitLab_ScheduleCheckError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Errors["ListPipelineSchedules"] = fmt.Errorf("API error")
+
+	_, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err == nil {
+		t.Fatal("expected error from schedule check")
+	}
+}
+
+func TestProbeComponents_GitHub_NoScheduleCheck(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+
+	for _, c := range components {
+		if c.Name == "schedule:slash-poll" || c.Name == "schedule:event-poll" {
+			t.Errorf("GitHub should not check pipeline schedules, found %q", c.Name)
 		}
 	}
 }

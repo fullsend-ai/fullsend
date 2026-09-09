@@ -321,8 +321,9 @@ jobs:
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
           REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and (.user.login == \"${REVIEW_BOT}\" or .user.login == \"${SHARED_REVIEW_BOT}\"))] | last | .body // \"\"" \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
@@ -355,6 +356,9 @@ jobs:
           FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           FIX_REPO_FULL_NAME: ${{ inputs.source_repo }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, FIX_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent

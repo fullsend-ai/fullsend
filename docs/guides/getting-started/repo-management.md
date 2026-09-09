@@ -149,8 +149,8 @@ Install runs in two phases:
 2. **Convergence** — every repo flows through a single probe → diff →
    apply pipeline. New repos are fully provisioned (scaffold files,
    variables, secrets). Already-installed repos are checked for
-   component drift (workflow, thin callers, variables, secrets),
-   scaffold content drift, and scaffold ref drift. Missing or drifted
+   component drift (workflow, thin callers, variables, secrets,
+   pipeline schedules), scaffold content drift, and scaffold ref drift. Missing or drifted
    components are repaired automatically; ref updates are committed as
    PRs (or direct pushes with `--direct`).
 
@@ -212,8 +212,8 @@ fullsend repos status -f repos.yaml --json
 ### Detecting and reconciling configuration drift
 
 Run `repos install` to detect and fix component drift (workflow, thin
-callers, variables, secrets), scaffold ref drift, and scaffold content
-drift across all manifest repos:
+callers, variables, secrets, pipeline schedules), scaffold ref drift,
+and scaffold content drift across all manifest repos:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -226,7 +226,7 @@ fullsend repos install -f repos.yaml --dry-run
 ```
 
 The convergence phase checks all components (workflow, thin callers,
-variables, secrets), scaffold content drift, and scaffold workflow refs
+variables, secrets, pipeline schedules), scaffold content drift, and scaffold workflow refs
 against the manifest. Missing or drifted components are repaired
 automatically; ref updates are committed as PRs (or direct pushes with
 `--direct`).
@@ -265,8 +265,8 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-and `--allowed-remote-resources`. The `--inference-region` flag is
-install-time only and is not stored in the manifest.
+`--allowed-remote-resources`, and `--vendor`. The `--inference-region`
+flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 

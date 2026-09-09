@@ -5,7 +5,7 @@
 # via cloud-init. After the VM boots, run setup.sh to register and configure
 # the runner.
 #
-# Usage: ./create-vm.sh (auto-numbers and applies this template)
+# Usage: ./create-openshift-vm.sh (auto-numbers and applies this template)
 #
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine

@@ -8,6 +8,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -100,24 +101,23 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 	}
 
 	printer.StepStart("Creating pipeline schedules")
-	slashID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-		"fullsend slash poll", "*/5 * * * *", map[string]string{forge.VarPollMode: "slash"})
-	if err != nil {
-		printer.StepFail("Failed to create slash poll schedule")
-		return fmt.Errorf("creating slash poll schedule: %w", err)
-	}
-	printer.StepDone(fmt.Sprintf("Created slash poll schedule (ID %d)", slashID))
-
-	eventID, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-		"fullsend event poll", "2,17,32,47 * * * *", map[string]string{forge.VarPollMode: "events"})
-	if err != nil {
-		if delErr := client.DeletePipelineSchedule(ctx, owner, repo, slashID); delErr != nil {
-			printer.StepWarn(fmt.Sprintf("Failed to clean up slash poll schedule (ID %d): %v", slashID, delErr))
+	var createdIDs []int64
+	for _, spec := range repos.PipelineScheduleSpecs() {
+		id, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
+			spec.Description, spec.Cron, spec.Variables)
+		if err != nil {
+			// Roll back any schedules created in this call.
+			for _, prevID := range createdIDs {
+				if delErr := client.DeletePipelineSchedule(ctx, owner, repo, prevID); delErr != nil {
+					printer.StepWarn(fmt.Sprintf("Failed to clean up schedule (ID %d): %v", prevID, delErr))
+				}
+			}
+			printer.StepFail(fmt.Sprintf("Failed to create %s schedule", spec.Description))
+			return fmt.Errorf("creating %s schedule: %w", spec.Description, err)
 		}
-		printer.StepFail("Failed to create event poll schedule")
-		return fmt.Errorf("creating event poll schedule: %w", err)
+		createdIDs = append(createdIDs, id)
+		printer.StepDone(fmt.Sprintf("Created %s schedule (ID %d)", spec.Description, id))
 	}
-	printer.StepDone(fmt.Sprintf("Created event poll schedule (ID %d)", eventID))
 	return nil
 }
 

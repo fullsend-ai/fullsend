@@ -265,7 +265,7 @@ func TestHarnessRouter_ChangesRequestedNilChangeProposal(t *testing.T) {
 	}
 }
 
-func TestHarnessRouter_NeedsInfoTriageByReporter(t *testing.T) {
+func TestHarnessRouter_NeedsInfoCommentNoDispatch(t *testing.T) {
 	r := NewHarnessRouter([]string{"triage"})
 
 	event := &NormalizedEvent{
@@ -281,12 +281,12 @@ func TestHarnessRouter_NeedsInfoTriageByReporter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stages) != 1 || stages[0] != "triage" {
-		t.Fatalf("expected [triage], got %v", stages)
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages for non-command comment on needs-info issue, got %v", stages)
 	}
 }
 
-func TestHarnessRouter_NeedsInfoTriageByGuestBlocked(t *testing.T) {
+func TestHarnessRouter_NeedsInfoCommentByGuestNoDispatch(t *testing.T) {
 	r := NewHarnessRouter([]string{"triage"})
 
 	event := &NormalizedEvent{
@@ -303,11 +303,11 @@ func TestHarnessRouter_NeedsInfoTriageByGuestBlocked(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(stages) != 0 {
-		t.Fatalf("expected no stages for Guest on needs-info, got %v", stages)
+		t.Fatalf("expected no stages for non-command comment on needs-info issue, got %v", stages)
 	}
 }
 
-func TestHarnessRouter_NeedsInfoTriageByEntityAuthor(t *testing.T) {
+func TestHarnessRouter_NeedsInfoCommentByEntityAuthorNoDispatch(t *testing.T) {
 	r := NewHarnessRouter([]string{"triage"})
 
 	event := &NormalizedEvent{
@@ -323,12 +323,34 @@ func TestHarnessRouter_NeedsInfoTriageByEntityAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stages) != 1 || stages[0] != "triage" {
-		t.Fatalf("expected [triage] for entity author, got %v", stages)
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages for non-command comment on needs-info issue (even from entity author), got %v", stages)
 	}
 }
 
-func TestHarnessRouter_CommentWithoutNeedsInfoNoRoute(t *testing.T) {
+func TestHarnessRouter_NeedsInfoWithFsTriageCommand(t *testing.T) {
+	r := NewHarnessRouter([]string{"triage"})
+
+	event := &NormalizedEvent{
+		Entity: Entity{Kind: "work_item", ID: 5},
+		Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{
+			Command: "/fs-triage",
+			Body:    "/fs-triage please re-evaluate",
+		}},
+		Actor: Actor{ID: "dev", Role: "write"},
+		State: State{Labels: []string{"needs-info"}},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "triage" {
+		t.Fatalf("expected [triage] for /fs-triage on needs-info issue, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_NonCommandCommentNoRoute(t *testing.T) {
 	r := NewHarnessRouter([]string{"triage"})
 
 	event := &NormalizedEvent{
@@ -529,8 +551,8 @@ func TestHarnessRouter_ChangesRequestedFixNotInValidSet(t *testing.T) {
 	}
 }
 
-func TestHarnessRouter_NeedsInfoTriageNotInValidSet(t *testing.T) {
-	r := NewHarnessRouter([]string{"code", "review"})
+func TestHarnessRouter_NeedsInfoCommentWriteRoleNoDispatch(t *testing.T) {
+	r := NewHarnessRouter([]string{"triage", "code", "review"})
 
 	event := &NormalizedEvent{
 		Entity: Entity{Kind: "work_item", ID: 5},
@@ -546,7 +568,7 @@ func TestHarnessRouter_NeedsInfoTriageNotInValidSet(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(stages) != 0 {
-		t.Fatalf("expected no stages when triage not in valid set, got %v", stages)
+		t.Fatalf("expected no stages for non-command comment on needs-info issue, got %v", stages)
 	}
 }
 
@@ -604,6 +626,160 @@ func TestHarnessRouter_SlashCommandNilChangeProposalBlocked(t *testing.T) {
 	}
 	if len(stages) != 0 {
 		t.Fatalf("expected no stages for slash command with nil ChangeProposal, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_SlashCommandTriageRoleObservationStage(t *testing.T) {
+	r := NewHarnessRouter([]string{"triage", "code", "review", "fix"})
+
+	tests := []struct {
+		name    string
+		command string
+		entity  Entity
+		actor   Actor
+		want    []string
+	}{
+		{
+			name:    "triage role dispatches /fs-triage on work_item",
+			command: "/fs-triage",
+			entity:  Entity{Kind: "work_item", ID: 1},
+			actor:   Actor{ID: "triager", Role: "triage"},
+			want:    []string{"triage"},
+		},
+		{
+			name:    "triage role dispatches /fs-review on work_item",
+			command: "/fs-review",
+			entity:  Entity{Kind: "work_item", ID: 1},
+			actor:   Actor{ID: "triager", Role: "triage"},
+			want:    []string{"review"},
+		},
+		{
+			name:    "triage role rejected for /fs-code on work_item",
+			command: "/fs-code",
+			entity:  Entity{Kind: "work_item", ID: 1},
+			actor:   Actor{ID: "triager", Role: "triage"},
+			want:    nil,
+		},
+		{
+			name:    "triage role rejected for /fs-fix on change_proposal",
+			command: "/fs-fix",
+			entity:  Entity{Kind: "change_proposal", ID: 10},
+			actor:   Actor{ID: "triager", Role: "triage"},
+			want:    nil,
+		},
+		{
+			name:    "triage role dispatches /fs-review on same-project change_proposal",
+			command: "/fs-review",
+			entity:  Entity{Kind: "change_proposal", ID: 10},
+			actor:   Actor{ID: "triager", Role: "triage"},
+			want:    []string{"review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := &NormalizedEvent{
+				Entity:     tt.entity,
+				Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Command: tt.command, Body: tt.command}},
+				Actor:      tt.actor,
+				State:      State{ChangeProposal: &ChangeProposalState{IsFork: false}},
+			}
+			stages, err := r.Route(event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.want == nil {
+				if len(stages) != 0 {
+					t.Fatalf("expected no stages, got %v", stages)
+				}
+				return
+			}
+			if len(stages) != len(tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, stages)
+			}
+			for i, s := range stages {
+				if s != tt.want[i] {
+					t.Fatalf("expected %v, got %v", tt.want, stages)
+				}
+			}
+		})
+	}
+}
+
+func TestHarnessRouter_SlashCommandEntityAuthorBypass(t *testing.T) {
+	r := NewHarnessRouter([]string{"triage", "code", "review"})
+
+	tests := []struct {
+		name    string
+		command string
+		entity  Entity
+		actor   Actor
+		want    []string
+	}{
+		{
+			name:    "read-only entity author dispatches /fs-triage on work_item",
+			command: "/fs-triage",
+			entity:  Entity{Kind: "work_item", ID: 5},
+			actor:   Actor{ID: "author", Role: "read", IsEntityAuthor: true},
+			want:    []string{"triage"},
+		},
+		{
+			name:    "read-only entity author dispatches /fs-review on work_item",
+			command: "/fs-review",
+			entity:  Entity{Kind: "work_item", ID: 5},
+			actor:   Actor{ID: "author", Role: "read", IsEntityAuthor: true},
+			want:    []string{"review"},
+		},
+		{
+			name:    "read-only entity author rejected for /fs-triage on change_proposal",
+			command: "/fs-triage",
+			entity:  Entity{Kind: "change_proposal", ID: 10},
+			actor:   Actor{ID: "author", Role: "read", IsEntityAuthor: true},
+			want:    nil,
+		},
+		{
+			name:    "read-only entity author rejected for /fs-code on work_item",
+			command: "/fs-code",
+			entity:  Entity{Kind: "work_item", ID: 5},
+			actor:   Actor{ID: "author", Role: "read", IsEntityAuthor: true},
+			want:    nil,
+		},
+		{
+			name:    "read-only non-author rejected for /fs-triage on work_item",
+			command: "/fs-triage",
+			entity:  Entity{Kind: "work_item", ID: 5},
+			actor:   Actor{ID: "other", Role: "read", IsEntityAuthor: false},
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := &NormalizedEvent{
+				Entity:     tt.entity,
+				Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{Command: tt.command, Body: tt.command}},
+				Actor:      tt.actor,
+				State:      State{ChangeProposal: &ChangeProposalState{IsFork: false}},
+			}
+			stages, err := r.Route(event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.want == nil {
+				if len(stages) != 0 {
+					t.Fatalf("expected no stages, got %v", stages)
+				}
+				return
+			}
+			if len(stages) != len(tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, stages)
+			}
+			for i, s := range stages {
+				if s != tt.want[i] {
+					t.Fatalf("expected %v, got %v", tt.want, stages)
+				}
+			}
+		})
 	}
 }
 

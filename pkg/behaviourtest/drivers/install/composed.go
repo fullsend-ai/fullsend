@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // composedDriver wraps a mintDriver, ensurer, and an internal
@@ -17,6 +19,12 @@ type composedDriver struct {
 	mint    mintDriver
 	ensurer ensurer
 	logf    func(string, ...any)
+
+	// rate, when set, samples the shared installation token's primary
+	// rate-limit budget on every allocation and release, so a suite
+	// that later goes blind on 403s shows in its own log how the
+	// budget drained across the run (#6702).
+	rate forge.RateLimitReporter
 
 	names    chan string // buffered channel of available repo names
 	capacity int
@@ -81,6 +89,7 @@ func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
 	}
 
 	d.logf("[driver] allocated %s/%s", d.org, name)
+	d.logRateLimit("after allocating " + d.org + "/" + name)
 	return name, nil
 }
 
@@ -99,6 +108,7 @@ func (d *composedDriver) DeallocateRepo(_ context.Context, repoName string) erro
 	// non-blocking.
 	d.names <- repoName
 	d.logf("[driver] deallocated %s/%s", d.org, repoName)
+	d.logRateLimit("after deallocating " + d.org + "/" + repoName)
 	return nil
 }
 
@@ -139,3 +149,25 @@ func (d *composedDriver) Capacity() int {
 
 // Compile-time check.
 var _ Driver = (*composedDriver)(nil)
+
+// withRateLimitReporter attaches client as the driver's rate-limit
+// sampler when it reports one; other clients leave sampling off.
+func withRateLimitReporter(d Driver, client forge.Client) Driver {
+	if cd, ok := d.(*composedDriver); ok {
+		if r, ok := client.(forge.RateLimitReporter); ok {
+			cd.rate = r
+		}
+	}
+	return d
+}
+
+// logRateLimit writes one primary-quota sample, if a reporter is set
+// and has observed a response.
+func (d *composedDriver) logRateLimit(when string) {
+	if d.rate == nil {
+		return
+	}
+	if rl, seen := d.rate.RateLimit(); seen {
+		d.logf("[driver] rate limit %s: %s", when, rl)
+	}
+}

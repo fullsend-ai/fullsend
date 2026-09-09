@@ -32,7 +32,8 @@ func promptRuntime(printer *ui.Printer, in io.Reader, interactive bool) (string,
 	printer.StepInfo("Choose the agent runtime for this repository:")
 	printer.StepInfo("  [claude] Claude Code — stable default, recommended; all fleet agents, concurrent sub-agents")
 	printer.StepInfo("  [pi]     pi — experimental (enablement phase); any provider pi supports, no sub-agent tool yet")
-	printer.StepInfo("  Keep the default unless you are taking part in the pi pilot. Change later with `runtime:`")
+	printer.StepInfo("  [codex]  Codex — experimental; OpenAI models only. Recommended: keep review and retro on claude")
+	printer.StepInfo("  Keep the default unless you are taking part in a pilot. Change later with `runtime:`")
 	printer.StepInfo("  in .fullsend/config.yaml or `fullsend github setup --runtime`; see docs/runtimes.md.")
 	printer.Blank()
 
@@ -58,12 +59,12 @@ func promptRuntime(printer *ui.Printer, in io.Reader, interactive bool) (string,
 }
 
 // userRuntimeChoices lists the runtimes offered to a person: every valid
-// runtime except dummy, which exists for behaviour-test installs and is only
-// ever selected with an explicit --runtime dummy.
+// runtime except dummy and dummy-playback, which exist for behaviour-test
+// installs and are only ever selected with an explicit --runtime flag.
 func userRuntimeChoices() []string {
 	var out []string
 	for _, r := range config.ValidRuntimes() {
-		if r != "dummy" {
+		if r != "dummy" && r != "dummy-playback" {
 			out = append(out, r)
 		}
 	}

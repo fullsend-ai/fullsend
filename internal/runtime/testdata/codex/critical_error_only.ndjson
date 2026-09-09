@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"01a06300-0000-7000-8000-000000000003"}
+{"type":"turn.started"}
+{"type":"error","message":"unexpected status 401 Unauthorized"}

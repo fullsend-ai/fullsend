@@ -16,7 +16,8 @@ import (
 // reports it.
 type ComponentStatus struct {
 	// Name identifies the component, prefixed by category:
-	//   "workflow", "thin-caller:<path>", "var:<name>", "secret:<name>"
+	//   "workflow", "thin-caller:<path>", "var:<name>", "secret:<name>",
+	//   "schedule:<name>"
 	Name string
 
 	// Present is true when the component exists on the forge.
@@ -167,6 +168,28 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 				Expected: expected,
 				Actual:   val,
 				Match:    val == expected,
+			})
+		}
+	}
+
+	// Pipeline schedules (GitLab only — GitHub uses webhook dispatch).
+	if forgeName == ForgeGitLab {
+		schedules, schedErr := client.ListPipelineSchedules(ctx, owner, repo)
+		if schedErr != nil {
+			return nil, fmt.Errorf("checking pipeline schedules: %w", schedErr)
+		}
+		for _, spec := range pipelineScheduleSpecs {
+			found := false
+			for _, s := range schedules {
+				if s.Description == spec.Description {
+					found = true
+					break
+				}
+			}
+			results = append(results, ComponentStatus{
+				Name:    spec.ComponentName,
+				Present: found,
+				Match:   found,
 			})
 		}
 	}

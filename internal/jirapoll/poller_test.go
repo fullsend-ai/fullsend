@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,6 +81,7 @@ func newMockClient() *mockClient {
 		propertySetErr: make(map[string]error),
 		statuses:       make(map[string]jira.Status),
 		statusErr:      make(map[string]error),
+		myselfUser:     &jira.User{AccountID: "poller-service-account", AccountType: "atlassian", Active: true},
 	}
 }
 
@@ -293,6 +295,97 @@ func TestRunEmptyPoll(t *testing.T) {
 	}
 	if string(data) != "[]\n" {
 		t.Errorf("output = %q, want empty JSON array", string(data))
+	}
+}
+
+// TestRun_AuthPreflightFailure verifies that Run returns a clear
+// authentication error when GetMyself fails (e.g. 401/403), and that no
+// JQL discovery is attempted — preventing the silent-zero-candidates
+// failure mode described in #6831.
+func TestRun_AuthPreflightFailure(t *testing.T) {
+	mc := newMockClient()
+	mc.myselfErr = fmt.Errorf("jira api: 401 unauthorized")
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	p := newTestPoller(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected Run() to return an error when authentication preflight fails")
+	}
+	if got := err.Error(); !strings.Contains(got, "authentication preflight") {
+		t.Errorf("error = %q, want it to mention authentication preflight", got)
+	}
+	// SearchIssues must not have been called — the preflight short-circuits.
+	if mc.lastQuery != "" {
+		t.Errorf("SearchIssues was called with JQL %q; expected no JQL discovery after auth failure", mc.lastQuery)
+	}
+	// The error must not expose credential material (the mock error is a
+	// status-code string, so this validates the wrapping does not inject
+	// secrets).
+	if strings.Contains(err.Error(), "token") || strings.Contains(err.Error(), "password") {
+		t.Errorf("error exposes credential material: %q", err.Error())
+	}
+}
+
+// TestRun_AuthPreflightInactiveAccount verifies that an inactive Jira
+// account is treated as an authentication failure.
+func TestRun_AuthPreflightInactiveAccount(t *testing.T) {
+	mc := newMockClient()
+	mc.myselfUser = &jira.User{
+		AccountID:   "deactivated-service-account",
+		AccountType: "atlassian",
+		Active:      false,
+	}
+
+	p := newTestPoller(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected Run() to return an error for an inactive account")
+	}
+	if got := err.Error(); !strings.Contains(got, "inactive") {
+		t.Errorf("error = %q, want it to mention 'inactive'", got)
+	}
+	if mc.lastQuery != "" {
+		t.Errorf("SearchIssues was called; expected no JQL discovery after inactive-account check")
+	}
+}
+
+// TestRun_AuthPreflightSuccess verifies that a valid, active account
+// proceeds to JQL discovery as normal.
+func TestRun_AuthPreflightSuccess(t *testing.T) {
+	mc := newMockClient()
+	// myselfUser is already set to an active user by newMockClient.
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	p := newTestPoller(mc, nil, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	// Verify SearchIssues was called — preflight passed and discovery ran.
+	if mc.lastQuery == "" {
+		t.Error("SearchIssues was not called; expected JQL discovery after successful auth preflight")
 	}
 }
 

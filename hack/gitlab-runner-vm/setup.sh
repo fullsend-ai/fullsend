@@ -6,7 +6,7 @@
 #   - VM created from vm.yaml (provides Fedora + podman + gitlab-runner)
 #   - sudo access for the running user
 #
-# Normally called by create-vm.sh. Can also be run standalone:
+# Normally called by create-openshift-vm.sh / create-gcp-vm.sh. Can also be run standalone:
 #   GITLAB_URL=https://gitlab.example.com RUNNER_IMAGE=ghcr.io/org/runner:v1 \
 #     REGISTRATION_TOKEN=glrt-xxx ./setup.sh
 #
@@ -92,9 +92,25 @@ fix_fedora_repos() {
     [ -f "${repo_file}" ] || continue
     if grep -q '^metalink=' "${repo_file}"; then
       sudo sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' "${repo_file}"
+      # Stock Fedora cloud images ship a placeholder baseurl pointing at
+      # download.example (not a real mirror). Replace it with the real
+      # Fedora mirror that is already in the TenantEgress allowlist.
+      if grep -q 'download\.example' "${repo_file}"; then
+        sudo sed -i 's|download\.example|dl.fedoraproject.org|g' "${repo_file}"
+      fi
       changed=1
     fi
   done
+
+  # The Cisco openh264 repo has broken mirrors on Fedora 43 cloud images
+  # and is not needed for runner operation. Disable it to prevent dnf
+  # metadata refresh failures.
+  local cisco_repo="/etc/yum.repos.d/fedora-cisco-openh264.repo"
+  if [ -f "${cisco_repo}" ]; then
+    sudo dnf config-manager setopt fedora-cisco-openh264.enabled=0 2>/dev/null \
+      || sudo sed -i 's/^enabled=1/enabled=0/' "${cisco_repo}"
+    ok "disabled fedora-cisco-openh264 repo"
+  fi
 
   if [ "${changed}" -eq 1 ]; then
     ok "switched Fedora repos from metalink to baseurl"
@@ -213,7 +229,7 @@ install_gitlab_runner() {
   tmpbin=$(mktemp)
   # Stall detection rather than a hard cap: the binary is tens of megabytes,
   # so --max-time turns a slow-but-working link into a deterministic failure.
-  # Overall runtime is already bounded by create-vm.sh's `timeout`.
+  # Overall runtime is already bounded by create-openshift-vm.sh / create-gcp-vm.sh's `timeout`.
   curl --connect-timeout 10 --speed-limit 10240 --speed-time 60 \
     --retry 3 --retry-connrefused -fsSL -o "${tmpbin}" "${runner_url}"
 
@@ -624,24 +640,21 @@ start_gateway() {
   done
 
   # Register the gateway with the CLI so openshell commands can find it.
-  # Check for an active gateway (line starting with *).
-  if ! openshell gateway list 2>/dev/null | grep -Eq '^[[:space:]]*\*'; then
-    # `gateway add` is not idempotent — it refuses when metadata for the
-    # canonical "openshell" loopback name already exists — so fall back to
-    # selecting that name. Both failing must fail setup: every job's agent
-    # depends on this registration, and verify() only checks the systemd unit.
-    local add_err
-    if ! add_err=$(openshell gateway add --local https://127.0.0.1:17670 2>&1) \
-      && ! openshell gateway select openshell >/dev/null 2>&1; then
-      fail "could not register or select the OpenShell gateway: ${add_err}"
-    fi
-    if ! openshell gateway list 2>/dev/null | grep -Eq '^[[:space:]]*\*'; then
-      fail "no active OpenShell gateway after add/select"
-    fi
-    ok "gateway registered and selected"
-  else
-    ok "gateway already registered"
+  # The restart above triggers ExecStartPre which regenerates TLS
+  # certificates. Any existing CLI registration still references the old
+  # certs, so mTLS checks would fail. Remove the stale registration first,
+  # then re-add so the CLI picks up the new certificates.
+  openshell gateway remove openshell >/dev/null 2>&1 || true
+
+  local add_err
+  if ! add_err=$(openshell gateway add --local https://127.0.0.1:17670 2>&1) \
+    && ! openshell gateway select openshell >/dev/null 2>&1; then
+    fail "could not register or select the OpenShell gateway: ${add_err}"
   fi
+  if ! openshell gateway list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -Eq '^[[:space:]]*\*'; then
+    fail "no active OpenShell gateway after add/select"
+  fi
+  ok "gateway registered and selected"
 
   ok "gateway is running"
 }
@@ -770,7 +783,7 @@ verify() {
 
   # The unit being active says nothing about CLI registration, which is what
   # the agent inside job containers actually resolves the gateway through.
-  if openshell gateway list 2>/dev/null | grep -Eq '^[[:space:]]*\*'; then
+  if openshell gateway list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -Eq '^[[:space:]]*\*'; then
     ok "gateway registered with the CLI"
   else
     echo "  WARN: no active gateway in 'openshell gateway list'"; errors=$((errors + 1))

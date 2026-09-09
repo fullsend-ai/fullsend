@@ -1,3 +1,7 @@
+---
+description: How the fullsend code agent implements triaged GitHub issues following repository conventions, runs tests and linters, and commits to a feature branch.
+---
+
 # Code Agent
 
 ![Code agent icon](icons/coder.png)

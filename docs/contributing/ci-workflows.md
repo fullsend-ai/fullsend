@@ -184,7 +184,7 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts on failure. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
 Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 
@@ -199,6 +199,14 @@ Redaction covers:
 - Symlinks under the artifact directory — replaced with a stub before upload
 
 **Residual limitations:** content scanning cannot catch every encoding or obfuscation of a secret in a text-classified file (base64, hex, split tokens). Same-job PR-head code could theoretically race the upload step after redaction; isolating redaction in a separate job would narrow that window further.
+
+## Scaffold-sync dispatch recursion
+
+`notify-scaffold-sync` fires on every `push` to `main`. Its job generates a GitHub App installation token for `fullsend-ai-sync[bot]` and dispatches `fullsend-updated` to `fullsend-ai/.fullsend`, which runs `sync-scaffold` to converge per-repo variables and scaffold files.
+
+Because the sync App authenticates with an App installation token (not `GITHUB_TOKEN`), GitHub's workflow-suppression rule does not apply — a sync commit pushed to `main` re-triggers `notify-scaffold-sync`, which dispatches again. Each scaffold-touching merge therefore costs ≥2 dispatch rounds: the first sync converges files, the second re-enters and converges any state that depends on the first sync's output. The chain terminates when a sync round produces no diff.
+
+This recursion is by design but interacts with the convergence non-idempotence tracked in #6553. See also [Bot Identities § App-token push recursion](bot-identities.md#app-token-push-recursion) for the observed dispatch chain and the security-relevant distinction between the coder token (no `workflows` permission) and the sync App (has `workflows` permission plus `bypass_mode: always` on the `main` ruleset).
 
 ## Additional conventions
 

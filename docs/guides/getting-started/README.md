@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: Step-by-step setup for fullsend — connect a model provider, choose where your agents run, and configure GitHub so they can work on your repositories.
 ---
 
 # Getting Started

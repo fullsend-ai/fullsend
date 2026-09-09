@@ -16,21 +16,54 @@ success() { echo "OK: $1"; }
 
 escaped_links=()
 
-for mdfile in "$@"; do
-    # pre-commit passes paths relative to repo root
-    [[ "$mdfile" = /* ]] || mdfile="$REPO_ROOT/$mdfile"
-    file_dir="$(dirname "$mdfile")"
-    rel_file="${mdfile#"$REPO_ROOT/"}"
-    while IFS= read -r target; do
-        [[ "$target" =~ ^https?:// || "$target" =~ ^mailto: || "$target" =~ ^# ]] && continue
-        path="${target%%#*}"
-        [[ -z "$path" ]] && continue
-        resolved="$(cd "$file_dir" && realpath -m "$path")"
-        if [[ "$resolved" != "$REPO_ROOT/"* && "$resolved" != "$REPO_ROOT" ]]; then
-            escaped_links+=("$rel_file: $target")
-        fi
-    done < <(grep -oP '(?<=\])\(\K[^)]+' "$mdfile" || true)
-done
+# Emits one NUL-terminated record per candidate link: file_dir, rel_file
+# and the raw target, tab-separated. Target goes last so a tab inside a
+# link target cannot shift the fields; NUL termination keeps targets with
+# spaces intact. Scheme/anchor filtering stays here so Python only ever
+# sees relative filesystem links.
+collect_candidates() {
+    local mdfile file_dir rel_file target
+    for mdfile in "$@"; do
+        # pre-commit passes paths relative to repo root
+        [[ "$mdfile" = /* ]] || mdfile="$REPO_ROOT/$mdfile"
+        file_dir="$(dirname "$mdfile")"
+        rel_file="${mdfile#"$REPO_ROOT/"}"
+        while IFS= read -r target; do
+            [[ "$target" =~ ^https?:// || "$target" =~ ^mailto: || "$target" =~ ^# ]] && continue
+            [[ -z "${target%%#*}" ]] && continue
+            printf '%s\t%s\t%s\0' "$file_dir" "$rel_file" "$target"
+        # grep -oE + sed, not grep -oP: BSD grep (macOS) has no -P — it
+        # exited with "invalid option" and the `|| true` swallowed it, so
+        # the loop saw zero links and this hook passed vacuously on every
+        # macOS commit. The two-step form is the same match: a literal
+        # "](", then everything up to the next ")" or end of line, all
+        # occurrences per line.
+        done < <(grep -oE '\]\([^)]+' "$mdfile" | sed -E 's/^\]\(//' || true)
+    done
+}
+
+# One python3 for the whole run, not one per link — interpreter startup
+# per link made a full-corpus pass take over a minute. python3, not
+# realpath -m: BSD realpath (macOS) has no -m, and a link target may not
+# exist; os.path.realpath resolves what exists and normalizes the rest —
+# GNU `realpath -m` semantics. python3 is always present here: pre-commit
+# itself runs on it. Offenders come back newline-delimited, which is safe
+# because targets are read line-by-line above and so cannot contain one.
+while IFS= read -r offender; do
+    escaped_links+=("$offender")
+done < <(collect_candidates "$@" | python3 -c '
+import os, sys
+
+root = sys.argv[1]
+for rec in sys.stdin.buffer.read().split(b"\0"):
+    if not rec:
+        continue
+    file_dir, rel_file, target = rec.decode("utf-8", "replace").split("\t", 2)
+    path = target.split("#", 1)[0]
+    resolved = os.path.realpath(os.path.join(file_dir, path))
+    if resolved != root and not resolved.startswith(root + os.sep):
+        print(f"{rel_file}: {target}")
+' "$REPO_ROOT")
 
 if [[ ${#escaped_links[@]} -eq 0 ]]; then
     success "No docs/ links escape the repository root"

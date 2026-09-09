@@ -3860,6 +3860,156 @@ func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
 	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
+func TestReservedSandboxKeys_IncludesTimeoutKeys(t *testing.T) {
+	t.Parallel()
+	assert.True(t, reservedSandboxKeys["FULLSEND_TIMEOUT_MINUTES"])
+	assert.True(t, reservedSandboxKeys["FULLSEND_ITERATION_DEADLINE"])
+}
+
+// TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES
+// and FULLSEND_ITERATION_DEADLINE in env.sandbox are rejected as reserved (#7042).
+func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
+	t.Parallel()
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":                  "allowed",
+				"FULLSEND_TIMEOUT_MINUTES":    "999",
+				"FULLSEND_ITERATION_DEADLINE": "1234567890",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestEffectiveTimeoutMinutes(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 20, effectiveTimeoutMinutes(&harness.Harness{TimeoutMinutes: 20}))
+	assert.Equal(t, defaultTimeoutMinutes, effectiveTimeoutMinutes(&harness.Harness{}))
+}
+
+// TestIterationTimedOut pins the kill test (#7042, same rule as #5075): a
+// failed iteration (the runner's lastExitCode, which already folds in a
+// transcript-reported error) at or past 90 % of the budget.
+func TestIterationTimedOut(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	assert.False(t, iterationTimedOut(0, timeout, timeout), "finished cleanly at 100 %")
+	assert.False(t, iterationTimedOut(1, 17*time.Minute+59*time.Second, timeout), "failed at 89 %")
+	assert.True(t, iterationTimedOut(1, 18*time.Minute, timeout), "failed at 90 %")
+	assert.True(t, iterationTimedOut(-1, timeout, timeout), "killed at 100 %")
+	assert.False(t, iterationTimedOut(1, 3*time.Minute, timeout), "early exit with bad output")
+}
+
+// TestIterationEnvSourceLine pins the last line of .env: sourcing an absent
+// file must not turn .env's exit status non-zero.
+func TestIterationEnvSourceLine(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t,
+		"if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi",
+		iterationEnvSourceLine())
+}
+
+// TestIterationEnvCommand pins the shell the runner executes before every
+// iteration: it rewrites (not appends to) the runner-owned file with the
+// budget and the kill time as Unix seconds (#7042).
+func TestIterationEnvCommand(t *testing.T) {
+	t.Parallel()
+	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
+	assert.Equal(t,
+		fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix()),
+		iterationEnvCommand(20, deadline))
+}
+
+// TestWriteIterationEnv checks the exit code is not swallowed: sandbox.Exec
+// returns a nil error for an ordinary command failure.
+func TestWriteIterationEnv(t *testing.T) {
+	t.Parallel()
+	deadline := time.Unix(1788717600, 0)
+	t.Run("ok", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(name, cmd string, _ time.Duration) (string, string, int, error) {
+			assert.Equal(t, "fs-test", name)
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline))
+		assert.Equal(t, iterationEnvCommand(20, deadline), got)
+	})
+	t.Run("non-zero exit", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "sh: read-only file system\n", 1, nil
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		require.Error(t, err)
+		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
+	})
+	t.Run("exec error", func(t *testing.T) {
+		t.Parallel()
+		exec := func(string, string, time.Duration) (string, string, int, error) {
+			return "", "", 124, fmt.Errorf("command timed out after 10s")
+		}
+		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		require.EqualError(t, err, "command timed out after 10s")
+	})
+	t.Run("clear", func(t *testing.T) {
+		t.Parallel()
+		var got string
+		exec := func(_, cmd string, _ time.Duration) (string, string, int, error) {
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, clearIterationEnv(exec, "fs-test"))
+		assert.Equal(t, "rm -f /sandbox/workspace/.fullsend/iteration.env", got)
+	})
+}
+
+func TestTimeoutNoRetryMessage(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "Agent timed out (used 20m0s of 20m0s budget) — not retrying",
+		timeoutNoRetryMessage(20*time.Minute+400*time.Millisecond, 20*time.Minute))
+}
+
+// TestRunTerminalError covers the retry contract of #7042: a killed
+// iteration ends the run with the timeout error, a valid result still wins,
+// and an early exit with invalid output stays a validation failure.
+func TestRunTerminalError(t *testing.T) {
+	t.Parallel()
+	const timeout = 20 * time.Minute
+	cases := []struct {
+		name            string
+		hasLoop, passed bool
+		timedOut        bool
+		runCount        int
+		elapsed         time.Duration
+		wantErrMsg      string // empty = no error
+	}{
+		{name: "loop, killed at budget, nothing valid", hasLoop: true, timedOut: true, runCount: 1, elapsed: timeout, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
+		{name: "loop, killed at budget, output validated", hasLoop: true, passed: true, timedOut: true, runCount: 1, elapsed: timeout},
+		{name: "loop, early exit with invalid output", hasLoop: true, runCount: 2, elapsed: 3 * time.Minute, wantErrMsg: "validation failed after 2 iteration(s)"},
+		{name: "loop, validation passed", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute},
+		{name: "no loop, killed at budget", timedOut: true, runCount: 1, elapsed: 19 * time.Minute, wantErrMsg: "agent timed out after 19m0s without completing (timeout: 20m0s)"},
+		{name: "no loop, exited in time", runCount: 1, elapsed: 3 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := runTerminalError(tc.hasLoop, tc.passed, tc.timedOut, tc.runCount, tc.elapsed, timeout)
+			if tc.wantErrMsg == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tc.wantErrMsg)
+		})
+	}
+}
+
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
@@ -4411,6 +4561,160 @@ func TestSetupStatusNotifier_GitLab_NoMintURLNeeded(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "gitlab", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_Jira(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// Simulate a Jira-originated event: trackerSource and trackerProject
+	// are extracted from the normalized event by runAgent and threaded
+	// through statusOpts.
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	// Jira uses a static client (like GitLab), not a factory.
+	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
+}
+
+func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+}
+
+func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+}
+
+func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "")
+
+	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+}
+
+func TestParseJiraKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		proj string
+		num  int
+		ok   bool
+	}{
+		{"PROJ-123", "PROJ", 123, true},
+		{"MY-PROJECT-1", "MY-PROJECT", 1, true},
+		{"A-999", "A", 999, true},
+		{"", "", 0, false},
+		{"PROJ", "", 0, false},
+		{"PROJ-", "", 0, false},
+		{"-123", "", 0, false},
+		{"PROJ-0", "", 0, false},
+		{"PROJ-abc", "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			proj, num, ok := parseJiraKey(tt.key)
+			assert.Equal(t, tt.ok, ok)
+			if ok {
+				assert.Equal(t, tt.proj, proj)
+				assert.Equal(t, tt.num, num)
+			}
+		})
+	}
+}
+
+func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "98765")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
+func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	sOpts := statusOpts{
+		statusRepo:     "org/repo",
+		statusNum:      123,
+		trackerSource:  "jira",
+		trackerProject: "PROJ",
+	}
+
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("GITHUB_RUN_ID", "") // unset
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 }
@@ -5230,6 +5534,106 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent token minting failed")
 }
 
+// TestRunAgent_GitLabSkipsMint verifies that mintAgentToken is not called
+// when --forge=gitlab. Minting is GitHub-only; on GitLab the bot PAT
+// (FULLSEND_FORGE_TOKEN) serves as the push/API token. #6865.
+func TestRunAgent_GitLabSkipsMint(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called on GitLab")
+		return nil, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell, not from minting
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	// No "skipping token minting" warning on GitLab
+	assert.NotContains(t, buf.String(), "skipping token minting")
+}
+
+// TestRunAgent_SetsEnvFromFlags verifies that run.go exports TARGET_REPO_DIR,
+// REPO_FULL_NAME, and ISSUE_NUMBER from their CLI flag values before harness
+// env validation runs. #6865.
+func TestRunAgent_SetsEnvFromFlags(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\nrunner_env:\n  MY_REPO: ${REPO_FULL_NAME}\n  MY_TARGET: ${TARGET_REPO_DIR}\n  MY_ISSUE: ${ISSUE_NUMBER}\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, nil
+	}
+
+	// Clear any existing values
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("TARGET_REPO_DIR", "")
+	t.Setenv("ISSUE_NUMBER", "")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{statusRepo: "myorg/myrepo", statusNum: 42}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell (we get past env validation)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	// Env validation should not have failed
+	assert.NotContains(t, err.Error(), "validating env")
+}
+
 func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -5574,6 +5978,102 @@ func TestDedupResolvedProfiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShadowedProfiles(t *testing.T) {
+	const profilesDir = "/ws/.fullsend/profiles"
+	url := func(id string) resolve.ResolvedProfile {
+		return resolve.ResolvedProfile{ID: id, LocalPath: "/cache/sha256/" + id + "/content.yaml", FromURL: true}
+	}
+	ids := func(profiles []resolve.ResolvedProfile) []string {
+		var out []string
+		for _, p := range profiles {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	tests := []struct {
+		name      string
+		dirIDs    []string
+		resolved  []resolve.ResolvedProfile
+		generated map[string]bool
+		want      []string
+	}{
+		{
+			name:     "no overlap",
+			dirIDs:   []string{"local-only"},
+			resolved: []resolve.ResolvedProfile{url("remote-only")},
+			want:     nil,
+		},
+		{
+			name:     "empty dir",
+			dirIDs:   nil,
+			resolved: []resolve.ResolvedProfile{url("a")},
+			want:     nil,
+		},
+		{
+			name:     "empty resolved",
+			dirIDs:   []string{"a"},
+			resolved: nil,
+			want:     nil,
+		},
+		{
+			name:     "one shadow",
+			dirIDs:   []string{"fullsend-vertex-ai"},
+			resolved: []resolve.ResolvedProfile{url("fullsend-vertex-ai")},
+			want:     []string{"fullsend-vertex-ai"},
+		},
+		{
+			name:     "multiple shadows sorted",
+			dirIDs:   []string{"z-profile", "a-profile", "local-only"},
+			resolved: []resolve.ResolvedProfile{url("z-profile"), url("a-profile"), url("remote-only")},
+			want:     []string{"a-profile", "z-profile"},
+		},
+		{
+			name:   "local-path profile in the same directory is not a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: profilesDir + "/byo.yaml", FromURL: false},
+			},
+			want: nil,
+		},
+		{
+			name:   "local-path profile elsewhere in the workspace is a shadow",
+			dirIDs: []string{"byo"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "byo", LocalPath: "/ws/custom/byo.yaml", FromURL: false},
+			},
+			want: []string{"byo"},
+		},
+		{
+			name:     "duplicate directory ids reported once",
+			dirIDs:   []string{"dup", "dup"},
+			resolved: []resolve.ResolvedProfile{url("dup")},
+			want:     []string{"dup"},
+		},
+		{
+			name:   "runner-generated gitlab forge profile is not a shadow",
+			dirIDs: []string{"fullsend-gitlab-forge"},
+			resolved: []resolve.ResolvedProfile{
+				{ID: "fullsend-gitlab-forge", LocalPath: "/tmp/fullsend-gitlab-profile-123/fullsend-gitlab-forge.yaml"},
+			},
+			generated: map[string]bool{"fullsend-gitlab-forge": true},
+			want:      nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shadowedProfiles(tt.dirIDs, tt.resolved, profilesDir, tt.generated)
+			assert.Equal(t, tt.want, ids(got))
+		})
+	}
+}
+
+func TestShadowedProfiles_ReturnsResolvedCopy(t *testing.T) {
+	rp := resolve.ResolvedProfile{ID: "fullsend-vertex-ai", LocalPath: "/cache/x/content.yaml", FromURL: true}
+	got := shadowedProfiles([]string{"fullsend-vertex-ai"}, []resolve.ResolvedProfile{rp}, "/ws/profiles", nil)
+	require.Len(t, got, 1)
+	assert.Equal(t, rp, got[0], "the returned entry must carry the shadowed copy's path so the warning can name it")
 }
 
 func TestDedupResolvedProviders(t *testing.T) {
@@ -6147,7 +6647,9 @@ func TestExtractNormalizedEventFromDispatch_NeitherSource(t *testing.T) {
 }
 
 func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {
-	dir := t.TempDir()
+	// canonTempDir, not t.TempDir: the sourced-entry assertion below compares
+	// against containedLocalPath's symlink-resolved output.
+	dir := canonTempDir(t)
 	printer := ui.New(io.Discard)
 	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
 version: "1"
@@ -6183,4 +6685,128 @@ agents:
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dir, "harness", "lint.yaml"), path)
 	assert.Nil(t, deps)
+}
+
+// The token upload must wait for a between-iteration sweep in progress: the
+// in-sandbox tar truncates .gcp-oidc-token on open, so a kill mid-write
+// would leave an empty token until the next 4-minute tick. The iteration
+// loop side has no seam short of running the whole command, so it is
+// covered by the lock's documented contract rather than a test.
+func TestRefreshOIDCToken_WaitsForSandboxLock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"value":"fresh-oidc-token-content"}`)
+	}))
+	defer srv.Close()
+	stubOpenshell(t, "exit 0")
+
+	sandboxMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- refreshOIDCToken(context.Background(), "sb", srv.URL, "bearer test-auth")
+	}()
+	select {
+	case err := <-done:
+		sandboxMu.Unlock()
+		t.Fatalf("upload ran while the sweep held the lock (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	sandboxMu.Unlock()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("upload did not proceed once the lock was released")
+	}
+}
+
+// The lock must be released even when the critical section panics: the run's
+// deferred oidcWg/refreshWg waits would otherwise block on a refresher that
+// can never acquire it, hanging the process instead of surfacing the panic.
+func TestWithSandboxLock_ReleasesTheLockOnPanic(t *testing.T) {
+	assert.Panics(t, func() {
+		_ = withSandboxLock(context.Background(), nil, func() error { panic("boom") })
+	})
+	require.True(t, sandboxMu.TryLock(), "the sandbox lock is still held after a panic")
+	sandboxMu.Unlock()
+}
+
+// A sweep waiting on a credential refresher must say so: nothing else prints
+// between iterations, so an unreported wait looks like a stalled run.
+func TestWithSandboxLock_ReportsALongWait(t *testing.T) {
+	original := sandboxLockWarnAfter
+	sandboxLockWarnAfter = 50 * time.Millisecond
+	t.Cleanup(func() { sandboxLockWarnAfter = original })
+
+	waited := make(chan time.Duration, 4)
+	ran := make(chan struct{})
+	done := make(chan error, 1)
+
+	sandboxMu.Lock()
+	go func() {
+		done <- withSandboxLock(
+			context.Background(),
+			func(d time.Duration) { waited <- d },
+			func() error { close(ran); return nil },
+		)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		sandboxMu.Unlock()
+		t.Fatal("no report while the lock was held")
+	}
+	select {
+	case <-ran:
+		sandboxMu.Unlock()
+		t.Fatal("the critical section ran while the lock was held")
+	default:
+	}
+
+	sandboxMu.Unlock()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the critical section did not run once the lock was released")
+	}
+	<-ran
+	assert.Empty(t, waited, "the wait is reported once, not once per poll")
+}
+
+// The common case says nothing: a refresher waiting on a sweep is routine,
+// and every refresher passes a nil notify.
+func TestWithSandboxLock_UncontendedRunsWithoutReporting(t *testing.T) {
+	notified := 0
+	require.NoError(t, withSandboxLock(context.Background(), func(time.Duration) { notified++ }, func() error { return nil }))
+	assert.Equal(t, 0, notified)
+	require.True(t, sandboxMu.TryLock(), "the sandbox lock is still held after the call returned")
+	sandboxMu.Unlock()
+}
+
+// A waiter whose run is shutting down must not sit behind the holder's
+// in-flight sandbox exec (up to the documented ~45s hold): a cancelled
+// context abandons the wait, and the critical section never runs.
+func TestWithSandboxLock_AbandonsTheWaitWhenCancelled(t *testing.T) {
+	sandboxMu.Lock()
+	defer sandboxMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := false
+	done := make(chan error, 1)
+	go func() {
+		done <- withSandboxLock(ctx, nil, func() error { ran = true; return nil })
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("returned while the lock was held (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait did not stop on cancellation")
+	}
+	assert.False(t, ran, "the critical section ran without the lock")
 }

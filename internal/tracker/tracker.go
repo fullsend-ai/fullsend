@@ -12,7 +12,8 @@
 // GitLab.
 //
 // This package only defines the interface and thin adapters over
-// forge.Client (see ForgeClient). Nothing calls tracker.Client yet.
+// forge.Client (see ForgeClient). Consumers include statuscomment
+// (run-status notifications) and reconcilestatus (orphan cleanup).
 package tracker
 
 import (
@@ -84,4 +85,39 @@ type Client interface {
 	// UpdateComment updates the body of commentID on the issue (project, number).
 	// number is included because Jira requires the issue key to update a comment.
 	UpdateComment(ctx context.Context, project string, number int, commentID string, body Body) error
+	// DeleteComment removes the comment identified by commentID from the issue.
+	// number is included because Jira requires the issue key to delete a comment.
+	DeleteComment(ctx context.Context, project string, number int, commentID string) error
+}
+
+// StatusCommentClient is an optional capability for trackers that can store
+// run-status identity and lifecycle state outside the visible comment body.
+// Jira implements this with comment entity properties. Trackers without this
+// capability keep using invisible HTML markers in comment bodies.
+type StatusCommentClient interface {
+	CreateStatusComment(ctx context.Context, project string, number int, body Body, marker string, terminal bool) (*Comment, error)
+	UpdateStatusComment(ctx context.Context, project string, number int, commentID string, body Body, marker string, terminal bool) error
+	FindStatusComment(ctx context.Context, project string, number int, marker string) (comment *Comment, terminal bool, err error)
+	IsStatusComment(ctx context.Context, project string, number int, commentID string) (bool, error)
+}
+
+// Reactor is an optional capability for adding and removing emoji
+// reactions on issues and comments. Tracker reaction support varies:
+// GitHub and GitLab support reactions on both issues and comments;
+// Jira Cloud supports reactions on comments but not on issues. Because
+// the interface includes issue-level reactions, JiraClient does not
+// implement Reactor currently — adding Jira comment-reaction support
+// is straightforward once needed. Consumers should type-assert their
+// tracker.Client to Reactor before calling reaction methods and
+// silently skip reactions when the tracker does not implement it.
+type Reactor interface {
+	// AddIssueReaction adds an emoji reaction to an issue or pull request.
+	// content is the reaction type (e.g. "eyes", "+1", "confused").
+	AddIssueReaction(ctx context.Context, project string, number int, content string) (id int64, err error)
+	// DeleteIssueReaction removes a previously added issue reaction by ID.
+	DeleteIssueReaction(ctx context.Context, project string, number int, reactionID int64) error
+	// AddCommentReaction adds an emoji reaction to a specific comment.
+	AddCommentReaction(ctx context.Context, project string, number int, commentID string, content string) (id int64, err error)
+	// DeleteCommentReaction removes a previously added comment reaction by ID.
+	DeleteCommentReaction(ctx context.Context, project string, number int, commentID string, reactionID int64) error
 }

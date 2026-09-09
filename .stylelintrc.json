@@ -2,6 +2,7 @@
   "extends": ["stylelint-config-standard", "stylelint-config-html/vue"],
   "rules": {
     "custom-property-pattern": null,
-    "selector-class-pattern": null
+    "selector-class-pattern": null,
+    "property-no-vendor-prefix": [true, { "ignoreProperties": ["-webkit-background-clip", "-webkit-backdrop-filter"] }]
   }
 }

@@ -18,17 +18,21 @@ var gcpProjectPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 func newInferenceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inference",
-		Short: "Manage inference credentials (requires GCP access)",
-		Long: `Commands for provisioning and inspecting inference WIF infrastructure.
+		Short: "Manage inference credentials (GCP Vertex, OpenAI)",
+		Long: `Commands for provisioning and inspecting inference credentials.
 
-These commands only require GCP project access — no GitHub token or
-mint project is needed. Use them to set up Workload Identity Federation
-for Agent Platform inference, then hand off the WIF provider resource name
-to the GitHub admin who runs 'fullsend github setup'.`,
+'provision', 'deprovision' and 'status' set up Workload Identity
+Federation for Agent Platform (Vertex) inference and only require GCP
+project access — no GitHub token or mint project is needed. Hand the WIF
+provider resource name to the GitHub admin who runs 'fullsend github setup'.
+
+'openai' enrols repositories with OpenAI Workload Identity Federation for
+GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.`,
 	}
 	cmd.AddCommand(newInferenceProvisionCmd())
 	cmd.AddCommand(newInferenceStatusCmd())
 	cmd.AddCommand(newInferenceDeprovisionCmd())
+	cmd.AddCommand(newInferenceOpenAICmd())
 	return cmd
 }
 

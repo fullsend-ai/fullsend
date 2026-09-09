@@ -27,6 +27,12 @@ Related: [#877](https://github.com/fullsend-ai/fullsend/issues/877)
 (agents must not model their own authority limitations — this ADR
 implements the platform-level enforcement that principle requires).
 
+Living contract:
+[Authorization Contract v1](../normative/authorization/v1/)
+consolidates the normative rules from this ADR and subsequent
+implementation changes into a single reference for dispatch
+implementations, forge adapters, and harness authors.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)
@@ -123,7 +129,7 @@ push access to the repository."
 | `pull_request_target.ready_for_review` | PR author | Yes (same branch as opened/synchronize) |
 | `pull_request_target.closed` | Closer | Already implicit (requires write access) |
 | `pull_request_review.submitted` | Reviewer | Already gated (requires review-bot authorship) |
-| `issue_comment` (needs-info re-triage) | Commenter | Weaker gate: `author_association != NONE` or issue author (intentional — allows clarification from external reporters) |
+| `issue_comment` (needs-info re-triage) | Commenter | ~~Weaker gate: `author_association != NONE` or issue author (intentional — allows clarification from external reporters)~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — automatic needs-info re-triage replaced by explicit `/fs-triage` command |
 
 For external contributors (issues opened or PRs submitted by
 non-members), the agent does not fire automatically. A maintainer can

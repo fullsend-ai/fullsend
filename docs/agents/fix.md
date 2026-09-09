@@ -1,3 +1,7 @@
+---
+description: How the fullsend fix agent reads PR review feedback, implements targeted fixes, runs tests and linters, and commits the result.
+---
+
 # Fix Agent
 
 ![Fix agent icon](icons/coder.png)
@@ -21,7 +25,7 @@ The fix agent has two operating modes with different primary inputs:
 
 | Input | Source | How it gets there |
 |-------|--------|-------------------|
-| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
+| Review body | Latest `CHANGES_REQUESTED` review from a review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
 | Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
@@ -34,7 +38,7 @@ The fix agent has two operating modes with different primary inputs:
 | PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
 | Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
-| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
+| Review body (if any) | Prior `CHANGES_REQUESTED` review from a review bot | Still injected as `review-body.txt`, but human instruction takes precedence |
 
 When a human instruction is present, it supersedes the review body as the
 primary directive.

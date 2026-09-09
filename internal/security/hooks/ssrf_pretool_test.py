@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import socket
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -1195,3 +1198,723 @@ class TestEgressAllowlistValidateUrl:
         ):
             result = hook.validate_url(url)
             assert result is None  # allowed
+
+
+# ===========================================================================
+# Inert-pipeline exemption tests (issue #6541)
+#
+# The _pipeline_is_inert() path skips SSRF URL validation when every stage of
+# a Bash command is a known non-network command.  Security regression tests
+# verify that network-capable commands, shell reentry, command substitution,
+# process substitution, and /dev/tcp devices all defeat the exemption.
+# ===========================================================================
+
+
+class TestHasCommandSubstitution:
+    """Unit tests for command/process substitution detection."""
+
+    def test_dollar_paren(self, hook):
+        assert hook._has_command_substitution("echo $(whoami)")
+
+    def test_backtick(self, hook):
+        assert hook._has_command_substitution("echo `whoami`")
+
+    def test_process_substitution_lt(self, hook):
+        assert hook._has_command_substitution("diff <(ls) <(ls)")
+
+    def test_process_substitution_gt(self, hook):
+        assert hook._has_command_substitution("tee >(cat)")
+
+    def test_dollar_paren_in_single_quotes_is_literal(self, hook):
+        assert not hook._has_command_substitution("echo '$(not_a_subshell)'")
+
+    def test_backtick_in_single_quotes_is_literal(self, hook):
+        assert not hook._has_command_substitution("echo '`not_a_subshell`'")
+
+    def test_no_substitution(self, hook):
+        assert not hook._has_command_substitution("echo hello world")
+
+    def test_dollar_sign_without_paren(self, hook):
+        assert not hook._has_command_substitution("echo $HOME")
+
+    def test_escaped_dollar_paren(self, hook):
+        assert not hook._has_command_substitution("echo \\$(whoami)")
+
+    def test_single_quote_inside_double_quotes_does_not_hide_substitution(self, hook):
+        """Single quote inside double quotes is literal — must not enter sq mode."""
+        assert hook._has_command_substitution("""echo "'"$(curl http://example.com)"'" """)
+
+    def test_backtick_inside_double_quotes_is_active(self, hook):
+        assert hook._has_command_substitution('echo "`whoami`"')
+
+    def test_dollar_paren_inside_double_quotes_is_active(self, hook):
+        assert hook._has_command_substitution('echo "$(whoami)"')
+
+    def test_process_substitution_inside_double_quotes_is_literal(self, hook):
+        """<() inside double quotes is literal text — not process substitution."""
+        assert not hook._has_command_substitution('echo "<(not_a_subshell)"')
+
+    def test_gt_paren_inside_double_quotes_is_literal(self, hook):
+        """>() inside double quotes is literal text — not process substitution."""
+        assert not hook._has_command_substitution('echo ">(not_a_subshell)"')
+
+
+# ---------------------------------------------------------------------------
+# _split_command_stages tests
+# ---------------------------------------------------------------------------
+
+
+class TestSplitCommandStages:
+    """Unit tests for quote-aware pipeline/sequence splitting."""
+
+    def test_simple_pipe(self, hook):
+        assert hook._split_command_stages("echo hello | grep hello") == [
+            "echo hello",
+            "grep hello",
+        ]
+
+    def test_semicolon(self, hook):
+        assert hook._split_command_stages("echo a; echo b") == ["echo a", "echo b"]
+
+    def test_and_operator(self, hook):
+        assert hook._split_command_stages("echo a && echo b") == ["echo a", "echo b"]
+
+    def test_or_operator(self, hook):
+        assert hook._split_command_stages("echo a || echo b") == ["echo a", "echo b"]
+
+    def test_pipe_inside_single_quotes_not_split(self, hook):
+        result = hook._split_command_stages("sed 's|https://github.com/||'")
+        assert len(result) == 1
+        assert "sed" in result[0]
+
+    def test_pipe_inside_double_quotes_not_split(self, hook):
+        result = hook._split_command_stages('echo "a|b"')
+        assert len(result) == 1
+
+    def test_mixed_pipe_and_quoted_pipe(self, hook):
+        result = hook._split_command_stages(
+            "echo \"https://github.com/o/r/issues/925\" | sed 's|https://github.com/||'"
+        )
+        assert len(result) == 2
+        assert "echo" in result[0]
+        assert "sed" in result[1]
+
+    def test_newline_splits(self, hook):
+        result = hook._split_command_stages("echo a\necho b")
+        assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# _extract_base_command tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractBaseCommand:
+    """Unit tests for command name extraction from a stage."""
+
+    def test_simple_command(self, hook):
+        assert hook._extract_base_command("echo hello") == "echo"
+
+    def test_command_with_path_is_unknown(self, hook):
+        """A path-qualified executable is not trusted by basename (/tmp/echo)."""
+        assert hook._extract_base_command("/usr/bin/sed 's|x||'") is None
+        assert hook._extract_base_command("/tmp/echo hello") is None
+
+    def test_variable_assignment_then_command_is_unknown(self, hook):
+        """An assignment prefix can load code before the command runs."""
+        assert hook._extract_base_command("FOO=bar echo hello") is None
+        assert hook._extract_base_command("LD_PRELOAD=/tmp/x.so grep x f") is None
+
+    def test_variable_assignment_only(self, hook):
+        # A bare assignment is still parsed — the "command" is the value part.
+        # _pipeline_is_inert handles this by checking the result against
+        # _INERT_COMMANDS, which won't match the value → fail closed.
+        result = hook._extract_base_command("FOO=bar")
+        # "FOO=bar" splits into one token which matches the assignment pattern,
+        # so there's no command left → None
+        assert result is None
+
+    def test_redirection_skipped(self, hook):
+        assert hook._extract_base_command("echo hello > /tmp/out") == "echo"
+
+    def test_here_string_skipped(self, hook):
+        assert hook._extract_base_command("sed 's|x||' <<< input") == "sed"
+
+    def test_quoted_command(self, hook):
+        assert hook._extract_base_command("'echo' hello") == "echo"
+
+    def test_trailing_slash_returns_none(self, hook):
+        """A path ending in / yields an empty basename — return None, not ''."""
+        assert hook._extract_base_command("/usr/bin/") is None
+
+
+# ---------------------------------------------------------------------------
+# _pipeline_is_inert tests
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineIsInert:
+    """Unit tests for the inert-pipeline detector."""
+
+    # --- Inert commands (should return True) ---
+
+    def test_echo_pipe_cut(self, hook):
+        cmd = "echo https://github.com/o/r/issues/925 | cut -d/ -f4,5"
+        assert hook._pipeline_is_inert(cmd)
+
+    def test_echo_alone(self, hook):
+        assert hook._pipeline_is_inert("echo https://github.com/foo")
+
+    def test_cat_pipe_grep_pipe_sort(self, hook):
+        cmd = "cat file.txt | grep 'https://example.com' | sort"
+        assert hook._pipeline_is_inert(cmd)
+
+    def test_printf_pipe_head(self, hook):
+        assert hook._pipeline_is_inert("printf '%s\\n' https://example.com | head -1")
+
+    def test_echo_pipe_jq(self, hook):
+        assert hook._pipeline_is_inert('echo \'{"url":"https://example.com"}\' | jq .url')
+
+    def test_echo_pipe_tr(self, hook):
+        assert hook._pipeline_is_inert("echo https://example.com | tr '/' ' '")
+
+    def test_echo_pipe_wc(self, hook):
+        assert hook._pipeline_is_inert("echo https://example.com | wc -c")
+
+    def test_echo_semicolon_echo(self, hook):
+        assert hook._pipeline_is_inert("echo https://github.com/a; echo https://github.com/b")
+
+    # --- Non-inert commands (should return False) ---
+
+    def test_curl_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("curl https://evil.com")
+
+    def test_wget_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("wget https://evil.com")
+
+    def test_python_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("python3 -c 'import urllib'")
+
+    def test_xargs_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("echo https://evil.com | xargs curl")
+
+    def test_pipe_to_curl_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("echo https://evil.com | curl -K -")
+
+    def test_unknown_command_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("myprogram https://example.com")
+
+    def test_sed_not_inert(self, hook):
+        """sed has GNU 'e' command/flag for shell execution — not safe."""
+        assert not hook._pipeline_is_inert(
+            "echo https://github.com/o/r/issues/925 | sed 's|https://github.com/||; s|/issues/.*||'"
+        )
+
+    def test_sed_alone_not_inert(self, hook):
+        """sed with here-string — not safe due to GNU 'e' command."""
+        assert not hook._pipeline_is_inert(
+            "sed 's|https://github.com/||'  <<< \"https://github.com/o/r/issues/925\""
+        )
+
+    def test_awk_not_inert(self, hook):
+        """awk has system(), getline-from-pipe — not safe."""
+        assert not hook._pipeline_is_inert("echo 'hello' | awk '{print $1}'")
+
+    def test_gawk_not_inert(self, hook):
+        """gawk has native TCP/UDP networking via /inet/ files."""
+        assert not hook._pipeline_is_inert("echo data | gawk '{print}'")
+
+    def test_mawk_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("echo data | mawk '{print}'")
+
+    def test_nawk_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("echo data | nawk '{print}'")
+
+    def test_tee_not_inert(self, hook):
+        """tee writes to arbitrary files — not safe for inert exemption."""
+        assert not hook._pipeline_is_inert("echo data | tee /tmp/out")
+
+    # --- Shell reentry (should return False) ---
+
+    def test_bash_c_not_inert(self, hook):
+        assert not hook._pipeline_is_inert('bash -c "echo https://evil.com"')
+
+    def test_sh_c_not_inert(self, hook):
+        assert not hook._pipeline_is_inert('sh -c "echo https://evil.com"')
+
+    def test_eval_not_inert(self, hook):
+        assert not hook._pipeline_is_inert('eval "echo https://evil.com"')
+
+    def test_exec_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("exec curl https://evil.com")
+
+    def test_bash_lc_combined_flag_not_inert(self, hook):
+        """bash -lc combines login + command flags — still shell reentry."""
+        assert not hook._pipeline_is_inert('bash -lc "curl https://evil.com"')
+
+    def test_sh_xc_combined_flag_not_inert(self, hook):
+        """sh -xc combines trace + command flags — still shell reentry."""
+        assert not hook._pipeline_is_inert('sh -xc "curl https://evil.com"')
+
+    def test_bash_norc_c_flag_not_inert(self, hook):
+        """bash --norc -c has intervening long flag — still shell reentry."""
+        assert not hook._pipeline_is_inert('bash --norc -c "curl https://evil.com"')
+
+    def test_bash_ic_combined_flag_not_inert(self, hook):
+        """bash -ic combines interactive + command — still shell reentry."""
+        assert not hook._pipeline_is_inert('bash -ic "curl https://evil.com"')
+
+    # --- Command substitution (should return False) ---
+
+    def test_dollar_paren_not_inert(self, hook):
+        assert not hook._pipeline_is_inert(
+            "REPO=$(echo \"$ISSUE_URL\" | sed 's|https://github.com/||')"
+        )
+
+    def test_backtick_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("REPO=`echo https://example.com | cut -d/ -f3`")
+
+    def test_process_substitution_not_inert(self, hook):
+        assert not hook._pipeline_is_inert("diff <(curl https://evil.com) <(echo foo)")
+
+    # --- Double-quote context (should return False) ---
+
+    def test_single_quote_in_double_quotes_hides_subst_not_inert(self, hook):
+        """Single quote inside double quotes must not hide command substitution."""
+        cmd = """echo "'"$(curl http://metadata-endpoint/latest/)"'" """
+        assert not hook._pipeline_is_inert(cmd)
+
+    # --- Literal substitution in single quotes IS inert ---
+
+    def test_literal_dollar_paren_in_single_quotes_is_inert(self, hook):
+        cmd = "echo '$(not_a_subshell)' | grep pattern"
+        assert hook._pipeline_is_inert(cmd)
+
+
+# ---------------------------------------------------------------------------
+# process_tool_call integration tests — false positives fixed (#6541)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessToolCallInertPipeline:
+    """Verify URL literals in inert pipelines are not blocked (issue #6541).
+
+    Note: sed and awk pipelines are no longer exempted (removed from
+    _INERT_COMMANDS due to code-execution capabilities).  Those false
+    positives are addressed by PR #6536's per-argument context approach.
+    """
+
+    def test_echo_url_piped_to_cut_not_blocked(self, hook):
+        """Reproduction case from #6541: echo URL | cut."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo https://github.com/o/r/issues/925 | cut -d/ -f4,5",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    def test_echo_url_alone_not_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo https://github.com/fullsend-ai/agents/issues/925",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    def test_cat_grep_url_not_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "cat README.md | grep 'https://github.com/owner/repo'",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    def test_echo_url_pipe_jq_not_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'echo \'{"url":"https://github.com/o/r"}\' | jq .url',
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    def test_printf_url_pipe_head_not_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "printf '%s\\n' https://github.com/o/r | head -1",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    # ---------------------------------------------------------------------------
+    # process_tool_call integration tests — SSRF vectors still blocked
+    # ---------------------------------------------------------------------------
+
+    def test_dev_tcp_as_string_data_allowed(self, hook):
+        """A /dev/tcp mention in echo text is data, not a redirection (no URL, no block)."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'echo "/dev/tcp/host/80 is a bash device"'},
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+
+class TestProcessToolCallInertSSRFStillBlocked:
+    """Verify actual SSRF vectors are still caught after the inert-pipeline change."""
+
+    def test_curl_to_metadata_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl http://169.254.169.254/latest/meta-data/"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None, "curl to metadata endpoint should be blocked"
+        assert "169.254.169.254" in result
+
+    def test_curl_to_private_ip_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl http://192.168.1.1/admin"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+
+    def test_wget_to_metadata_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "wget http://169.254.169.254/latest/meta-data/"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+
+    def test_webfetch_blocked_scheme(self, hook):
+        tool_input = {
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "file:///etc/passwd"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "Blocked scheme" in result
+
+    def test_webfetch_private_ip_blocked(self, hook):
+        tool_input = {
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "http://10.0.0.1/internal"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+
+    def test_webfetch_metadata_blocked(self, hook):
+        tool_input = {
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "http://169.254.169.254/latest/meta-data/"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+
+    def test_bash_file_scheme_still_blocked(self, hook):
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "curl file:///etc/shadow"},
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "Blocked scheme" in result
+
+    def test_echo_then_curl_both_urls_validated(self, hook):
+        """echo URL && curl URL — curl makes the pipeline non-inert."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "echo https://example.test/safe"
+                    " && curl http://169.254.169.254/latest/meta-data/"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "SSRF blocked" in result
+
+    def test_grep_pipe_to_xargs_curl_blocked(self, hook):
+        """grep URL piped to xargs curl must be blocked (xargs not inert)."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "grep -oP 'http://169.254.169.254/latest/' file | xargs curl",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_bash_c_nested_shell_blocked(self, hook):
+        """bash -c with grep piped to curl must be blocked (shell reentry)."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("bash -c \"grep 'http://169.254.169.254/latest/' f | xargs curl\""),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_eval_blocked(self, hook):
+        """eval re-parses the string — URL must not be exempted."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'eval "curl http://169.254.169.254/latest/meta-data/"',
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_command_substitution_with_curl_blocked(self, hook):
+        """$() with curl inside — substitution defeats inert check."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "RESULT=$(curl http://169.254.169.254/latest/meta-data/)",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_process_substitution_blocked(self, hook):
+        """<(curl URL) process substitution — must not be exempted."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "diff <(curl http://169.254.169.254/latest/) /dev/null",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_unknown_command_still_validated(self, hook):
+        """Unknown commands must not be exempted — fail closed."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "myprogram http://169.254.169.254/latest/meta-data/",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_backgrounded_then_curl_blocked(self, hook):
+        """echo URL & curl URL — background operator creates two stages."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "echo https://example.test/safe & curl http://169.254.169.254/latest/meta-data/"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "SSRF blocked" in result
+
+    def test_sed_cross_segment_semicolon_blocked(self, hook):
+        """sed in one statement must not exempt curl in a later statement."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("echo sed 's|'; curl http://169.254.169.254/latest/meta-data/"),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_sed_cross_segment_and_blocked(self, hook):
+        """sed in one statement must not exempt curl after &&."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("echo sed 's/' && curl http://169.254.169.254/latest/meta-data/"),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_awk_system_bypass_blocked(self, hook):
+        """awk system() can execute arbitrary commands — not inert."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    "awk 'BEGIN{system(\"curl http://169.254.169.254/latest/meta-data/\")}'"
+                ),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_sed_e_command_bypass_blocked(self, hook):
+        """GNU sed 'e' flag can execute shell — sed pipelines are not inert.
+
+        Uses a URL visible to URL_PATTERN to confirm the pipeline goes
+        through full validation now that sed is removed from _INERT_COMMANDS.
+        """
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo http://169.254.169.254/latest/meta-data/ | sed 's/^/GET /e'",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_dev_tcp_redirect_not_inert(self, hook):
+        """Bash /dev/tcp makes network connections via redirections."""
+        assert not hook._pipeline_is_inert("echo 'GET / HTTP/1.0' > /dev/tcp/169.254.169.254/80")
+
+    def test_dev_udp_redirect_not_inert(self, hook):
+        """Bash /dev/udp makes network connections via redirections."""
+        assert not hook._pipeline_is_inert("read -r line < /dev/udp/10.0.0.1/53")
+
+    def test_dev_tcp_in_otherwise_inert_pipeline_not_inert(self, hook):
+        """echo + /dev/tcp — both are 'inert' commands but /dev/tcp is a network device."""
+        assert not hook._pipeline_is_inert("echo 'GET /' > /dev/tcp/metadata.google.internal/80")
+
+    def test_dev_tcp_single_quoted_evasion_not_inert(self, hook):
+        """Shell quotes in /dev/tcp path: /dev/'tcp'/HOST/80 is equivalent at runtime."""
+        assert not hook._pipeline_is_inert("read line < /dev/'tcp'/169.254.169.254/80")
+
+    def test_dev_tcp_double_quoted_evasion_not_inert(self, hook):
+        """Shell quotes in /dev/tcp path: /dev/\"tcp\"/HOST/80 is equivalent at runtime."""
+        assert not hook._pipeline_is_inert('echo "GET /" > /dev/"tcp"/169.254.169.254/80')
+
+    def test_dev_udp_single_quoted_evasion_not_inert(self, hook):
+        """Shell quotes in /dev/udp path: /dev/'udp'/HOST/53 is equivalent at runtime."""
+        assert not hook._pipeline_is_inert("read line < /dev/'udp'/10.0.0.1/53")
+
+    def test_dev_tcp_partial_quote_evasion_not_inert(self, hook):
+        """Partial quoting: /dev/tc'p'/HOST/80 resolves to /dev/tcp/HOST/80."""
+        assert not hook._pipeline_is_inert("read line < /dev/tc'p'/169.254.169.254/80")
+
+    def test_dev_tcp_variable_expansion_not_inert(self, hook):
+        """Variable expansion: /dev/$PROTO/HOST/80 could resolve to /dev/tcp/."""
+        assert not hook._pipeline_is_inert(
+            "export PROTO=tcp; read line < /dev/$PROTO/169.254.169.254/80"
+        )
+
+    def test_dev_tcp_variable_expansion_curly_not_inert(self, hook):
+        """Variable expansion with braces: /dev/${PROTO}/HOST/80."""
+        assert not hook._pipeline_is_inert("read line < /dev/${PROTO}/169.254.169.254/80")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/tmp/echo http://169.254.169.254/latest/meta-data",
+            "LD_PRELOAD=/tmp/x.so grep x http://169.254.169.254/ f",
+            "echo http://169.254.169.254/ | sort --compress-program=/tmp/fetch",
+            "echo http://169.254.169.254/ | rg --p\\re /tmp/fetch x",
+        ],
+    )
+    def test_untrusted_executable_or_exec_flag_still_validated(self, hook, command):
+        """Path-qualified commands, assignment prefixes and helper-exec flags fail closed."""
+        result = hook.process_tool_call({"tool_name": "Bash", "tool_input": {"command": command}})
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_tee_write_not_exempted(self, hook):
+        """tee writes to arbitrary files — no longer exempted as inert."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo http://169.254.169.254/latest/meta-data/ | tee /tmp/out",
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+    def test_single_quote_in_dq_hides_substitution_blocked(self, hook):
+        """Single quote inside double quotes must not hide command substitution."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": ("""echo "'"$(curl http://169.254.169.254/latest/meta-data/)"'" """),
+            },
+        }
+        result = hook.process_tool_call(tool_input)
+        assert result is not None
+        assert "169.254.169.254" in result
+
+
+# ---------------------------------------------------------------------------
+# Subprocess-based integration tests — stdin/stdout/exit-code protocol
+# ---------------------------------------------------------------------------
+
+
+def _run_hook(stdin_data: str) -> tuple[int, str]:
+    """Run the hook as a subprocess, matching the convention in other hook tests."""
+    result = subprocess.run(
+        [sys.executable, HOOK_PATH],
+        input=stdin_data,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout
+
+
+class TestSubprocessProtocol:
+    """Verify the hook's stdin/stdout/exit-code contract via subprocess."""
+
+    def test_inert_pipeline_allowed(self):
+        """Inert pipeline should exit 0 with no stdout (allowed)."""
+        payload = json.dumps(
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "echo https://github.com/o/r/issues/925 | cut -d/ -f4,5",
+                },
+            }
+        )
+        code, stdout = _run_hook(payload)
+        assert code == 0
+        assert stdout == ""
+
+    def test_curl_to_metadata_blocked(self):
+        """curl to metadata endpoint should exit 1 with block JSON on stdout."""
+        payload = json.dumps(
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "curl http://169.254.169.254/latest/meta-data/",
+                },
+            }
+        )
+        code, stdout = _run_hook(payload)
+        assert code == 1
+        response = json.loads(stdout)
+        assert response["decision"] == "block"
+        assert "169.254.169.254" in response["reason"]
+
+    def test_empty_input_allowed(self):
+        """Empty stdin should exit 0 (no tool call to validate)."""
+        code, stdout = _run_hook("")
+        assert code == 0
+
+    def test_malformed_json_blocked(self):
+        """Unparseable JSON should exit 1 (fail-closed)."""
+        code, stdout = _run_hook("{not json")
+        assert code == 1
+        response = json.loads(stdout)
+        assert response["decision"] == "block"

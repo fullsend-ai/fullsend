@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -417,67 +418,335 @@ func (c *LiveClient) GetOrgVariableRepos(_ context.Context, _, _ string) ([]int6
 }
 
 // ---------------------------------------------------------------------------
-// CI/Workflow operations — GitHub Actions concepts, not supported
+// CI/Workflow operations — mapped from GitLab pipelines/jobs to forge types
 // ---------------------------------------------------------------------------
 
-// GetWorkflow is not supported on GitLab (GitHub Actions concept).
+// mapPipelineStatus maps a GitLab pipeline or job status to the portable
+// forge (Status, Conclusion) pair used by the behaviour test framework.
+//
+// GitLab statuses: created, waiting_for_resource, preparing, pending,
+// running, success, failed, canceled, skipped, manual, scheduled.
+func mapPipelineStatus(glStatus string) (status, conclusion string) {
+	switch glStatus {
+	case "success":
+		return "completed", "success"
+	case "failed":
+		return "completed", "failure"
+	case "canceled":
+		return "completed", "cancelled"
+	case "skipped":
+		return "completed", "skipped"
+	default:
+		// created, waiting_for_resource, preparing, pending, running,
+		// manual, scheduled — all in-progress from the forge's perspective.
+		return "in_progress", ""
+	}
+}
+
+// pipelineToWorkflowRun converts a GitLab pipeline JSON response to a
+// portable forge.WorkflowRun.
+func pipelineToWorkflowRun(p glPipeline) forge.WorkflowRun {
+	status, conclusion := mapPipelineStatus(p.Status)
+	return forge.WorkflowRun{
+		ID:         int(p.ID),
+		Name:       p.Ref,
+		Event:      p.Source,
+		Status:     status,
+		Conclusion: conclusion,
+		HTMLURL:    p.WebURL,
+		CreatedAt:  p.CreatedAt,
+	}
+}
+
+// glPipeline is the JSON shape returned by GET /projects/:id/pipelines
+// and GET /projects/:id/pipelines/:pid.
+type glPipeline struct {
+	ID        int64  `json:"id"`
+	Status    string `json:"status"`
+	Ref       string `json:"ref"`
+	Source    string `json:"source"`
+	WebURL    string `json:"web_url"`
+	CreatedAt string `json:"created_at"`
+}
+
+// glJob is the JSON shape returned by GET /projects/:id/pipelines/:pid/jobs.
+type glJob struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Artifacts []struct {
+		Filename string `json:"filename"`
+	} `json:"artifacts"`
+}
+
+// GetWorkflow is not supported on GitLab — GitLab CI configuration lives
+// in .gitlab-ci.yml, not in individually addressable workflow objects.
 func (c *LiveClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
 	return nil, forge.ErrNotSupported
 }
 
-// GetLatestWorkflowRun is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) GetLatestWorkflowRun(_ context.Context, _, _, _ string) (*forge.WorkflowRun, error) {
-	return nil, forge.ErrNotSupported
+// GetLatestWorkflowRun returns the newest pipeline for the project,
+// optionally filtered by ref (workflowFile is treated as the ref name).
+func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*forge.WorkflowRun, error) {
+	path := fmt.Sprintf("/projects/%s/pipelines?per_page=1&order_by=id&sort=desc",
+		projectPath(owner, repo))
+	if workflowFile != "" {
+		path += "&ref=" + url.QueryEscape(workflowFile)
+	}
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("get latest pipeline: %w", err)
+	}
+	var pipelines []glPipeline
+	if err := decodeJSON(resp, &pipelines); err != nil {
+		return nil, fmt.Errorf("decode latest pipeline: %w", err)
+	}
+	if len(pipelines) == 0 {
+		return nil, nil
+	}
+	run := pipelineToWorkflowRun(pipelines[0])
+	return &run, nil
 }
 
-// GetWorkflowRun is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) GetWorkflowRun(_ context.Context, _, _ string, _ int) (*forge.WorkflowRun, error) {
-	return nil, forge.ErrNotSupported
+// GetWorkflowRun returns a single pipeline by ID, mapped to a WorkflowRun.
+func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*forge.WorkflowRun, error) {
+	path := fmt.Sprintf("/projects/%s/pipelines/%d",
+		projectPath(owner, repo), runID)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("get pipeline %d: %w", runID, err)
+	}
+	var p glPipeline
+	if err := decodeJSON(resp, &p); err != nil {
+		return nil, fmt.Errorf("decode pipeline %d: %w", runID, err)
+	}
+	run := pipelineToWorkflowRun(p)
+	return &run, nil
 }
 
-// DispatchWorkflow is not supported on GitLab (GitHub Actions concept).
+// DispatchWorkflow is not directly supported on GitLab — use CreatePipeline
+// with variables instead (already implemented above).
 func (c *LiveClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ map[string]string) error {
 	return forge.ErrNotSupported
 }
 
-// ListWorkflowRuns is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
-	return nil, forge.ErrNotSupported
+// ListWorkflowRuns lists recent pipelines, optionally filtered by ref
+// (workflowFile is treated as the ref name). Returns up to 100 pipelines.
+func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
+	path := fmt.Sprintf("/projects/%s/pipelines?per_page=100&order_by=id&sort=desc",
+		projectPath(owner, repo))
+	if workflowFile != "" {
+		path += "&ref=" + url.QueryEscape(workflowFile)
+	}
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("list pipelines: %w", err)
+	}
+	var pipelines []glPipeline
+	if err := decodeJSON(resp, &pipelines); err != nil {
+		return nil, fmt.Errorf("decode pipelines: %w", err)
+	}
+	runs := make([]forge.WorkflowRun, len(pipelines))
+	for i, p := range pipelines {
+		runs[i] = pipelineToWorkflowRun(p)
+	}
+	return runs, nil
 }
 
-// ListRecentWorkflowRuns is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) ListRecentWorkflowRuns(_ context.Context, _, _ string, _ int) ([]forge.WorkflowRun, error) {
-	return nil, forge.ErrNotSupported
+// ListRecentWorkflowRuns lists the most recent pipelines regardless of ref.
+func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]forge.WorkflowRun, error) {
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	path := fmt.Sprintf("/projects/%s/pipelines?per_page=%d&order_by=id&sort=desc",
+		projectPath(owner, repo), perPage)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("list recent pipelines: %w", err)
+	}
+	var pipelines []glPipeline
+	if err := decodeJSON(resp, &pipelines); err != nil {
+		return nil, fmt.Errorf("decode recent pipelines: %w", err)
+	}
+	runs := make([]forge.WorkflowRun, len(pipelines))
+	for i, p := range pipelines {
+		runs[i] = pipelineToWorkflowRun(p)
+	}
+	return runs, nil
 }
 
-// ListWorkflowRunJobs is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) ListWorkflowRunJobs(_ context.Context, _, _ string, _ int) ([]forge.WorkflowJob, error) {
-	return nil, forge.ErrNotSupported
+// ListWorkflowRunJobs lists the jobs for a given pipeline, mapped to
+// WorkflowJob.
+func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	path := fmt.Sprintf("/projects/%s/pipelines/%d/jobs?per_page=100",
+		projectPath(owner, repo), runID)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("list pipeline jobs: %w", err)
+	}
+	var jobs []glJob
+	if err := decodeJSON(resp, &jobs); err != nil {
+		return nil, fmt.Errorf("decode pipeline jobs: %w", err)
+	}
+	result := make([]forge.WorkflowJob, len(jobs))
+	for i, j := range jobs {
+		status, conclusion := mapPipelineStatus(j.Status)
+		result[i] = forge.WorkflowJob{
+			ID:         int(j.ID),
+			Name:       j.Name,
+			Status:     status,
+			Conclusion: conclusion,
+		}
+	}
+	return result, nil
 }
 
-// ListWorkflowRunArtifacts is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, _ int) ([]forge.WorkflowArtifact, error) {
-	return nil, forge.ErrNotSupported
+// ListWorkflowRunArtifacts lists the artifacts produced by a pipeline's
+// jobs. GitLab artifacts are per-job; this method enumerates all jobs
+// and returns one WorkflowArtifact per job that has artifacts.
+func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
+	path := fmt.Sprintf("/projects/%s/pipelines/%d/jobs?per_page=100",
+		projectPath(owner, repo), runID)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("list pipeline job artifacts: %w", err)
+	}
+	var jobs []glJob
+	if err := decodeJSON(resp, &jobs); err != nil {
+		return nil, fmt.Errorf("decode pipeline job artifacts: %w", err)
+	}
+	var arts []forge.WorkflowArtifact
+	for _, j := range jobs {
+		if len(j.Artifacts) > 0 {
+			arts = append(arts, forge.WorkflowArtifact{
+				ID:   int(j.ID),
+				Name: j.Name,
+			})
+		}
+	}
+	return arts, nil
 }
 
-// DownloadWorkflowRunArtifact is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) DownloadWorkflowRunArtifact(_ context.Context, _, _ string, _ int) ([]byte, error) {
-	return nil, forge.ErrNotSupported
+// DownloadWorkflowRunArtifact downloads the artifact archive for a
+// GitLab job (the artifactID is the job ID).
+func (c *LiveClient) DownloadWorkflowRunArtifact(ctx context.Context, owner, repo string, artifactID int) ([]byte, error) {
+	path := fmt.Sprintf("/projects/%s/jobs/%d/artifacts",
+		projectPath(owner, repo), artifactID)
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("download job artifacts: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+	const maxArtifactSize = 100 << 20 // 100 MiB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxArtifactSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read job artifacts: %w", err)
+	}
+	if int64(len(data)) > maxArtifactSize {
+		return nil, fmt.Errorf("artifact exceeds %d byte limit", maxArtifactSize)
+	}
+	return data, nil
 }
 
-// ListRepositoryArtifacts is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) ListRepositoryArtifacts(_ context.Context, _, _ string, _ int) ([]forge.RepositoryArtifact, error) {
-	return nil, forge.ErrNotSupported
+// ListRepositoryArtifacts lists recent jobs that have artifacts across the
+// project. Each job with artifacts is returned as a RepositoryArtifact
+// with the job ID, name, creation time, and parent pipeline ID.
+func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]forge.RepositoryArtifact, error) {
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	path := fmt.Sprintf("/projects/%s/jobs?per_page=%d&order_by=id&sort=desc",
+		projectPath(owner, repo), perPage)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("list project jobs: %w", err)
+	}
+	var jobs []struct {
+		ID        int64  `json:"id"`
+		Name      string `json:"name"`
+		CreatedAt string `json:"created_at"`
+		Pipeline  struct {
+			ID int64 `json:"id"`
+		} `json:"pipeline"`
+		Artifacts []struct {
+			Filename string `json:"filename"`
+		} `json:"artifacts"`
+	}
+	if err := decodeJSON(resp, &jobs); err != nil {
+		return nil, fmt.Errorf("decode project jobs: %w", err)
+	}
+	var result []forge.RepositoryArtifact
+	for _, j := range jobs {
+		if len(j.Artifacts) > 0 {
+			result = append(result, forge.RepositoryArtifact{
+				ID:            int(j.ID),
+				Name:          j.Name,
+				CreatedAt:     j.CreatedAt,
+				WorkflowRunID: int(j.Pipeline.ID),
+			})
+		}
+	}
+	return result, nil
 }
 
-// GetWorkflowRunLogs is not supported on GitLab (GitHub Actions concept).
-func (c *LiveClient) GetWorkflowRunLogs(_ context.Context, _, _ string, _ int) (string, error) {
-	return "", forge.ErrNotSupported
+// GetWorkflowRunLogs concatenates the trace (log output) of all jobs in
+// a pipeline, separated by headers.
+func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error) {
+	jobs, err := c.ListWorkflowRunJobs(ctx, owner, repo, runID)
+	if err != nil {
+		return "", fmt.Errorf("list jobs for logs: %w", err)
+	}
+	const maxTraceSize = 10 << 20      // 10 MiB per job
+	const maxAggregateSize = 100 << 20 // 100 MiB total across all jobs
+
+	var b strings.Builder
+	var totalRead int64
+	for _, j := range jobs {
+		if totalRead >= maxAggregateSize {
+			fmt.Fprintf(&b, "=== aggregate trace limit (%d bytes) reached, skipping remaining jobs ===\n", maxAggregateSize)
+			break
+		}
+		tracePath := fmt.Sprintf("/projects/%s/jobs/%d/trace",
+			projectPath(owner, repo), j.ID)
+		resp, err := c.do(ctx, http.MethodGet, tracePath, nil)
+		if err != nil {
+			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			continue
+		}
+		if err := checkStatus(resp, http.StatusOK); err != nil {
+			resp.Body.Close()
+			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			continue
+		}
+		remaining := maxAggregateSize - totalRead
+		if remaining > maxTraceSize {
+			remaining = maxTraceSize
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining))
+		resp.Body.Close()
+		if readErr != nil {
+			fmt.Fprintf(&b, "=== Job %d (%s): error reading trace: %v ===\n", j.ID, j.Name, readErr)
+			continue
+		}
+		totalRead += int64(len(data))
+		fmt.Fprintf(&b, "=== Job %d (%s) ===\n%s\n", j.ID, j.Name, string(data))
+	}
+	return b.String(), nil
 }
 
-// GetWorkflowRunAnnotations is not supported on GitLab (GitHub Actions concept).
+// GetWorkflowRunAnnotations returns an empty slice — GitLab CI has no
+// annotations concept equivalent to GitHub Actions check-run annotations.
 func (c *LiveClient) GetWorkflowRunAnnotations(_ context.Context, _, _ string, _ int) ([]forge.Annotation, error) {
-	return nil, forge.ErrNotSupported
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------

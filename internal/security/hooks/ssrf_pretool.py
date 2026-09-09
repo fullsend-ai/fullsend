@@ -115,6 +115,127 @@ _PURE_VIEWERS = frozenset(
 # name and -c (``bash -x -c``, ``sh -l -c``, ``bash --norc -c``).
 _SHELL_REENTRY = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-c\b|\beval\b")
 
+# --- Inert-pipeline exemption (issue #6541) ---
+
+# Commands that definitely cannot make outbound network requests.
+# When *every* stage of a pipeline uses only inert commands (and the
+# pipeline has no substitution, shell reentry, or /dev/tcp-style device
+# access), URL literals in the command text are data — not network targets.
+#
+# Deliberately excluded: ``sed``/``awk`` (GNU sed ``e``, awk ``system()``
+# execute shells), ``tee``/``xargs``/``find`` (write or exec), ``read``/
+# ``yes`` (``read`` pairs with ``/dev/tcp`` redirections; ``yes`` floods),
+# and every interpreter or shell.  Unknown commands fail closed.
+_INERT_COMMANDS: frozenset[str] = frozenset(
+    {
+        # Text output / input
+        "echo",
+        "printf",
+        "cat",
+        "tac",
+        # Text processing
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "cut",
+        "tr",
+        "sort",
+        "uniq",
+        "wc",
+        "head",
+        "tail",
+        "paste",
+        "fold",
+        "fmt",
+        "column",
+        "rev",
+        "nl",
+        "comm",
+        "join",
+        "diff",
+        # Path manipulation
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        # Encoding / hashing
+        "base64",
+        "xxd",
+        "od",
+        "hexdump",
+        "md5sum",
+        "sha1sum",
+        "sha256sum",
+        "sha512sum",
+        "shasum",
+        # JSON / data processing
+        "jq",
+        "yq",
+        # File metadata
+        "stat",
+        "file",
+        "test",
+        "ls",
+        # Shell builtins (variable ops)
+        "export",
+        "local",
+        "declare",
+        "readonly",
+        "set",
+        "unset",
+        "true",
+        "false",
+        # Misc safe operations
+        "date",
+        "sleep",
+    }
+)
+
+# Additional shell-reentry shapes for the inert-pipeline check: combined
+# short-flag clusters (``bash -lc``, ``sh -xc``, ``bash --norc -lc``) and
+# ``exec``.  Kept separate from _SHELL_REENTRY so the sed/grep
+# pattern-context path above is unchanged.
+_SHELL_REENTRY_CLUSTER = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-\w*c\b|\bexec\b")
+
+# Bash virtual devices that make network connections via redirections,
+# e.g. ``echo 'GET /' > /dev/tcp/HOST/80`` or ``read line < /dev/tcp/HOST/80``.
+_DEV_NET_PATTERN = re.compile(r"/dev/(?:tcp|udp)/")
+
+# Flags that make an otherwise inert command execute a helper program.
+_INERT_EXEC_FLAG = re.compile(r"--(?:pre|compress-program)\b")
+
+# Any variable expansion inside a /dev/ path (``/dev/$PROTO/HOST/80``,
+# ``/dev/tc$'\x70'/``) could resolve to tcp or udp at runtime — fail closed.
+_DEV_VAR_PATTERN = re.compile(r"/dev/\S*\$")
+
+# An unquoted redirection whose target starts with a variable expansion
+# (``read line < ${A}${B}``, ``echo x > $DEST``) can name a /dev/tcp path
+# assembled at runtime from fragments the literal scans above cannot see.
+# The lookbehind keeps here-strings (``<<< "$VAR"``) and heredocs exempt:
+# their operators' second and third ``<`` are preceded by ``<``, and the
+# first is followed by ``<``, never by ``$``.
+_REDIRECT_VAR_PATTERN = re.compile(r"(?<!<)[<>]\s*\$")
+
+
+def _strip_shell_quoting(text: str) -> str:
+    """Approximate Bash quote removal: drop backslashes and quote characters.
+
+    ``/dev/tc'p'/``, ``/dev/"tcp"/`` and ``/dev/\\tcp/`` all normalise to
+    ``/dev/tcp/``; ANSI-C forms like ``/dev/tc$'p'/`` keep their ``$`` and
+    are caught by _DEV_VAR_PATTERN instead.
+    """
+    return text.replace("\\", "").replace("'", "").replace('"', "")
+
+
+def _has_dev_net_device(command: str) -> bool:
+    """Return True if *command* could touch /dev/tcp or /dev/udp."""
+    stripped = _strip_shell_quoting(command)
+    if _DEV_NET_PATTERN.search(stripped):
+        return True
+    return bool(_DEV_VAR_PATTERN.search(stripped))
+
+
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 
@@ -549,6 +670,205 @@ def _extract_network_urls(command: str) -> list[str]:
     ]
 
 
+def _has_command_substitution(command: str) -> bool:
+    """Return True if *command* contains command or process substitution.
+
+    Unlike _has_substitution above (used by the pattern-context path), this
+    variant also tracks double-quote context so an apostrophe inside double
+    quotes (``echo "don't" $(curl ...)``) cannot open a phantom single-quote
+    region that hides a later substitution:
+    - Inside single quotes: everything is literal (no expansion).
+    - Inside double quotes: ``$()`` and backticks are active, but single
+      quotes and process substitution ``<()``/``>()`` are literal.
+    - Outside quotes: ``$()``, backticks, ``<()``, and ``>()`` are active.
+    """
+    i = 0
+    in_sq = False
+    in_dq = False
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            i += 1
+            continue
+        if in_dq:
+            if ch == "\\" and i + 1 < n:
+                i += 2  # skip escaped character inside double quotes
+                continue
+            if ch == '"':
+                in_dq = False
+                i += 1
+                continue
+            if ch == "`":
+                return True
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                return True
+            i += 1
+            continue
+        if ch == "'":
+            in_sq = True
+            i += 1
+            continue
+        if ch == '"':
+            in_dq = True
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "`":
+            return True
+        if ch in "$<>" and i + 1 < n and command[i + 1] == "(":
+            return True
+        i += 1
+    return False
+
+
+def _split_command_stages(command: str) -> list[str]:
+    """Split *command* at unquoted ``|``, ``;``, ``&&``, ``||``, ``&``, newlines.
+
+    Returns the list of non-empty stripped stage strings.  Splitting respects
+    single- and double-quoted regions so that ``sed 's|x||'`` is not split
+    at the ``|`` inside the quotes.
+    """
+    stages: list[str] = []
+    current: list[str] = []
+    in_sq = False
+    in_dq = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            current.append(ch)
+            i += 1
+            continue
+        if in_dq:
+            if ch == "\\" and i + 1 < n:
+                current.append(ch)
+                current.append(command[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_dq = False
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "'":
+            in_sq = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_dq = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            current.append(ch)
+            current.append(command[i + 1])
+            i += 2
+            continue
+        # Two-char operators first so ``||`` is not mistaken for ``|``.
+        two = command[i : i + 2]
+        if two in ("&&", "||"):
+            stages.append("".join(current))
+            current = []
+            i += 2
+            continue
+        if ch in "|;&\n":
+            stages.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    if current:
+        stages.append("".join(current))
+    return [s.strip() for s in stages if s.strip()]
+
+
+def _extract_base_command(stage: str) -> str | None:
+    """Extract the base command name from a pipeline stage.
+
+    Returns ``None`` (caller fails closed to full validation) when the
+    command cannot be trusted by name alone: a leading variable assignment
+    (``LD_PRELOAD=/tmp/x.so grep ...`` runs code before grep does) or a
+    path-qualified executable (``/tmp/echo`` is not ``echo``).
+    """
+    for word in stage.split():
+        # Strip surrounding quotes
+        word = word.strip("'\"")
+        if not word:
+            continue
+        # Skip redirection operators and here-string
+        if word[0] in "<>" or word in ("2>&1", "&>", "&>>", ">&", "<<<"):
+            continue
+        # Assignment prefix or path-qualified command: identity unknown.
+        if re.match(r"^[A-Za-z_]\w*=", word) or "/" in word:
+            return None
+        return word
+    return None
+
+
+def _pipeline_is_inert(command: str) -> bool:
+    """Return True if *command* consists entirely of known-inert operations.
+
+    Conservative: returns ``False`` (not inert) when safety cannot be
+    determined, causing the caller to fall through to full URL validation.
+
+    Checks:
+    1. No shell reentry (``bash -c``/``-lc`` clusters, ``eval``, ``exec``)
+    2. No command or process substitution (``$()``, backticks, ``<()``)
+    3. No /dev/tcp-style device access, including quote/backslash-obscured
+       and variable-assembled forms
+    4. No redirection to a variable-expanded target
+    5. Every pipeline/sequence stage uses a command from ``_INERT_COMMANDS``
+    """
+    # Shell reentry can hide arbitrary commands in quoted arguments.
+    if _SHELL_REENTRY.search(command) or _SHELL_REENTRY_CLUSTER.search(command):
+        return False
+
+    # Command/process substitution can embed network-capable commands
+    # that are not visible as top-level pipeline stage commands.
+    if _has_command_substitution(command):
+        return False
+
+    # /dev/tcp and /dev/udp make network connections via redirections, so
+    # a pipeline that touches them is not inert.  Denying the exemption is
+    # all this does — the sandbox network policy is the enforcing layer.
+    if _has_dev_net_device(command):
+        return False
+
+    # A redirection target assembled from variables can name a /dev/tcp
+    # path in fragments (``A=/dev/tc; B=p/H/80; read x < ${A}${B}``).
+    if _REDIRECT_VAR_PATTERN.search(_strip_shell_quoting(command)):
+        return False
+
+    stages = _split_command_stages(command)
+    if not stages:
+        return False
+
+    for stage in stages:
+        cmd = _extract_base_command(stage)
+        if cmd is None:
+            return False  # Cannot determine command → fail closed
+        if cmd not in _INERT_COMMANDS:
+            return False
+        # The escape hatches in otherwise inert tools: ``rg --pre`` runs a
+        # preprocessor per file, GNU ``sort --compress-program`` runs a
+        # helper.  Match on the quote-stripped stage so ``--p\re`` cannot
+        # hide the flag.
+        if _INERT_EXEC_FLAG.search(_strip_shell_quoting(stage)):
+            return False
+
+    return True
+
+
 def process_tool_call(tool_input: dict) -> str | None:
     tool_name = tool_input.get("tool_name", "")
     tool_params = tool_input.get("tool_input", {})
@@ -557,6 +877,13 @@ def process_tool_call(tool_input: dict) -> str | None:
     if tool_name == "Bash":
         command = tool_params.get("command", "")
         urls = _extract_network_urls(command)
+        # If every stage of the pipeline is a known-inert command (no
+        # network capability, no substitution, no shell reentry), URL
+        # literals in the command text are data — not outbound targets.
+        # Checked only when URLs survived the context filter above, so
+        # ordinary URL-free commands never pay for the pipeline parse.
+        if urls and _pipeline_is_inert(command):
+            return None
     elif tool_name == "WebFetch":
         url = tool_params.get("url", "")
         if url:

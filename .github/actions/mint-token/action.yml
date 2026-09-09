@@ -10,6 +10,13 @@ inputs:
   repos:
     description: Comma-separated repo names to scope the token to
     required: true
+  level:
+    description: >-
+      Privilege level for the minted token (e.g. read, write).
+      Defaults to write for backward compatibility — the server defaults
+      omitted levels to read, so callers that need write must pass it explicitly.
+    required: false
+    default: write
   mint_url:
     description: URL of the token mint (typically from vars.FULLSEND_MINT_URL)
     required: true
@@ -29,6 +36,7 @@ runs:
         MINT_URL: ${{ inputs.mint_url }}
         ROLE: ${{ inputs.role }}
         REPOS: ${{ inputs.repos }}
+        LEVEL: ${{ inputs.level }}
       run: |
         set -euo pipefail
         if [[ -z "$MINT_URL" ]]; then
@@ -49,9 +57,9 @@ runs:
         fi
         echo "::add-mask::$OIDC_TOKEN"
         REPOS_JSON=$(echo "$REPOS" | jq -Rc 'split(",") | map(select(length > 0))')
-        BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" \
-          '{role: $role, repos: $repos}')
-        echo "Requesting token: role=$ROLE repos=$REPOS"
+        BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" --arg level "$LEVEL" \
+          '{role: $role, repos: $repos, level: $level}')
+        echo "Requesting token: role=$ROLE level=$LEVEL repos=$REPOS"
         MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
           -H "Authorization: Bearer $OIDC_TOKEN" \
           -H "Content-Type: application/json" \

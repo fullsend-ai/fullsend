@@ -105,7 +105,11 @@ func buildCFMintDriver(
 	ens := newRepoEnsurer(e2eCfg, client, token, binary, logf)
 
 	// Construct and return the composed driver.
-	return newComposedDriver(org, md, ens, poolSize, logf)
+	d, err := newComposedDriver(org, md, ens, poolSize, logf)
+	if err != nil {
+		return nil, err
+	}
+	return withRateLimitReporter(d, client), nil
 }
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived

@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // fakeMintDriver is a test double for mintDriver.
@@ -253,4 +255,39 @@ type failingEnsurer struct {
 
 func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) error {
 	return f.err
+}
+
+// rateReportingClient is a forge.Client that also reports a fixed
+// rate-limit observation.
+type rateReportingClient struct {
+	forge.Client
+	rl   forge.RateLimit
+	seen bool
+}
+
+func (c *rateReportingClient) RateLimit() (forge.RateLimit, bool) { return c.rl, c.seen }
+
+func TestComposedDriver_SamplesRateLimitOnAllocateAndDeallocate(t *testing.T) {
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	e := newFakeEnsurer()
+	d, err := newComposedDriver("org", &fakeMintDriver{}, e, 2, logf)
+	require.NoError(t, err)
+
+	// A client without a reporter, or one that has observed nothing yet, samples nothing.
+	withRateLimitReporter(d, &rateReportingClient{})
+	name, err := d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	for _, l := range lines {
+		assert.NotContains(t, l, "rate limit")
+	}
+
+	withRateLimitReporter(d, &rateReportingClient{seen: true, rl: forge.RateLimit{Limit: 5000, Remaining: 42, Reset: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Resource: "core"}})
+	lines = nil
+	name, err = d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	assert.Contains(t, lines, "[driver] rate limit after allocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
+	assert.Contains(t, lines, "[driver] rate limit after deallocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
 }

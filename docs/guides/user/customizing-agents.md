@@ -100,7 +100,7 @@ env:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's.
+- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
 
@@ -135,6 +135,14 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
+If the `profiles/` directory next to the harness also contains a file with the same `id` as a profile the harness already resolves, `fullsend run` warns:
+
+```text
+  ! Profile "fullsend-vertex-ai" is defined both in /work/.fullsend/profiles and by the harness (/work/.fullsend/.fullsend-cache/resources/sha256/fe4f748d…/content); whichever copy was imported most recently is live — delete the directory copy or keep it in sync
+```
+
+Delete the directory copy unless you mean to override the harness's. A stale copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
+
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 
 ### Tuning agents with augmentation skills
@@ -156,7 +164,8 @@ are actually changing:
    [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Do not guess
    field names or roster lists from memory.
 2. **Unique skill names** — a repo skill with the same directory name as a
-   built-in is ignored (see [skill precedence](customizing-with-skills.md#skill-precedence)).
+   built-in is ignored and produces a warning (see
+   [skill precedence](customizing-with-skills.md#skill-precedence)).
 3. **Specificity wins** — vague augmentations lose to hard default
    instructions. Own exact fields; use word limits and templates.
 4. **Sub-agents are not wrapper skills** — if you need a new review dimension,
@@ -263,7 +272,11 @@ Reference the skill in your harness's `skills:` list. The skill is available to 
 
 ## Agent roles
 
-Each agent role has its own identity, permissions, and purpose:
+On the hosted mint, agents run as one of a **fixed** set of built-in roles.
+Each role is a GitHub App identity with a fixed permission ceiling. An agent's
+name is separate from its role — the `code` and `fix` agents both run as the
+`coder` role. To pick a role for a custom agent, or to use your own identity or
+a custom role, see [Custom Agent Identity](custom-agent-identity.md).
 
 | Role | GitHub App | Purpose |
 |------|------------|---------|
@@ -282,6 +295,8 @@ Each agent role has its own identity, permissions, and purpose:
 - Secret name: `fullsend-{role}-app-pem`
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
+>
+> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match both the org-specific and shared vendor forms — see [Bot Identities](../../contributing/bot-identities.md) for details.
 
 > **Note:** Mint-only dogfood roles such as `scribe` can be registered with
 > `fullsend mint add-role` (and used via remote harness registration) but are
@@ -319,11 +334,10 @@ In `enabled` mode (the default), a hard crash or cancellation that happens befor
 As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
 
 ```yaml
-defaults:
-  status_notifications:
-    reaction:
-      start: enabled       # "enabled" | "disabled" (default)
-      completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+status_notifications:
+  reaction:
+    start: enabled       # "enabled" | "disabled" (default)
+    completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
 ```
 
 Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.

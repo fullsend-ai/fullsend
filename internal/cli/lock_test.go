@@ -1809,7 +1809,7 @@ func TestResolveFromLock_PluginMalformedFieldError(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
@@ -1846,7 +1846,7 @@ func TestResolveFromLock_PluginOutOfRangeError(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
@@ -1888,7 +1888,7 @@ func TestResolveFromLock_PluginExecutablePermissions(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/exec-plugin#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/exec-plugin#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
@@ -1898,7 +1898,7 @@ func TestResolveFromLock_PluginExecutablePermissions(t *testing.T) {
 	require.Len(t, lockResult.Deps, 1)
 
 	// Verify plugin files have executable permissions.
-	scriptPath := filepath.Join(h.Plugins[0], "scripts", "init.sh")
+	scriptPath := filepath.Join(h.Plugins[0].Path, "scripts", "init.sh")
 	info, statErr := os.Stat(scriptPath)
 	require.NoError(t, statErr)
 	assert.True(t, info.Mode()&0o100 != 0,
@@ -1935,7 +1935,7 @@ func TestResolveFromLock_PluginSlots(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
@@ -1945,8 +1945,8 @@ func TestResolveFromLock_PluginSlots(t *testing.T) {
 	require.Len(t, lockResult.Deps, 1)
 
 	assert.Equal(t, "directory", lockResult.Deps[0].Type)
-	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]), "plugin basename must be the real plugin name, not 'tree'")
-	assert.False(t, harness.IsURL(h.Plugins[0]))
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path), "plugin basename must be the real plugin name, not 'tree'")
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
 }
 
 func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
@@ -1979,7 +1979,7 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
 		Skills:                 []harness.SkillEntry{{Source: sharedURL + "#sha256=" + treeHash}},
-		Plugins:                []string{sharedURL + "#sha256=" + treeHash},
+		Plugins:                []harness.PluginSpec{{Path: sharedURL + "#sha256=" + treeHash}},
 		AllowedRemoteResources: []string{"https://github.com/"},
 	}
 
@@ -1990,8 +1990,8 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 
 	assert.Len(t, h.Skills, 1, "skill should survive lock replay")
 	assert.Len(t, h.Plugins, 1, "plugin should survive lock replay when sharing URL with skill")
-	assert.False(t, harness.IsURL(h.Plugins[0]), "plugin should be resolved to a local path")
-	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0]))
+	assert.False(t, harness.IsURL(h.Plugins[0].Path), "plugin should be resolved to a local path")
+	assert.Equal(t, "shared-dir", filepath.Base(h.Plugins[0].Path))
 }
 
 func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
@@ -2026,7 +2026,7 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"plugins/gopls-lsp"},
+		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 
@@ -2035,10 +2035,10 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, lockResult.Deps, 1)
 
-	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0].Path),
 		"plugin basename must be derived from the URL directory, not the marker file")
-	assert.False(t, harness.IsURL(h.Plugins[0]))
-	assert.FileExists(t, filepath.Join(h.Plugins[0], "plugin.json"))
+	assert.False(t, harness.IsURL(h.Plugins[0].Path))
+	assert.FileExists(t, filepath.Join(h.Plugins[0].Path, "plugin.json"))
 }
 
 func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
@@ -2395,7 +2395,7 @@ func TestResolveFromLock_PluginInvalidBasenameRejected(t *testing.T) {
 
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []string{"plugins/bad.name"},
+		Plugins:                []harness.PluginSpec{{Path: "plugins/bad.name"}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 

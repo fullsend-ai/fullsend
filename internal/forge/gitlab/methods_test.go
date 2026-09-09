@@ -1538,18 +1538,9 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 	client, _ := setupTest(t)
 	ctx := context.Background()
 
+	// Methods that remain unsupported on GitLab.
 	t.Run("GetWorkflow", func(t *testing.T) {
 		_, err := client.GetWorkflow(ctx, "o", "r", "w")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetLatestWorkflowRun", func(t *testing.T) {
-		_, err := client.GetLatestWorkflowRun(ctx, "o", "r", "w")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetWorkflowRun", func(t *testing.T) {
-		_, err := client.GetWorkflowRun(ctx, "o", "r", 1)
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
@@ -1557,46 +1548,509 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 		err := client.DispatchWorkflow(ctx, "o", "r", "w", "main", nil)
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+}
 
-	t.Run("ListWorkflowRuns", func(t *testing.T) {
-		_, err := client.ListWorkflowRuns(ctx, "o", "r", "w")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+func TestGetLatestWorkflowRun(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":42,"status":"success","ref":"main","source":"api","web_url":"https://gl/p/42","created_at":"2026-01-02T00:00:00Z"}]`)
+	})
+	run, err := client.GetLatestWorkflowRun(context.Background(), "o", "r", "")
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 42, run.ID)
+	assert.Equal(t, "completed", run.Status)
+	assert.Equal(t, "success", run.Conclusion)
+}
+
+func TestGetLatestWorkflowRun_Empty(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+	run, err := client.GetLatestWorkflowRun(context.Background(), "o", "r", "")
+	require.NoError(t, err)
+	assert.Nil(t, run)
+}
+
+func TestGetWorkflowRun_Running(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/99", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":99,"status":"running","ref":"main","source":"push","web_url":"https://gl/p/99","created_at":"2026-01-02T00:00:00Z"}`)
+	})
+	run, err := client.GetWorkflowRun(context.Background(), "o", "r", 99)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 99, run.ID)
+	assert.Equal(t, "in_progress", run.Status)
+	assert.Equal(t, "", run.Conclusion)
+}
+
+func TestListWorkflowRuns(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"status":"success","ref":"main","created_at":"2026-01-01T00:00:00Z"},{"id":2,"status":"failed","ref":"main","created_at":"2026-01-02T00:00:00Z"}]`)
+	})
+	runs, err := client.ListWorkflowRuns(context.Background(), "o", "r", "")
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	assert.Equal(t, 1, runs[0].ID)
+	assert.Equal(t, "success", runs[0].Conclusion)
+	assert.Equal(t, 2, runs[1].ID)
+	assert.Equal(t, "failure", runs[1].Conclusion)
+}
+
+func TestListRecentWorkflowRuns(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":5,"status":"canceled","ref":"dev","created_at":"2026-01-01T00:00:00Z"}]`)
+	})
+	runs, err := client.ListRecentWorkflowRuns(context.Background(), "o", "r", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, "cancelled", runs[0].Conclusion)
+}
+
+func TestListWorkflowRunJobs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"failed"}]`)
+	})
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, "build", jobs[0].Name)
+	assert.Equal(t, "success", jobs[0].Conclusion)
+	assert.Equal(t, "test", jobs[1].Name)
+	assert.Equal(t, "failure", jobs[1].Conclusion)
+}
+
+func TestListWorkflowRunArtifacts(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/20/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success","artifacts":[]},{"id":2,"name":"deploy","status":"success","artifacts":[{"filename":"artifacts.zip"}]}]`)
+	})
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "o", "r", 20)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 2, arts[0].ID)
+	assert.Equal(t, "deploy", arts[0].Name)
+}
+
+func TestListRepositoryArtifacts(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"name":"fullsend-triage","created_at":"2026-01-02T00:00:00Z","pipeline":{"id":100},"artifacts":[{"filename":"artifacts.zip"}]},{"id":11,"name":"lint","created_at":"2026-01-02T00:00:00Z","pipeline":{"id":100},"artifacts":[]}]`)
+	})
+	arts, err := client.ListRepositoryArtifacts(context.Background(), "o", "r", 50)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 10, arts[0].ID)
+	assert.Equal(t, "fullsend-triage", arts[0].Name)
+	assert.Equal(t, 100, arts[0].WorkflowRunID)
+}
+
+func TestDownloadWorkflowRunArtifact(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/5/artifacts", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("fake-zip-data"))
+	})
+	data, err := client.DownloadWorkflowRunArtifact(context.Background(), "o", "r", 5)
+	require.NoError(t, err)
+	assert.Equal(t, "fake-zip-data", string(data))
+}
+
+func TestGetWorkflowRunLogs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build output here"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "build output here")
+	assert.Contains(t, logs, "Job 1 (build)")
+}
+
+func TestGetWorkflowRunAnnotations_ReturnsNil(t *testing.T) {
+	client, _ := setupTest(t)
+	anns, err := client.GetWorkflowRunAnnotations(context.Background(), "o", "r", 1)
+	require.NoError(t, err)
+	assert.Nil(t, anns)
+}
+
+// ---------------------------------------------------------------------------
+// Additional CI method edge-case tests (coverage improvements)
+// ---------------------------------------------------------------------------
+
+func TestGetLatestWorkflowRun_WithRefFilter(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "feature", r.URL.Query().Get("ref"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":55,"status":"running","ref":"feature","source":"push","web_url":"https://gl/p/55","created_at":"2026-01-02T00:00:00Z"}]`)
+	})
+	run, err := client.GetLatestWorkflowRun(context.Background(), "o", "r", "feature")
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 55, run.ID)
+	assert.Equal(t, "feature", run.Name) // Ref maps to Name
+}
+
+func TestGetLatestWorkflowRun_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.GetLatestWorkflowRun(context.Background(), "o", "r", "")
+	require.Error(t, err)
+}
+
+func TestGetWorkflowRun_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/999", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := client.GetWorkflowRun(context.Background(), "o", "r", 999)
+	require.Error(t, err)
+}
+
+func TestListWorkflowRuns_WithRefFilter(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "develop", r.URL.Query().Get("ref"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"status":"success","ref":"develop","created_at":"2026-01-01T00:00:00Z"}]`)
+	})
+	runs, err := client.ListWorkflowRuns(context.Background(), "o", "r", "develop")
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 10, runs[0].ID)
+}
+
+func TestListWorkflowRuns_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRuns(context.Background(), "o", "r", "")
+	require.Error(t, err)
+}
+
+func TestListRecentWorkflowRuns_BoundaryPerPage(t *testing.T) {
+	t.Run("zero defaults to 20", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "20", r.URL.Query().Get("per_page"))
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+		})
+		runs, err := client.ListRecentWorkflowRuns(context.Background(), "o", "r", 0)
+		require.NoError(t, err)
+		assert.Empty(t, runs)
 	})
 
-	t.Run("ListRecentWorkflowRuns", func(t *testing.T) {
-		_, err := client.ListRecentWorkflowRuns(ctx, "o", "r", 10)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	t.Run("negative defaults to 20", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "20", r.URL.Query().Get("per_page"))
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+		})
+		runs, err := client.ListRecentWorkflowRuns(context.Background(), "o", "r", -5)
+		require.NoError(t, err)
+		assert.Empty(t, runs)
 	})
 
-	t.Run("ListWorkflowRunJobs", func(t *testing.T) {
-		_, err := client.ListWorkflowRunJobs(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	t.Run("over 100 capped to 100", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+		})
+		runs, err := client.ListRecentWorkflowRuns(context.Background(), "o", "r", 200)
+		require.NoError(t, err)
+		assert.Empty(t, runs)
+	})
+}
+
+func TestListRecentWorkflowRuns_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListRecentWorkflowRuns(context.Background(), "o", "r", 10)
+	require.Error(t, err)
+}
+
+func TestListWorkflowRunJobs_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+	require.Error(t, err)
+}
+
+func TestListWorkflowRunArtifacts_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/20/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRunArtifacts(context.Background(), "o", "r", 20)
+	require.Error(t, err)
+}
+
+func TestListWorkflowRunArtifacts_NoArtifacts(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/20/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success","artifacts":[]}]`)
+	})
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "o", "r", 20)
+	require.NoError(t, err)
+	assert.Empty(t, arts)
+}
+
+func TestDownloadWorkflowRunArtifact_NonOKStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/5/artifacts", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := client.DownloadWorkflowRunArtifact(context.Background(), "o", "r", 5)
+	require.Error(t, err)
+}
+
+func TestDownloadWorkflowRunArtifact_OversizedArtifact(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/5/artifacts", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Write 100 MiB + 2 bytes to exceed the limit.
+		// Use a small approximation: the handler writes enough to trigger
+		// the size check. LimitReader caps at 100<<20 + 1 bytes.
+		data := make([]byte, (100<<20)+2)
+		_, _ = w.Write(data)
+	})
+	_, err := client.DownloadWorkflowRunArtifact(context.Background(), "o", "r", 5)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestListRepositoryArtifacts_BoundaryPerPage(t *testing.T) {
+	t.Run("zero defaults to 20", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/jobs", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "20", r.URL.Query().Get("per_page"))
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+		})
+		arts, err := client.ListRepositoryArtifacts(context.Background(), "o", "r", 0)
+		require.NoError(t, err)
+		assert.Empty(t, arts)
 	})
 
-	t.Run("ListWorkflowRunArtifacts", func(t *testing.T) {
-		_, err := client.ListWorkflowRunArtifacts(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	t.Run("over 100 capped to 100", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/jobs", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[]`)
+		})
+		arts, err := client.ListRepositoryArtifacts(context.Background(), "o", "r", 200)
+		require.NoError(t, err)
+		assert.Empty(t, arts)
+	})
+}
+
+func TestListRepositoryArtifacts_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListRepositoryArtifacts(context.Background(), "o", "r", 50)
+	require.Error(t, err)
+}
+
+func TestGetWorkflowRunLogs_MultipleJobs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"failed"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build output"))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("test failure output"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "build output")
+	assert.Contains(t, logs, "test failure output")
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "Job 2 (test)")
+}
+
+func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("test output"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	// Job 1 should show an error, job 2 should show output
+	assert.Contains(t, logs, "error fetching trace")
+	assert.Contains(t, logs, "test output")
+}
+
+func TestGetWorkflowRunLogs_ListJobsError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list jobs for logs")
+}
+
+func TestGetWorkflowRunLogs_EmptyJobs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Equal(t, "", logs)
+}
+
+func TestListWorkflowRunArtifacts_MultipleJobsSomeWithArtifacts(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/20/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[
+			{"id":1,"name":"build","status":"success","artifacts":[]},
+			{"id":2,"name":"deploy","status":"success","artifacts":[{"filename":"artifacts.zip"}]},
+			{"id":3,"name":"test","status":"success","artifacts":[{"filename":"report.zip"}]}
+		]`)
+	})
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "o", "r", 20)
+	require.NoError(t, err)
+	require.Len(t, arts, 2)
+	assert.Equal(t, 2, arts[0].ID)
+	assert.Equal(t, "deploy", arts[0].Name)
+	assert.Equal(t, 3, arts[1].ID)
+	assert.Equal(t, "test", arts[1].Name)
+}
+
+func TestListRepositoryArtifacts_NoArtifacts(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"name":"lint","created_at":"2026-01-02T00:00:00Z","pipeline":{"id":100},"artifacts":[]}]`)
+	})
+	arts, err := client.ListRepositoryArtifacts(context.Background(), "o", "r", 50)
+	require.NoError(t, err)
+	assert.Empty(t, arts)
+}
+
+func TestUpdateRepoSecret_MaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	// Initial create returns conflict (already exists)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": "MY_SECRET has already been taken",
+		})
 	})
 
-	t.Run("DownloadWorkflowRunArtifact", func(t *testing.T) {
-		_, err := client.DownloadWorkflowRunArtifact(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/MY_SECRET", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		if body["masked"] == true {
+			// First PUT attempt with masked:true fails
+			writeJSON(t, w, http.StatusBadRequest, map[string]string{
+				"message": "This variable can not be masked",
+			})
+			return
+		}
+		// Second PUT with masked:false succeeds
+		assert.Equal(t, false, body["masked"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"key": "MY_SECRET"})
 	})
 
-	t.Run("ListRepositoryArtifacts", func(t *testing.T) {
-		_, err := client.ListRepositoryArtifacts(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", "MY_SECRET", "ab")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "should retry with masked:false after 400")
+}
+
+func TestCreateOrUpdateRepoVariable_UpdateOnBadRequest(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	// POST returns 400 with "has already been taken"
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			writeJSON(t, w, http.StatusBadRequest, map[string]string{
+				"message": "MY_VAR has already been taken",
+			})
+			return
+		}
 	})
 
-	t.Run("GetWorkflowRunLogs", func(t *testing.T) {
-		_, err := client.GetWorkflowRunLogs(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/MY_VAR", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{"key": "MY_VAR"})
 	})
 
-	t.Run("GetWorkflowRunAnnotations", func(t *testing.T) {
-		_, err := client.GetWorkflowRunAnnotations(ctx, "o", "r", 1)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
+	err := client.CreateOrUpdateRepoVariable(ctx, "myorg", "myrepo", "MY_VAR", "new-value")
+	require.NoError(t, err)
+}
+
+func TestMapPipelineStatus(t *testing.T) {
+	tests := []struct {
+		glStatus   string
+		wantStatus string
+		wantConc   string
+	}{
+		{"success", "completed", "success"},
+		{"failed", "completed", "failure"},
+		{"canceled", "completed", "cancelled"},
+		{"skipped", "completed", "skipped"},
+		{"running", "in_progress", ""},
+		{"pending", "in_progress", ""},
+		{"created", "in_progress", ""},
+		{"manual", "in_progress", ""},
+	}
+	for _, tt := range tests {
+		status, conclusion := mapPipelineStatus(tt.glStatus)
+		assert.Equal(t, tt.wantStatus, status, "status for %q", tt.glStatus)
+		assert.Equal(t, tt.wantConc, conclusion, "conclusion for %q", tt.glStatus)
+	}
 }
 
 // ---------------------------------------------------------------------------

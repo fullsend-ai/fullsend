@@ -45,7 +45,7 @@ per-overlay:
 | `model`            | Model selection is independent of forge             |
 | `image`            | Container images are platform-neutral              |
 | `api_servers`      | REST proxies abstract forge details                |
-| `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
+| `plugins`          | Plugin directories are forge-agnostic; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `plugins:` key there is ignored, not an error) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
@@ -68,6 +68,17 @@ When a forge block or overlay is merged into the harness top level, each
 field type follows specific merge semantics. The same rules apply during
 `base:` composition (base → child merging).
 
+Two independent precedence axes govern field resolution
+(see [#6798](https://github.com/fullsend-ai/fullsend/issues/6798)):
+
+- **Specificity (within a layer):** Conditional forge/overlay values
+  override same-layer top-level values.
+- **Derivation (across layers):** Child-layer values override inherited
+  base-layer values. Each base layer's forge and overlay blocks are
+  resolved into top-level fields before merging into the child, so
+  inherited conditional values cannot override the child's explicit
+  settings.
+
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
@@ -85,7 +96,12 @@ field type follows specific merge semantics. The same rules apply during
 
 ## `ForgeConfig` struct
 
-The Go struct that holds per-forge (or per-overlay) configuration:
+`ForgeConfig` is the shared field payload used by both legacy `forge:`
+platform blocks and current `overlays:` entries (via `OverlayEntry`'s
+`yaml:",inline"` embedding). The type name is a legacy artifact from the
+original forge feature (ADR-0045); it was retained when ADR-0088
+introduced overlays to avoid a rename-heavy migration. Both mechanisms
+use `mergeForgeConfig` to apply their fields onto harness top-level values.
 
 ```go
 // ForgeConfig holds platform-specific harness configuration.

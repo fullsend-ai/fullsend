@@ -468,7 +468,7 @@ func TestBuildHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("custom role with invalid permission level", func(t *testing.T) {
+	t.Run("custom role with admin permission level accepted", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
 		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
@@ -476,12 +476,8 @@ func TestBuildHandler(t *testing.T) {
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 		t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"scanner":{"contents":"admin"}}`)
 
-		_, err := buildHandler()
-		if err == nil {
-			t.Fatal("expected error for invalid permission level")
-		}
-		if !strings.Contains(err.Error(), "invalid level") {
-			t.Fatalf("unexpected error: %v", err)
+		if _, err := buildHandler(); err != nil {
+			t.Fatalf("admin should be an accepted permission level: %v", err)
 		}
 	})
 

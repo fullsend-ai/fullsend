@@ -1,3 +1,7 @@
+---
+description: The fullsend vision — fully autonomous agentic software development across a GitHub organization, with humans setting strategic intent and guardrails.
+---
+
 # Vision
 
 ## The goal

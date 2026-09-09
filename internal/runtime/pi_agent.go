@@ -180,7 +180,9 @@ func parseClaudeToolSpecs(specs []string) (tools, bashAllowlist []string) {
 
 // piToolForClaude maps the Claude Code tool names an agent definition may
 // list to pi's built-in tools (packages/coding-agent/src/core/tools/index.ts:
-// read, bash, edit, write, grep, find, ls). Claude tools without a pi
+// read, bash, edit, write, grep, find, ls — every non-Windows built-in; pi
+// also has powershell — all activated via settings.json defaultTools, since
+// pi alone starts with only the first four). Claude tools without a pi
 // counterpart are reported as unsupported; Skill maps to no tool (pi's
 // skills are prompt-driven), and Bootstrap adds read for it, since pi only
 // emits the skills section of the system prompt when read is active.
@@ -208,6 +210,29 @@ var claudeToolForPi = map[string]string{
 	"ls":    "LS",
 }
 
+// Sub-agent tool. Claude Code's Agent tool (legacy name Task) has no pi
+// counterpart in core; the embedded fullsend-agent.js extension registers
+// both names with the same contract (prompt, description, model,
+// subagent_type) so the fleet's skills dispatch unchanged (#6527).
+const (
+	piAgentToolName  = "Agent"
+	piAgentToolAlias = "Task"
+)
+
+// piExploreTools is the read-only tool set a child gets when dispatched
+// with subagent_type "Explore" (Claude Code's built-in read-only agent).
+// Bootstrap writes it into the manifest so the extension and the runner
+// agree on it.
+var piExploreTools = []string{"read", "grep", "find", "ls"}
+
+// piAgentToolEnabled reports whether the runtime registers the Agent tool
+// for this agent definition: an absent tools: entry means the default set,
+// which includes it (as under Claude Code); a declared list must name
+// Agent or Task.
+func piAgentToolEnabled(def *piAgentDef) bool {
+	return def.Tools == nil || hasTool(def.Tools, piAgentToolName) || hasTool(def.Tools, piAgentToolAlias)
+}
+
 func hasTool(tools []string, name string) bool {
 	for _, t := range tools {
 		if t == name {
@@ -228,6 +253,18 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 	seen := map[string]bool{}
 	for _, ct := range claudeTools {
 		if ct == "Skill" {
+			continue
+		}
+		if ct == piAgentToolName || ct == piAgentToolAlias {
+			// Both names are registered by the extension; --tools is a
+			// strict allowlist across built-in and extension tools, so
+			// activating one requires naming both.
+			for _, pt := range []string{piAgentToolName, piAgentToolAlias} {
+				if !seen[pt] {
+					seen[pt] = true
+					tools = append(tools, pt)
+				}
+			}
 			continue
 		}
 		pt, ok := piToolForClaude[ct]

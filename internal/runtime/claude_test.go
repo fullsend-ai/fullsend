@@ -16,24 +16,47 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 type bootstrapInput struct {
-	sandboxName string
-	agentPath   string
-	agentName   string
-	skillDirs   []string
-	pluginDirs  []string
+	sandboxName  string
+	agentPath    string
+	agentName    string
+	skillDirs    []string
+	plugins      []PluginInput
+	modelAliases map[string]string
 }
 
-func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
-func (b bootstrapInput) AgentPath() string    { return b.agentPath }
-func (b bootstrapInput) AgentName() string    { return b.agentName }
-func (b bootstrapInput) SkillDirs() []string  { return b.skillDirs }
-func (b bootstrapInput) PluginDirs() []string { return b.pluginDirs }
+func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
+func (b bootstrapInput) AgentPath() string                  { return b.agentPath }
+func (b bootstrapInput) AgentName() string                  { return b.agentName }
+func (b bootstrapInput) SkillDirs() []string                { return b.skillDirs }
+func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
+func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
+func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
+func (b bootstrapInput) ParentModel() string                { return "" }
+
+// claudePlugins and piPlugins build the two kinds of plugin input from
+// host directories, so a test names the format it means.
+func claudePlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindClaude})
+	}
+	return out
+}
+
+func piPlugins(dirs ...string) []PluginInput {
+	out := make([]PluginInput, 0, len(dirs))
+	for _, d := range dirs {
+		out = append(out, PluginInput{Path: d, Kind: pluginformat.KindPi})
+	}
+	return out
+}
 
 func TestBootstrap_EmptyAgentPath(t *testing.T) {
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "test"})
@@ -103,6 +126,92 @@ func TestAgentDestName(t *testing.T) {
 			assert.Equal(t, tc.expected, got)
 		})
 	}
+}
+
+func TestValidateAgentNameMatch(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestedName  string
+		definitionName string
+		wantErr        string // empty means no error expected
+	}{
+		{
+			name:           "matching names pass",
+			requestedName:  "code",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "mismatched names fail",
+			requestedName:  "coder",
+			definitionName: "code",
+			wantErr:        `agent name mismatch: requested "coder" but definition declares "code"`,
+		},
+		{
+			name:           "empty requested name skips validation",
+			requestedName:  "",
+			definitionName: "code",
+			wantErr:        "",
+		},
+		{
+			name:           "empty definition name skips validation",
+			requestedName:  "coder",
+			definitionName: "",
+			wantErr:        "",
+		},
+		{
+			name:           "both empty skips validation",
+			requestedName:  "",
+			definitionName: "",
+			wantErr:        "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAgentNameMatch(tc.requestedName, tc.definitionName)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBootstrap_AgentNameMismatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "coder",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent name mismatch")
+	assert.Contains(t, err.Error(), `"coder"`)
+	assert.Contains(t, err.Error(), `"code"`)
+}
+
+func TestBootstrap_AgentNameMatch(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("---\nname: code\n---\n# Code agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "code",
+	})
+	assert.NoError(t, err)
 }
 
 func TestBuildRunCommand_Basic(t *testing.T) {
@@ -282,6 +391,62 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
 		})
 	}
+}
+
+// --- models.aliases tests (#6882) ---
+
+func TestBuildRunCommand_WithConfigAlias(t *testing.T) {
+	// When a models.aliases entry exists for the model, the Claude
+	// runtime translates it to the id before --model.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5'",
+		"config alias remaps the model")
+	assert.NotContains(t, cmd, "'sonnet'",
+		"alias name does not appear in the command")
+}
+
+func TestBuildRunCommand_WithConfigAliasNoMatch(t *testing.T) {
+	// When the model is not in the config aliases, it passes through.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "opus",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--model 'opus'",
+		"unmatched model passes through")
+}
+
+func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
+	// Nil aliases behaves identically to no aliases.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		Model:         "sonnet",
+		RepoDir:       "/sandbox/workspace/repo",
+		ModelAliases:  nil,
+	})
+	assert.Contains(t, cmd, "--model 'sonnet'",
+		"nil aliases passes the model through")
+}
+
+func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
+	// The fallback chain goes through the same remap as --model, so a
+	// chain cannot land on the generation the repo retargeted away from.
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName:  "agent",
+		Model:          "opus",
+		FallbackModels: []string{"sonnet", "claude-haiku-4-5"},
+		RepoDir:        "/sandbox/workspace/repo",
+		ModelAliases:   map[string]string{"sonnet": "claude-sonnet-5"},
+	})
+	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5,claude-haiku-4-5'",
+		"aliased fallback entries are remapped, bare ids pass through")
+	assert.Contains(t, cmd, "--model 'opus'", "unmapped primary passes through")
 }
 
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
@@ -511,6 +676,44 @@ func TestClaudeRuntime_ClearIterationArtifacts_OpenshellNotInPath(t *testing.T) 
 	assert.Error(t, err)
 }
 
+// ClearIterationArtifacts sweeps stray processes left by the previous
+// iteration before removing its files (see killStrayProcesses).
+func TestClaudeRuntime_ClearIterationArtifacts_SweepsStraysBeforeFiles(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellBootstrap(t, logPath, filepath.Join(t.TempDir(), "unused"))
+
+	require.NoError(t, ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox"))
+
+	logBytes, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	log := string(logBytes)
+	sweep := strings.Index(log, "ps -o pid= -o ppid=")
+	rm := strings.Index(log, "rm -rf /sandbox/workspace/output/*")
+	require.NotEqual(t, -1, sweep, "expected the stray-process sweep to run")
+	require.NotEqual(t, -1, rm, "expected the file cleanup to run")
+	assert.Less(t, sweep, rm, "sweep must precede the file cleanup")
+}
+
+// A sweep that fails (exit 124 is the only exec failure sandbox.Exec
+// reports) is warning-only: the rm -rf still runs and the result is nil.
+func TestClaudeRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> '" + logPath + "'\n" +
+		"for last; do :; done\n" +
+		"case \"$last\" in *\"stray processes killed\"*) echo boom >&2; exit 124 ;; esac\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, ClaudeRuntime{}.ClearIterationArtifacts("test-sandbox"))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "rm -rf /sandbox/workspace/output/*", "file cleanup still runs after a failed sweep")
+}
+
 func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
@@ -723,7 +926,7 @@ func TestClaudeRuntime_Bootstrap_PluginSymlink(t *testing.T) {
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginPath},
+		plugins:     claudePlugins(pluginPath),
 	})
 	require.NoError(t, err)
 
@@ -806,7 +1009,7 @@ func TestClaudeRuntime_Bootstrap_ReservedPluginName_FailsLoudly(t *testing.T) {
 				sandboxName: "test-sandbox",
 				agentPath:   agentFile,
 				agentName:   "review",
-				pluginDirs:  []string{pluginDir},
+				plugins:     claudePlugins(pluginDir),
 			})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), reserved)
@@ -843,7 +1046,7 @@ func TestClaudeRuntime_Bootstrap_PluginMaliciousName_MarketplaceSetupQuoted(t *t
 		sandboxName: "test-sandbox",
 		agentPath:   agentFile,
 		agentName:   "review",
-		pluginDirs:  []string{pluginDir},
+		plugins:     claudePlugins(pluginDir),
 	})
 	require.NoError(t, err)
 

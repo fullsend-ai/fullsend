@@ -36,12 +36,14 @@ concurrency:
 
 jobs:
   build:
+    timeout-minutes: 10
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: true
+          fetch-tags: true
+          fetch-depth: 0
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -52,8 +54,38 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      # Caches are immutable: save is a no-op if the primary key already exists.
+      # Unique time-based key + restore-keys is the documented way to persist an
+      # updated tree; restore-keys then takes the most recently created prefix
+      # match (the last main save, which has the most tagged versions).
+      # Save only on main, and only when mvb wrote new per-tag artifacts.
+      - name: Compute mvb cache key
+        id: mvb-key
+        run: echo "key=lando-mvb-$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.mvb-key.outputs.key }}
+          restore-keys: |
+            lando-mvb-
+          path: docs/.vitepress/cache/@lando/mvb
+
+      - name: Snapshot restored mvb cache
+        id: mvb-before
+        env:
+          MVB_CACHE: docs/.vitepress/cache/@lando/mvb
+        run: |
+          set -euo pipefail
+          mkdir -p "$MVB_CACHE"
+          hash=$(find "$MVB_CACHE" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | sha256sum | awk '{print $1}')
+          echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+
       - name: Build documentation site
-        run: npm run docs:build
+        run: |
+          git submodule update --init
+          npx mvb docs
+        env:
+          VPL_MVB_BRANCH: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Prepare deploy bundle
         run: |
@@ -61,6 +93,7 @@ jobs:
           mkdir -p _bundle/public
           cp web/public/index.html _bundle/public/index.html
           cp web/public/graph.html _bundle/public/graph.html
+          cp web/public/404.html _bundle/public/404.html
           mkdir -p _bundle/public/docs
           cp -a docs/.vitepress/dist/. _bundle/public/docs/
           cp -a cloudflare_site/public/. _bundle/public/
@@ -72,3 +105,25 @@ jobs:
           name: site
           path: _bundle/
           retention-days: 5
+
+      - name: Detect new mvb version artifacts
+        id: mvb-after
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          MVB_CACHE: docs/.vitepress/cache/@lando/mvb
+          BEFORE: ${{ steps.mvb-before.outputs.hash }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$MVB_CACHE"
+          hash=$(find "$MVB_CACHE" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | sha256sum | awk '{print $1}')
+          if [[ "$hash" != "$BEFORE" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mvb-after.outputs.changed == 'true'
+        with:
+          key: ${{ steps.mvb-key.outputs.key }}
+          path: docs/.vitepress/cache/@lando/mvb

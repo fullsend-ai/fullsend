@@ -136,6 +136,29 @@ func TestPerRepoConfig_AgentEntries(t *testing.T) {
 	assert.Equal(t, agents, cfg.AgentEntries())
 }
 
+func TestPerRepoConfig_AgentEntries_RefSurvivesLayeredMerge(t *testing.T) {
+	// Parent defines an agent without a Ref (pre-existing entry).
+	parent := &perRepoConfig{
+		Agents: []AgentEntry{{
+			Source: "https://raw.githubusercontent.com/org/repo/abc123/harness/triage.yaml#sha256=aaa",
+			Name:   "triage",
+		}},
+	}
+	// Overlay re-declares the same agent with a Ref from adoption.
+	overlay := &perRepoConfig{
+		parent: parent,
+		Agents: []AgentEntry{{
+			Name: "triage",
+			Ref:  "release-1.0",
+		}},
+	}
+	merged := overlay.AgentEntries()
+	require.Len(t, merged, 1)
+	assert.Equal(t, "release-1.0", merged[0].Ref, "Ref from overlay must survive layered merge")
+	// Source should still come from parent since overlay didn't set it.
+	assert.Contains(t, merged[0].Source, "raw.githubusercontent.com")
+}
+
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	tr := true
 	cfg := &perRepoConfig{KillSwitch: &tr}
@@ -143,6 +166,15 @@ func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	f := false
 	cfg.KillSwitch = &f
 	assert.False(t, cfg.IsKillSwitchActive())
+}
+
+func TestPerRepoConfig_ConfigKeepHistory(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{KeepHistory: &f}
+	assert.False(t, cfg.ConfigKeepHistory())
+	tr := true
+	cfg.KeepHistory = &tr
+	assert.True(t, cfg.ConfigKeepHistory())
 }
 
 func TestPerRepoConfig_AllowedResources(t *testing.T) {
@@ -213,6 +245,16 @@ func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
 	cfg.SetKillSwitch(false)
 	require.NotNil(t, cfg.KillSwitch)
 	assert.False(t, *cfg.KillSwitch)
+}
+
+func TestPerRepoConfig_SetKeepHistory(t *testing.T) {
+	cfg := &perRepoConfig{}
+	cfg.SetKeepHistory(false)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.False(t, *cfg.KeepHistory)
+	cfg.SetKeepHistory(true)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.True(t, *cfg.KeepHistory)
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {

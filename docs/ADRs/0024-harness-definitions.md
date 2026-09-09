@@ -139,6 +139,10 @@ definition and executes a deterministic sequence:
 └───────────────────────────────────────────────────────────┘
 ```
 
+> Step 9c no longer applies to an iteration the runner killed at
+> `timeout_minutes`: the loop stops and the run ends with a distinct timeout
+> error ([ADR 0105](0105-timed-out-iteration-ends-the-run.md)).
+
 The runner is deterministic code, not an LLM. The agent is the LLM session.
 Each harness invocation provisions one sandbox for one agent — consistent with
 the composable single-responsibility agent model

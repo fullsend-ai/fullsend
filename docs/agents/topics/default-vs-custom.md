@@ -10,7 +10,7 @@ different. This document defines three tiers:
    (env vars, skills, `AGENTS.md`, plugins, host files, sandbox image layers).
    Still recognizably the same default agent.
 2. **Derived agent** — starts from a default via `base` inheritance but
-   replaces identity-defining components (system prompt, scripts, slug, or
+   replaces identity-defining components (system prompt, scripts, role, or
    validation loop). It re-uses parts of a default but is no longer
    recognizably that agent.
 3. **Custom agent** — its `base` chain does not trace back to a default agent
@@ -77,12 +77,13 @@ agent is custom by definition — regardless of how similar it looks.
 | Change the sandbox policy (`policy:`) | Configured default | Policy composition lets you augment an agent's policy without changing its identity. |
 | **Replace the agent system prompt** (`agent:`) | **Derived** | The system prompt (sometimes called the subagent definition file) provides the primary instructions for the agent. Replacing it creates a different agent. |
 | **Replace pre or post scripts** (`pre_script:`, `post_script:`) | **Derived** | Scripts control the agent's integration with external systems. Different scripts mean different behavior at the pipeline boundary. |
-| **Replace the app role slug** (`slug:`) | **Derived**\* | The slug determines who the agent authenticates as. A different identity is a different agent. |
+| **Replace the mint role** (`role:`) | **Derived**\* | `role:` determines who the agent authenticates as and its permission ceiling. A different identity is a different agent. |
+| Change the install-time slug (`slug:`) | Configured default | `slug` only helps `fullsend github setup` find or name the App at install time; the mint never reads it, so it does not change identity. |
 | **Replace the validation loop** (`validation_loop:`) | **Derived** | The validation loop defines the contract between the agent and the harness. Changing it changes what the agent is expected to produce. |
 
-\* Replacing the slug is acceptable in limited cases we may document in the
+\* Replacing the role is acceptable in limited cases we may document in the
 future — for example, granting the review agent merge rights via a different
-GitHub App. When a specific agent's documentation recommends a slug override
+GitHub App. When a specific agent's documentation recommends a role override
 for a stated purpose, that override does not make the agent derived.
 
 ## See also

@@ -474,7 +474,8 @@ func walkADFNode(node map[string]any, sb *strings.Builder, depth int) {
 func isBlockType(nodeType string) bool {
 	switch nodeType {
 	case "doc", "paragraph", "heading", "blockquote", "codeBlock",
-		"bulletList", "orderedList", "listItem", "panel", "rule":
+		"bulletList", "orderedList", "listItem", "panel", "rule",
+		"expand":
 		return true
 	default:
 		return false

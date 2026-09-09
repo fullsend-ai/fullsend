@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
@@ -214,11 +215,12 @@ func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{},
-		client:  sc,
-		runCLI:  noopCLI,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -232,11 +234,12 @@ func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 func TestEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{},
-		client:  sc,
-		runCLI:  noopCLI,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -258,11 +261,12 @@ func TestEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 		installed:  true,
 	}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{},
-		client:  sc,
-		runCLI:  noopCLI,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-05")
@@ -274,14 +278,15 @@ func TestEnsurer_DeletesAndRecreatesExistingRepo(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:  sc,
-		binary:  "/usr/bin/fullsend",
-		token:   "tok",
-		runCLI:  noopCLI,
-		settle:  noopSettle,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    sc,
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
@@ -305,9 +310,10 @@ func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
 			}
 			return "", nil
 		},
-		settle:  noopSettle,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-10")
@@ -339,9 +345,10 @@ func TestEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 			}
 			return "", nil
 		},
-		settle:  noopSettle,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -379,9 +386,10 @@ func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 			}
 			return "", nil
 		},
-		settle:  noopSettle,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-gcp")
@@ -410,8 +418,9 @@ func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", fmt.Errorf("cli exploded")
 		},
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-err")
@@ -437,8 +446,9 @@ func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
 			}
 			return "", nil
 		},
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-prov-err")
@@ -454,11 +464,12 @@ func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 		ensureDelay: 50 * time.Millisecond,
 	}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{},
-		client:  sc,
-		runCLI:  noopCLI,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	const goroutines = 5
@@ -536,8 +547,9 @@ func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", nil
 		},
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-broken")
@@ -562,8 +574,9 @@ func TestProvisionInference_StatusCLIError(t *testing.T) {
 			}
 			return "", nil
 		},
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-status-err")
@@ -589,8 +602,9 @@ func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
 			}
 			return "", nil
 		},
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-parse-err")
@@ -626,9 +640,10 @@ func TestDoEnsure_AlwaysInstallsAfterReset(t *testing.T) {
 			cliCalled = true
 			return "", nil
 		},
-		settle:  noopSettle,
-		logf:    t.Logf,
-		ensured: make(map[string]struct{}),
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
@@ -676,6 +691,7 @@ func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
 			}
 			return "", nil
 		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			settleCalled = true
 			return nil
@@ -701,6 +717,7 @@ func TestDoEnsure_SettleAlwaysCalledAfterReset(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", nil
 		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			settleCalled = true
 			return nil
@@ -712,6 +729,65 @@ func TestDoEnsure_SettleAlwaysCalledAfterReset(t *testing.T) {
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-settle-after-reset")
 	require.NoError(t, err)
 	assert.True(t, settleCalled, "settle should always be called after repo reset")
+}
+
+func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
+	// Non-vendored mode should pass validation without vendored
+	// marker and binary files.
+	speedUpValidateRetries(t)
+	// Override GetFileContent to return only shim + config (no marker/binary).
+	nonVendoredFiles := map[string][]byte{
+		".github/workflows/fullsend.yaml": []byte("# shim"),
+		".fullsend/config.yaml":           []byte(validPerRepoConfig),
+	}
+
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: &stubClientWithCustomFiles{
+			stubClient: stubClient{},
+			files:      nonVendoredFiles,
+		},
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		setupOpts: common.GitHubSetupOpts{
+			Vendor:      false,
+			FullsendRef: "main",
+		},
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-nonvendored")
+	require.NoError(t, err)
+
+	// CLI should have been called for "github setup" with --fullsend-ref.
+	require.Len(t, cliCalls, 1)
+	assert.Equal(t, "github", cliCalls[0][0])
+	assert.Equal(t, "setup", cliCalls[0][1])
+	assert.Contains(t, cliCalls[0], "--fullsend-ref")
+	assert.Contains(t, cliCalls[0], "main")
+	assert.NotContains(t, cliCalls[0], "--vendor")
+}
+
+// stubClientWithCustomFiles is a test double that returns custom file
+// contents instead of using the global installedStubFiles map.
+type stubClientWithCustomFiles struct {
+	stubClient
+	files map[string][]byte
+}
+
+func (s *stubClientWithCustomFiles) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+	clean := strings.TrimPrefix(path, "./")
+	if content, ok := s.files[clean]; ok {
+		return content, nil
+	}
+	return nil, forge.ErrNotFound
 }
 
 func TestDoEnsure_SettleError_Propagated(t *testing.T) {
@@ -728,6 +804,7 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 			}
 			return "", nil
 		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			return fmt.Errorf("Actions not ready")
 		},

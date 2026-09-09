@@ -20,7 +20,7 @@ Manage agent registrations in fullsend config. Add, list, set (runtime, model, e
 
 ## `agent add`
 
-Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. The URL prefix is added to `allowed_remote_resources` if not already present.
+Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
 
 ```bash
 fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml --fullsend-dir .fullsend
@@ -61,7 +61,7 @@ my-lint  harness/my-lint.yaml
 
 ## `agent update`
 
-Update a URL-based agent to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the default branch HEAD is resolved automatically.
+Update a URL-based agent to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored (backward-compatible entries), the default branch HEAD is used.
 
 ```bash
 fullsend agent update triage --fullsend-dir .fullsend
@@ -88,6 +88,7 @@ before it is written.
 ```bash
 fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high
 fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4.6
+fullsend agent set review --fullsend-dir .fullsend --subagent correctness=opus --subagent default=haiku
 ```
 
 ### Flags
@@ -95,11 +96,14 @@ fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (required) |
-| `--runtime` | Agent runtime for this agent (`claude` or `pi`) |
-| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi |
+| `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
+| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
+See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for
+how `subagents` map to persona dispatch.
 
 ## `agent remove`
 

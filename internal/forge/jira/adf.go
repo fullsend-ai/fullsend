@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"html"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -94,10 +95,221 @@ func adfBlockContent(parent ast.Node, source []byte, depth int, restricted bool)
 	if depth > maxADFWriteDepth {
 		return content
 	}
-	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
+	for c := parent.FirstChild(); c != nil; {
+		// In non-restricted context, attempt to convert <details>
+		// HTML blocks into ADF expand nodes. tryDetailsExpand
+		// handles both single-block (no blank lines inside the
+		// markup) and multi-block (blank lines split the <details>
+		// opening, body, and closing across several AST siblings)
+		// forms, since sticky.BuildUpdatedBody produces the latter
+		// while hand-written Markdown typically produces the former.
+		if !restricted {
+			if expand, next := tryDetailsExpand(c, source, depth); expand != nil {
+				content = append(content, expand)
+				c = next
+				continue
+			}
+		}
 		content = append(content, convertBlockNode(c, source, depth, restricted)...)
+		c = c.NextSibling()
 	}
 	return content
+}
+
+// summaryTagPattern matches <summary>...</summary> in HTML block content
+// for extracting the expand title from a <details> block.
+var summaryTagPattern = regexp.MustCompile(`(?is)<summary>(.*?)</summary>`)
+
+// summaryInnerTagPattern matches HTML tags inside <summary> element content
+// for stripping in extractSummary. Ensures the ADF expand title contains only
+// plain text — nested HTML tags like <b>, <a>, <script>, or <img> inside
+// the <summary> element are removed, leaving just the text content.
+var summaryInnerTagPattern = regexp.MustCompile(`<[^>]*>`)
+
+// stickyHistorySentinelPattern matches sticky history sentinel comments
+// on their own line, for stripping from <details> body content before
+// re-parsing as Markdown. These sentinels are metadata used by
+// sticky.BuildUpdatedBody for history reconstruction and must not
+// become visible text inside the rendered ADF expansion.
+var stickyHistorySentinelPattern = regexp.MustCompile(`(?m)^\s*<!--\s*sticky:history-(?:start|end)\s*-->\s*$`)
+
+// tryDetailsExpand checks whether c is an HTML block opening a
+// <details> section and, if so, converts the entire section into an ADF
+// expand node whose attrs.title carries the <summary> text and whose
+// content holds the body re-parsed as Markdown.
+//
+// Two layouts are handled:
+//
+//   - Single-block: the entire <details>…</details> is one goldmark
+//     HTMLBlock (no blank lines inside), common in hand-written Markdown.
+//
+//   - Multi-block: blank lines inside the markup (as produced by
+//     sticky.BuildUpdatedBody) cause goldmark to split the opening tag,
+//     body, and closing tag across separate AST siblings. The function
+//     collects siblings until it finds the </details> closing block.
+//
+// Returns (expand, nextSibling) on success, or (nil, nil) if c is
+// not a <details> opener — in which case adfBlockContent processes c
+// normally through convertBlockNode.
+func tryDetailsExpand(c ast.Node, source []byte, depth int) (map[string]any, ast.Node) {
+	htmlBlock, ok := c.(*ast.HTMLBlock)
+	if !ok {
+		return nil, nil
+	}
+	raw := string(htmlBlock.Lines().Value(source))
+	if !isDetailsOpen(raw) {
+		return nil, nil
+	}
+
+	title := extractSummary(raw)
+
+	// Single-block case: the entire <details>...</details> is one
+	// HTMLBlock (no blank lines inside the markup).
+	if hasDetailsClose(raw) {
+		body := detailsInnerBody(raw)
+		body = stickyHistorySentinelPattern.ReplaceAllString(body, "")
+		body = strings.TrimSpace(body)
+		var adfContent []any
+		if body != "" {
+			src := []byte(body)
+			doc := goldmark.DefaultParser().Parse(text.NewReader(src))
+			adfContent = adfBlockContent(doc, src, depth+1, false)
+		}
+		// When the body is empty (or becomes empty after sentinel
+		// stripping), emit an expand with a single empty paragraph
+		// rather than falling through to raw-text processing. This
+		// mirrors the multi-block path and satisfies ADF's minItems: 1.
+		if len(adfContent) == 0 {
+			adfContent = []any{map[string]any{
+				"type":    "paragraph",
+				"content": []any{},
+			}}
+		}
+		return expandNode(title, adfContent), c.NextSibling()
+	}
+
+	// Multi-block case: blank lines inside <details> caused goldmark to
+	// split the block across multiple AST siblings. Collect content
+	// nodes until we find the </details> closing block.
+	var bodyContent []any
+	next := c.NextSibling()
+	foundClose := false
+	for next != nil {
+		if htmlBlock, ok := next.(*ast.HTMLBlock); ok {
+			blockRaw := string(htmlBlock.Lines().Value(source))
+			if isDetailsClose(blockRaw) {
+				foundClose = true
+				next = next.NextSibling()
+				break
+			}
+			if isStickyHistorySentinel(blockRaw) {
+				next = next.NextSibling()
+				continue
+			}
+		}
+		bodyContent = append(bodyContent, convertBlockNode(next, source, depth+1, false)...)
+		next = next.NextSibling()
+	}
+	if !foundClose {
+		return nil, nil
+	}
+	// When all siblings between <details> and </details> were sticky
+	// sentinels (or otherwise produced no ADF content), emit an expand
+	// with a single empty paragraph rather than falling through to
+	// raw-text processing, which would render visible HTML in Jira.
+	// ADF expand requires minItems: 1, so we supply one empty paragraph.
+	if len(bodyContent) == 0 {
+		bodyContent = []any{map[string]any{
+			"type":    "paragraph",
+			"content": []any{},
+		}}
+	}
+	return expandNode(title, bodyContent), next
+}
+
+// expandNode builds an ADF expand node with the given title and block
+// content. ADF's expand schema requires at least one content child
+// (minItems: 1), so callers must ensure content is non-empty.
+func expandNode(title string, content []any) map[string]any {
+	node := map[string]any{
+		"type":    "expand",
+		"content": content,
+	}
+	if title != "" {
+		node["attrs"] = map[string]any{"title": title}
+	}
+	return node
+}
+
+// isDetailsOpen reports whether raw starts with an HTML <details> tag.
+func isDetailsOpen(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "<details>") || strings.HasPrefix(lower, "<details ")
+}
+
+// hasDetailsClose reports whether raw contains a </details> closing tag.
+func hasDetailsClose(raw string) bool {
+	return strings.Contains(strings.ToLower(raw), "</details>")
+}
+
+// isDetailsClose reports whether raw is a </details> closing block.
+func isDetailsClose(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return strings.HasPrefix(strings.ToLower(trimmed), "</details")
+}
+
+// isStickyHistorySentinel reports whether raw is a sticky history
+// sentinel HTML comment (<!-- sticky:history-start --> or
+// <!-- sticky:history-end -->).
+func isStickyHistorySentinel(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return trimmed == "<!-- sticky:history-start -->" ||
+		trimmed == "<!-- sticky:history-end -->"
+}
+
+// extractSummary extracts the text content of the first <summary> tag in
+// raw, or "" if none is present. HTML entities are decoded and any nested
+// HTML tags are stripped so the title stored in the ADF expand node is
+// guaranteed plain text. The read-side (adfMarkdownBlock's expand case)
+// re-encodes with html.EscapeString, keeping the round-trip correct
+// without double-encoding pre-existing entities like "&amp;" → "&amp;amp;".
+//
+// Stripping tags prevents HTML injection: without it, a <summary> like
+// <summary><img src=x onerror=alert(1)></summary> would store the raw
+// <img> tag in the ADF title attribute, which could be interpreted as
+// HTML by the consuming renderer.
+func extractSummary(raw string) string {
+	match := summaryTagPattern.FindStringSubmatch(raw)
+	if match == nil {
+		return ""
+	}
+	decoded := html.UnescapeString(strings.TrimSpace(match[1]))
+	stripped := summaryInnerTagPattern.ReplaceAllString(decoded, "")
+	return strings.TrimSpace(stripped)
+}
+
+// detailsInnerBody extracts the body content from a self-contained
+// <details>...</details> HTML block: everything between </summary>
+// (or the <details> opening tag if there's no summary) and </details>.
+//
+// Limitation: the no-summary fallback uses the first ">" to find the
+// end of the opening tag, which would misparse a <details> tag with an
+// attribute value containing ">". The codebase never produces
+// attributed <details> tags, so this is acceptable.
+func detailsInnerBody(raw string) string {
+	body := raw
+	lower := strings.ToLower(body)
+	if idx := strings.Index(lower, "</summary>"); idx >= 0 {
+		body = body[idx+len("</summary>"):]
+	} else if idx := strings.Index(body, ">"); idx >= 0 {
+		body = body[idx+1:]
+	}
+	lower = strings.ToLower(body)
+	if idx := strings.LastIndex(lower, "</details>"); idx >= 0 {
+		body = body[:idx]
+	}
+	return body
 }
 
 // convertBlockNode converts a single goldmark block node to zero or more
@@ -585,7 +797,8 @@ func walkADFNode(node map[string]any, sb *strings.Builder, depth int) {
 func isBlockType(nodeType string) bool {
 	switch nodeType {
 	case "doc", "paragraph", "heading", "blockquote", "codeBlock",
-		"bulletList", "orderedList", "listItem", "panel", "rule":
+		"bulletList", "orderedList", "listItem", "panel", "rule",
+		"expand":
 		return true
 	default:
 		return false
@@ -652,12 +865,12 @@ func adfMarkdownBlocks(node map[string]any, depth int) []string {
 }
 
 // adfMarkdownBlock renders a single ADF block-level node as Markdown.
-// Unrecognized types (e.g. "panel", "table", "expand", "taskList") fall
-// back to recursing into their block-level children (e.g. a panel's
-// paragraphs, a table's rows) so content isn't silently dropped; if that
-// yields nothing, e.g. a taskItem whose own children are inline text
-// nodes rather than blocks, it falls back further to rendering any
-// direct inline text content flat, mirroring MarkdownToADF's own
+// Unrecognized types (e.g. "panel", "table", "taskList") fall back to
+// recursing into their block-level children (e.g. a panel's paragraphs,
+// a table's rows) so content isn't silently dropped; if that yields
+// nothing, e.g. a taskItem whose own children are inline text nodes
+// rather than blocks, it falls back further to rendering any direct
+// inline text content flat, mirroring MarkdownToADF's own
 // fallback-to-plain-text convention.
 func adfMarkdownBlock(node map[string]any, depth int) string {
 	nodeType, _ := node["type"].(string)
@@ -716,6 +929,28 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 		// produce a marker a Markdown parser would reject.
 		start = clampInt(start, 0, 999999999)
 		return adfMarkdownList(node, depth, func(i int) string { return fmt.Sprintf("%d. ", start+i) })
+	case "expand":
+		title := ""
+		if attrs, ok := node["attrs"].(map[string]any); ok {
+			if t, ok := attrs["title"].(string); ok {
+				title = t
+			}
+		}
+		body := strings.Join(adfMarkdownBlocks(node, depth), "\n\n")
+		var sb strings.Builder
+		sb.WriteString("<details>")
+		if title != "" {
+			sb.WriteString("<summary>")
+			sb.WriteString(html.EscapeString(title))
+			sb.WriteString("</summary>")
+		}
+		sb.WriteString("\n")
+		if body != "" {
+			sb.WriteString(body)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("</details>")
+		return sb.String()
 	default:
 		if blocks := adfMarkdownBlocks(node, depth); len(blocks) > 0 {
 			return strings.Join(blocks, "\n\n")

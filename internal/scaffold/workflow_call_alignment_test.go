@@ -3,6 +3,7 @@ package scaffold
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -351,6 +352,60 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
 }
 
+// TestReusableDispatchFixInstructionNormalizesCRLF validates that CRLF line endings
+// in a comment body are stripped before the fix instruction is written to GITHUB_OUTPUT.
+func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	var script string
+	for _, step := range workflow.Jobs["fix"].Steps {
+		if step.Name == "Extract PR number and context" {
+			script = step.Run
+			break
+		}
+	}
+	require.NotEmpty(t, script)
+
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"gh":      "#!/bin/sh\nprintf '[]\\n'\n",
+		"openssl": "#!/bin/sh\nprintf 'fixed-delimiter\\n'\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755))
+	}
+	outputPath := filepath.Join(dir, "github-output")
+	payload := `{"pull_request":{"number":42,"head":{"ref":"fix-branch"},"base":{"ref":"main"}},"comment":{"body":"/fs-fix\r\nChange A\r\nChange B"}}`
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"EVENT_PAYLOAD="+payload,
+		"INPUT_PR_NUMBER=",
+		"INPUT_INSTRUCTION=",
+		"TRIGGER_SOURCE=contributor",
+		"SOURCE_REPO=fullsend-ai/fullsend",
+		"GITHUB_OUTPUT="+outputPath,
+	)
+	result, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", result)
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "instruction<<INSTRUCTION_fixed-delimiter\nChange A\nChange B\nINSTRUCTION_fixed-delimiter\n")
+	assert.NotContains(t, string(output), "\r")
+}
+
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
 // secrets (#2862, #5886) are forwarded along both installation-mode chains
 // to every reusable stage workflow. TestWorkflowCallInputAlignment only
@@ -669,6 +724,64 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 	}
 }
 
+// TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
+// filters issue_comment events with both a /fs- prefix check and a bot-type
+// guard, preserving defense-in-depth while short-circuiting non-slash-command
+// comments at the workflow level (#6738).
+func TestShimPerRepoSlashCommandFilter(t *testing.T) {
+	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
+// TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
+// workflow does not route on the removed /fullsend alias (#6738).
+func TestShimPerRepoNoFullsendAlias(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+	cases := []workflowCase{
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+	}
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+			assert.NotContains(t, s, `/fullsend)`,
+				"%s must not route on the /fullsend alias (removed in #6738)", wc.name)
+			assert.NotContains(t, s, `SECOND_WORD`,
+				"%s must not parse SECOND_WORD for the removed /fullsend alias", wc.name)
+		})
+	}
+}
+
+// TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
+// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+func TestLiveShimSlashCommandFilter(t *testing.T) {
+	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "fullsend.yaml must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive
@@ -807,6 +920,49 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 			"harness-run pr-head-sha must be populated from event_payload")
 		assert.Contains(t, section, "matrix.event_payload",
 			"harness-run must use matrix.event_payload, not needs.route.outputs")
+	})
+}
+
+// TestWorkItemKeyEnvCompatibility validates that legacy code dispatch and the
+// common harness-dispatch path expose the forge-neutral key alongside the
+// backwards-compatible GitHub issue number (#6760).
+func TestWorkItemKeyEnvCompatibility(t *testing.T) {
+	t.Run("legacy reusable code", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-code.yml")(t))
+		section := extractStepSection(t, content, "Run code agent")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(inputs.event_payload).issue.number }}")
+		assert.Contains(t, section,
+			"ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}")
+	})
+
+	t.Run("route based code", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		section := extractStepSection(t, content, "Run code agent")
+		assert.Contains(t, section,
+			"FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}")
+		assert.Contains(t, section,
+			"ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}")
+	})
+
+	t.Run("harness dispatch", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		exportSection := extractStepSection(t, content, "Export dispatch context env")
+		assert.Contains(t, exportSection,
+			`._normalized_event.entity.key // .issue.number // .pull_request.number // empty`)
+		assert.Contains(t, exportSection,
+			`if ._normalized_event.source.system == "jira" then empty`)
+		assert.Contains(t, exportSection, `echo "work_item_key<<${DELIM}"`)
+		assert.Contains(t, exportSection, `printf '%s' "${WORK_ITEM_KEY}"`)
+		assert.NotContains(t, exportSection, `echo "work_item_key=${WORK_ITEM_KEY}"`)
+
+		runSection := extractStepSection(t, content, "Run harness agent")
+		assert.Contains(t, runSection,
+			"FULLSEND_WORK_ITEM_KEY: ${{ steps.dispatch-env.outputs.work_item_key }}")
+		assert.Contains(t, runSection,
+			"ISSUE_NUMBER: ${{ steps.dispatch-env.outputs.issue_number }}")
 	})
 }
 
@@ -1133,6 +1289,30 @@ func TestOpenAIVariableForwarding(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestHarnessRunResolvesBotIdentity validates that the common matrix path
+// exports the app-derived commit identity before it configures and runs an
+// agent (#6762). Harnesses intentionally require this identity so commits are
+// associated with the GitHub App, including for DCO checks.
+func TestHarnessRunResolvesBotIdentity(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	harnessStart := strings.Index(content, "  harness-run:\n")
+	require.NotEqual(t, -1, harnessStart, "reusable-dispatch.yml must define harness-run")
+	harnessJob := content[harnessStart:]
+
+	identity := extractStepSection(t, harnessJob, "Resolve bot identity")
+	assert.Contains(t, identity, "GH_TOKEN: ${{ steps.app-token.outputs.token }}")
+	assert.Contains(t, identity, "viewer { login databaseId }")
+	assert.Contains(t, identity, `GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"`)
+	assert.Contains(t, identity, `echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"`)
+	assert.Contains(t, identity, `git config --global user.email "${GIT_BOT_EMAIL}"`)
+	assert.Contains(t, identity, `git config --global user.name "${BOT_LOGIN}"`)
+
+	identityIndex := strings.Index(harnessJob, "      - name: Resolve bot identity\n")
+	setupIndex := strings.Index(harnessJob, "      - name: Setup agent environment\n")
+	require.NotEqual(t, -1, setupIndex, "harness-run must set up the agent environment")
+	assert.Less(t, identityIndex, setupIndex, "harness-run must resolve identity before agent environment setup")
 }
 
 // TestLayeredDirsMatchWorkspacePreparation pins the LAYERED_DIRS list in

@@ -1,65 +1,63 @@
 #!/usr/bin/env bash
 #
-# delete-vm.sh — Delete a GitLab Runner VM and deregister it from GitLab.
+# delete-gcp-vm.sh — Delete a GitLab Runner GCE VM and deregister it from GitLab.
 #
 # This script:
 #   1. Finds the runner by description via the GitLab API
 #   2. Deregisters the runner from GitLab
-#   3. Deletes the VirtualMachine from OpenShift (and its DataVolume)
+#   3. Deletes the GCE instance
 #
 # Required environment variables:
-#   GL_TOKEN    — GitLab personal access token
-#   GITLAB_URL  — GitLab instance URL (e.g. https://gitlab.example.com)
-#   NAMESPACE   — OpenShift namespace
+#   GL_TOKEN     — GitLab personal access token
+#   GITLAB_URL   — GitLab instance URL (e.g. https://gitlab.example.com)
+#   GCP_PROJECT  — GCP project ID
 #
 # Optional environment variables:
+#   GCP_ZONE    — GCE zone (default: us-east1-b)
 #   RUNNER_TAG  — runner tag used for registration (default: fullsend-gitlab-runner)
 #
 # Usage:
-#   GL_TOKEN=glpat-xxx GITLAB_URL=https://gitlab.example.com NAMESPACE=my-ns \
-#     ./delete-vm.sh fullsend-gitlab-runner-01
+#   GL_TOKEN=glpat-xxx GITLAB_URL=https://gitlab.example.com \
+#     GCP_PROJECT=my-gcp-project \
+#     ./delete-gcp-vm.sh fullsend-gitlab-runner-01
 #
 #   # List existing runner VMs:
-#   NAMESPACE=my-ns ./delete-vm.sh --list
+#   GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 #
 set -euo pipefail
 
 GITLAB_URL="${GITLAB_URL:-}"
-NAMESPACE="${NAMESPACE:-}"
+GCP_PROJECT="${GCP_PROJECT:-}"
+GCP_ZONE="${GCP_ZONE:-us-east1-b}"
 RUNNER_TAG="${RUNNER_TAG:-fullsend-gitlab-runner}"
 PREFIX="fullsend-gitlab-runner"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-gl_curl() {
-  local config old_umask rc
-  old_umask=$(umask)
-  umask 077
-  config=$(mktemp)
-  umask "${old_umask}"
-  printf 'header = "PRIVATE-TOKEN: %s"\n' "${GL_TOKEN}" > "${config}"
-  rc=0
-  curl --max-time 30 --connect-timeout 10 -sf -K "${config}" "$@" || rc=$?
-  rm -f "${config}"
-  return "${rc}"
-}
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
 
 usage() {
-  echo "Usage: GL_TOKEN=glpat-xxx $0 <vm-name> [vm-name ...]"
-  echo "       $0 --list"
+  echo "Usage: GL_TOKEN=glpat-xxx GCP_PROJECT=<project> $0 <vm-name> [vm-name ...]"
+  echo "       GCP_PROJECT=<project> $0 --list"
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  head -24 "$0" | tail -22 | sed 's/^# \?//'
+  head -26 "$0" | tail -24 | sed 's/^# \?//'
   exit 0
 fi
 
+if [ -z "${GCP_PROJECT}" ]; then
+  echo "ERROR: GCP_PROJECT is required (GCP project ID)" >&2
+  exit 1
+fi
+
 if [ "${1:-}" = "--list" ]; then
-  if [ -z "${NAMESPACE}" ]; then
-    echo "ERROR: NAMESPACE is required for --list" >&2
-    exit 1
-  fi
-  echo "Runner VMs in ${NAMESPACE}:"
-  oc -n "${NAMESPACE}" get vm --no-headers -o custom-columns=NAME:.metadata.name,STATUS:.status.printableStatus \
-    | grep "^${PREFIX}" || echo "  (none)"
+  echo "Runner VMs in ${GCP_PROJECT} (${GCP_ZONE}):"
+  gcloud compute instances list \
+    --project="${GCP_PROJECT}" \
+    --filter="name~'^${PREFIX}-' AND zone:${GCP_ZONE}" \
+    --format="table(name, status)" 2>/dev/null \
+    | tail -n +2 || echo "  (none)"
   exit 0
 fi
 
@@ -85,11 +83,6 @@ if [ -z "${GITLAB_URL}" ]; then
 fi
 if ! [[ "${GITLAB_URL}" =~ ^https://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
   echo "ERROR: GITLAB_URL must start with https:// (got: ${GITLAB_URL})" >&2
-  exit 1
-fi
-
-if [ -z "${NAMESPACE}" ]; then
-  echo "ERROR: NAMESPACE is required (OpenShift namespace)" >&2
   exit 1
 fi
 
@@ -121,14 +114,14 @@ for vm_name in "$@"; do
     fi
     runner_id=$(echo "${page_json}" | python3 -c "
 import sys, json
-ns, vm = sys.argv[1], sys.argv[2]
+proj, vm = sys.argv[1], sys.argv[2]
 runners = json.load(sys.stdin)
 for r in runners:
     desc = r.get('description', '')
-    if desc == ns + '/' + vm:
+    if desc == proj + '/' + vm:
         print(r['id'])
         break
-" "${NAMESPACE}" "${vm_name}" 2>/dev/null) || true
+" "${GCP_PROJECT}" "${vm_name}" 2>/dev/null) || true
     [ -n "${runner_id}" ] && break
     count=$(echo "${page_json}" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || { lookup_failed=true; break; }
     [ "${count}" -lt 100 ] && break
@@ -138,7 +131,7 @@ for r in runners:
   if [ "${lookup_failed}" = true ]; then
     echo "  ERROR: GitLab API request failed — refusing to delete VM without deregistering runner" >&2
     echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
-    echo "  To force: manually deregister at ${GITLAB_URL}, then: oc -n ${NAMESPACE} delete vm -- ${vm_name}" >&2
+    echo "  To force: manually deregister at ${GITLAB_URL}, then: gcloud compute instances delete ${vm_name} --project=${GCP_PROJECT} --zone=${GCP_ZONE} --quiet" >&2
     had_errors=true
     continue
   fi
@@ -152,7 +145,7 @@ for r in runners:
       echo "  OK: deregistered runner ID ${runner_id}"
     else
       echo "  ERROR: failed to deregister runner ID ${runner_id} — refusing to delete VM (would orphan the registration)" >&2
-      echo "  Hint: deregister at ${GITLAB_URL}, then re-run, or use: oc -n ${NAMESPACE} delete vm -- ${vm_name}" >&2
+      echo "  Hint: deregister at ${GITLAB_URL}, then re-run, or use: gcloud compute instances delete ${vm_name} --project=${GCP_PROJECT} --zone=${GCP_ZONE} --quiet" >&2
       had_errors=true
       continue
     fi
@@ -161,29 +154,15 @@ for r in runners:
   fi
 
   # ------------------------------------------------------------------
-  # 3. Delete the VM
+  # 3. Delete the GCE instance
   # ------------------------------------------------------------------
-  # Only a genuine NotFound is benign here. Anything else (RBAC, webhook
-  # rejection, API outage) must set had_errors — otherwise the script prints
-  # "Done." and exits 0 while the VM keeps running, and the runner has already
-  # been deregistered above, leaving nothing to find it by.
-  if delete_err=$(oc -n "${NAMESPACE}" delete vm --wait=false -- "${vm_name}" 2>&1); then
-    echo "  OK: VM ${vm_name} deletion initiated"
-  elif printf '%s' "${delete_err}" | grep -q '(NotFound)'; then
+  if delete_err=$(gcloud compute instances delete "${vm_name}" \
+    --project="${GCP_PROJECT}" --zone="${GCP_ZONE}" --quiet 2>&1); then
+    echo "  OK: VM ${vm_name} deleted"
+  elif printf '%s' "${delete_err}" | grep -qi 'not found'; then
     echo "  WARN: VM ${vm_name} not found — nothing to delete"
   else
     echo "  ERROR: failed to delete VM ${vm_name}: ${delete_err}" >&2
-    had_errors=true
-  fi
-
-  # DataVolume shares the VM name — delete it too, with the same
-  # NotFound-vs-error split as the VM above.
-  if delete_err=$(oc -n "${NAMESPACE}" delete dv --wait=false -- "${vm_name}" 2>&1); then
-    echo "  OK: DataVolume ${vm_name} deletion initiated"
-  elif printf '%s' "${delete_err}" | grep -q '(NotFound)'; then
-    : # no DataVolume — nothing to delete
-  else
-    echo "  ERROR: failed to delete DataVolume ${vm_name}: ${delete_err}" >&2
     had_errors=true
   fi
 

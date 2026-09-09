@@ -629,6 +629,376 @@ model: opus
 	assert.Equal(t, "gl-pre.sh", h.PreScript)
 }
 
+// TestLoadWithBase_ChildTopLevelOverridesInheritedForge verifies that base
+// forge/overlay values are resolved before merging into the child, so they
+// participate as top-level values and do not override the child's explicit
+// top-level settings. See #6798.
+func TestLoadWithBase_ChildTopLevelOverridesInheritedForge(t *testing.T) {
+	t.Run("inherited platform no child forge", func(t *testing.T) {
+		// Issue scenario 1: child sets top-level scripts, base has
+		// forge.github scripts. Child's values must survive.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+forge:
+  github:
+    pre_script: base-forge-pre.sh
+    post_script: base-forge-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+post_script: child-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base forge value")
+		assert.Equal(t, "child-post.sh", h.PostScript,
+			"child top-level post_script must override resolved base forge value")
+	})
+
+	t.Run("same platform child also has forge", func(t *testing.T) {
+		// Issue scenario 2: both base and child define forge.github.
+		// Base forge pre_script should not leak through to override
+		// child's top-level pre_script.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: base-forge.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child.sh
+forge:
+  github:
+    post_script: child-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child.sh", h.PreScript,
+			"child top-level pre_script must survive when both layers have forge.github")
+		assert.Equal(t, "child-post.sh", h.PostScript,
+			"child forge post_script must apply via child's own ResolveForge")
+	})
+
+	t.Run("child forge overrides child top level", func(t *testing.T) {
+		// Issue scenario 3: within the same layer, forge > top-level.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-top.sh
+forge:
+  github:
+    pre_script: child-forge.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-forge.sh", h.PreScript,
+			"within the same layer, forge must override top-level")
+	})
+
+	t.Run("multi level chain", func(t *testing.T) {
+		// Issue scenario 4: grandparent forge → parent top-level → child top-level.
+		// Each layer resolves before the next.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "grandparent.yaml", `
+agent: agents/test.md
+role: test
+pre_script: gp-top.sh
+forge:
+  github:
+    pre_script: gp-forge.sh
+    post_script: gp-forge-post.sh
+`)
+
+		writeTestHarness(t, dir, "parent.yaml", `
+base: grandparent.yaml
+pre_script: parent-pre.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: parent.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level must override parent which overrides resolved grandparent forge")
+		// post_script: grandparent forge resolves → gp-forge-post.sh becomes top-level.
+		// Parent doesn't set post_script → inherits gp-forge-post.sh.
+		// Child doesn't set post_script → inherits gp-forge-post.sh.
+		assert.Equal(t, "gp-forge-post.sh", h.PostScript,
+			"grandparent forge post_script should propagate through chain when not overridden")
+	})
+
+	t.Run("overlays resolved before merge", func(t *testing.T) {
+		// Issue scenario 5: base overlay sets pre_script, child sets top-level
+		// pre_script. Child must win.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: base-overlay-pre.sh
+    post_script: base-overlay-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base overlay value")
+		assert.Equal(t, "base-overlay-post.sh", h.PostScript,
+			"resolved base overlay post_script should inherit when child does not set it")
+	})
+
+	t.Run("partial override", func(t *testing.T) {
+		// Issue scenario 6: child sets pre_script but not post_script.
+		// Only pre_script overridden; post_script inherited from resolved base.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: base-forge-pre.sh
+    post_script: base-forge-post.sh
+    policy: base-forge-policy.yaml
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base forge value")
+		assert.Equal(t, "base-forge-post.sh", h.PostScript,
+			"resolved base forge post_script should inherit when child does not set it")
+		assert.Equal(t, "base-forge-policy.yaml", h.Policy,
+			"resolved base forge policy should inherit when child does not set it")
+	})
+
+	t.Run("skills and providers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    skills:
+      - base-forge-skill
+    providers:
+      - base-forge-provider
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+skills:
+  - child-skill
+providers:
+  - child-provider
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		// Base forge skills are resolved into base top-level before merge.
+		// mergeBaseIntoChild concatenates: base top-level + child top-level.
+		assert.Contains(t, SkillSources(h.Skills), "child-skill",
+			"child top-level skill must be present")
+		assert.Contains(t, SkillSources(h.Skills), "base-forge-skill",
+			"resolved base forge skill should be inherited via top-level concatenation")
+		assert.Contains(t, h.Providers, "child-provider",
+			"child top-level provider must be present")
+		assert.Contains(t, h.Providers, "base-forge-provider",
+			"resolved base forge provider should be inherited via top-level concatenation")
+	})
+
+	t.Run("runner env", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    runner_env:
+      SHARED_KEY: base-forge-value
+      FORGE_ONLY: forge-only-value
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+runner_env:
+  SHARED_KEY: child-value
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-value", h.RunnerEnv["SHARED_KEY"],
+			"child top-level runner_env key must win over resolved base forge value")
+		assert.Equal(t, "forge-only-value", h.RunnerEnv["FORGE_ONLY"],
+			"resolved base forge env key not set by child should still apply")
+	})
+
+	t.Run("env sub maps", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    env:
+      runner:
+        SHARED_KEY: base-forge-runner-val
+        FORGE_ONLY: forge-runner-val
+      sandbox:
+        SB_SHARED: base-forge-sb-val
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+env:
+  runner:
+    SHARED_KEY: child-runner-val
+  sandbox:
+    SB_SHARED: child-sb-val
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-runner-val", h.Env.Runner["SHARED_KEY"],
+			"child top-level env.runner key must win over resolved base forge value")
+		assert.Equal(t, "forge-runner-val", h.Env.Runner["FORGE_ONLY"],
+			"resolved base forge env.runner key not set by child should still apply")
+		assert.Equal(t, "child-sb-val", h.Env.Sandbox["SB_SHARED"],
+			"child top-level env.sandbox key must win over resolved base forge value")
+	})
+
+	t.Run("base overlay resolved before merge", func(t *testing.T) {
+		// Base uses overlays (not forge) to set pre_script.
+		// Child sets top-level pre_script. Child must win because the
+		// base overlay is resolved before merging into the child.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: base-overlay-pre.sh
+    post_script: base-overlay-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level must override resolved base overlay")
+		assert.Equal(t, "base-overlay-post.sh", h.PostScript,
+			"resolved base overlay post_script should inherit when child does not set it")
+	})
+
+	t.Run("base forge for different platform is discarded", func(t *testing.T) {
+		// Base defines forge for gitlab but child runs on github.
+		// The gitlab forge values should be discarded, not leaked.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+forge:
+  gitlab:
+    pre_script: base-gl-pre.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    post_script: child-gh-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "base-top-pre.sh", h.PreScript,
+			"base top-level pre_script should inherit (gitlab forge was discarded)")
+		assert.Equal(t, "child-gh-post.sh", h.PostScript,
+			"child forge post_script should apply")
+	})
+}
+
 func TestLoadWithBase_URLBase(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/remote.md
@@ -1359,7 +1729,8 @@ model: opus
 
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid harness")
+	assert.Contains(t, err.Error(), "invalid base harness")
+	assert.Contains(t, err.Error(), "unrecognized key")
 }
 
 func TestLoadWithBase_ValidationErrorAfterMerge(t *testing.T) {
@@ -1507,7 +1878,9 @@ plugins:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"plugin-a", "plugin-b"}, h.Plugins)
+	require.Len(t, h.Plugins, 2)
+	assert.Equal(t, "plugin-a", h.Plugins[0].Path)
+	assert.Equal(t, "plugin-b", h.Plugins[1].Path)
 }
 
 func TestLoadWithBase_ProvidersConcat(t *testing.T) {
@@ -4851,6 +5224,18 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestMergeBaseIntoChild_PanicsOnUnresolvedForge(t *testing.T) {
+	base := &Harness{Forge: map[string]*ForgeConfig{"github": {}}}
+	child := &Harness{}
+	assert.Panics(t, func() { mergeBaseIntoChild(base, child) })
+}
+
+func TestMergeBaseIntoChild_PanicsOnUnresolvedOverlays(t *testing.T) {
+	base := &Harness{Overlays: []OverlayEntry{{}}}
+	child := &Harness{}
+	assert.Panics(t, func() { mergeBaseIntoChild(base, child) })
+}
+
 func TestMergeBaseIntoChild_Env(t *testing.T) {
 	base := &Harness{
 		Env: &EnvConfig{
@@ -7620,6 +8005,65 @@ plugins:
 	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
 	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
 
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/"
+	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
+	pluginFileHash := fetch.ComputeSHA256(pluginContent)
+	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
+
+	files := map[string][]byte{"plugin.json": pluginContent}
+	treeHash, err := fetch.CachePutDir(cacheDir, pluginFileURL, files)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+pluginFileURL, treeHash))
+
+	baseURL := "https://example.com/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path))
+
+	cachedPlugin := filepath.Join(h.Plugins[0].Path, "plugin.json")
+	content, err := os.ReadFile(cachedPlugin)
+	require.NoError(t, err)
+	assert.Equal(t, pluginContent, content)
+
+	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit")
+	assert.Equal(t, "directory", deps[len(deps)-1].Type)
+}
+
+func TestLoadWithBase_URLBase_PluginOfflineCacheHit_LegacyMarkerKey(t *testing.T) {
+	pluginContent := []byte(`{"name":"gopls-lsp"}`)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - plugins/gopls-lsp
+`)
+	hash := computeHash(baseContent)
+
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+
+	// An index written before the plugins key carried pi entries is keyed
+	// on the marker file, not the directory: lookups must still hit it.
 	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
 	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
 	pluginFileHash := fetch.ComputeSHA256(pluginContent)
@@ -7646,14 +8090,15 @@ base: `+baseURL+`
 	require.NoError(t, err)
 
 	require.Len(t, h.Plugins, 1)
-	assert.True(t, filepath.IsAbs(h.Plugins[0]))
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path))
 
-	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	cachedPlugin := filepath.Join(h.Plugins[0].Path, "plugin.json")
 	content, err := os.ReadFile(cachedPlugin)
 	require.NoError(t, err)
 	assert.Equal(t, pluginContent, content)
 
-	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit")
+	assert.True(t, deps[len(deps)-1].CacheHit, "plugin should be cache hit through the legacy key")
+	assert.Equal(t, "https://example.com/plugins/gopls-lsp/", deps[len(deps)-1].URL, "the dependency is recorded under the new directory key")
 	assert.Equal(t, "directory", deps[len(deps)-1].Type)
 }
 
@@ -7671,7 +8116,7 @@ plugins:
   - plugins/gopls-lsp
 `)
 
-	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/"
 	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
 	pluginFileHash := fetch.ComputeSHA256(pluginContent)
 	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
@@ -7698,10 +8143,10 @@ plugins:
 	require.NoError(t, err)
 
 	require.Len(t, h.Plugins, 1)
-	assert.True(t, filepath.IsAbs(h.Plugins[0]),
-		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0].Path)
 
-	cachedPlugin := filepath.Join(h.Plugins[0], "plugin.json")
+	cachedPlugin := filepath.Join(h.Plugins[0].Path, "plugin.json")
 	content, err := os.ReadFile(cachedPlugin)
 	require.NoError(t, err)
 	assert.Equal(t, pluginContent, content)
@@ -7734,7 +8179,7 @@ plugins:
   - plugins/gopls-lsp
 `)
 
-	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/"
 	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
 	pluginFileHash := fetch.ComputeSHA256(pluginContent)
 	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
@@ -7778,7 +8223,7 @@ func TestFetchBasePluginDir_FullDirectory(t *testing.T) {
 
 	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/"
 	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
-	pluginFileURL := pluginDirURL + "/plugin.json"
+	pluginFileURL := pluginDirURL + "/"
 	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}
 
 	dep, localDir, err := fetchBasePluginDir(context.Background(), "plugins[0]",
@@ -7818,7 +8263,7 @@ func TestFetchBasePluginDir_NoPluginJSON(t *testing.T) {
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
 	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
-	pluginFileURL := pluginDirURL + "/plugin.json"
+	pluginFileURL := pluginDirURL + "/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
@@ -7827,7 +8272,7 @@ func TestFetchBasePluginDir_NoPluginJSON(t *testing.T) {
 			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no plugin.json")
+	assert.Contains(t, err.Error(), "not a Claude plugin (no plugin.json or .claude-plugin/plugin.json) and not a pi extension")
 }
 
 func TestFetchBasePluginDir_FetchError(t *testing.T) {
@@ -7840,7 +8285,7 @@ func TestFetchBasePluginDir_FetchError(t *testing.T) {
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
 	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
-	pluginFileURL := pluginDirURL + "/plugin.json"
+	pluginFileURL := pluginDirURL + "/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
@@ -7891,7 +8336,7 @@ func TestFetchBasePlugin_FullCacheHit(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
-	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	files := map[string][]byte{"plugin.json": []byte(`{"name":"gopls-lsp"}`)}
@@ -7915,7 +8360,7 @@ func TestFetchBasePlugin_StaleCacheInvalidation(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
-	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
@@ -7953,7 +8398,7 @@ func TestFetchBasePlugin_StaleCacheOfflineServesStale(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
-	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
@@ -7977,7 +8422,7 @@ func TestFetchBasePlugin_StaleCacheTransientFallback(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
-	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
@@ -8007,7 +8452,7 @@ func TestFetchBasePlugin_StaleCacheNonTransientError(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref/"
-	pluginFileURL := baseURLDir + "plugins/gopls-lsp/plugin.json"
+	pluginFileURL := baseURLDir + "plugins/gopls-lsp/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	oldFiles := map[string][]byte{"plugin.json": []byte(`{"name":"old"}`)}
@@ -8067,14 +8512,14 @@ func TestFetchBasePlugin_PartialIndexHit_RefetchesViaTreeFetcher(t *testing.T) {
 }
 
 func TestResolveBasePlugins_InvalidBaseURL(t *testing.T) {
-	base := &Harness{Plugins: []string{"plugins/test"}}
+	base := &Harness{Plugins: []PluginSpec{{Path: "plugins/test"}}}
 	_, err := resolveBasePlugins(context.Background(), base, "", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
 func TestResolveBasePlugins_PathTraversal(t *testing.T) {
-	base := &Harness{Plugins: []string{"../../../etc/shadow"}}
+	base := &Harness{Plugins: []PluginSpec{{Path: "../../../etc/shadow"}}}
 	_, err := resolveBasePlugins(context.Background(), base,
 		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
 		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
@@ -8083,7 +8528,7 @@ func TestResolveBasePlugins_PathTraversal(t *testing.T) {
 }
 
 func TestResolveBasePlugins_InvalidBasename(t *testing.T) {
-	base := &Harness{Plugins: []string{"plugins/bad name"}}
+	base := &Harness{Plugins: []PluginSpec{{Path: "plugins/bad name"}}}
 	_, err := resolveBasePlugins(context.Background(), base,
 		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
 		[]string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{})
@@ -8095,10 +8540,10 @@ func TestResolveBasePlugins_SkipsEmptyURLAndCache(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	base := &Harness{Plugins: []string{
-		"",
-		"https://example.com/plugin",
-		filepath.Join(cacheDir, ".fullsend-cache/sha256/abc/my-plugin"),
+	base := &Harness{Plugins: []PluginSpec{
+		{Path: ""},
+		{Path: "https://example.com/plugin"},
+		{Path: filepath.Join(cacheDir, ".fullsend-cache/sha256/abc/my-plugin")},
 	}}
 	deps, err := resolveBasePlugins(context.Background(), base,
 		"https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml",
@@ -8141,7 +8586,7 @@ func TestFetchBasePluginDir_FetchErrorWithToken(t *testing.T) {
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
 	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
-	pluginFileURL := pluginDirURL + "/plugin.json"
+	pluginFileURL := pluginDirURL + "/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
@@ -8165,7 +8610,7 @@ func TestFetchBasePluginDir_FetchErrorNoToken(t *testing.T) {
 
 	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
 	pluginDirURL := baseURLDir + "plugins/gopls-lsp"
-	pluginFileURL := pluginDirURL + "/plugin.json"
+	pluginFileURL := pluginDirURL + "/"
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
 	_, _, err := fetchBasePluginDir(context.Background(), "plugins[0]",
@@ -8281,7 +8726,7 @@ base: https://example.com/grandparent.yaml#sha256=` + grandparentHash + `
 		require.NoError(t, urlIndexPut(cacheDir, agentURL, fetch.ComputeSHA256(agentRes)))
 	}
 	// Pre-populate cache: plugin directory
-	pluginFileURL := "https://example.com/plugins/gopls-lsp/plugin.json"
+	pluginFileURL := "https://example.com/plugins/gopls-lsp/"
 	require.NoError(t, fetch.CachePut(cacheDir, pluginFileURL, pluginContent))
 	pluginFileHash := fetch.ComputeSHA256(pluginContent)
 	require.NoError(t, urlIndexPut(cacheDir, pluginFileURL, pluginFileHash))
@@ -8309,10 +8754,10 @@ base: `+baseURL+`
 	assert.Equal(t, "opus", h.Model)
 
 	require.Len(t, h.Plugins, 1)
-	assert.True(t, filepath.IsAbs(h.Plugins[0]),
-		"plugin should be resolved to cache path, got %s", h.Plugins[0])
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path),
+		"plugin should be resolved to cache path, got %s", h.Plugins[0].Path)
 
-	pluginJSON, err := os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	pluginJSON, err := os.ReadFile(filepath.Join(h.Plugins[0].Path, "plugin.json"))
 	require.NoError(t, err)
 	assert.Equal(t, pluginContent, pluginJSON)
 
@@ -8775,4 +9220,253 @@ base: `+baseURL+`
 		}
 	}
 	assert.True(t, foundValDep, "expected overlay validation_loop dep")
+}
+
+func TestLoadWithBase_PluginsConcatWithOptions(t *testing.T) {
+	dir := t.TempDir()
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+plugins:
+  - extensions/from-base
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: base.yaml
+plugins:
+  - path: extensions/from-child
+    env:
+      CHILD_FLAG: "1"
+    pi:
+      args: ["--fff-mode", "x"]
+`)
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	require.Len(t, h.Plugins, 2, "base + child, base first")
+	assert.Equal(t, "extensions/from-base", h.Plugins[0].Path)
+	assert.Equal(t, "extensions/from-child", h.Plugins[1].Path)
+	assert.Equal(t, []string{"--fff-mode", "x"}, h.Plugins[1].PiArgs())
+	assert.Equal(t, map[string]string{"CHILD_FLAG": "1"}, h.Plugins[1].Env)
+
+	// A child without plugins inherits the base list; a base without
+	// plugins leaves the child's untouched.
+	path = writeTestHarness(t, dir, "child2.yaml", "agent: agents/child.md\nrole: test\nbase: base.yaml\n")
+	h, _, err = LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, []PluginSpec{{Path: "extensions/from-base"}}, h.Plugins)
+
+	writeTestHarness(t, dir, "bare-base.yaml", "agent: agents/base.md\nrole: test\n")
+	path = writeTestHarness(t, dir, "child3.yaml", `
+agent: agents/child.md
+role: test
+base: bare-base.yaml
+plugins:
+  - extensions/from-child
+`)
+	h, _, err = LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, []PluginSpec{{Path: "extensions/from-child"}}, h.Plugins)
+}
+
+func TestFetchBasePlugin_PiFormat_FreshFetch(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"index.js":  []byte("export default function () {}"),
+		"lib/x.js":  []byte("//"),
+		"README.md": []byte("# ext"),
+	})
+	dep, localDir, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"extensions/go-diagnostics", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Equal(t, "plugins[0]", dep.Field)
+	assert.Equal(t, "https://raw.githubusercontent.com/org/repo/ref/extensions/go-diagnostics/", dep.URL)
+	assert.Equal(t, "go-diagnostics", filepath.Base(localDir))
+	assert.FileExists(t, filepath.Join(localDir, "index.js"))
+	assert.FileExists(t, filepath.Join(localDir, "lib", "x.js"))
+
+	// The fetched tree passes the same loadability rule as a local dir.
+	h := &Harness{Agent: filepath.Join(localDir, "index.js"), Plugins: []PluginSpec{{Path: localDir}}}
+	require.NoError(t, h.ValidateFilesExist())
+
+	// Second call is a full cache hit.
+	dep, localDir2, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"extensions/go-diagnostics", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Equal(t, localDir, localDir2)
+}
+
+func TestFetchBasePlugin_PiFormat_NotLoadable(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"README.md":   []byte("# ext"),
+		"src/main.js": []byte("//"),
+	})
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"extensions/broken", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pi would fail to load it")
+}
+
+func TestFetchBasePlugin_PiFormat_AllowlistAndOffline(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	_, _, err := fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"extensions/x", []string{"https://raw.githubusercontent.com/other/"}, ComposeOpts{WorkspaceRoot: cacheDir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+
+	_, _, err = fetchBasePlugin(context.Background(), "plugins[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"extensions/x", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir, FetchPolicy: fetch.FetchPolicy{Offline: true},
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "offline mode")
+}
+
+func TestResolveBasePlugins_PiFormatValidation(t *testing.T) {
+	baseURL := "https://raw.githubusercontent.com/org/repo/ref/harness/triage.yaml"
+	allow := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	_, err := resolveBasePlugins(context.Background(), &Harness{Plugins: []PluginSpec{{Path: "extensions/x"}}}, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+
+	_, err = resolveBasePlugins(context.Background(), &Harness{Plugins: []PluginSpec{{Path: "../../etc"}}}, baseURL, allow, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+
+	_, err = resolveBasePlugins(context.Background(), &Harness{Plugins: []PluginSpec{{Path: "/abs/ext"}}}, baseURL, allow, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an absolute path")
+
+	_, err = resolveBasePlugins(context.Background(), &Harness{Plugins: []PluginSpec{{Path: "extensions/bad name"}}}, baseURL, allow, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "valid plugin basename")
+
+	// Empty and already-cached entries are skipped; no plugins is a no-op.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	base := &Harness{Plugins: []PluginSpec{
+		{Path: ""},
+		{Path: filepath.Join(cacheDir, ".fullsend-cache/sha256/abc/my-ext")},
+	}}
+	deps, err := resolveBasePlugins(context.Background(), base, baseURL, nil, ComposeOpts{WorkspaceRoot: cacheDir})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	deps, err = resolveBasePlugins(context.Background(), &Harness{}, "", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+// seedPluginTreeCache pre-populates the content-addressed cache and URL
+// index the way a prior online fetch would have, so LoadWithBase can run
+// offline against it. The key is the directory URL: a plugin entry has no
+// one marker file since pi extensions joined the key.
+func seedPluginTreeCache(t *testing.T, cacheDir, dirURL string, files map[string][]byte) {
+	t.Helper()
+	treeHash, err := fetch.CachePutDir(cacheDir, dirURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, dirURL, treeHash))
+	require.NoError(t, urlIndexPut(cacheDir, "plugin:"+dirURL, treeHash))
+}
+
+func TestLoadWithBase_URLBase_PiPluginOfflineCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+plugins:
+  - path: extensions/go-diagnostics
+    pi:
+      args: ["--strict"]
+`)
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+	extFiles := map[string][]byte{"index.js": []byte("export default function () {}")}
+	seedPluginTreeCache(t, cacheDir, "https://example.com/extensions/go-diagnostics/", extFiles)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: https://example.com/harness/triage.yaml#sha256=`+computeHash(baseContent)+`
+plugins:
+  - extensions/local-child
+`)
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, h.Plugins, 2)
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path), "base extension resolved to a cache path: %s", h.Plugins[0].Path)
+	assert.Equal(t, "go-diagnostics", filepath.Base(h.Plugins[0].Path))
+	assert.Equal(t, []string{"--strict"}, h.Plugins[0].PiArgs(), "pi args survive the cache rewrite")
+	assert.Equal(t, "extensions/local-child", h.Plugins[1].Path, "child's local entry is left for ResolveRelativeTo")
+	content, err := os.ReadFile(filepath.Join(h.Plugins[0].Path, "index.js"))
+	require.NoError(t, err)
+	assert.Equal(t, extFiles["index.js"], content)
+
+	var pluginDep *Dependency
+	for i := range deps {
+		if deps[i].Field == "plugins[0]" {
+			pluginDep = &deps[i]
+		}
+	}
+	require.NotNil(t, pluginDep, "extension recorded as a dependency: %+v", deps)
+	assert.True(t, pluginDep.CacheHit)
+	assert.Equal(t, "directory", pluginDep.Type)
+}
+
+func TestLoadWithBase_SourceURL_PiPlugins(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	fullsendDir := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
+
+	agentRes := []byte("# triage agent")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/agents/triage.md", agentRes))
+	require.NoError(t, urlIndexPut(cacheDir, "https://example.com/agents/triage.md", fetch.ComputeSHA256(agentRes)))
+	seedPluginTreeCache(t, cacheDir, "https://example.com/extensions/go-diagnostics/", map[string][]byte{"index.ts": []byte("//")})
+
+	path := writeTestHarness(t, dir, "triage.yaml", `
+role: test
+slug: test
+agent: agents/triage.md
+plugins:
+  - extensions/go-diagnostics
+`)
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{"https://example.com/"},
+		SourceURL:     "https://example.com/harness/triage.yaml",
+	})
+	require.NoError(t, err)
+	require.Len(t, h.Plugins, 1)
+	assert.True(t, filepath.IsAbs(h.Plugins[0].Path))
+
+	// Same flow as run.go: the cache path must survive ResolveRelativeTo and
+	// pass ValidateFilesExist, rather than being re-rooted under fullsendDir.
+	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
+	require.NoError(t, h.ValidateFilesExist())
 }

@@ -18,10 +18,26 @@ type ScaffoldPRMetadata struct {
 }
 
 const (
+	// gettingStartedCatalog documents the primary /fs-* slash commands so users
+	// discover them at their first touchpoint — the fresh-install PR. It mirrors
+	// the per-org onboarding catalog (GETTING_STARTED_SECTION in
+	// scripts/reconcile-repos.sh); both surfaces are independently pinned to
+	// dispatch.yml's routing (per-repo by TestPerRepoOnboardingCatalog, per-org by
+	// TestReconcileReposSlashCommandCatalog) so they cannot drift apart. See #2165.
+	gettingStartedCatalog = "\n\n## Getting started\n\n" +
+		"Once this PR is merged, interact with fullsend by commenting one of these " +
+		"slash commands. The supported target (issue and/or pull request) is shown for each:\n\n" +
+		"- `/fs-triage` (issue or PR) — Invoke the [triage](https://fullsend.sh/docs/agents/triage) agent to categorize, label, and assess an issue.\n" +
+		"- `/fs-code` (issue only) — Invoke the [code](https://fullsend.sh/docs/agents/code) agent to implement a fix for an issue and open a PR.\n" +
+		"- `/fs-review` (PR only) — Invoke the [review](https://fullsend.sh/docs/agents/review) agent to review a pull request.\n" +
+		"- `/fs-fix` (PR only) — Invoke the [fix](https://fullsend.sh/docs/agents/fix) agent to address review feedback on a pull request.\n" +
+		"- `/fs-retro` (issue or PR) — Invoke the [retro](https://fullsend.sh/docs/agents/retro) agent to analyze completed work and propose improvements.\n" +
+		"- `/fs-prioritize` (issue or PR) — Invoke the [prioritize](https://fullsend.sh/docs/agents/prioritize) agent to score an issue for project board ranking."
+
 	// defaultScaffoldPRBody is the PR body for fresh installations.
 	// Only used within this package.
 	defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-		"Merge this PR to activate fullsend workflows."
+		"Merge this PR to activate fullsend workflows." + gettingStartedCatalog
 
 	// DefaultScaffoldBranch is the branch name for fresh installations.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
@@ -140,7 +156,7 @@ func RuntimeSection(runtime string) string {
 	return "\n\n## Runtime\n\n" +
 		fmt.Sprintf("Agents in this repository run on **%s**", runtime) +
 		" (`runtime:` in `.fullsend/config.yaml`). To change it later, edit that key, " +
-		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi>`, or override a " +
+		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi|codex>`, or override a " +
 		"single run with `fullsend run --runtime`. To put one agent on another runtime or model, " +
 		"set runtime/model/effort on its `agents:` entry in the same file (`fullsend agent set <name> --runtime pi`). " +
 		"See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."

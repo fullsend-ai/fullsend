@@ -49,14 +49,19 @@ fullsend issues get \
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml`) |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ## `fullsend issues post-comment`
 
-Posts a comment with a hidden HTML marker on an issue. On re-runs,
-finds the existing comment by its marker and edits in-place, collapsing
-old content into `<details>` blocks. This prevents comment flooding
-on re-runs.
+Posts a comment with a sticky marker on an issue. On re-runs, finds
+the existing comment by its marker and edits in-place. By default,
+old content is collapsed into `<details>` blocks to preserve history;
+set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
+to replace the body with no history.
+This prevents comment flooding on re-runs. For GitHub and GitLab, the marker is embedded as an invisible
+HTML comment in the body. For Jira, the marker is stored as a comment
+entity property (Jira has no HTML comments, so a body-embedded marker
+would be visible to users).
 
 ```bash
 echo "Triage complete. See PR #99." | fullsend issues post-comment \
@@ -75,19 +80,23 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
 | `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
 | `--number` | Yes | Issue number (must be a positive integer) |
-| `--marker` | Yes | Hidden HTML marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`) |
+| `--marker` | Yes | Sticky marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`). GitHub/GitLab: hidden HTML comment in body. Jira: comment entity property. |
 | `--result` | No | Path to comment body file, or `-` for stdin (default: `-`) |
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--dry-run` | No | Print what would be posted without making API calls |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml`) |
+| `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
-### Jira marker constraints
+### Jira marker storage
 
-For `--tracker jira`, the `--marker` value must not contain `\`, `*`,
-`_`, `` ` ``, `[`, `]`, or `&`. Jira's markdown round-trip escapes
-these characters, which would break marker re-detection on later runs.
+For `--tracker jira`, the `--marker` value is stored as an invisible
+comment entity property rather than embedded in the visible comment
+body. Jira's ADF format has no HTML comment equivalent, so
+body-embedded markers would be visible to users. Because the marker
+lives in a property, character restrictions do not apply — any
+characters valid in the `--marker` flag are fine for Jira.
 
 ## Config-based default tracker
 
@@ -107,11 +116,18 @@ for how the `tracker` field resolves through the config overlay chain.
 
 Marker-based comment lookup does not verify the comment author. In a
 trusted CI environment (the intended deployment) this is safe because
-only the bot writes marker-bearing comments. If untrusted users can
-post issue comments containing your marker string, they could cause
-the bot to edit their comment instead of creating its own. Do not use
-this command in environments where untrusted users can write arbitrary
-issue comments bearing your marker.
+only the bot writes marker-bearing comments.
+
+For GitHub and GitLab, where markers are hidden HTML comments in the
+body, an untrusted user who can post issue comments containing your
+marker string could cause the bot to edit their comment instead of
+creating its own. For Jira, markers are stored as comment entity
+properties, which require comment-edit permissions to set — body-text
+injection alone cannot spoof a marker.
+
+Do not use this command in environments where untrusted users can write
+arbitrary issue comments bearing your marker (GitHub/GitLab) or have
+comment-edit permissions (Jira).
 
 ## Environment variables
 
