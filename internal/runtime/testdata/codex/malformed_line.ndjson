@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"01a06300-0000-7000-8000-000000000006"}
+{"type":"turn.started"}
+this is not json at all
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"first"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execu
+
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"echo hi","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":500,"cached_input_tokens":100,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}

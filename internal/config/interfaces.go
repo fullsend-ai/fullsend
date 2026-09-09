@@ -77,11 +77,17 @@ type PerRepoConfigReader interface {
 	ConfigForge() string
 	ConfigTracker() string
 	ConfigMintURL() string
+	ConfigKeepHistory() bool
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
 	ConfigInferenceOpenAI() OpenAIWIFConfig
+	// ConfigModelAliases returns the effective model alias map, merged
+	// per-key through the parent chain. nil (the code default) means no
+	// aliases are configured: every alias resolves through the runtime's
+	// compiled-in table.
+	ConfigModelAliases() map[string]string
 }
 
 // --- Write superset interfaces ---
@@ -117,11 +123,13 @@ type PerRepoConfigWriter interface {
 	SetRoles([]string)
 	SetRuntime(string)
 	SetMintURL(string)
+	SetKeepHistory(bool)
 	SetInferenceProvider(string)
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
+	SetModelAliases(map[string]string)
 }
 
 // --- Compile-time assertions ---
@@ -287,6 +295,20 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			if oi.entry.Effort != "" {
 				merged.Effort = oi.entry.Effort
 			}
+			// Subagents merge per key: overlay entries override or
+			// tombstone parent entries; unstated keys inherit.
+			// `merged := pa` shares the map header, so clone before
+			// writing or the overlay leaks into the parent layer.
+			if oi.entry.Subagents != nil {
+				cloned := make(map[string]*string, len(merged.Subagents)+len(oi.entry.Subagents))
+				for k, v := range merged.Subagents {
+					cloned[k] = v
+				}
+				for k, v := range oi.entry.Subagents {
+					cloned[k] = v
+				}
+				merged.Subagents = cloned
+			}
 		}
 		result = append(result, merged)
 	}
@@ -429,6 +451,21 @@ func (c *perRepoConfig) ConfigForge() string {
 	return ""
 }
 
+// ConfigKeepHistory reports whether sticky comment updates should
+// append previous content as a collapsed "Previous run" block.
+// KeepHistory is a *bool: nil falls through to parent, non-nil
+// (including explicit false) is the local decision. Code default
+// is true (history appended).
+func (c *perRepoConfig) ConfigKeepHistory() bool {
+	if c.KeepHistory != nil {
+		return *c.KeepHistory
+	}
+	if c.parent != nil {
+		return c.parent.ConfigKeepHistory()
+	}
+	return true
+}
+
 // ConfigTracker returns the configured default issue tracker (e.g.
 // "github", "gitlab", "jira"), used as the default for `fullsend
 // issues` commands' --tracker flag when it is not set explicitly.
@@ -522,6 +559,35 @@ func (c *perRepoConfig) ConfigInferenceOpenAI() OpenAIWIFConfig {
 	return out
 }
 
+// ConfigModelAliases returns the effective model alias map, merged per
+// key through the parent chain. Each key in the local Models.Aliases
+// overrides the same key from the parent; unstated keys inherit the
+// parent's value.
+func (c *perRepoConfig) ConfigModelAliases() map[string]string {
+	var parentAliases map[string]string
+	if c.parent != nil {
+		parentAliases = c.parent.ConfigModelAliases()
+	}
+	if c.Models == nil || len(c.Models.Aliases) == 0 {
+		return parentAliases
+	}
+	if len(parentAliases) == 0 {
+		result := make(map[string]string, len(c.Models.Aliases))
+		for k, v := range c.Models.Aliases {
+			result[k] = v
+		}
+		return result
+	}
+	merged := make(map[string]string, len(parentAliases)+len(c.Models.Aliases))
+	for k, v := range parentAliases {
+		merged[k] = v
+	}
+	for k, v := range c.Models.Aliases {
+		merged[k] = v
+	}
+	return merged
+}
+
 // --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
@@ -542,6 +608,11 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 
 // SetRuntime replaces the configured agent runtime.
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
+
+// SetKeepHistory sets whether sticky comment updates append history.
+// Stores a *bool so that an explicit false is distinguishable from
+// unset (nil) across layers.
+func (c *perRepoConfig) SetKeepHistory(v bool) { c.KeepHistory = &v }
 
 // SetMintURL sets the token mint URL.
 func (c *perRepoConfig) SetMintURL(mintURL string) { c.MintURL = mintURL }
@@ -565,6 +636,19 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
+}
+
+// SetModelAliases sets the per-repo model alias overrides; a nil or
+// empty map removes the block.
+func (c *perRepoConfig) SetModelAliases(aliases map[string]string) {
+	if len(aliases) == 0 {
+		c.Models = nil
+		return
+	}
+	if c.Models == nil {
+		c.Models = &ModelsConfig{}
+	}
+	c.Models.Aliases = aliases
 }
 
 // SetInferenceOpenAI sets the OpenAI WIF identifiers; a zero value

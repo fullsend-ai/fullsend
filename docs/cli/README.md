@@ -16,7 +16,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 |--------------|-------------|
 | [`fullsend agent`](agent.md) | Manage agent registrations — add, list, set, update, remove |
 | [`fullsend github`](github.md) | Configure GitHub orgs and repos — setup, enrollment, day-2 operations |
-| [`fullsend inference`](inference.md) | Manage inference credentials — GCP Workload Identity Federation for Agent Platform, and OpenAI WIF enrolment for GPT on pi |
+| [`fullsend inference`](inference.md) | Manage inference credentials — GCP Workload Identity Federation for Agent Platform, and OpenAI WIF enrolment for GPT on pi or codex |
 | [`fullsend mint`](mint.md) | Deploy and manage the OIDC token mint service |
 | [`fullsend repos`](repos.md) | Manage per-repo installations at scale via declarative manifest |
 

@@ -360,7 +360,9 @@ else
     role_app_ids=$(echo "${mint_env}" | jq -r '.ROLE_APP_IDS // ""')
     missing_roles=()
     for role in "${ROLES[@]}"; do
-      key="${ORG}/${role}"
+      # ROLE_APP_IDS uses role-only keys; org/role keys are legacy and ignored
+      # by the mint during the migration window.
+      key="${role}"
       if echo "${role_app_ids}" | jq -e --arg k "${key}" '.[$k]' &>/dev/null; then
         echo "    OK: ${key} is in ROLE_APP_IDS"
       else

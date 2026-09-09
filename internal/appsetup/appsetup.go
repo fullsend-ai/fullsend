@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -19,12 +20,14 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	ghTypes "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -125,17 +128,18 @@ func (StdinPrompter) ReadLine(prompt string) (string, error) {
 
 // Setup orchestrates the creation or reuse of GitHub Apps for agent roles.
 type Setup struct {
-	client       forge.Client
-	prompter     Prompter
-	browser      BrowserOpener
-	ui           *ui.Printer
-	knownSlugs   map[string]string
-	secretExists SecretExistsFunc
-	storeSecret  StoreSecretFunc
-	permErrors   []string
-	publicApps   bool
-	appSet       string
-	storedAppIDs map[string]string // role → app_id from ROLE_APP_IDS
+	client           forge.Client
+	prompter         Prompter
+	browser          BrowserOpener
+	ui               *ui.Printer
+	knownSlugs       map[string]string
+	secretExists     SecretExistsFunc
+	storeSecret      StoreSecretFunc
+	permErrors       []string
+	publicApps       bool
+	appSet           string
+	storedAppIDs     map[string]string // role → app_id from ROLE_APP_IDS
+	readinessTimeout time.Duration     // 0 → use default appReadyTimeout
 }
 
 // NewSetup creates a new Setup instance.
@@ -244,17 +248,20 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 		if err := s.ensureInstalled(ctx, org, recovered.Slug); err != nil {
 			return nil, fmt.Errorf("ensuring installation: %w", err)
 		}
-		// Resolve AppID from the installation so ROLE_APP_IDS gets updated.
+		// Re-read the installation after recovery so permission drift is
+		// reported just like it is on every other existing-app path.
+		inst, found, err := s.findExistingInstallation(ctx, org, role, recovered.Slug)
+		if err != nil {
+			return nil, fmt.Errorf("looking up recovered app installation: %w", err)
+		}
+		if !found {
+			return nil, fmt.Errorf("recovered app %s was installed but not found in installations list", recovered.Slug)
+		}
 		if recovered.AppID == 0 {
-			inst, found, err := s.findExistingInstallation(ctx, org, role, recovered.Slug)
-			if err != nil {
-				return nil, fmt.Errorf("looking up recovered app installation: %w", err)
-			}
-			if !found {
-				return nil, fmt.Errorf("recovered app %s was installed but not found in installations list", recovered.Slug)
-			}
+			// Resolve AppID from the installation so ROLE_APP_IDS gets updated.
 			recovered.AppID = inst.AppID
 		}
+		s.checkPermissions(inst, org, role)
 		return recovered, nil
 	}
 
@@ -632,7 +639,10 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 		}, nil
 	}
 
-	// No secretExists function — can't check, assume reuse.
+	// No secretExists function — assume the remote mint owns the credentials,
+	// but still report permission drift so remote-only setup has the same
+	// rollout visibility as local credential paths.
+	s.checkPermissions(inst, org, role)
 	s.ui.StepDone(fmt.Sprintf("Reusing existing app %s", inst.AppSlug))
 	return &AppCredentials{
 		AppID:    inst.AppID,
@@ -642,11 +652,11 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 	}, nil
 }
 
-// checkPermissions warns if the installed app is missing permissions that
-// the current manifest expects.
-// PermissionErrors returns a combined error if any apps have stale permissions,
-// or nil if all permissions are up to date. Call after all roles have been
-// processed so the user sees every mismatch at once.
+// PermissionErrors returns the accumulated missing-permission errors from every
+// checkPermissions call on this Setup, or nil when no required permission was
+// missing. Only required permissions land here: permissions that mintcore marks
+// optional for the role (rollout permissions such as coder's packages:read) are
+// reported as warnings and do not fail setup.
 func (s *Setup) PermissionErrors() error {
 	if len(s.permErrors) == 0 {
 		return nil
@@ -654,8 +664,26 @@ func (s *Setup) PermissionErrors() error {
 	return fmt.Errorf("apps have stale permissions:\n  %s", strings.Join(s.permErrors, "\n  "))
 }
 
+// apiBaseURL returns the GitHub API base URL the configured client talks to,
+// or "" when the client does not expose one. mintcore treats "" as public
+// github.com when building installation guidance.
+func (s *Setup) apiBaseURL() string {
+	if provider, ok := s.client.(interface{ BaseURL() string }); ok {
+		return strings.TrimSpace(provider.BaseURL())
+	}
+	return ""
+}
+
+// checkPermissions compares the installed app's granted permissions against the
+// ones the current manifest expects and reports the gap the same way mint does.
+// Permissions that mintcore marks optional for the role are pending-rollout
+// permissions: they are warned about but do not block setup. Every other
+// missing permission is required and is recorded in s.permErrors so
+// PermissionErrors fails the run.
 func (s *Setup) checkPermissions(inst *forge.Installation, org, role string) {
-	if inst.Permissions == nil {
+	// GitHub always grants at least metadata:read, so an empty (non-nil) map
+	// carries no permission data either — treat it the same as nil.
+	if len(inst.Permissions) == 0 {
 		s.ui.StepWarn(fmt.Sprintf("app %s: permissions not available, skipping check", inst.AppSlug))
 		return
 	}
@@ -663,25 +691,38 @@ func (s *Setup) checkPermissions(inst *forge.Installation, org, role string) {
 	data, _ := json.Marshal(expected)
 	var want map[string]string
 	_ = json.Unmarshal(data, &want)
-	var missing []string
+	var optional, required []string
 	for perm, level := range want {
 		if level == "" {
 			continue
 		}
-		if inst.Permissions[perm] != level {
-			missing = append(missing, fmt.Sprintf("%s:%s", perm, level))
+		if mintcore.PermissionLevelAtLeast(mintcore.GrantedPermissionLevel(inst.Permissions, perm), level) {
+			continue
 		}
+		entry := fmt.Sprintf("%s:%s", perm, level)
+		if mintcore.IsOptionalRolePermission(role, perm) {
+			optional = append(optional, entry)
+			continue
+		}
+		required = append(required, entry)
 	}
-	if len(missing) == 0 {
+	if len(optional) == 0 && len(required) == 0 {
 		return
 	}
-	s.ui.StepWarn(fmt.Sprintf("app %s missing permissions: %s", inst.AppSlug, strings.Join(missing, ", ")))
-	permURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/permissions", org, inst.AppSlug)
-	installURL := fmt.Sprintf("https://github.com/organizations/%s/settings/installations/%d", org, inst.ID)
-	s.permErrors = append(s.permErrors, fmt.Sprintf(
-		"%s — update at %s then approve at %s",
-		inst.AppSlug, permURL, installURL,
-	))
+	sort.Strings(optional)
+	sort.Strings(required)
+
+	hint := mintcore.InstallationAcceptHint(s.apiBaseURL(), org, int64(inst.ID))
+	if len(optional) > 0 {
+		s.ui.StepWarn(fmt.Sprintf("app %s pending rollout permissions (setup continues): %s — %s",
+			inst.AppSlug, strings.Join(optional, ", "), hint))
+	}
+	if len(required) > 0 {
+		s.ui.StepWarn(fmt.Sprintf("app %s missing permissions: %s — %s",
+			inst.AppSlug, strings.Join(required, ", "), hint))
+		s.permErrors = append(s.permErrors, fmt.Sprintf("%s — missing required permissions: %s; %s",
+			inst.AppSlug, strings.Join(required, ", "), hint))
+	}
 }
 
 // manifestResponse is the JSON response from GitHub's app manifest conversion.
@@ -872,6 +913,58 @@ const installPollInterval = 2 * time.Second
 // installPollTimeout is how long we wait for the user to install the app.
 const installPollTimeout = 5 * time.Minute
 
+// appReadyInitialInterval is the initial backoff interval when waiting for
+// the GitHub App page to become available after creation.
+const appReadyInitialInterval = 500 * time.Millisecond
+
+// appReadyMaxInterval caps exponential backoff when polling app readiness.
+const appReadyMaxInterval = 5 * time.Second
+
+// appReadyTimeout is how long we wait for the app page to be provisioned.
+const appReadyTimeout = 30 * time.Second
+
+// waitForAppReady polls GetAppClientID with bounded exponential backoff
+// until the app page is reachable. GitHub sometimes needs a few seconds to
+// provision a newly created app, and opening the browser before it's ready
+// results in a 404.
+func (s *Setup) waitForAppReady(ctx context.Context, ghExt forge.GitHubExtensions, slug string) error {
+	// Quick check — the app may already be available.
+	if _, err := ghExt.GetAppClientID(ctx, slug); err == nil {
+		return nil
+	}
+
+	s.ui.StepStart(fmt.Sprintf("Waiting for app %s to become available...", slug))
+
+	timeout := appReadyTimeout
+	if s.readinessTimeout > 0 {
+		timeout = s.readinessTimeout
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	interval := appReadyInitialInterval
+	for {
+		select {
+		case <-pollCtx.Done():
+			// Distinguish parent-context cancellation from readiness timeout.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("timed out waiting for app %s to become available on GitHub", slug)
+		case <-time.After(interval):
+			if _, err := ghExt.GetAppClientID(pollCtx, slug); err == nil {
+				s.ui.StepDone(fmt.Sprintf("App %s is available", slug))
+				return nil
+			}
+			// Exponential backoff, capped at appReadyMaxInterval.
+			interval *= 2
+			if interval > appReadyMaxInterval {
+				interval = appReadyMaxInterval
+			}
+		}
+	}
+}
+
 func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	ghExt, ok := s.client.(forge.GitHubExtensions)
 	if !ok {
@@ -888,6 +981,19 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 			s.ui.StepDone(fmt.Sprintf("App %s is installed on %s", slug, org))
 			return nil
 		}
+	}
+
+	// Wait for the app page to be provisioned before opening the browser.
+	// After the manifest flow, GitHub may take a few seconds to make the
+	// app page available — opening the install URL before that returns 404.
+	if err := s.waitForAppReady(ctx, ghExt, slug); err != nil {
+		// waitForAppReady returns ctx.Err() for parent cancellation, so
+		// context errors propagate directly without a separate guard.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		s.ui.StepWarn(fmt.Sprintf("App readiness check failed: %v", err))
+		s.ui.StepInfo("Proceeding to open browser anyway — the page may require a manual refresh.")
 	}
 
 	// App not installed — open browser and poll until it appears.

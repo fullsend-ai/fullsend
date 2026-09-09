@@ -172,6 +172,9 @@ jobs:
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
           CODE_ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, CODE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent

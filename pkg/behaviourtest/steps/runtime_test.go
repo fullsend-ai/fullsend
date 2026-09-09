@@ -77,17 +77,17 @@ func TestGivenPiAgent_CommitsDefinitionWithFixtureInlined(t *testing.T) {
 	scmDriver := &recordingSCM{}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver, FixturesRoot: "e2e/behaviour"}
 	doc := "---\nname: pi-smoke\ntools: Bash(ls), Write\n---\nWrite this:\n\n{{fixture:fixtures/triage/sufficient.json}}\n"
-	require.NoError(t, givenPiAgent(w, "pi-smoke", doc))
+	require.NoError(t, givenRuntimeAgent(w, "pi-smoke", doc))
 	assert.Equal(t, filepath.Join(".fullsend", "agents", "pi-smoke.md"), scmDriver.lastPath)
 	body := string(scmDriver.lastContent)
 	assert.True(t, strings.HasPrefix(body, "---\nname: pi-smoke"), body)
 	assert.NotContains(t, body, "{{fixture:")
 	assert.Contains(t, body, `"action": "sufficient"`, "fixture content is inlined verbatim")
 
-	require.ErrorContains(t, givenPiAgent(w, "x", "no frontmatter"), "frontmatter")
-	require.ErrorContains(t, givenPiAgent(w, "x", "---\nname: x\n---\n{{fixture:fixtures/nope.json}}"), "reading fixture")
-	require.ErrorContains(t, givenPiAgent(w, "../x", doc), "bare file name")
-	require.ErrorContains(t, givenPiAgent(&world.World{Org: "org", RepoName: "repo", SCM: scmDriver}, "x", doc), "FixturesRoot")
+	require.ErrorContains(t, givenRuntimeAgent(w, "x", "no frontmatter"), "frontmatter")
+	require.ErrorContains(t, givenRuntimeAgent(w, "x", "---\nname: x\n---\n{{fixture:fixtures/nope.json}}"), "reading fixture")
+	require.ErrorContains(t, givenRuntimeAgent(w, "../x", doc), "bare file name")
+	require.ErrorContains(t, givenRuntimeAgent(&world.World{Org: "org", RepoName: "repo", SCM: scmDriver}, "x", doc), "FixturesRoot")
 }
 
 func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {
@@ -169,6 +169,61 @@ func TestAssertPiTranscriptHasToolCall(t *testing.T) {
 	assert.True(t, isPiSessionFile([]byte(header)))
 	assert.False(t, isPiSessionFile([]byte(`{"type":"assistant"}`+"\n")))
 	assert.False(t, isPiSessionFile(nil))
+}
+
+func TestAssertCodexStreamHasToolCall(t *testing.T) {
+	t.Parallel()
+	const started = `{"type":"thread.started","thread_id":"01a062d8-3c06-78f1-95f2-0fe3e261d47f"}` + "\n"
+	const command = `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls .","aggregated_output":"","exit_code":0,"status":"completed"}}` + "\n"
+	const textOnly = `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}` + "\n"
+	const completed = `{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}` + "\n"
+
+	good := t.TempDir()
+	writeArtifact(t, good, "agent-triage-1/metrics.json", `{"runtime":"codex"}`)
+	writeArtifact(t, good, "agent-triage-1/iteration-1/output.jsonl", started+command+completed)
+	// A pi stream in the same tree is ignored, not mistaken for codex.
+	writeArtifact(t, good, "agent-triage-2/iteration-1/output.jsonl",
+		`{"type":"session","version":3,"id":"abc"}`+"\n")
+	require.NoError(t, assertCodexStreamHasToolCall(&world.World{ArtifactDir: good}))
+
+	noCall := t.TempDir()
+	writeArtifact(t, noCall, "agent-triage-1/iteration-1/output.jsonl", started+textOnly+completed)
+	require.ErrorContains(t, assertCodexStreamHasToolCall(&world.World{ArtifactDir: noCall}),
+		"none records a command_execution item")
+
+	none := t.TempDir()
+	// A codex stream that is not named output.jsonl is not the artifact.
+	writeArtifact(t, none, "agent-triage-1/iteration-1/transcripts/rollout.jsonl", started+command)
+	require.ErrorContains(t, assertCodexStreamHasToolCall(&world.World{ArtifactDir: none}),
+		"no codex output.jsonl stream")
+
+	// An announced command is not a completed one, and a command the hooks
+	// declined is a tool call the agent never got to make. Neither proves
+	// the agent ran a tool, so neither may satisfy the step.
+	const inProgress = `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"ls .","aggregated_output":"","exit_code":null,"status":"in_progress"}}` + "\n"
+	const declinedCmd = `{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"rm -rf /","aggregated_output":"","exit_code":null,"status":"declined"}}` + "\n"
+	for name, body := range map[string]string{
+		"only announced": started + inProgress + completed,
+		"only declined":  started + declinedCmd + completed,
+	} {
+		dir := t.TempDir()
+		writeArtifact(t, dir, "agent-triage-1/iteration-1/output.jsonl", body)
+		require.ErrorContains(t, assertCodexStreamHasToolCall(&world.World{ArtifactDir: dir}),
+			"none records a command_execution item", name)
+	}
+
+	assert.True(t, isCodexStreamFile([]byte(started)))
+	assert.True(t, isCodexStreamFile([]byte(completed)))
+	// Rollout session files use underscored inner names inside event_msg
+	// envelopes, so they never look like a --json capture.
+	assert.False(t, isCodexStreamFile(
+		[]byte(`{"type":"event_msg","payload":{"type":"item_completed"}}`+"\n")))
+	// Nor does a codex event name nested inside another envelope's payload,
+	// which the old substring scan would have accepted.
+	assert.False(t, isCodexStreamFile(
+		[]byte(`{"type":"wrapper","inner":{"type":"thread.started"}}`+"\n")))
+	assert.False(t, isCodexStreamFile([]byte("not json at all\n")))
+	assert.False(t, isCodexStreamFile(nil))
 }
 
 func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing.T) {

@@ -162,14 +162,11 @@ wasm-stage: wasm-build
 	@echo "==> Staged: $(WORKERSRC_DIR)/mintcore.wasm, $(WORKERSRC_DIR)/wasm_exec.js"
 
 # Run CF Worker bridge smoke tests.
-# Works on a clean checkout: stages WASM, installs npm deps, runs vitest.
-# Uses `npm install` (not `npm ci`) because the workersrc lockfile is not
-# committed — the dep tree is small enough that install-time resolution is
-# acceptable. Switch to `npm ci` if a lockfile is added later.
+# Works on a clean checkout: stages WASM, installs locked npm deps, runs vitest.
 # Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
 mint-cf-worker-test: wasm-stage
 	@echo "==> Installing CF Worker npm dependencies..."
-	cd $(WORKERSRC_DIR) && npm install --no-audit --no-fund
+	cd $(WORKERSRC_DIR) && npm ci --no-audit --no-fund
 	@echo "==> Type-checking CF Worker source (production + test files)..."
 	cd $(WORKERSRC_DIR) && npm run typecheck && npm run typecheck:tests
 	@echo "==> Running CF Worker bridge smoke tests..."
@@ -177,7 +174,7 @@ mint-cf-worker-test: wasm-stage
 	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
 
 define run-timed
 	@start=$$(date +%s); \
@@ -192,6 +189,7 @@ script-test:
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
+	$(call run-timed,bash scripts/verify-release-tag-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
@@ -219,6 +217,10 @@ e2e-test:
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
 # that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
+# runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
+# for the same reason, and codex has no Vertex path — so unlike pi it has no
+# default behaviour coverage at all until that organization exists:
+# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-openai
 BEHAVIOUR_CAPABILITIES ?= runtime-pi
 
 behaviour-test:

@@ -1,7 +1,7 @@
 ---
 id: fullsend-openai
 display_name: Fullsend OpenAI
-description: OpenAI Responses API for the pi runtime (runner-exchanged, run-scoped access token)
+description: OpenAI Responses API for the pi and codex runtimes (runner-exchanged, run-scoped access token)
 category: inference
 credentials:
   - name: api_token
@@ -33,5 +33,9 @@ endpoints:
       - allow:
           method: POST
           path: /v1/responses
+# pi calls the API from node; codex's npm launcher (bin/codex.js) spawns the
+# per-platform native binary, so it is `codex` — not node — that opens the
+# connection on that runtime (#6920).
 binaries:
   - "**/node"
+  - "**/codex"

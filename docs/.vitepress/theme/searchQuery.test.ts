@@ -86,15 +86,15 @@ describe("textContainsPhrases", () => {
   });
 
   it("returns true when the phrase appears in the text", () => {
-    expect(
-      textContainsPhrases("The eval scenario runner starts here.", ["eval scenario"]),
-    ).toBe(true);
+    expect(textContainsPhrases("The eval scenario runner starts here.", ["eval scenario"])).toBe(
+      true,
+    );
   });
 
   it("returns false when the phrase does not appear adjacent", () => {
-    expect(
-      textContainsPhrases("The eval of each scenario is different.", ["eval scenario"]),
-    ).toBe(false);
+    expect(textContainsPhrases("The eval of each scenario is different.", ["eval scenario"])).toBe(
+      false,
+    );
   });
 
   it("matches case-insensitively", () => {
@@ -110,10 +110,7 @@ describe("textContainsPhrases", () => {
     ).toBe(true);
 
     expect(
-      textContainsPhrases("eval scenario but no harness here", [
-        "eval scenario",
-        "harness config",
-      ]),
+      textContainsPhrases("eval scenario but no harness here", ["eval scenario", "harness config"]),
     ).toBe(false);
   });
 

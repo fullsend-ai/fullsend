@@ -67,7 +67,13 @@ Environment variables set by the pre-script:
 
 - `MY_INPUT_FILE` — path to input data JSON
 - `TARGET_REPO_DIR` — path to target repository checkout
+
+Environment variables set by the runner, present in every agent's shell:
+
 - `FULLSEND_OUTPUT_DIR` — where to write your result
+- `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
+- `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
+  write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
 
 ## Process
 
@@ -303,7 +309,7 @@ set -euo pipefail
 WORKSPACE="/tmp/workspace"
 mkdir -p "$WORKSPACE"
 
-elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
+if [[ "${ISSUE_SOURCE}" == "github" ]]; then
   gh issue view "$ISSUE_KEY" --repo "$REPO_FULL_NAME" \
     --json number,title,body,labels,comments \
     > "$WORKSPACE/my-input.json"
@@ -441,6 +447,7 @@ name: fullsend-my-agent
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 on:
   workflow_dispatch:
@@ -454,10 +461,6 @@ on:
         required: true
         type: string
         default: 'github'
-
-permissions:
-  contents: read
-  issues: write
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}

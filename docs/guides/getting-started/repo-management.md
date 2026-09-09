@@ -84,6 +84,7 @@ gitlab:
   fullsend_ref: v2.5.0
   repos:
     - name: gitlab-group/project
+    - name: gitlab-group/subgroup/nested-project
 ```
 
 GitHub repos use a token mint for authentication. The
@@ -96,7 +97,9 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
 is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
 `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
-none are set.
+none are set. You can also pass `--gitlab-url` to `fullsend repos install`
+to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
+when no forge is specified).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -265,8 +268,8 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-and `--allowed-remote-resources`. The `--inference-region` flag is
-install-time only and is not stored in the manifest.
+`--allowed-remote-resources`, and `--vendor`. The `--inference-region`
+flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 

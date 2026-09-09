@@ -366,8 +366,8 @@ This keeps the dispatch scanning logic identical across GitHub and GitLab.
 - Add `--forge` flag to `fullsend admin install` for manual override
 
 **Phase 4: Configuration**
-- Add `forge: github` or `forge: gitlab` to `config.yaml`
-- Support forge-specific settings (GitLab instance URL for self-hosted)
+- Add `forge: github` or `forge: gitlab` to `config.yaml` (implementation uses `gitlab.url` in the repos manifest — see Config Schema Changes below)
+- Support forge-specific settings (GitLab instance URL for self-hosted; implemented via `--gitlab-url` flag on `repos install`)
 - Update config schema and validation
 
 **Phase 5: Testing**
@@ -482,17 +482,20 @@ func detectForge(repoURL string) (string, error) {
 ### Install Command Changes
 
 - Add `--forge {github|gitlab}` flag (auto-detected if not specified)
-- Add `--gitlab-url` for self-hosted GitLab instances
+- Add `--gitlab-url` for self-hosted GitLab instances *(implemented — see PR #7087)*
 - Update app setup flow to create Project Access Tokens for GitLab
 - Update workflows layer to deploy `.gitlab/` instead of `.github/`
 
 ### Config Schema Changes
 
 ```yaml
-# config.yaml
-forge: gitlab  # or "github"
-gitlab_instance_url: https://gitlab.example.com  # optional, defaults to gitlab.com
+# repos.yaml (manifest)
+gitlab:
+  url: https://gitlab.example.com  # optional, defaults to gitlab.com
 ```
+
+> **Note:** The original design proposed `gitlab_instance_url` in `config.yaml`;
+> the implementation uses `gitlab.url` in the repos manifest instead.
 
 ### New Packages
 

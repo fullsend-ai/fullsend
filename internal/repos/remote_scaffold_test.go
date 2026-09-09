@@ -22,7 +22,7 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+ref] = []byte(content)
 	}
 
-	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"})
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"}, false)
 	if err != nil {
 		t.Fatalf("FetchRemoteScaffold() error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestFetchRemoteScaffold_GitHub_IncludesThinCallers(t *testing.T) {
 		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+remotePath+"@"+ref] = []byte("---\n# fullsend-stage: prioritize\nname: thin-caller\nuses: __REUSABLE_WORKFLOW__\ninstall_mode: per-org\nrunner_image: __GH_RUNNER__\n")
 	}
 
-	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil)
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil, false)
 	if err != nil {
 		t.Fatalf("FetchRemoteScaffold() error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestFetchRemoteScaffold_GitHub_ThinCallerNotFound(t *testing.T) {
 
 	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@"+ref] = []byte("---\nname: fullsend\nuses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@__FULLSEND_AI_REF__\n")
 
-	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil)
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil, false)
 	if err != nil {
 		t.Fatalf("FetchRemoteScaffold() error: %v", err)
 	}
@@ -108,9 +108,68 @@ func TestFetchRemoteScaffold_GitHub_ThinCallerNotFound(t *testing.T) {
 	}
 }
 
+func TestFetchRemoteScaffold_GitHub_VendoredRendersLocalRefs(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref := "v0.42.0"
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@"+ref] = []byte("---\nname: fullsend\nuses: __REUSABLE_DISPATCH__\nref: __FULLSEND_AI_REF__\n")
+
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		remotePath := "internal/scaffold/fullsend-repo/" + tcPath
+		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+remotePath+"@"+ref] = []byte("---\n# fullsend-stage: prioritize\nname: thin-caller\nuses: __REUSABLE_WORKFLOW__\ninstall_mode: per-org\nrunner_image: __GH_RUNNER__\n")
+	}
+
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil, true)
+	if err != nil {
+		t.Fatalf("FetchRemoteScaffold() error: %v", err)
+	}
+
+	// Verify shim uses local ref for reusable-dispatch
+	shimContent := string(files[0].Content)
+	if !strings.Contains(shimContent, "./.github/workflows/reusable-dispatch.yml") {
+		t.Errorf("vendored shim should use local ref, got:\n%s", shimContent)
+	}
+	if strings.Contains(shimContent, "fullsend-ai/fullsend/.github/workflows/") {
+		t.Errorf("vendored shim should not contain cross-repo ref, got:\n%s", shimContent)
+	}
+
+	// Verify thin callers use local refs for reusable workflows
+	for i, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		content := string(files[i+1].Content)
+		if !strings.Contains(content, "./.github/workflows/reusable-prioritize.yml") {
+			t.Errorf("vendored thin caller %s should use local ref, got:\n%s", tcPath, content)
+		}
+		if strings.Contains(content, "fullsend-ai/fullsend/.github/workflows/") {
+			t.Errorf("vendored thin caller %s should not contain cross-repo ref", tcPath)
+		}
+	}
+}
+
+func TestFetchRemoteScaffold_GitHub_NonVendoredRendersCrossRepoRefs(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref := "v0.42.0"
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@"+ref] = []byte("---\nname: fullsend\nuses: __REUSABLE_DISPATCH__\nref: __FULLSEND_AI_REF__\n")
+
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil, false)
+	if err != nil {
+		t.Fatalf("FetchRemoteScaffold() error: %v", err)
+	}
+
+	shimContent := string(files[0].Content)
+	if strings.Contains(shimContent, "./.github/workflows/reusable-dispatch.yml") {
+		t.Errorf("non-vendored shim should not use local ref, got:\n%s", shimContent)
+	}
+	if !strings.Contains(shimContent, "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@") {
+		t.Errorf("non-vendored shim should use cross-repo ref, got:\n%s", shimContent)
+	}
+}
+
 func TestFetchRemoteScaffold_UnsupportedForge(t *testing.T) {
 	fc := forge.NewFakeClient()
-	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil)
+	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported forge")
 	}

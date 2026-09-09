@@ -71,6 +71,8 @@ type InstallConfig struct {
 	// Empty keeps the code default; ignored when PerRepoConfig is set.
 	Runtime string
 
+	// VendorBinary renders scaffold workflows to reference the vendored
+	// binary path instead of fetching from upstream on each CI run.
 	VendorBinary bool
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
@@ -300,6 +302,7 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		UpstreamRef:       ref,
 		UpstreamTag:       ref,
 		Runtime:           resolved.Runtime,
+		VendorBinary:      resolved.Vendor,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		RunnerTags:        dcfg.RunnerTags,
@@ -332,7 +335,10 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 	// rather than the running binary's embedded templates. This is the
 	// same logic the converge path uses in convergeContentDriftFiles.
 	manifestRef := resolved.FullsendRef
-	if manifestRef != "" && refResolver != nil {
+	// When vendored, the running binary's embedded templates match the
+	// binary being committed to the repo — no version-skew concern, so
+	// skip the remote fetch to avoid unnecessary API calls.
+	if manifestRef != "" && refResolver != nil && !installCfg.VendorBinary {
 		ref := manifestRef
 		if isSemver(manifestRef) {
 			if sha := refResolver.Resolve(ctx, manifestRef); sha != manifestRef {
@@ -344,6 +350,7 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
 			dcfg.RunnerTags,
+			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles

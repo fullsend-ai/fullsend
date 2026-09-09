@@ -22,6 +22,12 @@ const (
 	// FULLSEND_MODEL for pi runs. FULLSEND_PI_PROVIDER stays pi-only (it is
 	// the provider prefix for bare ids, not a model choice).
 	envPiModel = "FULLSEND_PI_MODEL"
+	// envCodexModel is the same idea for codex (#6920). Codex serves OpenAI
+	// models only and needs one named (the runtime enforces which ids it
+	// accepts), while fleet harnesses say `model: opus` — so a repo moving
+	// to codex needs one place to name a model for every agent without
+	// editing each harness.
+	envCodexModel = "FULLSEND_CODEX_MODEL"
 
 	sourceFlagRuntime = "--runtime flag"
 	sourceFlagModel   = "--model flag"
@@ -54,9 +60,26 @@ type runOverrides struct {
 	fallbackSource string
 }
 
+// runtimeModelEnv returns the runtime-scoped model override variable for a
+// runtime, or "" when it has none. Only runtimes that actually need one are
+// listed: a knob is user-visible surface, and inventing FULLSEND_<NAME>_MODEL
+// for every runtime would both document variables nobody asked for and
+// produce an unusable name for dummy-playback (a hyphen cannot appear in an
+// environment variable name). FULLSEND_MODEL is the runtime-neutral override
+// and outranks all of these.
+func runtimeModelEnv(runtimeName string) string {
+	switch runtimeName {
+	case "pi":
+		return envPiModel
+	case "codex":
+		return envCodexModel
+	}
+	return ""
+}
+
 // resolveRunOverrides applies the precedence flag > env for each override.
 // runtimeName is the runtime that will run (after the runtime override, if
-// any) and only gates the pi-specific FULLSEND_PI_MODEL alias.
+// any) and gates only the runtime-scoped model aliases (runtimeModelEnv).
 func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, runtimeName string) (runOverrides, error) {
 	var o runOverrides
 	env := func(name string) string { return strings.TrimSpace(getenv(name)) }
@@ -74,13 +97,14 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		runtimeName = o.runtime
 	}
 
+	runtimeEnv := runtimeModelEnv(runtimeName)
 	switch {
 	case strings.TrimSpace(flags.model) != "":
 		o.model, o.modelSource = strings.TrimSpace(flags.model), sourceFlagModel
 	case env(envModel) != "":
 		o.model, o.modelSource = env(envModel), envModel
-	case runtimeName == "pi" && env(envPiModel) != "":
-		o.model, o.modelSource = env(envPiModel), envPiModel
+	case runtimeEnv != "" && env(runtimeEnv) != "":
+		o.model, o.modelSource = env(runtimeEnv), runtimeEnv
 	}
 
 	switch {
@@ -151,4 +175,17 @@ func modelOverrideSource(o runOverrides, effectiveModel string) string {
 		return sourceHarness
 	}
 	return sourceDefault
+}
+
+// aliasOverrideSource appends the models.aliases remap to an
+// override_source value when the effective model was an alias with a
+// per-repo entry (#6882): "<base>, remapped by <config path>
+// models.aliases". base is never empty — modelOverrideSource returns
+// "harness" or "default" when no override applied — so the remap is
+// always a suffix, never the whole value.
+func aliasOverrideSource(base string, remapped bool, configSource string) string {
+	if !remapped {
+		return base
+	}
+	return base + ", remapped by " + configSource + " models.aliases"
 }

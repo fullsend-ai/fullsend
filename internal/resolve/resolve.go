@@ -213,6 +213,14 @@ type ResolveOpts struct {
 	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
 	TreeFetcher gitfetch.TreeFetchFunc
 
+	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
+	// allowlist). When set, URLs that are not in the harness-level
+	// AllowedRemoteResources are checked against this list as a fallback.
+	// This makes org-level trust apply uniformly to all URL resolution
+	// (policy, agent, skills, plugins, profiles, providers), not just
+	// base: composition.
+	OrgAllowlist []string
+
 	// GitToken is an optional token for authenticating git fetches.
 	// Empty means unauthenticated (sufficient for public repos).
 	GitToken string
@@ -346,8 +354,8 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 
 	// Resolve plugins — same directory fetch as skills, but without
 	// transitive dependency resolution (plugins have no SKILL.md frontmatter).
-	for i, p := range h.Plugins {
-		if harness.IsURL(p) {
+	for i, e := range h.Plugins {
+		if p := e.Path; harness.IsURL(p) {
 			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("plugins[%d]", i), p, h, opts, state, false, 0)
 			if err != nil {
 				return ResolveResult{}, fmt.Errorf("resolving plugins[%d]: %w", i, err)
@@ -366,9 +374,11 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				}
 			}
 
-			// Always assign — plugins have no transitive re-append, so
-			// blanking the slot (as skills do for dedup) would drop the plugin.
-			h.Plugins[i] = localPath
+			// Only the path is replaced: the entry's env and pi options
+			// are the harness author's and survive resolution. Always
+			// assign — plugins have no transitive re-append, so blanking
+			// the slot (as skills do for dedup) would drop the plugin.
+			h.Plugins[i].Path = localPath
 			state.appendDependency(dep)
 
 			// Make plugin files executable. The cache writes all files
@@ -376,21 +386,28 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			// or MCP server binaries that need the executable bit.
 			// NOTE: this mutates the shared content-addressed cache — files
 			// in the same tree referenced as skills will also become 0755.
-			if err := chmodPluginDir(h.Plugins[i]); err != nil {
+			if err := chmodPluginDir(h.Plugins[i].Path); err != nil {
 				return ResolveResult{}, fmt.Errorf("setting plugin permissions for plugins[%d]: %w", i, err)
 			}
 		}
 	}
 
 	// De-duplicate plugins by resolved path (e.g. two slots referencing
-	// the same URL resolve to identical local paths).
-	seen := make(map[string]bool, len(h.Plugins))
+	// the same URL resolve to identical local paths). Two spellings of one
+	// tree that carry different env/pi options are a conflict, not a
+	// duplicate: dropping the second would silently discard its options.
+	seen := make(map[string]int, len(h.Plugins))
 	deduped := h.Plugins[:0]
-	for _, p := range h.Plugins {
-		if !seen[p] {
-			seen[p] = true
-			deduped = append(deduped, p)
+	for i, p := range h.Plugins {
+		if prev, ok := seen[p.Path]; ok {
+			kept := deduped[prev]
+			if !kept.SameOptions(p) {
+				return ResolveResult{}, fmt.Errorf("plugins[%d]: resolves to the same directory as an earlier entry (%s) but with different env/pi options; merge them into one entry", i, p.Path)
+			}
+			continue
 		}
+		seen[p.Path] = len(deduped)
+		deduped = append(deduped, p)
 	}
 	h.Plugins = deduped
 
@@ -562,6 +579,9 @@ func resolveFileURL(ctx context.Context, field, rawURL string, h *harness.Harnes
 
 	allowedBy := h.MatchingAllowedPrefix(cleanURL)
 	if allowedBy == "" {
+		allowedBy = harness.MatchingAllowedPrefixInList(cleanURL, opts.OrgAllowlist)
+	}
+	if allowedBy == "" {
 		return Dependency{}, "", fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
 	}
 
@@ -666,6 +686,9 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	state.resourceCount++
 
 	allowedBy := h.MatchingAllowedPrefix(cleanURL)
+	if allowedBy == "" {
+		allowedBy = harness.MatchingAllowedPrefixInList(cleanURL, opts.OrgAllowlist)
+	}
 	if allowedBy == "" {
 		return Dependency{}, "", fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
 	}

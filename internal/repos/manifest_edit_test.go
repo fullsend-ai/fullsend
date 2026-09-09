@@ -190,6 +190,72 @@ func TestAddToManifest_GlobRepoAllowed(t *testing.T) {
 	}
 }
 
+func TestAddToManifest_GitLabNestedPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		forge     string
+		repoName  string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:     "gitlab 3-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "group/subgroup/project",
+		},
+		{
+			name:     "gitlab 4-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "a/b/c/d",
+		},
+		{
+			name:     "gitlab 2-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "owner/project",
+		},
+		{
+			name:      "single-segment rejected for gitlab",
+			forge:     ForgeGitLab,
+			repoName:  "project",
+			wantErr:   true,
+			errSubstr: "group[/subgroup]/project format",
+		},
+		{
+			name:      "github rejects 3-segment path",
+			forge:     ForgeGitHub,
+			repoName:  "a/b/c",
+			wantErr:   true,
+			errSubstr: "owner/repo format",
+		},
+		{
+			name:     "github 2-segment path accepted",
+			forge:    ForgeGitHub,
+			repoName: "owner/repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := &Manifest{Version: 1}
+			_, _, err := AddToManifest(context.Background(), ManifestEditConfig{
+				Manifest: manifest,
+			}, tt.forge, []RepoEntry{{Name: tt.repoName}}, nil, nil)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errSubstr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
@@ -844,4 +910,29 @@ func TestSetDefault_Runtime(t *testing.T) {
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "runtime:")
+}
+
+func TestSetDefault_Vendor(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", "true"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "vendor: true")
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", "false"))
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "vendor: false")
+
+	err = SetDefault(path, "defaults.vendor", "yes")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `must be "true" or "false"`)
+
+	require.NoError(t, SetDefault(path, "defaults.vendor", ""), "empty clears the default")
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "vendor:")
 }

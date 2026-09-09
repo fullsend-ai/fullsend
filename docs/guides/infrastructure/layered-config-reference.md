@@ -74,6 +74,7 @@ the overlay → base → code defaults chain.
 | `version` | `string` | Scalar override | `"1"` |
 | `runtime` | `string` | Scalar override | `"claude"` |
 | `kill_switch` | `*bool` | Scalar override | `false` (inactive) |
+| `keep_history` | `*bool` | Scalar override | `true` (history appended) |
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
@@ -87,22 +88,26 @@ the overlay → base → code defaults chain.
 | `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
-### Per-agent `runtime`, `model`, `effort` on `agents:` entries
+### Per-agent `runtime`, `model`, `effort`, `subagents` on `agents:` entries
 
-An `agents:` entry may set `runtime`, `model` and `effort` for that agent.
-The `ref` field records the branch or tag that was resolved when the agent was
-adopted via `agent add`; `agent update` re-resolves against this ref instead
-of the default branch when it is present (empty for SHA-pinned or legacy entries).
+An `agents:` entry may set `runtime`, `model`, `effort` and `subagents` for
+that agent. The `ref` field records the branch or tag that was resolved when
+the agent was adopted via `agent add`; `agent update` re-resolves against
+this ref instead of the default branch when it is present (empty for
+SHA-pinned or legacy entries).
 
 An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
-base layer). The keyed merge by `DerivedName()` carries the three settings
-field by field: the overlay's non-empty value wins, an empty value inherits
-the parent's. There is no way to unset a parent's value from the overlay
-short of restating the entry.
+base layer). The keyed merge by `DerivedName()` carries the four settings
+field by field: for `runtime`, `model` and `effort` the overlay's non-empty
+value wins and an empty value inherits the parent's. `subagents` uses
+per-key merge: overlay entries override or tombstone (`~`) individual
+persona keys while unstated keys inherit from the parent. There is no way to
+unset a parent's scalar value from the overlay short of restating the entry.
 
 ```yaml
 # config.base.yaml (preset)
@@ -129,7 +134,7 @@ unset, the accessor falls through to the base layer, then to code defaults.
 - **`version`**: Schema version string. Unset (`""`) falls through to parent.
   Code default is `"1"`.
 - **`runtime`**: Agent runtime identifier. Unset (`""`) falls through to
-  parent. Code default is `"claude"`. Valid values: `claude`, `pi`, `dummy`,
+  parent. Code default is `"claude"`. Valid values: `claude`, `pi`, `codex`, `dummy`,
   `dummy-playback`.
 - **`kill_switch`**: Pointer to bool (`*bool`). Using a pointer allows
   distinguishing between three states:
@@ -137,6 +142,20 @@ unset, the accessor falls through to the base layer, then to code defaults.
   - `*false` (explicit `kill_switch: false`) — locally set to inactive.
     Does **not** fall through.
   - `*true` (explicit `kill_switch: true`) — locally set to active.
+- **`keep_history`**: Pointer to bool (`*bool`). Controls whether sticky
+  comment updates (from `post-review`, `post-comment`, and
+  `issues post-comment`) append the previous body as a collapsed
+  "Previous run" `<details>` block. Uses the same three-state pointer
+  semantics as `kill_switch`:
+  - `nil` (key omitted) — unset, falls through to parent.
+    Code default is `true` (history appended, preserving existing
+    behavior).
+  - `*true` (explicit `keep_history: true`) — updates collapse old
+    content into history blocks.
+  - `*false` (explicit `keep_history: false`) — updates replace the
+    comment body in-place with no history. Useful when accumulated
+    "Previous run" blocks add unwanted noise (e.g., when comments are
+    synced to Jira where `<details>` does not render as collapsible).
 
 ### `mint_url` and `inference` — scalar override (ADR 0069 Decision 1)
 
@@ -159,7 +178,7 @@ unset (`""`) falls through to parent, then to code default
 - **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
   falls through to parent (no code default — must be provided by the installer).
 - **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
-  the OpenAI Workload Identity identifiers for GPT on pi (ADR 0092), written
+  the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
   by `fullsend github setup --openai-*`. Each resolves independently through
   the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
   runner variables, when any is set, replace the resolved block entirely.
@@ -189,6 +208,38 @@ inference:
 #   inference.project: my-project (from overlay)
 #   inference.region: us-central1 (from base)
 #   inference.wif_provider: ...base... (from base)
+```
+
+### `models.aliases` — per-key merge
+
+`models.aliases` overrides fullsend's pinned model alias table per key
+(#6882). Keys are the existing alias vocabulary (`opus`, `sonnet`,
+`haiku`, `fable`); values are model ids or `provider/id` specs validated
+with `ValidModelRef`, and never another alias name — bare or as the id
+segment of a `provider/id` spec (aliases resolve once, so `sonnet: opus`
+or `sonnet: anthropic-vertex/opus` would reach the provider as the
+literal id `opus`). An unknown key is a config validation error.
+
+Merge is per key across layers: an overlay that sets `fable` inherits
+the base's `sonnet` entry without restating it. A `nil` Models block
+(key omitted from YAML) falls through to the parent layer. Validation
+runs on the merged map, so a bad key in `config.base.yaml` fails an
+overlay write (and `fullsend run`) even when the overlay omits
+`models:`.
+
+```yaml
+# config.base.yaml
+models:
+  aliases:
+    sonnet: claude-sonnet-5
+
+# config.yaml (overlay)
+models:
+  aliases:
+    fable: claude-fable-5-1
+
+# Effective: sonnet → claude-sonnet-5 (from base), fable → claude-fable-5-1 (from overlay),
+# opus and haiku → fleet defaults (compiled-in).
 ```
 
 ### `tracker` — scalar override
@@ -271,8 +322,9 @@ agents:
 
 ### `allowed_remote_resources` — union with deny-all
 
-This field controls which URL prefixes are allowed for remote agent sources
-and base composition. It uses special three-way semantics:
+This field controls which URL prefixes are allowed for remote resources
+(agents, policies, skills, plugins, profiles, providers, and base
+composition). It uses special three-way semantics:
 
 | Overlay value | Behavior |
 |---------------|----------|
@@ -343,6 +395,7 @@ compiled-in defaults apply:
 | `version` | `"1"` |
 | `runtime` | `"claude"` |
 | `kill_switch` | `false` (inactive) |
+| `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
@@ -353,11 +406,14 @@ compiled-in defaults apply:
 | `inference.project` | `""` (empty — must be provided) |
 | `inference.region` | `"global"` |
 | `inference.wif_provider` | `""` (empty — must be provided) |
+| `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |
 
 ## Related
 
+- [Config Reference](../../reference/config-reference.md) — canonical
+  user-facing reference for every `.fullsend/config.yaml` field.
 - [ADR 0069 — Ready-made configuration presets](../../ADRs/0069-ready-made-configuration-presets.md)
   — the architectural decision that introduced layered configuration.
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)

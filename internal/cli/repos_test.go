@@ -1154,12 +1154,63 @@ func TestReposInstallCmd_ForgeFlag(t *testing.T) {
 	assert.Equal(t, "", forgeFlag.DefValue)
 }
 
+func TestReposInstallCmd_VendorFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("vendor")
+	require.NotNil(t, f, "expected --vendor flag")
+	assert.Equal(t, "false", f.DefValue)
+}
+
+func TestReposInstallCmd_FullsendBinarySourceFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+
+	binaryFlag := cmd.Flags().Lookup("fullsend-binary")
+	require.NotNil(t, binaryFlag, "expected --fullsend-binary flag")
+	assert.Equal(t, "", binaryFlag.DefValue)
+
+	sourceFlag := cmd.Flags().Lookup("fullsend-source")
+	require.NotNil(t, sourceFlag, "expected --fullsend-source flag")
+	assert.Equal(t, "", sourceFlag.DefValue)
+}
+
+func TestReposInstallCmd_VendorFlagValidation(t *testing.T) {
+	t.Run("fullsend-binary without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-binary", "/tmp/fullsend",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-binary requires --vendor")
+	})
+
+	t.Run("fullsend-source without vendor", func(t *testing.T) {
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{
+			"repos", "install",
+			"--manifest", writeTestManifest(t, testManifestYAML),
+			"--fullsend-source", "/tmp/src",
+		})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--fullsend-source requires --vendor")
+	})
+}
+
 func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"inference-region", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
+	for _, name := range []string{"inference-region", "inference-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, "expected --%s flag", name)
 	}
+}
+
+func TestReposInstallCmd_NoInferenceProjectNumberFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("inference-project-number")
+	assert.Nil(t, f, "--inference-project-number flag should be removed")
 }
 
 func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
@@ -1383,16 +1434,16 @@ func TestRunReposInstall_InvalidInferenceProject(t *testing.T) {
 	assert.Contains(t, err.Error(), "--inference-project")
 }
 
-func TestRunReposInstall_InvalidInferenceProjectNumber(t *testing.T) {
+func TestRunReposInstall_InvalidInferenceWIFProvider(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            4,
-		inferenceProjectNumber: "not-a-number",
-		testClient:             newInstallFakeClient(),
+		manifest:             manifestPath,
+		concurrency:          4,
+		inferenceWIFProvider: "not-a-valid-provider",
+		testClient:           newInstallFakeClient(),
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--inference-project-number must be numeric")
+	assert.Contains(t, err.Error(), "--inference-wif-provider")
 }
 
 func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
@@ -1429,20 +1480,19 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 		"inference region should default to global")
 }
 
-func TestRunReposInstall_ExplicitProjectNumberSkipsLookup(t *testing.T) {
+func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
 	lookupCalled := false
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            4,
-		roles:                  []string{"triage"},
-		direct:                 true,
-		inferenceProject:       "inf-proj",
-		inferenceProjectNumber: "111222333",
-		inferenceRegion:        "us-central1",
-		testClient:             fc,
+		manifest:             manifestPath,
+		concurrency:          4,
+		roles:                []string{"triage"},
+		direct:               true,
+		inferenceProject:     "inf-proj",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
+		testClient:           fc,
 		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
 			lookupCalled = true
 			return "999", nil
@@ -1450,7 +1500,7 @@ func TestRunReposInstall_ExplicitProjectNumberSkipsLookup(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, lookupCalled,
-		"project number lookup should be skipped when --inference-project-number is explicit")
+		"project number lookup should be skipped when --inference-wif-provider is set")
 }
 
 func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
@@ -1493,7 +1543,7 @@ func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deriving project number")
 	assert.Contains(t, err.Error(), "API unavailable")
-	assert.Contains(t, err.Error(), "--inference-project-number")
+	assert.Contains(t, err.Error(), "--inference-wif-provider")
 }
 
 func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
@@ -1637,6 +1687,8 @@ gitlab:
 		inferenceRegion: "us-central1",
 		fullsendRef:     "v2.0.0",
 		mintURL:         "https://mint.example.com",
+		vendor:          true,
+		vendorChanged:   true,
 		direct:          true,
 		testClient:      fc,
 	})
@@ -1895,4 +1947,314 @@ gitlab:
 	require.NotEmpty(t, fc.CreatedProposals, "expected a scaffold PR to be created")
 	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
 		"GitLab scaffold MR title must include [skip ci] to suppress dispatch")
+}
+
+func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 true,
+		vendorChanged:          true,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	require.NotNil(t, newEntry.Vendor, "vendor should be persisted on new entry")
+	assert.True(t, *newEntry.Vendor)
+}
+
+func TestRunReposInstall_VendorFalsePersistsWhenDefaultTrue(t *testing.T) {
+	vendorManifest := `version: 1
+defaults:
+  vendor: true
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+`
+	manifestPath := writeTestManifest(t, vendorManifest)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 false,
+		vendorChanged:          true,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	require.NotNil(t, newEntry.Vendor, "vendor=false should be persisted when defaults.vendor=true")
+	assert.False(t, *newEntry.Vendor)
+}
+
+func TestRunReposInstall_VendorNotPersistedWhenUnchanged(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		vendor:                 false,
+		vendorChanged:          false,
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 2, len(m.GitHub.Repos))
+	newEntry := m.GitHub.Repos[1]
+	assert.Equal(t, "acme/web", newEntry.Name)
+	assert.Nil(t, newEntry.Vendor, "vendor should not be set when --vendor was not passed")
+}
+
+func TestReposInstallCmd_GitLabURLFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("gitlab-url")
+	require.NotNil(t, f, "expected --gitlab-url flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap a new manifest with a GitLab repo and --gitlab-url.
+	// The converge phase will fail (fake client doesn't support full
+	// GitLab setup), but the manifest should be written with the URL.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/project"},
+		forge:       repos.ForgeGitLab,
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab, "expected gitlab section in manifest")
+	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+	assert.Len(t, m.GitLab.Repos, 1)
+	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+}
+
+func TestRunReposInstall_GitLabURLOverridesExisting(t *testing.T) {
+	existingManifest := `version: 1
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// The converge phase will fail but the manifest URL should be updated.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://new.gitlab.example.com", m.GitLab.URL)
+}
+
+func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
+	existingManifest := `version: 1
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// Dry-run with --gitlab-url should not modify the manifest on disk.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://old.gitlab.example.com", m.GitLab.URL,
+		"dry-run should not modify the manifest URL on disk")
+}
+
+func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap dry-run: new manifest + --forge gitlab + --gitlab-url + --dry-run.
+	// The function should return without error and NOT write the manifest to disk.
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		repoFilter:  []string{"group/project"},
+		forge:       repos.ForgeGitLab,
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+
+	// In dry-run mode the manifest should not be written to disk.
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"dry-run bootstrap should not create the manifest file on disk")
+}
+
+func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
+	t.Run("empty manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, "repos.yaml")
+		fc := newInstallFakeClient("group/project")
+
+		// When --gitlab-url is provided without --forge on a fresh
+		// manifest, the forge should be inferred as gitlab.
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1)
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	})
+
+	t.Run("manifest with existing GitHub repos", func(t *testing.T) {
+		// When the manifest already contains GitHub repos and --gitlab-url
+		// is passed without --forge, the new repo must land in the GitLab
+		// section, not GitHub.
+		existingManifest := `version: 1
+github:
+  repos:
+    - name: acme/web
+`
+		manifestPath := writeTestManifest(t, existingManifest)
+		fc := newInstallFakeClient("group/project")
+
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge even with existing GitHub repos")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1, "new repo should be in GitLab section")
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+		// The existing GitHub repo should still be there.
+		require.NotNil(t, m.GitHub)
+		assert.Len(t, m.GitHub.Repos, 1)
+		assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+	})
+}
+
+func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		forge     string
+		wantError string
+	}{
+		{
+			name:      "non-HTTPS scheme",
+			url:       "http://gitlab.example.com",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "invalid URL",
+			url:       "not-a-url",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "URL with path",
+			url:       "https://gitlab.example.com/some/path",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must not contain a path component",
+		},
+		{
+			name:      "conflicts with --forge=github",
+			url:       "https://gitlab.example.com",
+			forge:     repos.ForgeGitHub,
+			wantError: "--gitlab-url cannot be combined with --forge=github",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), &reposInstallConfig{
+				manifest:    filepath.Join(t.TempDir(), "repos.yaml"),
+				concurrency: 4,
+				repoFilter:  []string{"group/project"},
+				forge:       tt.forge,
+				gitlabURL:   tt.url,
+				testClient:  newInstallFakeClient("group/project"),
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
 }

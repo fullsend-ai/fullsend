@@ -393,6 +393,10 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m1.CacheCreationInputTokens, m1.CacheReadInputTokens = 1000, 5000
 	m1.ToolCalls.Store(3)
 	m1.Model = "claude-opus-4-6"
+	m1.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 10, CostUSD: 0.06},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 4, CostUSD: 0.04},
+	}
 	aggregateRunMetrics(&agg, &m1, 1)
 
 	var m2 agentruntime.RunMetrics
@@ -401,6 +405,9 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m2.ReasoningTokens = 15
 	m2.CacheCreationInputTokens, m2.CacheReadInputTokens = 200, 900
 	m2.ToolCalls.Store(2)
+	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 4, CostUSD: 0.05},
+	}
 	aggregateRunMetrics(&agg, &m2, 2)
 
 	assert.Equal(t, 7, agg.NumTurns)
@@ -413,6 +420,55 @@ func TestAggregateRunMetrics(t *testing.T) {
 	assert.Equal(t, 5, agg.ToolCalls)
 	assert.Equal(t, 2, agg.Iterations)
 	assert.Equal(t, "claude-opus-4-6", agg.Model, "last non-empty model is retained")
+	assert.Equal(t, map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 2, InputTokens: 14, CostUSD: 0.11},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 4, CostUSD: 0.04},
+	}, agg.PerModelUsage, "sub-agent usage accumulates across retry iterations like the totals")
+
+	var noSubagents aggregateMetrics
+	var m3 agentruntime.RunMetrics
+	m3.TotalCostUSD = 0.01
+	aggregateRunMetrics(&noSubagents, &m3, 1)
+	assert.Nil(t, noSubagents.PerModelUsage, "runtimes without sub-agents add no breakdown key to metrics.json")
+}
+
+// TestAggregateRunMetrics_MixedIterations is the invariant that makes
+// per_model_usage readable: it must sum to the run totals. A retry run
+// where only one iteration dispatched sub-agents is the case that breaks
+// if an iteration reports totals without also reporting its own entry, so
+// the pi runtime folds the parent entry on every iteration.
+func TestAggregateRunMetrics_MixedIterations(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Iteration 1 dispatched two children.
+	var m1 agentruntime.RunMetrics
+	m1.TotalCostUSD = 0.30
+	m1.InputTokens, m1.OutputTokens = 300, 30
+	m1.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.10},
+		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 200, OutputTokens: 20, CostUSD: 0.20},
+	}
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2 is a retry that dispatched nothing — but its own tokens
+	// are still in the totals, so they must be in the breakdown too.
+	var m2 agentruntime.RunMetrics
+	m2.TotalCostUSD = 0.07
+	m2.InputTokens, m2.OutputTokens = 70, 7
+	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
+		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 70, OutputTokens: 7, CostUSD: 0.07},
+	}
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	var sum agentruntime.ModelUsage
+	for _, u := range agg.PerModelUsage {
+		sum.Add(u)
+	}
+	assert.InDelta(t, agg.TotalCostUSD, sum.CostUSD, 1e-9, "the breakdown sums to the run cost")
+	assert.Equal(t, agg.TokenUsage.Input, sum.InputTokens, "and to the run's input tokens")
+	assert.Equal(t, agg.TokenUsage.Output, sum.OutputTokens)
+	assert.Equal(t, 2, agg.PerModelUsage["anthropic-vertex/claude-opus-4-6"].Requests,
+		"the parent contributes one entry per iteration, dispatching or not")
 }
 
 func testTracer() trace.Tracer {

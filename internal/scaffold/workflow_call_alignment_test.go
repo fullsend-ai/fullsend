@@ -3,6 +3,7 @@ package scaffold
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -351,6 +352,60 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
 }
 
+// TestReusableDispatchFixInstructionNormalizesCRLF validates that CRLF line endings
+// in a comment body are stripped before the fix instruction is written to GITHUB_OUTPUT.
+func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	var script string
+	for _, step := range workflow.Jobs["fix"].Steps {
+		if step.Name == "Extract PR number and context" {
+			script = step.Run
+			break
+		}
+	}
+	require.NotEmpty(t, script)
+
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"gh":      "#!/bin/sh\nprintf '[]\\n'\n",
+		"openssl": "#!/bin/sh\nprintf 'fixed-delimiter\\n'\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755))
+	}
+	outputPath := filepath.Join(dir, "github-output")
+	payload := `{"pull_request":{"number":42,"head":{"ref":"fix-branch"},"base":{"ref":"main"}},"comment":{"body":"/fs-fix\r\nChange A\r\nChange B"}}`
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"EVENT_PAYLOAD="+payload,
+		"INPUT_PR_NUMBER=",
+		"INPUT_INSTRUCTION=",
+		"TRIGGER_SOURCE=contributor",
+		"SOURCE_REPO=fullsend-ai/fullsend",
+		"GITHUB_OUTPUT="+outputPath,
+	)
+	result, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", result)
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "instruction<<INSTRUCTION_fixed-delimiter\nChange A\nChange B\nINSTRUCTION_fixed-delimiter\n")
+	assert.NotContains(t, string(output), "\r")
+}
+
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
 // secrets (#2862, #5886) are forwarded along both installation-mode chains
 // to every reusable stage workflow. TestWorkflowCallInputAlignment only
@@ -667,6 +722,64 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 				"%s dispatch job must filter scaffold branch PRs to prevent self-dispatch noise", tc.name)
 		})
 	}
+}
+
+// TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
+// filters issue_comment events with both a /fs- prefix check and a bot-type
+// guard, preserving defense-in-depth while short-circuiting non-slash-command
+// comments at the workflow level (#6738).
+func TestShimPerRepoSlashCommandFilter(t *testing.T) {
+	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+}
+
+// TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
+// workflow does not route on the removed /fullsend alias (#6738).
+func TestShimPerRepoNoFullsendAlias(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+	cases := []workflowCase{
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+	}
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+			assert.NotContains(t, s, `/fullsend)`,
+				"%s must not route on the /fullsend alias (removed in #6738)", wc.name)
+			assert.NotContains(t, s, `SECOND_WORD`,
+				"%s must not parse SECOND_WORD for the removed /fullsend alias", wc.name)
+		})
+	}
+}
+
+// TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
+// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+func TestLiveShimSlashCommandFilter(t *testing.T) {
+	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
+
+	var wf callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &wf))
+	job, ok := wf.Jobs["dispatch"]
+	require.True(t, ok, "fullsend.yaml must have a dispatch job")
+
+	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
+		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
+
+	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
+		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain

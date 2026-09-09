@@ -245,6 +245,7 @@ export default defineConfig({
           items: [
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
+            { text: "Codex", link: "/runtimes/codex" },
           ],
         },
         {
@@ -289,6 +290,7 @@ export default defineConfig({
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
                 },
+                { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
                 {
@@ -315,7 +317,10 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
+          items: [
+            { text: "Config Reference", link: "/reference/config-reference" },
+            { text: "Harness Field Reference", link: "/reference/harness-reference" },
+          ],
         },
         {
           text: "Infrastructure",
@@ -364,7 +369,14 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
-            { text: "Archived roadmaps", link: "/archived-roadmap" },
+            {
+              text: "Archived roadmaps",
+              collapsed: true,
+              items: [
+                { text: "Index", link: "/archived-roadmaps/" },
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
+              ],
+            },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
@@ -426,7 +438,13 @@ export default defineConfig({
         scopes: [
           {
             label: "Guides",
-            prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"],
+            prefixes: [
+              "/docs/guides/",
+              "/docs/agents/",
+              "/docs/cli/",
+              "/docs/runtimes",
+              "/docs/reference/",
+            ],
           },
           {
             label: "Design Docs",

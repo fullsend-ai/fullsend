@@ -942,6 +942,111 @@ func TestParseClaudeStreamTokensEvent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamTokensEventWithReasoningTokens(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":300}}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4000 + 1000 + 300 + 500 + 200 = 6000, crosses 5k threshold
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 tokens event, got %d", len(tokens))
+	}
+	if tokens[0].ReasoningTokens != 300 {
+		t.Errorf("expected 300 reasoning tokens, got %d", tokens[0].ReasoningTokens)
+	}
+	if tokens[0].OutputTokens != 1000 {
+		t.Errorf("expected 1000 output tokens, got %d", tokens[0].OutputTokens)
+	}
+}
+
+func TestParseClaudeStreamResultEventAccumulatesReasoningTokens(t *testing.T) {
+	lines := []string{
+		// First message turn with 200 thinking tokens.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":200}}}}`,
+		// Second message turn with 150 thinking tokens.
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":6000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":800,"output_tokens_details":{"thinking_tokens":150}}}}`,
+		// Result event.
+		`{"type":"result","num_turns":2,"total_cost_usd":0.50,"usage":{"input_tokens":10000,"output_tokens":1800,"cache_creation_input_tokens":400,"cache_read_input_tokens":1000}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var results []ResultEvent
+	for _, e := range events {
+		if re, ok := e.(ResultEvent); ok {
+			results = append(results, re)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result event, got %d", len(results))
+	}
+	// Accumulated: 200 + 150 = 350.
+	if results[0].ReasoningTokens != 350 {
+		t.Errorf("expected 350 accumulated reasoning tokens, got %d", results[0].ReasoningTokens)
+	}
+}
+
+func TestParseClaudeStreamNoThinkingTokensBackwardCompat(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}`,
+		`{"type":"result","num_turns":1,"total_cost_usd":0.10,"usage":{"input_tokens":4000,"output_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":500}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	var results []ResultEvent
+	for _, e := range events {
+		switch ev := e.(type) {
+		case TokensEvent:
+			tokens = append(tokens, ev)
+		case ResultEvent:
+			results = append(results, ev)
+		}
+	}
+	// TokensEvent: reasoning should be 0 when no thinking tokens present.
+	if len(tokens) == 1 && tokens[0].ReasoningTokens != 0 {
+		t.Errorf("expected 0 reasoning tokens when absent, got %d", tokens[0].ReasoningTokens)
+	}
+	// ResultEvent: reasoning should be 0.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result event, got %d", len(results))
+	}
+	if results[0].ReasoningTokens != 0 {
+		t.Errorf("expected 0 reasoning tokens in result when absent, got %d", results[0].ReasoningTokens)
+	}
+}
+
+func TestProgressParserCapturesReasoningTokensInMetrics(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000,"output_tokens_details":{"thinking_tokens":250}}}}`,
+		`{"type":"result","num_turns":1,"total_cost_usd":0.10,"usage":{"input_tokens":4000,"output_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":500}}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.ReasoningTokens != 250 {
+		t.Errorf("expected 250 reasoning tokens in metrics, got %d", metrics.ReasoningTokens)
+	}
+}
+
 func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
 	lines := []string{
 		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000}}}}`,

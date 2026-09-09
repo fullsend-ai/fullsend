@@ -394,3 +394,7 @@ Skill directory fetching now uses git sparse checkout (`internal/gitfetch/gitfet
 ### 2026-08-04: Plugins classified as declarative resources (#2113)
 
 Plugins bundle executable content (hooks, MCP servers, init scripts). Plugin content only reaches the sandbox filesystem; the agent process runs under openshell's landlock/network policy. The SHA-256 integrity pin plus `allowed_remote_resources` gate which content arrives. Two host-side touchpoints handle fetched plugin content without executing it: `buildPluginConfigs` reads and unmarshals `.lsp.json` into `marketplace.json`, and `chmodPluginDir` sets file permissions on cached trees. No new host-side privilege surface is introduced. Plugin URL references follow the same fetch/cache/validate pipeline as skills. Note: `plugin.json` and `.lsp.json` are scanned by the injection scanner; other plugin content (commands, hooks) is not currently scanned.
+
+### 2026-09-07: Org-level allowlist extended to all URL resolution (#6452)
+
+The org-level `allowed_remote_resources` from `config.yaml` now acts as a fallback for all URL resolution types (agents, policies, skills, plugins, profiles, providers), not just `base:` composition. A URL passes if it is in the org-level **or** harness-level list. The intersection constraint in the "Trust boundary for URL-fetched harnesses" section above still applies to the harness-level `allowed_remote_resources` entries themselves (they must be a subset of the org-level list), but the org-level entries are available for resolution even when the harness omits them.

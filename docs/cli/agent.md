@@ -88,6 +88,7 @@ before it is written.
 ```bash
 fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high
 fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4.6
+fullsend agent set review --fullsend-dir .fullsend --subagent correctness=opus --subagent default=haiku
 ```
 
 ### Flags
@@ -95,11 +96,14 @@ fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (required) |
-| `--runtime` | Agent runtime for this agent (`claude` or `pi`) |
-| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi |
+| `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
+| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
+See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for
+how `subagents` map to persona dispatch.
 
 ## `agent remove`
 

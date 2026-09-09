@@ -243,3 +243,6 @@ credential. What remains:
 - #6464 — pi runtime tracker
 - #1952 — Anthropic WIF sibling design
 - ADR 0095 — mapping scope: repository-only by default (#6782)
+- ADR 0099 — **amends this ADR's in-sandbox half**: the seeding step described here for pi's
+  `auth.json` is one implementation of a runtime-neutral seeder interface, and the
+  `fullsend-openai` egress profile admits `**/codex` as well as `**/node` (#6920)

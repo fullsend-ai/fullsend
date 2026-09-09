@@ -108,6 +108,11 @@ func (c *LiveClient) WithBaseURL(url string) *LiveClient {
 	return c
 }
 
+// BaseURL returns the configured GitHub API base URL.
+func (c *LiveClient) BaseURL() string {
+	return c.baseURL
+}
+
 // WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f
@@ -258,7 +263,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			}
 			// HTTP client timeout (Client.Timeout exceeded): retry
 			// with exponential backoff, same as transient server errors.
-			if isTimeoutError(err) {
+			if isTimeoutError(ctx, err) {
 				if attempt == maxRetries-1 {
 					return nil, fmt.Errorf("http %s %s: %w (after %d attempts)", method, path, err, maxRetries)
 				}
@@ -368,10 +373,20 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 }
 
 // isTimeoutError reports whether err is an HTTP client timeout (e.g.
-// Client.Timeout exceeded) as opposed to a caller-context cancellation.
-// Callers must check ctx.Err() first — this function only distinguishes
-// timeout transport errors from other transport errors.
-func isTimeoutError(err error) bool {
+// Client.Timeout exceeded) as opposed to a caller-context cancellation
+// or deadline. It checks ctx.Err() internally so callers do not need
+// to guard against context errors before calling this function.
+//
+// The context check is necessary because Go's net/http client timeout
+// wraps context.DeadlineExceeded internally, making error-only
+// introspection unable to distinguish caller deadlines from transport
+// timeouts. Checking the caller's context disambiguates: if ctx.Err()
+// is non-nil, the caller's context expired; otherwise, any Timeout()
+// error is a transport-level timeout worth retrying.
+func isTimeoutError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	var te interface{ Timeout() bool }
 	return errors.As(err, &te) && te.Timeout()
 }

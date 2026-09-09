@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a06300-0000-7000-8000-000000000002"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"model rerouted: gpt-5.6-luna -> gpt-5.6-sol (Overloaded)"}}
+{"type":"error","message":"stream disconnected before completion; retrying"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":800,"cache_write_input_tokens":400,"output_tokens":60,"reasoning_output_tokens":10}}

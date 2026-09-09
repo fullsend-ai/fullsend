@@ -19,6 +19,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -37,8 +38,9 @@ func githubUserAgent() string {
 
 // installationResponse is the response from GET /repos/{owner}/{repo}/installation.
 type installationResponse struct {
-	ID      int64 `json:"id"`
-	Account struct {
+	ID          int64             `json:"id"`
+	Permissions map[string]string `json:"permissions"`
+	Account     struct {
 		Login string `json:"login"`
 	} `json:"account"`
 }
@@ -66,52 +68,145 @@ type GrantedScope struct {
 	InstallationID int64
 }
 
-// canonicalRolePermissions defines the minimum GitHub App permissions per agent role.
-// Tokens are always downscoped to these permissions regardless of what the
-// App itself has configured. Unexported to prevent mutation; use
-// RolePermissions() to get a copy.
-var canonicalRolePermissions = map[string]map[string]string{
-	"triage":     {"contents": "read", "issues": "write", "metadata": "read"},
-	"scribe":     {"contents": "read", "issues": "write", "metadata": "read"},
-	"coder":      {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
-	"review":     {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
-	"fix":        {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
-	"retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
-	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
-	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+// Level constants for the two mandatory privilege level names.
+// Every role (built-in and custom) must define at least these two
+// levels. Custom roles may define additional named levels.
+const (
+	LevelRead  = "read"
+	LevelWrite = "write"
+)
+
+// canonicalRolePermissions defines the minimum GitHub App permissions per
+// agent role, organized by privilege level. Tokens are always downscoped
+// to these permissions regardless of what the App itself has configured.
+// Unexported to prevent mutation; use RolePermissionsForLevel() to get
+// a copy.
+//
+// Every built-in role statically defines both "read" and "write" levels.
+// The "write" level is the canonical ceiling; the "read" level has the
+// same keys with every "write" GitHub permission value rewritten to "read".
+// Both are baked into the table as data — no derivation at mint time.
+var canonicalRolePermissions = map[string]map[string]map[string]string{
+	"triage": {
+		LevelWrite: {"contents": "read", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "metadata": "read"},
+	},
+	"scribe": {
+		LevelWrite: {"contents": "read", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "metadata": "read"},
+	},
+	"coder": {
+		LevelWrite: {"contents": "write", "packages": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+		LevelRead:  {"contents": "read", "packages": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"},
+	},
+	"review": {
+		LevelWrite: {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+		LevelRead:  {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"},
+	},
+	"fix": {
+		LevelWrite: {"contents": "write", "packages": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "packages": "read", "pull_requests": "read", "issues": "read", "metadata": "read"},
+	},
+	"retro": {
+		LevelWrite: {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
+		LevelRead:  {"actions": "read", "contents": "read", "pull_requests": "read", "issues": "read", "metadata": "read"},
+	},
+	"prioritize": {
+		LevelWrite: {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "organization_projects": "read", "metadata": "read"},
+	},
+	"fullsend": {
+		LevelWrite: {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+		LevelRead:  {"actions": "read", "actions_variables": "read", "contents": "read", "pull_requests": "read", "metadata": "read"},
+	},
 	"e2e": {
-		"actions": "write", "actions_variables": "write", "administration": "write",
-		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
-		"organization_actions_variables": "write", "organization_administration": "write",
-		"pull_requests": "write", "secrets": "write", "workflows": "write",
+		LevelWrite: {
+			"actions": "write", "actions_variables": "write", "administration": "write",
+			"contents": "write", "issues": "write", "members": "write", "metadata": "read",
+			"organization_actions_variables": "write", "organization_administration": "write",
+			"pull_requests": "write", "secrets": "write", "workflows": "write",
+		},
+		LevelRead: {
+			"actions": "read", "actions_variables": "read", "administration": "read",
+			"contents": "read", "issues": "read", "members": "read", "metadata": "read",
+			"organization_actions_variables": "read", "organization_administration": "read",
+			"pull_requests": "read", "secrets": "read",
+		},
 	},
 }
 
-// customRoles stores user-defined role permissions. Written once at startup
-// via RegisterCustomRolePermissions, read concurrently by request handlers.
-// Lives in mintcore (not cmd/mint) so that RolePermissionsFor, HasRole, and
-// RolePermissions return a unified view — callers like CreateInstallationToken
-// need not distinguish built-in from custom roles.
-var customRoles atomic.Value // holds map[string]map[string]string
+// customRoleLevels stores user-defined role permissions organized by level.
+// Written once at startup via RegisterCustomRolePermissions or
+// RegisterCustomRoleLevels, read concurrently by request handlers.
+// Lives in mintcore (not cmd/mint) so that HasRole and
+// RolePermissionsForLevel return a unified view — callers like
+// CreateInstallationToken need not distinguish built-in from custom roles.
+//
+// Structure: role → level → permission → access.
+// Flat-format custom roles are stored with both "read" and "write" levels
+// containing the same permission map. Multi-level roles have explicit
+// entries for each level; extra named levels beyond read/write are allowed.
+var customRoleLevels atomic.Value // holds map[string]map[string]map[string]string
 
-func loadCustomRoles() map[string]map[string]string {
-	v := customRoles.Load()
+func loadCustomRoleLevels() map[string]map[string]map[string]string {
+	v := customRoleLevels.Load()
 	if v == nil {
 		return nil
 	}
-	return v.(map[string]map[string]string)
+	return v.(map[string]map[string]map[string]string)
+}
+
+// validateCustomRoleLevels validates the structure of custom role levels.
+// Every role must define at least the mandatory "read" and "write" levels.
+// Extra named levels are allowed (non-empty, except the reserved JSON
+// discriminator key "levels"). No write-superset-of-read enforcement —
+// level contents are the operator's responsibility.
+func validateCustomRoleLevels(levels map[string]map[string]map[string]string) error {
+	for role, roleLevels := range levels {
+		if err := ValidateRoleName(role); err != nil {
+			return fmt.Errorf("custom role name invalid: %w", err)
+		}
+		if _, ok := canonicalRolePermissions[role]; ok {
+			return fmt.Errorf("custom role %q collides with built-in role", role)
+		}
+		// Mandatory levels.
+		if _, ok := roleLevels[LevelRead]; !ok {
+			return fmt.Errorf("custom role %q: missing mandatory level %q", role, LevelRead)
+		}
+		if _, ok := roleLevels[LevelWrite]; !ok {
+			return fmt.Errorf("custom role %q: missing mandatory level %q", role, LevelWrite)
+		}
+		for level, perms := range roleLevels {
+			if err := ValidateLevelName(level); err != nil {
+				return fmt.Errorf("custom role %q: %w", role, err)
+			}
+			if level == "levels" {
+				return fmt.Errorf("custom role %q: %q is a reserved key and cannot be used as a level name", role, level)
+			}
+			for k, v := range perms {
+				if v != "read" && v != "write" && v != "admin" {
+					return fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read, write, or admin)", role, level, k, v)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // RegisterCustomRolePermissions adds user-defined role permissions that are
 // checked alongside the canonical built-in permissions. Pass nil to clear.
 // Returns an error if any custom role name collides with a built-in role.
 // Used by cmd/mint (standalone mint) only; the GCF mint uses canonical roles.
+//
+// The given flat permission map is stored as both the "read" and "write"
+// levels for the role. Both levels return the same GitHub permission values
+// — the level name selects the tier, not the individual access values.
 func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
 	if perms == nil {
-		customRoles.Store(map[string]map[string]string(nil))
+		customRoleLevels.Store(map[string]map[string]map[string]string(nil))
 		return nil
 	}
-	safe := make(map[string]map[string]string, len(perms))
+	safe := make(map[string]map[string]map[string]string, len(perms))
 	for role, p := range perms {
 		if err := ValidateRoleName(role); err != nil {
 			return fmt.Errorf("custom role name invalid: %w", err)
@@ -119,64 +214,176 @@ func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
 		if _, ok := canonicalRolePermissions[role]; ok {
 			return fmt.Errorf("custom role %q collides with built-in role", role)
 		}
-		cp := make(map[string]string, len(p))
+		if len(p) == 0 {
+			return fmt.Errorf("custom role %q: no permissions defined", role)
+		}
+		cpRead := make(map[string]string, len(p))
+		cpWrite := make(map[string]string, len(p))
 		for k, v := range p {
-			if v != "read" && v != "write" {
-				return fmt.Errorf("custom role %q: permission %q has invalid level %q (must be read or write)", role, k, v)
+			if v != "read" && v != "write" && v != "admin" {
+				return fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read, write, or admin)", role, k, v)
 			}
-			cp[k] = v
+			cpRead[k] = v
+			cpWrite[k] = v
 		}
-		safe[role] = cp
+		safe[role] = map[string]map[string]string{LevelRead: cpRead, LevelWrite: cpWrite}
 	}
-	customRoles.Store(safe)
+	customRoleLevels.Store(safe)
 	return nil
 }
 
-// RolePermissions returns a deep copy of the combined canonical and custom
-// role-to-permissions map. Custom roles are included alongside canonical ones.
-func RolePermissions() map[string]map[string]string {
-	out := make(map[string]map[string]string, len(canonicalRolePermissions))
-	for role, perms := range canonicalRolePermissions {
-		cp := make(map[string]string, len(perms))
-		for k, v := range perms {
-			cp[k] = v
-		}
-		out[role] = cp
+// RegisterCustomRoleLevels adds user-defined role permissions with explicit
+// level support. Each role maps level names to permission sets. Pass nil to
+// clear. Returns an error if any custom role collides with a built-in role.
+func RegisterCustomRoleLevels(levels map[string]map[string]map[string]string) error {
+	if levels == nil {
+		customRoleLevels.Store(map[string]map[string]map[string]string(nil))
+		return nil
 	}
-	if custom := loadCustomRoles(); len(custom) > 0 {
-		for role, perms := range custom {
+	if err := validateCustomRoleLevels(levels); err != nil {
+		return err
+	}
+	// Deep copy to prevent caller mutation.
+	safe := make(map[string]map[string]map[string]string, len(levels))
+	for role, roleLevels := range levels {
+		safeLevels := make(map[string]map[string]string, len(roleLevels))
+		for level, perms := range roleLevels {
 			cp := make(map[string]string, len(perms))
 			for k, v := range perms {
 				cp[k] = v
 			}
-			out[role] = cp
+			safeLevels[level] = cp
 		}
+		safe[role] = safeLevels
 	}
-	return out
+	customRoleLevels.Store(safe)
+	return nil
 }
 
-// RolePermissionsFor returns the permissions for a specific role, or nil if
-// the role is not defined. Canonical roles are checked first (avoids atomic
-// load on the hot path), then custom roles. Name collisions are rejected at
-// registration time so lookups are unambiguous. The returned map is a copy.
+// ParseCustomRolePermissions parses a CUSTOM_ROLE_PERMISSIONS JSON value,
+// auto-detecting flat vs multi-level format per role. Returns the unified
+// level structure.
+//
+// Flat format (role → permissions): the given map is stored as both the
+// "read" and "write" levels for the role. Both levels return the same
+// GitHub permission values.
+//
+// Multi-level format (role → {"levels": {level → permissions}}): the
+// levels object is used as-is. Extra named levels beyond read/write are
+// allowed; the mandatory read and write levels are enforced at
+// registration time by validateCustomRoleLevels.
+//
+// Mixed format within a single value is allowed.
+func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]string, error) {
+	var roles map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &roles); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	result := make(map[string]map[string]map[string]string, len(roles))
+	for role, rawVal := range roles {
+		// Try multi-level format: {"levels": {"read": {...}, "write": {...}}}
+		var multiLevel struct {
+			Levels map[string]map[string]string `json:"levels"`
+		}
+		if err := json.Unmarshal(rawVal, &multiLevel); err == nil && multiLevel.Levels != nil {
+			// Validate permission values early (defense-in-depth:
+			// RegisterCustomRoleLevels also validates, but catching
+			// errors here gives a clearer parse-time error message).
+			for level, perms := range multiLevel.Levels {
+				if err := ValidateLevelName(level); err != nil {
+					return nil, fmt.Errorf("custom role %q: %w", role, err)
+				}
+				for k, v := range perms {
+					if v != "read" && v != "write" && v != "admin" {
+						return nil, fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read, write, or admin)", role, level, k, v)
+					}
+				}
+			}
+			result[role] = multiLevel.Levels
+			continue
+		}
+
+		// Fall back to flat format: {"permission": "value"}.
+		// Store the same map under both mandatory levels so that
+		// read and write are ordinary lookups — no derivation needed.
+		var flat map[string]string
+		if err := json.Unmarshal(rawVal, &flat); err != nil {
+			return nil, fmt.Errorf("custom role %q: invalid format: %w", role, err)
+		}
+		for k, v := range flat {
+			if v != "read" && v != "write" && v != "admin" {
+				return nil, fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read, write, or admin)", role, k, v)
+			}
+		}
+		// Deep-copy for the second level to avoid aliasing.
+		flatCopy := make(map[string]string, len(flat))
+		for k, v := range flat {
+			flatCopy[k] = v
+		}
+		result[role] = map[string]map[string]string{LevelRead: flat, LevelWrite: flatCopy}
+	}
+
+	return result, nil
+}
+
+// RolePermissionsForLevel returns the permissions for a role at the given
+// privilege level. Levels are keys on the role — the lookup is a simple
+// table index with no derivation or fallback.
+//
+// When level is empty it defaults to LevelRead as a safe library-level
+// fallback. Note: the HTTP handler defaults omitted levels to LevelWrite
+// (temporary compatibility default) before calling this function.
+// The function checks canonical (built-in) roles first (avoids atomic
+// load on the hot path), then custom roles. Returns a copy of the stored
+// permission map.
+//
+// Errors:
+//   - unknown role → "no permissions defined for role %q"
+//   - known role, missing level → "role %q has no level %q"
+func RolePermissionsForLevel(role, level string) (map[string]string, error) {
+	if level == "" {
+		level = LevelRead
+	}
+
+	// Check built-in roles first.
+	if roleLevels, ok := canonicalRolePermissions[role]; ok {
+		if perms, ok := roleLevels[level]; ok {
+			cp := make(map[string]string, len(perms))
+			for k, v := range perms {
+				cp[k] = v
+			}
+			return cp, nil
+		}
+		return nil, fmt.Errorf("role %q has no level %q", role, level)
+	}
+
+	// Check custom roles.
+	if custom := loadCustomRoleLevels(); custom != nil {
+		if roleLevels, ok := custom[role]; ok {
+			if perms, ok := roleLevels[level]; ok {
+				cp := make(map[string]string, len(perms))
+				for k, v := range perms {
+					cp[k] = v
+				}
+				return cp, nil
+			}
+			return nil, fmt.Errorf("role %q has no level %q", role, level)
+		}
+	}
+
+	return nil, fmt.Errorf("no permissions defined for role %q", role)
+}
+
+// RolePermissionsFor returns the write-level permissions for a role.
+// This is a backward-compatible wrapper around RolePermissionsForLevel
+// that returns the full (write) permission set.
 func RolePermissionsFor(role string) map[string]string {
-	if perms, ok := canonicalRolePermissions[role]; ok {
-		cp := make(map[string]string, len(perms))
-		for k, v := range perms {
-			cp[k] = v
-		}
-		return cp
+	perms, err := RolePermissionsForLevel(role, LevelWrite)
+	if err != nil {
+		return nil
 	}
-	if custom := loadCustomRoles(); custom != nil {
-		if perms, ok := custom[role]; ok {
-			cp := make(map[string]string, len(perms))
-			for k, v := range perms {
-				cp[k] = v
-			}
-			return cp
-		}
-	}
-	return nil
+	return perms
 }
 
 // HasRole reports whether the given role has a permissions entry,
@@ -186,7 +393,7 @@ func HasRole(role string) bool {
 	if _, ok := canonicalRolePermissions[role]; ok {
 		return true
 	}
-	if custom := loadCustomRoles(); custom != nil {
+	if custom := loadCustomRoleLevels(); custom != nil {
 		if _, ok := custom[role]; ok {
 			return true
 		}
@@ -324,10 +531,18 @@ var ErrInstallationNotFound = errors.New("installation not found")
 // The returned installation's account is verified against the expected org to
 // prevent cross-org token leakage.
 func FindInstallation(ctx context.Context, githubBaseURL, jwt, org, repo string) (int64, error) {
+	inst, err := findInstallationDetails(ctx, githubBaseURL, jwt, org, repo)
+	if err != nil {
+		return 0, err
+	}
+	return inst.ID, nil
+}
+
+func findInstallationDetails(ctx context.Context, githubBaseURL, jwt, org, repo string) (installationResponse, error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/installation", githubBaseURL, org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("creating installation request: %w", err)
+		return installationResponse{}, fmt.Errorf("creating installation request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -335,43 +550,51 @@ func FindInstallation(ctx context.Context, githubBaseURL, jwt, org, repo string)
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return 0, fmt.Errorf("getting installation: %w", err)
+		return installationResponse{}, fmt.Errorf("getting installation: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusNotFound {
-			return 0, fmt.Errorf("getting installation for %s/%s: %w", org, repo, ErrInstallationNotFound)
+			return installationResponse{}, fmt.Errorf("getting installation for %s/%s: %w", org, repo, ErrInstallationNotFound)
 		}
-		return 0, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode)
+		return installationResponse{}, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode)
 	}
 
 	var inst installationResponse
 	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
-		return 0, fmt.Errorf("decoding installation: %w", err)
+		return installationResponse{}, fmt.Errorf("decoding installation: %w", err)
 	}
 
 	if inst.ID == 0 {
-		return 0, fmt.Errorf("no installation found for %s/%s", org, repo)
+		return installationResponse{}, fmt.Errorf("no installation found for %s/%s", org, repo)
 	}
 
 	if !strings.EqualFold(inst.Account.Login, org) {
 		log.Printf("cross-org installation mismatch: %s/%s belongs to %s, not %s",
 			org, repo, inst.Account.Login, org)
-		return 0, fmt.Errorf("installation for %s/%s belongs to %s, not %s",
+		return installationResponse{}, fmt.Errorf("installation for %s/%s belongs to %s, not %s",
 			org, repo, inst.Account.Login, org)
 	}
 
-	return inst.ID, nil
+	return inst, nil
 }
 
 // FindOrgInstallation looks up a GitHub App's installation ID for an organization.
 func FindOrgInstallation(ctx context.Context, githubBaseURL, jwt, org string) (int64, error) {
+	inst, err := findOrgInstallationDetails(ctx, githubBaseURL, jwt, org)
+	if err != nil {
+		return 0, err
+	}
+	return inst.ID, nil
+}
+
+func findOrgInstallationDetails(ctx context.Context, githubBaseURL, jwt, org string) (installationResponse, error) {
 	reqURL := fmt.Sprintf("%s/orgs/%s/installation", githubBaseURL, org)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("creating org installation request: %w", err)
+		return installationResponse{}, fmt.Errorf("creating org installation request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -379,30 +602,30 @@ func FindOrgInstallation(ctx context.Context, githubBaseURL, jwt, org string) (i
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return 0, fmt.Errorf("getting org installation: %w", err)
+		return installationResponse{}, fmt.Errorf("getting org installation: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("getting org installation for %s returned status %d", org, resp.StatusCode)
+		return installationResponse{}, fmt.Errorf("getting org installation for %s returned status %d", org, resp.StatusCode)
 	}
 
 	var inst installationResponse
 	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
-		return 0, fmt.Errorf("decoding org installation: %w", err)
+		return installationResponse{}, fmt.Errorf("decoding org installation: %w", err)
 	}
 
 	if inst.ID == 0 {
-		return 0, fmt.Errorf("no installation found for org %s", org)
+		return installationResponse{}, fmt.Errorf("no installation found for org %s", org)
 	}
 
 	if !strings.EqualFold(inst.Account.Login, org) {
-		return 0, fmt.Errorf("installation for org %s belongs to %s, not %s",
+		return installationResponse{}, fmt.Errorf("installation for org %s belongs to %s, not %s",
 			org, inst.Account.Login, org)
 	}
 
-	return inst.ID, nil
+	return inst, nil
 }
 
 // variableResponse is the JSON shape for GET /orgs/{org}/actions/variables/{name}
@@ -569,13 +792,177 @@ func ReadForeignAllowlistFromRepo(ctx context.Context, githubBaseURL, jwt string
 	return ParseForeignAllowlist(value), nil
 }
 
-// CreateInstallationToken exchanges a JWT for an installation access token,
-// scoped to the given repos and role-specific permissions.
-func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
-	perms := RolePermissionsFor(role)
-	if perms == nil {
-		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
+// isPublicGitHubAPI reports whether githubBaseURL refers to github.com's API
+// (or the empty default). Used only to choose Accept-URL wording.
+func isPublicGitHubAPI(githubBaseURL string) bool {
+	u := strings.TrimSpace(githubBaseURL)
+	if u == "" {
+		return true
 	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.github.com" || host == "github.com"
+}
+
+// InstallationAcceptHint returns a human-readable message directing an admin to
+// Accept the pending App permission update for the given installation.
+func InstallationAcceptHint(githubBaseURL, org string, installationID int64) string {
+	if isPublicGitHubAPI(githubBaseURL) {
+		return fmt.Sprintf("if the App already requests these permissions, Accept the pending update at https://github.com/organizations/%s/settings/installations/%d; otherwise the App owner must add them first", org, installationID)
+	}
+	return fmt.Sprintf("if the App already requests these permissions, an admin should Accept the pending update for org=%q installation_id=%d on this GitHub host; otherwise the App owner must add them first", org, installationID)
+}
+
+// optionalRolePermissions lists permissions that may be omitted during a
+// rollout while installations catch up with an App permission update. Only
+// permissions in this map are dropped when ungranted; everything else in the
+// role's set is required and fails hard if missing — preserving the pre-PR
+// behavior where GitHub's 422 surfaced immediately.
+var optionalRolePermissions = map[string]map[string]bool{
+	"coder": {"packages": true},
+	"fix":   {"packages": true},
+}
+
+// IsOptionalRolePermission reports whether the given permission may be omitted
+// from the role's requested set — and therefore only warned about — while
+// installations catch up with an App permission update. Every other permission
+// the role requests is required.
+func IsOptionalRolePermission(role, permission string) bool {
+	return optionalRolePermissions[role][permission]
+}
+
+// ErrRequiredPermissionsMissing is returned by effectiveInstallationPermissions
+// when the installation lacks a non-optional permission for the role.
+var ErrRequiredPermissionsMissing = errors.New("required permissions missing")
+
+// GitHub's app-permissions schema currently defines read, write, and admin
+// levels (see https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.yaml).
+// Unknown or empty levels intentionally fail closed as not granted.
+var permRank = map[string]int{"read": 1, "write": 2, "admin": 3}
+
+// PermissionLevelAtLeast reports whether a granted permission level satisfies
+// the requested level.
+func PermissionLevelAtLeast(granted, requested string) bool {
+	g, gok := permRank[granted]
+	r, rok := permRank[requested]
+	return gok && rok && g >= r
+}
+
+// GrantedPermissionLevel resolves the level an installation actually grants for
+// a permission. GitHub implicitly grants metadata:read to every App
+// installation, so an absent "metadata" entry is treated as "read".
+func GrantedPermissionLevel(granted map[string]string, permission string) string {
+	level := granted[permission]
+	if permission == "metadata" && level == "" {
+		// GitHub implicitly grants metadata:read to every App installation.
+		return "read"
+	}
+	return level
+}
+
+// effectiveInstallationPermissions builds the permission map for a token POST.
+// Only permissions listed in optionalRolePermissions for the role may be
+// omitted when the installation has not yet granted them. All other permissions
+// are required: if any required permission is ungranted, the function returns
+// ErrRequiredPermissionsMissing. A nil or empty granted map means the lookup
+// response did not provide permission information, so the full requested set is
+// preserved: GitHub always grants at least metadata:read to an installation, so
+// an empty map cannot be a real grant set.
+func effectiveInstallationPermissions(role string, requested, granted map[string]string) (map[string]string, []string, error) {
+	if len(granted) == 0 {
+		effective := copyPermissions(requested)
+		if len(effective) == 0 {
+			return nil, nil, fmt.Errorf("%w for role %q: no permissions remain", ErrRequiredPermissionsMissing, role)
+		}
+		return effective, nil, nil
+	}
+
+	optional := optionalRolePermissions[role]
+	effective := make(map[string]string, len(requested))
+	var dropped []string
+	var missingRequired []string
+	for perm, level := range requested {
+		if PermissionLevelAtLeast(GrantedPermissionLevel(granted, perm), level) {
+			effective[perm] = level
+			continue
+		}
+		if optional[perm] {
+			dropped = append(dropped, fmt.Sprintf("%s:%s", perm, level))
+			continue
+		}
+		missingRequired = append(missingRequired, fmt.Sprintf("%s:%s", perm, level))
+	}
+
+	if len(missingRequired) > 0 {
+		sort.Strings(missingRequired)
+		return nil, nil, fmt.Errorf("%w for role %q: %s", ErrRequiredPermissionsMissing, role, strings.Join(missingRequired, ", "))
+	}
+	if len(effective) == 0 {
+		return nil, nil, fmt.Errorf("%w for role %q: no permissions remain", ErrRequiredPermissionsMissing, role)
+	}
+
+	sort.Strings(dropped)
+	return effective, dropped, nil
+}
+
+func copyPermissions(perms map[string]string) map[string]string {
+	out := make(map[string]string, len(perms))
+	for k, v := range perms {
+		out[k] = v
+	}
+	return out
+}
+
+// CreateInstallationToken exchanges a JWT for an installation access token,
+// scoped to the given repos and role-specific permissions at the requested
+// privilege level. When level is empty, RolePermissionsForLevel defaults
+// to LevelRead as a safe library-level fallback; the HTTP handler applies
+// its own default (currently LevelWrite for compatibility) before calling
+// this. The level selects a key on the role's permission table — there is
+// no derivation or fallback.
+func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, org, role, level string, repos []string) (string, string, *GrantedScope, error) {
+	return createInstallationToken(ctx, githubBaseURL, jwt, installationID, org, role, level, repos, nil)
+}
+
+// CreateInstallationTokenWithGrantedPermissions mints a token after
+// downscoping requested role permissions to those currently granted to the
+// installation. This avoids a failed token POST while an App update is pending.
+func CreateInstallationTokenWithGrantedPermissions(ctx context.Context, githubBaseURL, jwt string, installationID int64, org, role, level string, repos []string, granted map[string]string) (string, string, *GrantedScope, error) {
+	return createInstallationToken(ctx, githubBaseURL, jwt, installationID, org, role, level, repos, granted)
+}
+
+func createInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, org, role, level string, repos []string, granted map[string]string) (string, string, *GrantedScope, error) {
+	requested, err := RolePermissionsForLevel(role, level)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	perms, dropped, err := effectiveInstallationPermissions(role, requested, granted)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("%w; %s", err, InstallationAcceptHint(githubBaseURL, org, installationID))
+	}
+	if len(dropped) > 0 {
+		log.Printf("installation permissions not granted: org=%q installation_id=%d role=%q dropped=%s; %s",
+			org, installationID, role, strings.Join(dropped, ", "), InstallationAcceptHint(githubBaseURL, org, installationID))
+	}
+
+	token, expiresAt, tokenGranted, status, body, err := postInstallationAccessToken(ctx, githubBaseURL, jwt, installationID, perms, repos)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if status != http.StatusCreated {
+		return "", "", nil, fmt.Errorf("creating installation token returned status %d: %s", status, truncateForLog(body, 256))
+	}
+	return token, expiresAt, tokenGranted, nil
+}
+
+// postInstallationAccessToken POSTs /app/installations/{id}/access_tokens and
+// returns the parsed success payload, or the raw status and body for the caller
+// to surface in an error. Network and marshal errors are returned via err.
+func postInstallationAccessToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (token, expiresAt string, granted *GrantedScope, status int, body string, err error) {
 	tokenReqBody := map[string]interface{}{
 		"permissions": perms,
 	}
@@ -585,13 +972,13 @@ func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, ins
 
 	tokenReqBytes, err := json.Marshal(tokenReqBody)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("marshaling token request: %w", err)
+		return "", "", nil, 0, "", fmt.Errorf("marshaling token request: %w", err)
 	}
 
 	reqURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubBaseURL, installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(tokenReqBytes))
 	if err != nil {
-		return "", "", nil, fmt.Errorf("creating token request: %w", err)
+		return "", "", nil, 0, "", fmt.Errorf("creating token request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -600,31 +987,48 @@ func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, ins
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("creating installation token: %w", err)
+		return "", "", nil, 0, "", fmt.Errorf("creating installation token: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", "", nil, fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
+		// Cap error bodies only — success payloads can include full repository
+		// objects and must not be truncated before JSON decode.
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return "", "", nil, resp.StatusCode, "", fmt.Errorf("reading installation token response: %w", readErr)
+		}
+		return "", "", nil, resp.StatusCode, string(raw), nil
 	}
 
 	var tokenResp installationTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", "", nil, fmt.Errorf("decoding token response: %w", err)
+		return "", "", nil, resp.StatusCode, "", fmt.Errorf("decoding token response: %w", err)
 	}
-
 	if tokenResp.Token == "" {
-		return "", "", nil, fmt.Errorf("empty installation token returned")
+		return "", "", nil, resp.StatusCode, "", fmt.Errorf("empty installation token returned")
 	}
 
-	granted := &GrantedScope{
+	granted = &GrantedScope{
 		Permissions:   tokenResp.Permissions,
 		RepoSelection: tokenResp.RepositorySelection,
 	}
 	for _, r := range tokenResp.Repositories {
 		granted.Repos = append(granted.Repos, r.FullName)
 	}
+	return tokenResp.Token, tokenResp.ExpiresAt, granted, resp.StatusCode, "", nil
+}
 
-	return tokenResp.Token, tokenResp.ExpiresAt, granted, nil
+// truncateForLog trims whitespace and truncates s to max runes, appending "…"
+// if truncation occurs.
+func truncateForLog(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }

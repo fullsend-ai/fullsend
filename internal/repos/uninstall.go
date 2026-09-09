@@ -298,11 +298,17 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	return result
 }
 
-// splitOwnerRepo splits "owner/repo" and rejects glob characters. Callers
+// splitOwnerRepo splits "owner/repo" (or "group/subgroup/project" for
+// GitLab nested paths) and rejects glob characters. The first segment
+// becomes owner; everything after the first "/" becomes repo. Callers
 // that accept glob patterns must filter them out before calling this.
+//
+// Validation uses gitlabRepoNamePattern (2+ segments) rather than the
+// stricter repoNamePattern because splitOwnerRepo runs before the forge
+// is resolved; forge-specific validation already occurs at install time.
 func splitOwnerRepo(fullName string) (string, string, error) {
-	if !repoNamePattern.MatchString(fullName) {
-		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo with alphanumeric, dash, dot, or underscore characters", fullName)
+	if !gitlabRepoNamePattern.MatchString(fullName) {
+		return "", "", fmt.Errorf("invalid repo format %q: expected owner/repo[/subgroup/...] using alphanumeric, dash, dot, or underscore characters", fullName)
 	}
 	parts := strings.SplitN(fullName, "/", 2)
 	return parts[0], parts[1], nil

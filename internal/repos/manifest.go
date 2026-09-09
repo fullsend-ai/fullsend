@@ -92,17 +92,23 @@ type RepoEntry struct {
 	MintMode               string   `yaml:"mint_mode,omitempty"`
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 	// Runtime is the agent runtime written as the repo's `runtime:` at
-	// install time (claude, pi); empty inherits defaults.runtime, and an
-	// empty resolved value keeps the code default (claude).
+	// install time (claude, pi, codex); empty inherits defaults.runtime,
+	// and an empty resolved value keeps the code default (claude).
 	Runtime string `yaml:"runtime,omitempty"`
+	// Vendor overrides the default vendor setting for this repo.
+	// nil inherits defaults.vendor; non-nil overrides it.
+	Vendor *bool `yaml:"vendor,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
 // across all platforms.
 type DefaultsConfig struct {
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-	// Runtime is the default agent runtime for every repo (claude, pi).
+	// Runtime is the default agent runtime for every repo (claude, pi, codex).
 	Runtime string `yaml:"runtime,omitempty"`
+	// Vendor, when true, vendors the fullsend binary and content into
+	// each repo so CI does not need network access to fetch them.
+	Vendor *bool `yaml:"vendor,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -133,6 +139,9 @@ type ResolvedConfig struct {
 	// Runtime is the resolved agent runtime (entry, then defaults); empty
 	// means the code default.
 	Runtime string
+	// Vendor is true when the fullsend binary and content should be
+	// vendored into the repo for offline CI.
+	Vendor bool
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
@@ -375,7 +384,7 @@ func (m *Manifest) Validate() error {
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return fmt.Errorf("github.url must be a valid HTTPS URL, got %q", githubURL)
 		}
-		if err := rejectExtraneousURLParts(u, "github.url"); err != nil {
+		if err := RejectExtraneousURLParts(u, "github.url"); err != nil {
 			return err
 		}
 
@@ -424,7 +433,7 @@ func (m *Manifest) Validate() error {
 			if err != nil || u.Scheme != "https" || u.Host == "" {
 				return fmt.Errorf("gitlab.url must be a valid HTTPS URL, got %q", m.GitLab.URL)
 			}
-			if err := rejectExtraneousURLParts(u, "gitlab.url"); err != nil {
+			if err := RejectExtraneousURLParts(u, "gitlab.url"); err != nil {
 				return err
 			}
 		}
@@ -533,7 +542,10 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 	return nil
 }
 
-func rejectExtraneousURLParts(u *url.URL, field string) error {
+// RejectExtraneousURLParts validates that a parsed URL contains only
+// scheme and host — no path, userinfo, query, or fragment. The field
+// parameter is used in error messages to identify the source.
+func RejectExtraneousURLParts(u *url.URL, field string) error {
 	if u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("%s must not contain a path component, got %q", field, u.String())
 	}
@@ -760,6 +772,8 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	// Runtime: per-repo overrides the global default; "none" stops the
 	// chain like the other string fields.
 	cfg.Runtime = resolveField(entry.Runtime, m.Defaults.Runtime, "")
+	// Vendor: per-repo *bool overrides defaults *bool; default is false.
+	cfg.Vendor = resolveBoolField(entry.Vendor, m.Defaults.Vendor, false)
 
 	// Source infrastructure config from the platform-level section,
 	// with per-repo overrides via the string fallback chain.
@@ -780,6 +794,18 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 		cfg.FullsendRef = resolveField(entry.FullsendRef, platform.FullsendRef, "")
 	}
 	return cfg
+}
+
+// resolveBoolField implements the three-level fallback chain for a
+// boolean override field. A nil pointer falls through to the next level.
+func resolveBoolField(perRepo, defaultVal *bool, builtinDefault bool) bool {
+	if perRepo != nil {
+		return *perRepo
+	}
+	if defaultVal != nil {
+		return *defaultVal
+	}
+	return builtinDefault
 }
 
 // resolveField implements the three-level fallback chain for an

@@ -176,11 +176,7 @@ func TestDetectExistingVersion(t *testing.T) {
 // commandsNotInPerRepoCatalog mirrors commandsNotInOnboardingCatalog in the
 // scaffold package: dispatch.yml routes these but they are deliberately omitted
 // from the user-facing per-repo onboarding catalog.
-//   - /fullsend: backward-compat alias for the /fs-retro form; /fs-retro is the
-//     primary command documented in the catalog.
-var commandsNotInPerRepoCatalog = map[string]bool{
-	"/fullsend": true,
-}
+var commandsNotInPerRepoCatalog = map[string]bool{}
 
 // These drift-guard helpers mirror the ones in the scaffold package's test.
 // They live in a different package, so they are duplicated here rather than
@@ -189,17 +185,17 @@ var commandsNotInPerRepoCatalog = map[string]bool{
 // comment, URL, or prose on either side cannot spoof a match.
 var (
 	// dispatchCaseArmRE matches a case-arm label in dispatch.yml's
-	// `case "${COMMAND}"` switch, e.g. "/fs-triage)" or "/fs-retro|/fullsend)".
-	dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/(?:fs-[a-z0-9-]+|fullsend)(?:\|/(?:fs-[a-z0-9-]+|fullsend))*)\)`)
-	// slashCommandRE matches a single /fs-* or /fullsend command token.
-	slashCommandRE = regexp.MustCompile(`/(?:fs-[a-z0-9-]+|fullsend)`)
+	// `case "${COMMAND}"` switch, e.g. "/fs-triage)".
+	dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/fs-[a-z0-9-]+(?:\|/fs-[a-z0-9-]+)*)\)`)
+	// slashCommandRE matches a single /fs-* command token.
+	slashCommandRE = regexp.MustCompile(`/fs-[a-z0-9-]+`)
 	// catalogBulletRE matches a rendered onboarding-catalog bullet. Both catalogs
 	// use bare backticks at this point (the per-org shell escapes are normalized
 	// before comparison, and the per-repo Go catalog uses bare backticks).
-	catalogBulletRE = regexp.MustCompile("(?m)^- `(/(?:fs-[a-z0-9-]+|fullsend))`")
+	catalogBulletRE = regexp.MustCompile("(?m)^- `(/fs-[a-z0-9-]+)`")
 	// catalogEntryRE additionally captures the full bullet text (target +
 	// description) after the command, for cross-catalog comparison.
-	catalogEntryRE = regexp.MustCompile("(?m)^- `(/(?:fs-[a-z0-9-]+|fullsend))` (.*)$")
+	catalogEntryRE = regexp.MustCompile("(?m)^- `(/fs-[a-z0-9-]+)` (.*)$")
 )
 
 // routedDispatchCommands returns the set of slash commands dispatch.yml routes

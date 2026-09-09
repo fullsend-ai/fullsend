@@ -20,7 +20,7 @@ See [architecture.md](architecture.md).
 
 ### Agent Runtime
 
-The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) is available as an opt-in second runtime (`runtime: pi`), and OpenCode is a stub. See [runtimes.md](runtimes.md).
+The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) and [Codex](https://github.com/openai/codex) are available as opt-in runtimes (`runtime: pi`, `runtime: codex`), and OpenCode is a stub. See [runtimes.md](runtimes.md).
 See [architecture.md](architecture.md) and [agent-infrastructure.md](problems/agent-infrastructure.md).
 
 ### Automerge
@@ -154,7 +154,7 @@ See [architecture.md](architecture.md).
 
 ### OTEL Derived Products
 
-Values **computed from** a run's OpenTelemetry trace after the fact — scores, fitness checks, later quality signals. They are not a second copy of what happened. First-ship example: `eval-measurements.jsonl` from `fullsend eval-measure` ([eval measurements](#eval-measurement) are the concept of scoring traces). Derived products sit beside telemetry as sibling files; they never replace [OTEL primary facts](#otel-primary-facts).
+Values **computed from** a run's OpenTelemetry trace after the fact — scores, fitness checks, later quality signals. They are not a second copy of what happened. First-ship example: `eval-measurements.jsonl` from `fullsend eval-measure` ([eval measurements](#eval-measurement) are the concept of scoring traces). Derived products sit beside telemetry as sibling files and, when `OTEL_EXPORTER_OTLP_*` is configured, also export as span events on the agent-trace OTLP path; they never replace [OTEL primary facts](#otel-primary-facts).
 See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) and [Eval Measurements](guides/infrastructure/eval-measurements.md).
 
 ### OTEL Primary Facts

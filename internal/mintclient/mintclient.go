@@ -30,6 +30,7 @@ const defaultAudience = mintconsts.OIDCAudience
 type MintRequest struct {
 	MintURL   string
 	Role      string
+	Level     string   // optional: privilege level ("read" or "write"); server defaults to "write" when empty
 	Repos     []string // required: specific repo names, or ["*"] for installation-wide token
 	TargetOrg string   // optional: cross-org mint when set and differs from caller org
 	Audience  string
@@ -159,6 +160,7 @@ func fetchOIDCJWT(ctx context.Context, audience string) (string, error) {
 
 type mintRequestBody struct {
 	Role      string   `json:"role"`
+	Level     string   `json:"level,omitempty"`
 	TargetOrg string   `json:"target_org,omitempty"`
 	Repos     []string `json:"repos"`
 }
@@ -166,6 +168,7 @@ type mintRequestBody struct {
 func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*MintResult, error) {
 	reqBody := mintRequestBody{
 		Role:      req.Role,
+		Level:     req.Level,
 		TargetOrg: req.TargetOrg,
 		Repos:     req.Repos,
 	}
