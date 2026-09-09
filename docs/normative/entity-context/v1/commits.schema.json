@@ -9,11 +9,16 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "sha", "subject", "committed_at"],
+        "required": ["id", "sha", "message", "parent_shas", "committed_at"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
-          "subject": { "type": "string" },
+          "message": { "type": "string" },
+          "parent_shas": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+            "uniqueItems": true
+          },
           "author": { "type": "string" },
           "committed_at": { "type": "string", "format": "date-time" }
         },

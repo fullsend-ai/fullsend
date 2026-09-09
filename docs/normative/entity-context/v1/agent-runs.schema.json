@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.sh/schemas/entity-context/v1/agent-runs.schema.json",
+  "title": "Fullsend entity-context immutable agent-run receipts v1",
+  "type": "object",
+  "required": ["runs"],
+  "properties": {
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "agent", "status", "input_revision", "result_record_keys", "source_url", "completed_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "agent": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "input_revision": { "type": "string", "minLength": 1 },
+          "input_head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+          "result_record_keys": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "uniqueItems": true
+          },
+          "resulting_commit_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+          "source_url": { "type": "string", "format": "uri" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

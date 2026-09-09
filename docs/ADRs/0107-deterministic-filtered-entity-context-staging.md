@@ -65,16 +65,22 @@ and bytes; breaking that guarantee requires a new major specification.
 
 Each comment and review is a self-contained attributed record whose filename
 sorts chronologically. The initial body uses the same record format and sorts
-first. Whole-conversation assembly is a glob concatenation; per-thread order
-files contain paths to the same records rather than copied content. New replies
-append without rewriting an unchanged prefix, preserving prompt-cache
-eligibility when runtimes concatenate records before mutable state.
+first. Order files define whole-conversation and review-focused projections and
+refer to the same records rather than copying content. New replies append
+without rewriting unchanged record files. Review-thread relationships, commit
+history, and immutable Fullsend agent-run receipts preserve enough provenance
+to relate a finding, the reviewed revision, a subsequent fix, and a re-review.
 
 The pre-script may inspect the host snapshot and skip the run. It cannot mutate
 the agent's view: Fullsend verifies the manifest digests before upload and
 restores or rejects changed files. The sandbox copy is read-only to the agent.
-Agent prompts should concatenate conversation records first and place mutable
-state after that stable prefix; `summary.md` remains the navigation aid for
+When a runtime injects staged context into a model request, it emits each
+ordered record as a distinct content block, followed by relationship and
+mutable-state blocks and then run-specific instructions. It must not collapse
+the records into one changing prompt block when cache reuse is intended.
+Provider prompt caching remains an optimization, not a conformance guarantee;
+agents that read records through tools still pay the corresponding tool-result
+tokens. `summary.md` and deterministic projections remain navigation aids for
 selective reads. Runtime forge reads are an explicit fallback for data outside
 the snapshot, not the default way to obtain it.
 
@@ -88,8 +94,8 @@ logs.
 
 ## Consequences
 
-- Agents start with a consistent, filtered view of entity content and need fewer forge tool calls and prompt tokens.
-- Pre-scripts, agents, validation, and post-scripts share one versioned relative-path contract without putting generated input in Git.
-- Snapshot assembly adds startup latency and ephemeral storage, bounded by per-entry and total-size limits.
-- A snapshot can become stale during a run, so outputs that mutate forge state must still validate relevant revisions in deterministic post-processing.
-- Forge adapters must expose the snapshot inputs through `forge.Client`; platform-specific gaps are explicit manifest errors rather than silent omissions.
+- Agents start with one filtered, versioned view and avoid duplicate forge reads, but token and provider-cache savings are conditional on selective projections and segmented runtime injection rather than automatic consequences of staging files.
+- Fullsend must add collection profiles, segmented context input and cache-boundary support to runtime backends, and telemetry for forge calls, staged/read bytes, input/cache tokens, latency, cost, and history-recall quality before claiming an efficiency improvement.
+- Shipped and custom review, fix, and code agents must migrate from mutable sticky summaries and single-body hand-offs to discovered entity-context projections, publish immutable per-run result receipts while retaining human-facing summaries, and anchor decisions to record keys and revisions.
+- Forge adapters must expose review/reply relationships, locations, reviewed revisions, commits, comparisons, checks, and immutable agent-result references through `forge.Client`; unavailable or unrecoverable edit and force-push history is an explicit manifest gap, not a silent omission.
+- Snapshot assembly adds bounded startup latency and storage and can become stale, so collection profiles avoid indiscriminate log/history fetching and deterministic post-processing still validates relevant revisions before any forge mutation.

@@ -3,10 +3,11 @@
   "$id": "https://fullsend.sh/schemas/entity-context/v1/index.schema.json",
   "title": "Fullsend entity-context index v1",
   "type": "object",
-  "required": ["schema_version", "filter_version", "source", "entity", "files", "records"],
+  "required": ["schema_version", "filter_version", "collection_profile", "source", "entity", "files", "records", "gaps"],
   "properties": {
     "schema_version": { "const": 1 },
     "filter_version": { "type": "string", "minLength": 1 },
+    "collection_profile": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "source": {
       "type": "object",
       "required": ["forge", "repository"],
@@ -34,6 +35,10 @@
     "records": {
       "type": "array",
       "items": { "$ref": "#/$defs/record" }
+    },
+    "gaps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gap" }
     }
   },
   "additionalProperties": false,
@@ -64,15 +69,25 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^(summary[.]md|entity/metadata[.]json|records/([0-9]{8}T[0-9]{15}Z)-[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]order|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
+          "pattern": "^(summary[.]md|entity/metadata[.]json|records/([0-9]{8}T[0-9]{15}Z)-[0-9a-f]{64}[.]md|threads/[0-9a-f]{64}[.]order|views/(conversation|unresolved-review)[.]order|views/reviews/[0-9a-f]{64}[.]order|relations/reviews[.]json|history/agent-runs[.]json|changes/(diff[.]patch|commits[.]json)|checks/[0-9a-f]{64}/(metadata[.]json|log[.]txt)|state/threads[.]json)$"
         },
         "role": {
-          "enum": ["summary", "entity_metadata", "entity_record", "comment_record", "review_record", "thread_order", "diff", "commits", "check_metadata", "check_log", "thread_state"]
+          "enum": ["summary", "entity_metadata", "entity_record", "comment_record", "review_record", "thread_order", "conversation_view", "unresolved_review_view", "review_view", "reviews", "agent_runs", "diff", "commits", "check_metadata", "check_log", "thread_state"]
         },
         "media_type": { "type": "string", "minLength": 1 },
         "bytes": { "type": "integer", "minimum": 0 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "filter": { "$ref": "#/$defs/filter" }
+      },
+      "additionalProperties": false
+    },
+    "gap": {
+      "type": "object",
+      "required": ["scope", "code", "count"],
+      "properties": {
+        "scope": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },

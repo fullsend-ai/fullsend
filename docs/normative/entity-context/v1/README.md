@@ -17,6 +17,12 @@ context/
 ├── entity/metadata.json
 ├── records/<order-key>-<record-key>.md
 ├── threads/<thread-key>.order
+├── views/
+│   ├── conversation.order
+│   ├── unresolved-review.order
+│   └── reviews/<record-key>.order
+├── relations/reviews.json
+├── history/agent-runs.json
 ├── changes/
 │   ├── diff.patch
 │   └── commits.json
@@ -29,15 +35,19 @@ context/
 
 `index.json` conforms to
 [`index.schema.json`](index.schema.json) and enumerates every other staged file.
-`entity/metadata.json`, `changes/commits.json`, check metadata, and
+`entity/metadata.json`, `relations/reviews.json`,
+`history/agent-runs.json`, `changes/commits.json`, check metadata, and
 `state/threads.json` conform respectively to
 [`entity.schema.json`](entity.schema.json),
+[`reviews.schema.json`](reviews.schema.json),
+[`agent-runs.schema.json`](agent-runs.schema.json),
 [`commits.schema.json`](commits.schema.json),
 [`check.schema.json`](check.schema.json), and
 [`thread-state.schema.json`](thread-state.schema.json). `summary.md` is a
 bounded navigation view generated only from the manifest and state documents;
 it must not duplicate record bodies or logs. Files under `threads/` contain
-only ordered relative paths to records.
+only ordered relative paths to records. Files under `views/` are deterministic
+projections containing those same paths, one per LF-terminated line.
 
 ## Stable records and mutable state
 
@@ -71,8 +81,8 @@ Filtered Markdown body.
 line are fixed. `Author-ID` and `Author` may be `null` when the forge withholds
 or has deleted the actor. All header strings are filtered before JSON-string
 serialization. The file contains no update time, ordering, thread membership,
-resolution, outdated, or minimized state; those properties belong in
-`index.json` or `state/threads.json`. Consequently, resolving a thread or
+review location, resolution, outdated, or minimized state; those properties
+belong in `index.json`, `relations/`, or `state/`. Consequently, resolving a thread or
 inserting an earlier record must not rename or rewrite an unchanged record.
 Changing its body or attribution fields changes that record's bytes and digest.
 
@@ -80,7 +90,7 @@ The initial issue or change-proposal body uses the same layout with
 `Fullsend-Record: "entity"`, the entity's stable ID and URL, and its author
 attribution and creation time. This makes it the first self-contained turn.
 
-## Filename order and prompt caching
+## Ordering files and prompt assembly
 
 An ordinary record filename is
 `records/<order-key>-<record-key>.md`. `<order-key>` is its source `created_at`
@@ -89,24 +99,58 @@ second digits and no punctuation other than `T` and `Z`. The entity-body record
 uses the reserved key `00000000T000000000000000Z`, so it always sorts first.
 Creation time is immutable forge data; edits do not rename a record.
 
-Because all path components are restricted to these ASCII forms,
-`LC_ALL=C cat records/*.md` concatenates the entire conversation in canonical
-order without an intermediate file. Each `threads/<thread-key>.order` contains
-the relative record path for each thread member followed by LF, in forge thread
-order. From the context root, `xargs cat < threads/<thread-key>.order`
-concatenates one thread; paths contain no whitespace or shell metacharacters.
+`views/conversation.order` lists the entity record and all comment and review
+records in canonical chronology. Each `threads/<thread-key>.order` lists that
+thread's records in forge order. `views/unresolved-review.order` lists records
+in unresolved, non-outdated review threads, ordered by thread creation time and
+key and then forge thread order. Each `views/reviews/<record-key>.order` lists
+one formal review followed by records in threads associated with it. A record
+path appears at most once in any one order file. Paths contain no whitespace or
+shell metacharacters, so a host consumer may materialize a projection with
+`xargs cat`, but runtimes use the segmented contract below.
 
-A normal later reply adds one lexically later file and appends one path to its
-thread order file, leaving all earlier record bytes and the whole-conversation
-prefix unchanged for prompt-cache reuse. A backfilled earlier record, edit,
-deletion, or attribution change necessarily invalidates the assembled context
-from the first affected record onward. Consumers place mutable state after the
-record concatenation and never infer resolution from record content.
+A runtime that injects a projection into a model request emits each referenced
+record as a distinct, ordered content block. Relationship, history, mutable
+state, and run-specific instruction blocks follow the stable record blocks.
+The runtime must not concatenate all records into one content block when
+prompt-cache reuse is intended: appending to that block would change its digest
+and lose the otherwise reusable record prefix. A runtime may mark boundaries
+using provider-specific cache controls, but provider cache behavior is not a
+v1 conformance guarantee. Reading the same files through agent tools avoids
+forge calls but still incurs tool-result tokens.
+
+A normal later reply adds one lexically later file and extends applicable order
+files, leaving earlier record blocks byte-identical. A backfilled earlier
+record, edit, deletion, or attribution change invalidates reuse from the first
+affected block onward. Consumers never infer resolution from record content.
 
 Check status is observation state in `checks/<record-key>/metadata.json`; its
 log file contains only filtered log bytes. A growing or replaced forge log is
 changed content and may change `log.txt`. A new check attempt has a new forge
 record ID and therefore a new record key.
+
+## Relationships, history, and collection profiles
+
+`relations/reviews.json` preserves formal review outcomes and the association
+between reviews, replies, reviewed revisions, and diff locations separately
+from mutable resolution state. Location fields are optional because forges
+expose different subsets. `history/agent-runs.json` contains only immutable,
+forge-observable Fullsend run receipts and relates an agent result to its input
+revision, result records, and resulting commit. A mutable sticky comment may be
+a human-facing summary, but it is not canonical run history and its overwritten
+versions cannot be reconstructed from a forge that does not expose edit
+history.
+
+The required `collection_profile` in `index.json` is the lowercase SHA-256 of
+the canonically serialized collection configuration: included source kinds,
+selection rules, and bounds. For example, a profile may include failed-check
+logs without fetching all successful logs. Given the same forge responses,
+profile, bounds, and filter version, the tree is identical. Profiles must not
+vary collection based on runner time or an agent's intermediate choices.
+Missing data within the selected profile is represented as a bounded manifest
+gap with a stable code; history unavailable from the forge, including
+overwritten edits or unreachable force-pushed commits, is not silently treated
+as an empty history.
 
 ## Canonical bytes
 
@@ -138,16 +182,18 @@ requires a new filter version. Removing or reinterpreting a status requires v2.
 Manifest record arrays and record filenames are sorted by source `created_at`,
 then by the record key's ASCII byte order. The reserved entity-body order key
 sorts before them. Thread arrays use thread creation time and then thread ID;
-`comment_ids` and `.order` lines preserve forge thread order. Commit arrays
-preserve forge history order. Other arrays state their ordering in their owning
-schema before being added to v1.
+`record_keys` and thread `.order` lines preserve forge thread order. Commit
+arrays preserve forge history order. Agent receipts sort by completion time and
+ID; manifest files sort by path, gaps by scope and code, and filter findings by
+code. Other arrays state their ordering in their owning schema before being
+added to v1.
 
 `generated_at` or another runner-clock value is forbidden anywhere under the
 context root. Acquisition timing belongs in run telemetry outside the staged
 tree. Source-provided timestamps, entity update time, PR head SHA, and check
 attempt IDs are permitted because they describe forge state. With identical
-forge responses, size bounds, and `filter_version`, the complete tree has
-identical paths and bytes.
+forge responses, `collection_profile`, size bounds, and `filter_version`, the
+complete tree has identical paths and bytes.
 
 ## Lifecycle and access
 
