@@ -202,6 +202,8 @@ Result after merge and resolution:
   `openshell provider create` time.
 - When URL-resolved providers exist but no URL-resolved profiles are declared,
   a warning is emitted (referential integrity cannot be verified ahead of time).
+  > **Update (#7095):** this case is no longer a warning; `checkProviderProfileIntegrity`
+  > now returns a hard error here, the same as an actual type mismatch.
 - Runs after profile import but before provider creation.
 
 ## Security

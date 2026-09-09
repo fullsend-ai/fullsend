@@ -820,6 +820,7 @@ func TestRunAgent_UnlistedProfileDirectoryFileIsNotImported(t *testing.T) {
 	assert.Contains(t, log, "provider profile import --file "+listedPath, "the harness-listed profile must be imported")
 	assert.NotContains(t, log, unlistedPath, "the unlisted directory file must never be referenced")
 	assert.NotContains(t, log, "unlisted.yaml", "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "provider profile import --from", "the removed directory-wide import must never be invoked")
 }
 
 func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
