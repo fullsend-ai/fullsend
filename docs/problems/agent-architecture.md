@@ -45,6 +45,8 @@ This is important: **the PR-level review is not a rubber stamp of the pre-PR rev
 
 ## Agent roles
 
+Which of these roles ship in the default catalog (versus remaining custom prototypes) is a separate promotion decision. Catalog membership is gated by [ADR 0111](../ADRs/0111-first-class-agent-promotion.md).
+
 ### Code agent
 
 Writes code to address an issue. This is the most mature capability of current AI coding tools.

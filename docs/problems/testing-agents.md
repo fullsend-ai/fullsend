@@ -366,6 +366,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 - **[Security Threat Model](security-threat-model.md)** — A compromised or regressed agent is a security event. The canary/tripwire patterns mentioned there are directly related to golden-set testing.
 - **[Code Review](code-review.md)** — The review sub-agents are the primary agents that need testing. Their decomposition into specialized roles means each role needs its own test coverage.
 - **[Agent Architecture](agent-architecture.md)** — The architecture determines what agents exist and what they're responsible for, which determines what needs testing.
+- **[First-class promotion](../ADRs/0111-first-class-agent-promotion.md)** — graduating a prototype into the default catalog requires script tests and at least one functional eval case; this document covers how those tests should work.
 - **[Repo Readiness](repo-readiness.md)** — Just as repos need test coverage before agents can be trusted with them, agent instructions need test coverage before instruction changes can be trusted.
 
 ## Open questions

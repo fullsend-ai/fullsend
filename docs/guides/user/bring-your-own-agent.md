@@ -12,6 +12,10 @@ all customization options, see
 
 This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) triage agent as a running example.
 
+A custom agent that proves itself in production may later graduate into the
+default catalog. That is a separate decision from building and registering
+it here — see [First-class agent promotion](../../contributing/first-class-agents.md).
+
 ## Overview
 
 Building and deploying a custom agent takes four steps:

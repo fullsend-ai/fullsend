@@ -398,13 +398,14 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 **Decided:**
 
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
+- First-class catalog: a custom prototype graduates into `fullsend-ai/agents` only when it meets catalog-fit, maturity, and cap criteria ([ADR 0111](ADRs/0111-first-class-agent-promotion.md)).
 - Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Config lookup: config entries are looked up directly via `findConfigAgentEntry`; the agents-repo fallback operates independently when the agent is not found in config. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add|list|set|update|remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
 
-- How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests provide a framework for testing agent roles against controlled fixtures — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Promotion workflow remains open.)
+- ~~How are new agent roles added, tested, and promoted to production?~~ First-class promotion criteria, maturity bar, and catalog cap are decided in [ADR 0111](ADRs/0111-first-class-agent-promotion.md). Functional tests remain the framework for testing agent roles ([ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md)); eval coverage and statistical thresholds are still discussed in [testing-agents.md](problems/testing-agents.md).
 - Does the registry include version information, so we can roll back to a previous agent configuration?
 - How does the registry relate to the policy store — does policy reference registry entries, or are they independent?
 

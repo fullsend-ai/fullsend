@@ -10,6 +10,8 @@ The default agents are defined in the
 and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in org or per-repo
 config (see [Architecture](../architecture.md#agent-registry) for details on the registration model).
+Which custom prototypes graduate into this catalog is gated by
+[ADR 0111](../ADRs/0111-first-class-agent-promotion.md).
 
 | Agent | Summary |
 |-------|---------|

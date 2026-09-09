@@ -16,6 +16,12 @@ different. This document defines three tiers:
 3. **Custom agent** — its `base` chain does not trace back to a default agent
    harness, or it has no `base` at all. Built from scratch.
 
+These three labels describe **customization depth** — how far a harness has
+moved from a shipped default. They are not catalog membership. Whether a
+custom agent should graduate into `fullsend-ai/agents` is a separate
+promotion decision ([ADR 0111](../../ADRs/0111-first-class-agent-promotion.md),
+[first-class-agents.md](../../contributing/first-class-agents.md)).
+
 ## Why the distinction matters
 
 We want two things simultaneously:
@@ -99,5 +105,7 @@ for a stated purpose, that override does not make the agent derived.
   extending or replacing built-in skills
 - [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
   building custom agents and configuring existing ones
+- [First-class agent promotion](../../contributing/first-class-agents.md) —
+  when a custom prototype may graduate into the default catalog
 - [Architecture](../../architecture.md#agent-harness) — `base`
   composition and harness inheritance
