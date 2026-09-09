@@ -168,6 +168,15 @@ func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	assert.False(t, cfg.IsKillSwitchActive())
 }
 
+func TestPerRepoConfig_ConfigKeepHistory(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{KeepHistory: &f}
+	assert.False(t, cfg.ConfigKeepHistory())
+	tr := true
+	cfg.KeepHistory = &tr
+	assert.True(t, cfg.ConfigKeepHistory())
+}
+
 func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	resources := []string{"https://example.com/"}
 	cfg := &perRepoConfig{AllowedRemoteResources: resources}
@@ -236,6 +245,16 @@ func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
 	cfg.SetKillSwitch(false)
 	require.NotNil(t, cfg.KillSwitch)
 	assert.False(t, *cfg.KillSwitch)
+}
+
+func TestPerRepoConfig_SetKeepHistory(t *testing.T) {
+	cfg := &perRepoConfig{}
+	cfg.SetKeepHistory(false)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.False(t, *cfg.KeepHistory)
+	cfg.SetKeepHistory(true)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.True(t, *cfg.KeepHistory)
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {

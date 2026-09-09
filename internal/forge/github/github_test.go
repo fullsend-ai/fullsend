@@ -2934,41 +2934,69 @@ func TestDoDoesNotRetryOnCallerContextCancel(t *testing.T) {
 }
 
 func TestIsTimeoutError(t *testing.T) {
+	// Create an already-cancelled context for testing the context guard.
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	tests := []struct {
 		name string
+		ctx  context.Context
 		err  error
 		want bool
 	}{
 		{
 			name: "nil error",
+			ctx:  context.Background(),
 			err:  nil,
 			want: false,
 		},
 		{
 			name: "generic error",
+			ctx:  context.Background(),
 			err:  fmt.Errorf("connection refused"),
 			want: false,
 		},
 		{
-			name: "context.DeadlineExceeded",
+			name: "context.DeadlineExceeded with active context",
+			ctx:  context.Background(),
 			err:  context.DeadlineExceeded,
 			want: true,
 		},
 		{
-			name: "wrapped context.DeadlineExceeded",
-			err:  fmt.Errorf("request failed: %w", context.DeadlineExceeded),
-			want: true,
+			name: "context.DeadlineExceeded with cancelled context",
+			ctx:  cancelledCtx,
+			err:  context.DeadlineExceeded,
+			want: false,
 		},
 		{
-			name: "context.Canceled is not a timeout",
+			name: "wrapped context.DeadlineExceeded with cancelled context",
+			ctx:  cancelledCtx,
+			err:  fmt.Errorf("request failed: %w", context.DeadlineExceeded),
+			want: false,
+		},
+		{
+			name: "context.Canceled with active context",
+			ctx:  context.Background(),
 			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "context.Canceled with cancelled context",
+			ctx:  cancelledCtx,
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "timeout error with cancelled context returns false",
+			ctx:  cancelledCtx,
+			err:  context.DeadlineExceeded,
 			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isTimeoutError(tt.err))
+			assert.Equal(t, tt.want, isTimeoutError(tt.ctx, tt.err))
 		})
 	}
 }
