@@ -31,13 +31,17 @@ Determine which repository should receive this issue:
 
   | File in `fullsend-ai/experiments` | File in `fullsend-ai/fullsend` |
   |-----------------------------------|--------------------------------|
-  | Experiment source, numbering, lint scripts, CI, or config **inside** the experiments repository | Submodule integration: `.gitmodules`, CODEOWNERS for `experiments`, Renovate bump PRs, `docs/experiments` symlink, ignore rules, docs-site wiring |
+  | Experiment source, conventions, lint scripts, CI, or config **inside** the experiments repository | Submodule integration: `.gitmodules`, CODEOWNERS for `experiments`, Renovate bump PRs, `docs/experiments` symlink, ignore rules, docs-site wiring |
   | New spikes and prototypes that live as experiment directories | Fullsend product or platform work that cites an experiment as research or evidence |
 
   When the current directory is the experiments submodule or a clone of
   `fullsend-ai/experiments`, still apply this table — submodule-integration
   work belongs in fullsend even if you are standing in the submodule.
   Canonical policy: [CONTRIBUTING.md](../../CONTRIBUTING.md#where-to-file-experiments-related-issues).
+- If the item is experiments-related but the table above does not decide a
+  single tracker, file in `fullsend-ai/fullsend` and link the
+  [experiments issue tracker](https://github.com/fullsend-ai/experiments/issues)
+  in the body.
 - If the current working directory is a git repo and the table above does not
   apply, default to its `origin` remote.
 - If neither applies, ask.
