@@ -42,10 +42,14 @@ gh api repos/fullsend-ai/agents/contents/harness \
 ```
 
 A local clone works the same way: `ls harness/*.yaml` at the agents-repo
-root (strip the `.yaml` suffix). Both commands enumerate harness files, used
-here as a proxy for first-class catalog membership — a harness file existing
-does not by itself confirm catalog-fit, but the harness directory is what
-"the catalog" means in practice. See the
+root (strip the `.yaml` suffix). Both commands enumerate harness files, not
+the first-class set directly — a harness file existing does not by itself
+confirm catalog-fit, and the harness directory can contain dogfood-only or
+otherwise non-catalog harnesses (see `scribe` in the snapshot below). Filter
+the raw listing against the documented default catalog — the table in
+[`docs/agents/README.md`](../agents/README.md) and the shipped-role list in
+[escalation-ladder.md](../agents/topics/escalation-ladder.md) — to get the
+current first-class set. See the
 [`author-fullsend-augmentations`](../../skills/author-fullsend-augmentations/SKILL.md)
 skill for the full discovery pattern.
 
@@ -80,7 +84,8 @@ just because the prototype is reliable.
 ## Classification snapshot (2026-09-09)
 
 Snapshot of applying ADR 0111, not a living roster. Re-run the discovery
-command above for the current first-class set.
+command above and filter it against the documented default catalog (as
+described above) for the current first-class set.
 
 | Agent | Status | Notes |
 |-------|--------|-------|
