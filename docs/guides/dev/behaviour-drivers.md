@@ -100,8 +100,9 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    `repopool_external_mint.go`) behind the shared `install.Driver`
    interface. Place common helpers shared across drivers in
    `install/common/` (e.g., `RunGitHubSetup`, `ProvisionInference`).
-5. **Register the driver** in the suite init for the matching
-   `BEHAVIOUR_INSTALL_MODE` value (or a new mode selector).
+5. **Register the driver** in `behaviourtest.RunSuite` (`installFactoryFor`
+   in `pkg/behaviourtest/select.go`). Install driver selection is keyed by
+   `ENVIRONMENT`, not `BEHAVIOUR_INSTALL_MODE`.
 6. **Use `repopool_external_mint.go`** (~71 lines) as the minimal
    reference implementation. For a more complex example showing CLI arg
    construction, preview alias generation, and teardown semantics, see
