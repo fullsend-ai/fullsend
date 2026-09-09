@@ -5581,6 +5581,74 @@ func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
 	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "cleanup must not unset a caller-set token outside Actions")
 }
 
+// TestMintAgentToken_WarnsWhenNoPreMintTokenInActions covers the case a
+// future caller overrides the workflow's github_token input to empty: the
+// preserve step must skip loudly (a StepWarn), not silently, so the #6649
+// failure mode is diagnosable (review finding: logic-error, run.go:5137).
+func TestMintAgentToken_WarnsWhenNoPreMintTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "no pre-mint GH_TOKEN was found")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not preserve a workflow token when none was found")
+}
+
+// TestMintAgentToken_WarnsWhenPreMintTokenMalformed covers an operator- or
+// caller-controlled GH_TOKEN override that doesn't match mintTokenPattern:
+// the preserve step must fail closed (skip Setenv/add-mask/RegisterRuntimeSecret)
+// the same way result.Token is gated, and warn rather than fail silently
+// (review finding: injection, run.go:5144).
+func TestMintAgentToken_WarnsWhenPreMintTokenMalformed(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "not a valid token\nwith control chars")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var stderrBuf bytes.Buffer
+	_, _ = io.Copy(&stderrBuf, r)
+
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "unexpected format")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "malformed pre-mint token must not be preserved")
+	assert.NotContains(t, stderrBuf.String(), "::add-mask::not a valid token", "malformed token must not reach add-mask")
+}
+
 func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()

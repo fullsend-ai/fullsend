@@ -2832,7 +2832,13 @@ func init() {
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
 	// inject them) but must remain expandable by expandProviderValue, so
-	// they are not passed to DenyExpansionKeys (#6649).
+	// they are not passed to DenyExpansionKeys (#6649). expandProviderValue
+	// is not scoped by provider type, so any provider definition's ${}
+	// credential can reference these keys, not only fullsend-github-packages.
+	// This does not widen the trusted-ref surface: .fullsend provider
+	// definitions (and the ${GH_TOKEN}/${PUSH_TOKEN} they can already
+	// reference) are already read from the trusted ref. Documented in
+	// docs/guides/user/customizing-agents.md#private-registries-and-github-packages.
 	for k := range providerOnlyKeys {
 		reservedSandboxKeys[k] = true
 	}
@@ -5134,7 +5140,19 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 	// Actions leave a caller-set value alone and never derive one from a
 	// local PAT (#6649).
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		if preMint := originals["GH_TOKEN"]; preMint != "" {
+		preMint := originals["GH_TOKEN"]
+		switch {
+		case preMint == "":
+			// A future caller could override the workflow's github_token
+			// input to empty; fail loud instead of silently skipping the
+			// preserve step (#6649).
+			printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN was found; FULLSEND_WORKFLOW_TOKEN will not be preserved for provider credentials")
+		case !mintTokenPattern.MatchString(preMint):
+			// Gate the same as result.Token below before it reaches
+			// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
+			// than trust an unvalidated value (#6649).
+			printer.StepWarn("pre-mint GH_TOKEN has an unexpected format; FULLSEND_WORKFLOW_TOKEN will not be preserved for provider credentials")
+		default:
 			if v, ok := os.LookupEnv(workflowTokenEnv); ok {
 				originals[workflowTokenEnv] = v
 			}

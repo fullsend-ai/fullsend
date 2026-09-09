@@ -170,6 +170,17 @@ workflow token. The shipped code and fix workflows already grant
 is read from the trusted ref, so a pull request cannot redirect the provider at
 a different credential.
 
+`FULLSEND_WORKFLOW_TOKEN` is scoped to *provider credential* expansion as a
+class, not to the `fullsend-github-packages` provider specifically: any
+provider definition's `${}` credential can reference it, the same way any
+provider can already reference `${GH_TOKEN}` or `${PUSH_TOKEN}`. This is not
+a new exposure — `.fullsend` provider definitions are read from the trusted
+ref, so the set of credentials a pull request could redirect a provider to
+read is unchanged; the workflow token just adds one more entry with the
+job's full permission set to that existing, already-trusted surface. If your
+repository ships other providers, keep that in mind when reviewing what
+`${}` references they use.
+
 This provider is **not** shipped by default. Add the files below to your
 repository (or config repo) and overlay them onto `code` and `fix`.
 
@@ -204,7 +215,6 @@ endpoints:
     protocol: rest
     access: read-only
     enforcement: enforce
-    allow_encoded_slash: true
   - host: pkg-npm.githubusercontent.com
     port: 443
     protocol: rest
@@ -220,8 +230,11 @@ binaries:
 
 `npm.pkg.github.com` is credential-bound. `pkg-npm.githubusercontent.com` is
 not: the tarball redirect carries a pre-signed URL, so no credential is
-attached. `allow_encoded_slash: true` is required because scoped package names
-use `%2F` in the registry URL.
+attached. Scoped package names (`@org/pkg`) put a `%2F`-encoded slash in the
+`npm.pkg.github.com` request path; if pulling scoped packages through this
+profile fails with a routing or path-matching error, check your pinned
+OpenShell version's endpoint field reference for an encoded-slash option
+before assuming the profile itself is wrong.
 
 **`.fullsend/env/npmrc-github-packages`:**
 
