@@ -13,7 +13,7 @@ Defending the agentic system against adversarial attacks. Security is not a feat
 4. **Agent drift** — insidious, slow, hard to detect
 5. **Supply chain attacks** — partially addressed by existing tooling, but agentic development introduces a novel trust boundary
 
-[Coordinated inauthentic contributions](#threat-7-coordinated-inauthentic-contributions) (Threat 7) cut across Threat 1 and Threat 6 but attack identity and intent rather than content or resources. They are documented as a distinct class rather than inserted into the ranking above.
+[Coordinated inauthentic contributions](#threat-7-coordinated-inauthentic-contributions) (Threat 7) cut across [prompt injection](#threat-1-external-prompt-injection) and [denial of service](#threat-6-denial-of-service-dos--resource-exhaustion) but attack identity and intent rather than content or resources. They are documented as a distinct class rather than inserted into the ranking above.
 
 ## Threat 1: External prompt injection
 
@@ -428,9 +428,9 @@ The behaviors are individually hard to distinguish from good-faith contribution:
 
 ### Why it's dangerous
 
-This is an identity-level and intent-level attack, not a content-level one. The [zero-trust content model](#threat-5-agent-to-agent-prompt-injection) sanitizes what agents read regardless of source; it does not ask "is this issue filed to promote a competing project?" A claw can increase comment volume on an issue until a maintainer, trying to assess legitimacy, feeds that thread to an agent — which is then exposed to whatever [prompt injection](#threat-1-external-prompt-injection) the thread contains.
+This is an identity-level and intent-level attack, not a content-level one. [Zero trust between agents](#threat-5-agent-to-agent-prompt-injection) treats every input as potentially adversarial regardless of source; it does not ask "is this issue filed to promote a competing project?" A claw can increase comment volume on an issue until a maintainer, trying to assess legitimacy, feeds that thread to an agent — which is then exposed to whatever [prompt injection](#threat-1-external-prompt-injection) the thread contains.
 
-It also specifically games the trust-building process that [DOS defenses](#threat-6-denial-of-service-dos--resource-exhaustion) rely on. "Tiered response based on actor trust" and per-actor rate limits assume that untrusted actors stay untrusted, and that volume from one actor is the signal. Claws aim to graduate from "untrusted external" to "recognized contributor" through a series of small, seemingly legitimate contributions, and they distribute volume across accounts so no single actor trips a rate limit.
+It also specifically games two [DOS defenses](#threat-6-denial-of-service-dos--resource-exhaustion), in different ways. "Tiered response based on actor trust" assumes that untrusted actors stay untrusted; claws game it by graduating from "untrusted external" to "recognized contributor" through a series of small, seemingly legitimate contributions. Per-actor rate limits assume that volume from one actor is the signal; claws game them by distributing volume across accounts so no single actor trips a limit.
 
 The [xz backdoor](https://en.wikipedia.org/wiki/XZ_Utils_backdoor) is the slow-burn precedent for building trust as a contributor before delivering a payload. Claws compress that timeline with AI and add a multi-account, multi-repo dimension the xz attacker did not need.
 
@@ -447,7 +447,7 @@ Content sanitization, input-size limits, and per-actor rate limits remain necess
 
 - **Prompt injection (Threat 1).** Claw-style threads are a natural delivery vehicle. Multiple accounts talking to each other inflate the untrusted text a later agent run will consume. Hidden Unicode and social-pressure variants apply to that text the same as to any other issue or PR.
 - **DOS (Threat 6).** Attention exhaustion is the human-side analogue of token exhaustion. Per-actor rate limits fail when each actor's contributions are small and the campaign is the sum. Actor-trust tiering is the control the attack is designed to graduate through.
-- **Insider threat (Threat 2).** Once a claw has write permission or a maintainer vouch, they look like a compromised-or-malicious insider for the purpose of dispatch gating.
+- **Insider threat (Threat 2).** Once a claw has actual write (or, for observation stages, triage) permission or org membership, they look like a compromised-or-malicious insider for the purpose of dispatch gating, which checks live collaborator permission rather than vouch status or merge history. A maintainer vouch or prior merge count is at most an intake/allowlist signal — it does not itself grant dispatch authority under [ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 - **Temporal split-payload.** A campaign that first lands small "innocent" test or docs PRs, then a later payload, is easier to stage if the early PRs also farm trust.
 - **Contribution volume.** Good-faith AI volume and inauthentic volume produce the same queue. Salvage-and-throughput workflows (immediately accepting review, asking the project to rewrite) are exactly the cooperation pattern speed-to-merge gaming exploits. See [contribution-volume.md](contribution-volume.md#when-volume-is-the-attack).
 
