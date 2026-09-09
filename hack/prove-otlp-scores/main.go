@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -125,12 +126,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FAIL: no scores written\n")
 		os.Exit(1)
 	}
+	if stats.RemoteExportWarning != "" {
+		fmt.Fprintf(os.Stderr, "FAIL: remote export warning: %s\n", stats.RemoteExportWarning)
+		os.Exit(1)
+	}
 	if nReqs == 0 {
 		fmt.Fprintf(os.Stderr, "FAIL: no OTLP requests received\n")
 		os.Exit(1)
 	}
 	if len(events) == 0 {
 		fmt.Fprintf(os.Stderr, "FAIL: no gen_ai.evaluation.result events\n")
+		os.Exit(1)
+	}
+	// Mirror the exportable filter in ExportOTLPScores (export_otlp.go).
+	// TRACEPARENT suppression is not replicated here because we unset it above.
+	eligible := 0
+	for _, r := range results {
+		if r.Label == evalmeasure.LabelSkip && (strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "") {
+			continue
+		}
+		eligible++
+	}
+	if len(events) < eligible {
+		fmt.Fprintf(os.Stderr, "FAIL: OTLP events %d < eligible scores %d\n", len(events), eligible)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "PASS: %d score(s), %d OTLP event(s)\n", len(results), len(events))

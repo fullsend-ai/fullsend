@@ -363,17 +363,16 @@ func TestExportOTLPScores_UnsampledTRACEPARENTOtherTraceIDExports(t *testing.T) 
 	assert.NotEmpty(t, sink.allSpans(), "unrelated TraceID must still export under TraceID-scoped gate")
 }
 
-func TestCapturingExporter_ClearsErrorOnLaterSuccess(t *testing.T) {
+func TestCapturingExporter_AccumulatesErrorsAcrossCalls(t *testing.T) {
 	seq := &seqExporter{errs: []error{assert.AnError, nil}}
 	cap := &capturingExporter{base: seq}
-	require.Error(t, cap.ExportSpans(context.Background(), nil))
+	// Disjoint batches: first fails (2 spans), second succeeds (1 span).
+	require.Error(t, cap.ExportSpans(context.Background(), make([]sdktrace.ReadOnlySpan, 2)))
+	require.NoError(t, cap.ExportSpans(context.Background(), make([]sdktrace.ReadOnlySpan, 1)))
 	cap.mu.Lock()
-	require.Error(t, cap.err)
-	cap.mu.Unlock()
-	require.NoError(t, cap.ExportSpans(context.Background(), nil))
-	cap.mu.Lock()
-	assert.NoError(t, cap.err, "successful ExportSpans must clear prior latch")
-	cap.mu.Unlock()
+	defer cap.mu.Unlock()
+	require.Error(t, cap.err, "later success must not clear an earlier disjoint-batch failure")
+	assert.Equal(t, 2, cap.failedSpans)
 }
 
 type seqExporter struct {
@@ -391,6 +390,43 @@ func (s *seqExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) erro
 }
 
 func (s *seqExporter) Shutdown(context.Context) error { return nil }
+
+func TestExportOTLPScores_ReportsPartialWhenEarlierBatchFails(t *testing.T) {
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1") // unused; seam replaces exporter
+
+	origExp := newScoreOTLPExporter
+	origBatch := otlpMaxExportBatchSize
+	t.Cleanup(func() {
+		newScoreOTLPExporter = origExp
+		otlpMaxExportBatchSize = origBatch
+	})
+	otlpMaxExportBatchSize = func(n int) int {
+		if n > 512 {
+			return 512
+		}
+		return n
+	}
+	seq := &seqExporter{errs: []error{assert.AnError, nil}}
+	newScoreOTLPExporter = func(context.Context) (sdktrace.SpanExporter, error) {
+		return seq, nil
+	}
+
+	const count = 600
+	results := make([]EvaluationResult, count)
+	for i := range results {
+		results[i] = EvaluationResult{
+			Name: "trace_fitness", Label: LabelPass,
+			TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+			Version: "em-001@1", Value: 1,
+		}
+	}
+	err := ExportOTLPScores(context.Background(), results, "test-1.2.3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "88/600 scores exported")
+	assert.Contains(t, err.Error(), "512 failed")
+	assert.Equal(t, 2, seq.i, "expected two ExportSpans calls (512 + 88)")
+}
 
 func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 	sink := newScoreOTLPSink(t)

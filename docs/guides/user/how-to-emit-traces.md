@@ -7,7 +7,7 @@ are written to the `run-telemetry.jsonl` file that gets uploaded into an artifac
 in the workflow. Fullsend is able to send traces to a remote OpenTelemetry-compatible
 endpoint.
 
-When the same `OTEL_EXPORTER_OTLP_*` configuration is set, managed
+When the same `OTEL_EXPORTER_OTLP_*` configuration is set,
 `fullsend eval-measure` also exports newly written scores as
 `gen_ai.evaluation.result` span events on that endpoint (fail-open; local
 `eval-measurements.jsonl` always wins). See

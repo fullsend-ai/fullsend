@@ -154,7 +154,7 @@ See [architecture.md](architecture.md).
 
 ### OTEL Derived Products
 
-Values **computed from** a run's OpenTelemetry trace after the fact — scores, fitness checks, later quality signals. They are not a second copy of what happened. First-ship example: `eval-measurements.jsonl` from `fullsend eval-measure` ([eval measurements](#eval-measurement) are the concept of scoring traces). Derived products sit beside telemetry as sibling files and, when `OTEL_EXPORTER_OTLP_*` is configured, also export as span events on that same OTLP path; they never replace [OTEL primary facts](#otel-primary-facts).
+Values **computed from** a run's OpenTelemetry trace after the fact — scores, fitness checks, later quality signals. They are not a second copy of what happened. First-ship example: `eval-measurements.jsonl` from `fullsend eval-measure` ([eval measurements](#eval-measurement) are the concept of scoring traces). Derived products sit beside telemetry as sibling files and, when `OTEL_EXPORTER_OTLP_*` is configured, also export as span events on the agent-trace OTLP path; they never replace [OTEL primary facts](#otel-primary-facts).
 See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md) and [Eval Measurements](guides/infrastructure/eval-measurements.md).
 
 ### OTEL Primary Facts

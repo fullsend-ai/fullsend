@@ -72,6 +72,11 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 	return telemetry.NewOTLPExporterBounded(ctx, otlpRetryBudget)
 }
 
+// otlpMaxExportBatchSize is a test seam. Production returns n so one
+// ExportOTLPScores call keeps a single HTTP batch for the materialized set.
+// Tests that override this must not use t.Parallel (same as newScoreOTLPExporter).
+var otlpMaxExportBatchSize = func(n int) int { return n }
+
 // ExportOTLPScores emits each measurement as a short child span on the same
 // TraceID (remote-parented to the scored SpanID) with a
 // gen_ai.evaluation.result event. Uses the same OTEL_EXPORTER_OTLP_* env as
@@ -130,15 +135,23 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	capExp := &capturingExporter{base: exp}
 
 	// Batch so N scores share one (or few) HTTP exports under the budget.
-	// Size the queue for this bounded, already-materialized result set. The
-	// SDK's default queue is 2,048 and drops spans once full; blocking instead
-	// would use context.TODO internally and could violate this function's
-	// fail-open wall-clock budget.
+	// Size the queue and export batch for this bounded, already-materialized
+	// result set. The SDK's default queue is 2,048 and drops spans once full;
+	// blocking instead would use context.TODO internally and could violate
+	// this function's fail-open wall-clock budget. MaxExportBatchSize matches
+	// the set so a single ExportOTLPScores call does not split across the
+	// SDK's default 512-span batches (disjoint batches must not clear each
+	// other's transport errors — see capturingExporter).
+	n := len(exportable)
+	batchSize := otlpMaxExportBatchSize(n)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(telemetry.BuildResource(serviceVersion)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithRawSpanLimits(telemetry.SpanLimits()),
-		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp, sdktrace.WithMaxQueueSize(len(exportable)))),
+		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp,
+			sdktrace.WithMaxQueueSize(n),
+			sdktrace.WithMaxExportBatchSize(batchSize),
+		)),
 	)
 	// Shutdown shares the same export budget (remaining deadline on ctx),
 	// not an extra Background timeout stacked on top.
@@ -165,6 +178,7 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	}
 	capExp.mu.Lock()
 	expErr := capExp.err
+	transportFailed := capExp.failedSpans
 	capExp.mu.Unlock()
 	if expErr != nil {
 		errs = append(errs, fmt.Errorf("otlp export: %w", expErr))
@@ -172,10 +186,23 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	if len(errs) == 0 {
 		return nil
 	}
-	// Transport failure: nothing is known to have landed — do not claim N/M
-	// success from spans that were only constructed locally.
-	if flushErr != nil || expErr != nil {
+	// ForceFlush failure: spans may still be queued — treat as total failure
+	// (nothing is known to have landed).
+	if flushErr != nil {
 		return fmt.Errorf("otlp export failed for all %d scores: %w", len(exportable), errors.Join(errs...))
+	}
+	// Transport errors are per disjoint ExportSpans batch. A later successful
+	// batch does not imply an earlier failed batch landed.
+	if transportFailed > 0 {
+		exported := len(exportable) - failed - transportFailed
+		if exported < 0 {
+			exported = 0
+		}
+		totalFailed := failed + transportFailed
+		if exported == 0 {
+			return fmt.Errorf("otlp export failed for all %d scores: %w", len(exportable), errors.Join(errs...))
+		}
+		return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, len(exportable), totalFailed, errors.Join(errs...))
 	}
 	exported := len(exportable) - failed
 	return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, len(exportable), failed, errors.Join(errs...))
@@ -209,20 +236,25 @@ func scoreTraceIDEquals(hexID string, want trace.TraceID) bool {
 	return got == want
 }
 
-// capturingExporter tracks the latest ExportSpans error so fail-open callers
-// can warn. A later successful ExportSpans clears a prior transient failure
-// (avoids false "remote export failed" after data actually landed). Mutex
-// covers BatchSpanProcessor's async export goroutine.
+// capturingExporter accumulates ExportSpans errors so fail-open callers can
+// warn. BatchSpanProcessor may call ExportSpans more than once with disjoint
+// span sets; a later success must not clear an earlier batch failure (retries
+// live inside a single ExportSpans call via otlptracehttp, not across calls).
+// Mutex covers the processor's async export goroutine.
 type capturingExporter struct {
-	base sdktrace.SpanExporter
-	mu   sync.Mutex
-	err  error
+	base        sdktrace.SpanExporter
+	mu          sync.Mutex
+	err         error
+	failedSpans int
 }
 
 func (c *capturingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := c.base.ExportSpans(ctx, spans)
 	c.mu.Lock()
-	c.err = err
+	if err != nil {
+		c.err = errors.Join(c.err, err)
+		c.failedSpans += len(spans)
+	}
 	c.mu.Unlock()
 	return err
 }
