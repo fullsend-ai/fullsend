@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -349,6 +350,26 @@ class TestBuildOutput(unittest.TestCase):
                 now=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
             )
             self.assertFalse(out["until_clamped"])
+
+    def test_build_output_reports_search_truncation(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            for name in ("rel-fullsend.json", "rel-agents.json"):
+                (tmp / name).write_text("[]", encoding="utf-8")
+            (tmp / "prs-fullsend.json").write_text(
+                json.dumps([{}] * SEARCH_LIMIT), encoding="utf-8"
+            )
+            (tmp / "prs-agents.json").write_text("[]", encoding="utf-8")
+            out = build_output(
+                "2026-08-11",
+                "2026-08-17",
+                tmp,
+                now=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+            )
+            self.assertEqual(
+                out["search_truncated"],
+                {"fullsend-ai/fullsend": True, "fullsend-ai/agents": False},
+            )
 
     def test_build_output_fails_closed_on_bad_json(self):
         with tempfile.TemporaryDirectory() as tmp_s:

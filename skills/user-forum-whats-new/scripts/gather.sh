@@ -6,7 +6,8 @@
 # the tzdata package) for America/New_York window math.
 #
 # Dates are forum Tuesdays in America/New_York. --since is 08:00 ET that
-# morning; --until is end of that day ET, or now (UTC) when until is today.
+# morning; --until is end of that day ET, clamped to now when that end is
+# still in the future (see until_clamped in the JSON output).
 # Default --until is today's date in America/New_York.
 set -euo pipefail
 

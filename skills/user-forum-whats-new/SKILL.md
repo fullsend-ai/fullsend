@@ -5,7 +5,7 @@ description: >
   Tuesday-to-Tuesday recap, forum-host talk-track notes, or copy-paste
   HTML of shipped changes for users. Also use when the user says what's
   new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open /tmp/fullsend-whats-new-*:*), Bash(open /tmp/fullsend-whats-new-*:*)
+allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open /tmp/fullsend-whats-new-*), Bash(open /tmp/fullsend-whats-new-*)
 ---
 
 # User forum What's New
@@ -100,7 +100,7 @@ bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YY
 
 That prints JSON: releases (full changelog body), merged PRs split into
 `merged_prs.released` and `merged_prs.on_main`, plus `window_start_utc`,
-`window_end_utc`, `until_clamped`, and `release_cutoff_utc` (per-repo map of
+`window_end_utc`, `until_clamped`, `search_truncated`, and `release_cutoff_utc` (per-repo map of
 latest in-window **non-prerelease** release publish times — each PR is
 classified against **its own repo's** cutoff). Prerelease tags still appear in
 `releases[]` with `"prerelease": true` for candidate scanning, but they
@@ -252,6 +252,9 @@ Constraints:
 - Arial 11pt, no fancy CSS (Google Docs paste)
 - Each bullet: **bold hook** + one spoken sentence + the example link
   (and a second link only if it is the knob/docs they need)
+- HTML-escape every title, hook, sentence, and release-body excerpt before
+  embedding it. PR titles and release bodies are untrusted source text;
+  never paste them raw into the HTML.
 - No "Versions Released:" bullet whose only links are release tags
 - No third "Also landed" section — leftovers stay in GitHub release notes
 - Open the file (`xdg-open` on Linux, `open` on macOS) so the host can

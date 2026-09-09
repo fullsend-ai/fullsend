@@ -318,10 +318,12 @@ def build_output(
         prs_by_repo[repo] = load_json(tmp / prs_name, required=True)
 
     classified = classify(releases_by_repo, prs_by_repo, since_ts, until_ts)
+    search_truncated = {repo: len(prs_by_repo[repo]) >= SEARCH_LIMIT for repo, _, prs_name in REPOS}
     return {
         "since": since,
         "until": until,
         "until_clamped": until_clamped,
+        "search_truncated": search_truncated,
         "window_start_utc": to_z(since_ts),
         "window_end_utc": to_z(until_ts),
         **classified,
