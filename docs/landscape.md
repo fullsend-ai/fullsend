@@ -273,7 +273,7 @@ Two observability pieces are worth borrowing: [SPEC Section 13.5](https://github
 **Implementation reusability:** The Elixir/OTP reference is a prototype; the spec is the product. Four pieces are worth borrowing, in rough order of value:
 
 1. *Workspace safety invariants (Section 9.5).* Cwd-validation + prefix-containment + sanitization-with-hash is a useful baseline regardless of containment strategy. Fullsend's sandbox should enforce these *and* containment.
-2. *Continuation-turn semantics (Sections 7.1, 10.3).* First turn = full prompt; continuation turns = continuation guidance on the same thread; single subprocess across turns. Maps to the open question in [agent-architecture.md](problems/agent-architecture.md#open-questions): "Should agents be stateless or stateful?"
+2. *Continuation-turn semantics (Sections 7.1, 10.3).* First turn = full prompt; continuation turns = continuation guidance on the same thread; single subprocess across turns. This is an intra-run session-reuse axis — fresh subprocess per turn vs. one thread for the life of an issue run — distinct from the stateless-vs-stateful [open question](problems/agent-architecture.md#open-questions) in agent-architecture.md, which is about cross-task/codebase memory, not multi-turn execution within a single run.
 3. *SSH worker extension (Appendix A).* Central orchestrator, remote worker hosts, host-as-part-of-run-identity, failover-on-startup-failure-only. One concrete answer to the Kubernetes-or-not question in [agent-infrastructure.md](problems/agent-infrastructure.md).
 4. *Token-accounting rules (Section 13.5).* Absolute-totals-not-deltas is small but correct.
 
@@ -616,7 +616,7 @@ All of these assume a central coordinator and cooperative inter-agent trust — 
 
 ### 7. Central scheduler daemon with a language-agnostic spec (OpenAI Symphony)
 
-A long-running orchestrator polls a tracker, claims issues, and dispatches isolated coding-agent runs. Forge, Gas City, and Kiro Crew all have a controller process; what Symphony adds is shipping the architecture as a conformance spec that a coding agent can reimplement. The trade-off is portability versus a single attack/failure target, and implementations that put scheduling judgment in the controller rather than in repo-visible rules. See [OpenAI Symphony](#openai-symphony).
+A long-running orchestrator polls a tracker, claims issues, and dispatches isolated coding-agent runs. Forge, Gas City, and Kiro Crew also have a controller process; Gas City's still forbids judgment in it (Zero Framework Cognition). Symphony's addition is shipping the architecture as a conformance spec that a coding agent can reimplement, at the cost of a cognitively active scheduler — the trade-off is portability versus a single attack/failure target and scheduling judgment landing in the controller rather than in repo-visible rules. See [OpenAI Symphony](#openai-symphony).
 
 ## What nobody is doing
 
