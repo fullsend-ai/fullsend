@@ -300,7 +300,9 @@ func TestStatusCFAccess_OIDCSuccess_BypassesCFAccess(t *testing.T) {
 	}
 
 	var resp statusResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if resp.Org != "test-org" {
 		t.Fatalf("expected OIDC org-scoped response, got org=%q", resp.Org)
 	}
