@@ -369,10 +369,11 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		cfg.runtime = choice
 	}
 	// Runtime resolution order: flag → existing config → preset.
-	// This intentionally differs from resolveEffectiveValue (flag →
-	// preset → code default) because on a re-run the existing config's
-	// runtime selection should be authoritative — a preset carrying a
-	// default runtime must not override an operator's explicit choice.
+	// This intentionally differs from the dual-write resolution order
+	// (flag → preset → code default) because on a re-run the existing
+	// config's runtime selection should be authoritative — a preset
+	// carrying a default runtime must not override an operator's
+	// explicit choice.
 	effectiveRuntime := cfg.runtime
 	if effectiveRuntime == "" && existingCfg != nil {
 		effectiveRuntime = existingCfg.ConfigRuntime()

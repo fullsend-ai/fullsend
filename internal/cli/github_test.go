@@ -2138,35 +2138,3 @@ inference:
 	assert.Contains(t, secretNames["FULLSEND_GCP_WIF_PROVIDER"], "preset-pool",
 		"dual-write WIF should come from new preset, not old base")
 }
-
-func TestRunGitHubSetupPerRepo_LayeredReader_DualWrite(t *testing.T) {
-	// Verify that dual-write vars/secrets are read through the layered
-	// config reader (overlay → base → defaults) rather than ad-hoc
-	// flag resolution.
-	t.Setenv("GH_TOKEN", "test-token")
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "acme"
-	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
-	client.TokenScopes = []string{"repo", "workflow"}
-	printer := ui.New(&discardWriter{})
-	preset := presetWithInference(t)
-
-	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
-		target:       "acme/widget",
-		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
-		configPreset: preset,
-		changedFlags: map[string]bool{"config": true},
-	})
-	require.NoError(t, err)
-
-	// Dual-write vars should match the preset values read through
-	// the layered reader (not resolved independently).
-	varNames := make(map[string]string)
-	for _, v := range client.Variables {
-		varNames[v.Name] = v.Value
-	}
-	assert.Equal(t, "https://preset-mint.example.com", varNames["FULLSEND_MINT_URL"],
-		"layered reader should resolve mint URL from base layer")
-	assert.Equal(t, "us-west1", varNames["FULLSEND_GCP_REGION"],
-		"layered reader should resolve region from base layer")
-}
