@@ -134,6 +134,9 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	// Deduplicate: build a set of existing skill names.
 	existing := make(map[string]bool, len(fm.Skills))
 	for _, s := range fm.Skills {
+		if !isValidSkillName(s) {
+			return nil, fmt.Errorf("invalid existing skill name %q: must match [a-zA-Z0-9._-]+", s)
+		}
 		existing[s] = true
 	}
 

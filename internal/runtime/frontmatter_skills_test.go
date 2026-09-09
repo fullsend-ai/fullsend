@@ -240,6 +240,15 @@ func TestInjectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
+func TestInjectFrontmatterSkills_FlowStyleRejectsUnsafeExistingName(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\"safe-skill\", \"unsafe: skill\"]\nmodel: opus\n---\nBody\n"
+	_, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid existing skill name")
+	assert.Contains(t, err.Error(), "unsafe: skill")
+}
+
 func TestInjectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills:\n  - skill-a\n  # A comment in the middle\n  - skill-b\nmodel: opus\n---\nBody\n"
