@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
@@ -265,6 +266,18 @@ func (d *cfmintMintDriver) Install(_ context.Context, org string) (string, error
 
 func (d *cfmintMintDriver) Teardown(_ context.Context) error {
 	return d.teardownPreview()
+}
+
+// CollectLogs queries the Cloudflare Workers Observability API for
+// trace events from this preview mint's Worker and writes them to
+// artifactDir. Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+// to be set; skips gracefully when credentials are unavailable.
+func (d *cfmintMintDriver) CollectLogs(ctx context.Context, since time.Time, artifactDir string) error {
+	collector := newCFWorkerLogCollector(d.logf)
+	if collector == nil {
+		return nil // credentials unavailable; already logged
+	}
+	return collector.Collect(ctx, d.workerName, since, artifactDir)
 }
 
 // deployCFMint deploys a Cloudflare Worker preview mint and returns the

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
@@ -71,5 +72,11 @@ func (d *externalMintDriver) Install(_ context.Context, _ string) (string, error
 
 func (d *externalMintDriver) Teardown(_ context.Context) error {
 	// The external mint driver has no mint infrastructure to tear down.
+	return nil
+}
+
+// CollectLogs is a no-op for external mints. The driver does not manage
+// the mint infrastructure and has no log collection mechanism.
+func (d *externalMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
 	return nil
 }

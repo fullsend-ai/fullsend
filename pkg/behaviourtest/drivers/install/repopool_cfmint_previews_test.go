@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -309,6 +310,7 @@ type testCFMintMintDriver struct {
 	installMintURL string
 	installErr     error
 	teardownErr    error
+	collectLogsErr error
 }
 
 func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (string, error) {
@@ -317,6 +319,10 @@ func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (string, err
 
 func (m *testCFMintMintDriver) Teardown(_ context.Context) error {
 	return m.teardownErr
+}
+
+func (m *testCFMintMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
+	return m.collectLogsErr
 }
 
 func TestBuildCFMintDriver_HappyPath(t *testing.T) {
@@ -460,6 +466,33 @@ func TestEnvAppSet_Default(t *testing.T) {
 func TestEnvAppSet_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_APP_SET", "my-app-set")
 	assert.Equal(t, "my-app-set", envAppSet())
+}
+
+func TestCFMintCollectLogs_NoCFCredentials(t *testing.T) {
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+
+	d := newTestCFMintDriver(nil)
+	d.workerName = "bt-mint"
+
+	// Should return nil (graceful skip) when credentials are unavailable.
+	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), t.TempDir())
+	require.NoError(t, err)
+}
+
+func TestCFMintCollectLogs_WithCredentials(t *testing.T) {
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	d := newTestCFMintDriver(nil)
+	d.workerName = "bt-mint"
+	d.logf = t.Logf
+
+	artifactDir := t.TempDir()
+	// Will fail because there's no real CF API, but should attempt the call.
+	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), artifactDir)
+	// Error is expected since we're hitting the real CF API without a valid token.
+	assert.Error(t, err)
 }
 
 // --- NewRepoPoolCFMintPreviews factory tests ---

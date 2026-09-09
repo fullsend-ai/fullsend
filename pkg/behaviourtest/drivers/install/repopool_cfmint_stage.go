@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
@@ -231,5 +232,13 @@ func (d *stageMintMintDriver) Install(_ context.Context, _ string) (string, erro
 // across runs; only preview aliases are torn down.
 func (d *stageMintMintDriver) Teardown(_ context.Context) error {
 	d.logf("[stage-cfmint] teardown is a no-op for the durable stage mint")
+	return nil
+}
+
+// CollectLogs is a no-op for the durable stage mint. The stage mint is
+// a shared/central resource; its logs are collected via distributed
+// tracing rather than per-suite log capture.
+func (d *stageMintMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
+	d.logf("[stage-cfmint] mint log collection skipped: stage mint uses distributed tracing")
 	return nil
 }

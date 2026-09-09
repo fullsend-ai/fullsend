@@ -15,8 +15,10 @@ import (
 
 // fakeMintDriver is a test double for mintDriver.
 type fakeMintDriver struct {
-	teardownCalled bool
-	teardownErr    error
+	teardownCalled    bool
+	teardownErr       error
+	collectLogsCalled bool
+	collectLogsErr    error
 }
 
 func (f *fakeMintDriver) Install(_ context.Context, _ string) (string, error) {
@@ -26,6 +28,11 @@ func (f *fakeMintDriver) Install(_ context.Context, _ string) (string, error) {
 func (f *fakeMintDriver) Teardown(_ context.Context) error {
 	f.teardownCalled = true
 	return f.teardownErr
+}
+
+func (f *fakeMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
+	f.collectLogsCalled = true
+	return f.collectLogsErr
 }
 
 func TestNewComposedDriver_OK(t *testing.T) {
@@ -246,6 +253,147 @@ func TestComposedDriver_ConcurrentAllocateDeallocate(t *testing.T) {
 	// All names should be back in the pool.
 	err = d.Finalize(ctx)
 	require.NoError(t, err, "no outstanding leases after all deallocations")
+}
+
+func TestComposedDriver_FinalizeCollectsLogs(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	mint := &fakeMintDriver{}
+	e := newFakeEnsurer()
+
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	require.NoError(t, err)
+
+	err = d.Finalize(context.Background())
+	require.NoError(t, err)
+	assert.True(t, mint.collectLogsCalled, "CollectLogs should be called during Finalize")
+	assert.True(t, mint.teardownCalled, "Teardown should still be called")
+}
+
+func TestComposedDriver_FinalizeSkipsLogsWhenArtifactDirUnset(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", "")
+
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	mint := &fakeMintDriver{}
+	e := newFakeEnsurer()
+
+	d, err := newComposedDriver("org", mint, e, 2, logf)
+	require.NoError(t, err)
+
+	err = d.Finalize(context.Background())
+	require.NoError(t, err)
+	assert.False(t, mint.collectLogsCalled, "CollectLogs should not be called when BEHAVIOUR_ARTIFACT_DIR is unset")
+	assert.True(t, mint.teardownCalled, "Teardown should still be called")
+
+	// Should log the skip reason.
+	found := false
+	for _, l := range logged {
+		if assert.ObjectsAreEqual("match", "match") { // always true, just iterate
+			if len(l) > 0 && (contains(l, "BEHAVIOUR_ARTIFACT_DIR unset") || contains(l, "skipping mint log collection")) {
+				found = true
+				break
+			}
+		}
+	}
+	assert.True(t, found, "should log that artifact dir is unset")
+}
+
+func TestComposedDriver_FinalizeLogCollectionErrorDoesNotFail(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	mint := &fakeMintDriver{collectLogsErr: fmt.Errorf("log collection exploded")}
+	e := newFakeEnsurer()
+
+	d, err := newComposedDriver("org", mint, e, 2, logf)
+	require.NoError(t, err)
+
+	// Finalize should NOT return the log collection error.
+	err = d.Finalize(context.Background())
+	require.NoError(t, err)
+	assert.True(t, mint.collectLogsCalled, "CollectLogs should be called")
+	assert.True(t, mint.teardownCalled, "Teardown should still be called after log error")
+
+	// The error should be logged.
+	found := false
+	for _, l := range logged {
+		if contains(l, "log collection exploded") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "log collection error should be logged")
+}
+
+func TestComposedDriver_FinalizeCollectsLogsBeforeTeardown(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	// Track the order of operations.
+	var ops []string
+	mint := &orderTrackingMintDriver{ops: &ops}
+	e := newFakeEnsurer()
+
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	require.NoError(t, err)
+
+	err = d.Finalize(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, ops, 2, "both CollectLogs and Teardown should be called")
+	assert.Equal(t, "CollectLogs", ops[0], "CollectLogs should be called first")
+	assert.Equal(t, "Teardown", ops[1], "Teardown should be called second")
+}
+
+// orderTrackingMintDriver records the order of method calls.
+type orderTrackingMintDriver struct {
+	ops *[]string
+}
+
+func (m *orderTrackingMintDriver) Install(_ context.Context, _ string) (string, error) {
+	return "https://mint.test", nil
+}
+
+func (m *orderTrackingMintDriver) Teardown(_ context.Context) error {
+	*m.ops = append(*m.ops, "Teardown")
+	return nil
+}
+
+func (m *orderTrackingMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
+	*m.ops = append(*m.ops, "CollectLogs")
+	return nil
+}
+
+func TestComposedDriver_SuiteStartIsRecorded(t *testing.T) {
+	before := time.Now()
+	e := newFakeEnsurer()
+	d, err := newComposedDriver("org", &fakeMintDriver{}, e, 2, t.Logf)
+	after := time.Now()
+	require.NoError(t, err)
+
+	cd := d.(*composedDriver)
+	assert.False(t, cd.suiteStart.IsZero(), "suiteStart should be set")
+	assert.True(t, !cd.suiteStart.Before(before), "suiteStart should be >= before")
+	assert.True(t, !cd.suiteStart.After(after), "suiteStart should be <= after")
+}
+
+// contains is a simple helper for string containment checks in test loops.
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		findSubstring(s, substr))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // failingEnsurer always returns an error.

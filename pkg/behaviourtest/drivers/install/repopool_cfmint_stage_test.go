@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -237,6 +238,18 @@ func TestNewRepoPoolCFMintStage_NoPEMs_FailsEarly(t *testing.T) {
 	_, err := NewRepoPoolCFMintStage(StageOrg, nil, "tok", "/bin/fullsend", "proj", t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
+}
+
+func TestStageMintCollectLogs_IsNoOp(t *testing.T) {
+	var logged []string
+	d := newTestStageMintDriver(nil)
+	d.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), t.TempDir())
+	require.NoError(t, err)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "distributed tracing")
 }
 
 func TestStageConstants(t *testing.T) {

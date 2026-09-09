@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +22,13 @@ func TestExternalMintTeardown_IsNoOp(t *testing.T) {
 
 	// Teardown should succeed and be a no-op.
 	err := d.Teardown(context.Background())
+	require.NoError(t, err)
+}
+
+func TestExternalMintCollectLogs_IsNoOp(t *testing.T) {
+	d := &externalMintDriver{mintURL: "https://mint.test"}
+
+	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), t.TempDir())
 	require.NoError(t, err)
 }
 
