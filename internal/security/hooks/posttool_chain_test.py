@@ -158,6 +158,13 @@ class TestPostToolChain(unittest.TestCase):
         self.assertNotIn("ghp_FAKEtest", result)
         self.assertIn("...", result)
 
+    def test_nfkc_reconstructed_csi_stripped_by_chain(self):
+        # #445: adjacent ESC + fullwidth brackets reconstruct CSI after NFKC.
+        payload = "~\x1b\x1b\uff3b\uff3b\uff3b\uff3b"
+        result = run_chain(payload)
+        self.assertEqual(result, "~")
+        self.assertNotIn("\x1b", result)
+
     def test_piped_legacy_order_still_redacts(self):
         obfuscated = obfuscate_with_char(PLAIN_PAT, "\u200c")
         result = run_piped_chain(obfuscated)

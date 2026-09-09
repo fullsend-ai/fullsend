@@ -11,6 +11,7 @@ import (
 
 func TestUnicodeNormalizer(t *testing.T) {
 	n := NewUnicodeNormalizer()
+	assert.Equal(t, "unicode_normalizer", n.Name())
 
 	t.Run("clean text unchanged", func(t *testing.T) {
 		r := n.Scan("This is normal text.")
@@ -55,6 +56,124 @@ func TestUnicodeNormalizer(t *testing.T) {
 		r := n.Scan("normal \x1b[31mred\x1b[0m text")
 		assert.False(t, r.Safe)
 		assert.Equal(t, "normal red text", r.Sanitized)
+	})
+
+	t.Run("adjacent ESC CSI reconstructed after one pass", func(t *testing.T) {
+		// Two ESC + four ASCII brackets: one non-overlapping CSI match
+		// leaves ESC [[, itself a CSI. The fixpoint must consume both.
+		r := n.Scan("~\x1b\x1b[[[[")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "~", r.Sanitized)
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.True(t, hasFinding(r, "ansi_escape"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("NFKC reconstructs CSI from fullwidth brackets", func(t *testing.T) {
+		// Reported #445 case: two ESC + four fullwidth "[" (U+FF3B).
+		r := n.Scan("~\x1b\x1b\uff3b\uff3b\uff3b\uff3b")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "~", r.Sanitized)
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.True(t, hasFinding(r, "ansi_escape"))
+		assert.True(t, hasFinding(r, "fullwidth"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("NFKC reconstructs OSC from fullwidth bracket", func(t *testing.T) {
+		r := n.Scan("before\x1b\uff3d8;;http://evil.com\x07after")
+		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "evil.com")
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.True(t, hasFinding(r, "osc_escape"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("zero-width between ESC and CSI stripped at fixpoint", func(t *testing.T) {
+		r := n.Scan("pre\x1b\u200b[31mred")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "prered", r.Sanitized)
+		assert.True(t, hasFinding(r, "zero_width"))
+		assert.True(t, hasFinding(r, "ansi_escape"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("unterminated CSI is not a recognized sequence", func(t *testing.T) {
+		// No final byte in 0x40-0x7e, so this is not a CSI match.
+		r := n.Scan("ok\x1b[31")
+		assert.Contains(t, r.Sanitized, "ok")
+		assert.False(t, reANSI.MatchString(r.Sanitized))
+	})
+
+	t.Run("unterminated OSC is not a recognized sequence", func(t *testing.T) {
+		r := n.Scan("ok\x1b]8;;http://evil.com")
+		assert.Contains(t, r.Sanitized, "ok")
+		assert.False(t, reSTTerminated.MatchString(r.Sanitized))
+	})
+
+	t.Run("tag payload bounded in findings not in sanitized text", func(t *testing.T) {
+		hidden := strings.Repeat("A", 250)
+		var payload strings.Builder
+		payload.WriteString("clean")
+		for _, c := range hidden {
+			payload.WriteRune(rune(c) + 0xE0000)
+		}
+		r := n.Scan(payload.String())
+		assert.Equal(t, "clean", r.Sanitized)
+		assert.NotContains(t, r.Sanitized, "A")
+		require.True(t, hasFinding(r, "tag_char"))
+		for _, f := range r.Findings {
+			if f.Name == "tag_char" {
+				assert.Contains(t, f.Detail, "decoded hidden text")
+				assert.Contains(t, f.Detail, "...")
+				assert.LessOrEqual(t, len(f.Detail), 200+len(" (decoded hidden text: ...)")+len("250 tag characters removed")+10)
+			}
+		}
+	})
+
+	t.Run("mixed reconstructed CSI and tag chars all stripped", func(t *testing.T) {
+		r := n.Scan("\x1b\uff3b31m\U000E0048idden")
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.NotContains(t, r.Sanitized, "\U000E0048")
+		assert.True(t, hasFinding(r, "tag_char"))
+		assert.True(t, hasFinding(r, "ansi_escape"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("BMP variation selectors removed", func(t *testing.T) {
+		r := n.Scan("test\ufe0fdata")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "testdata", r.Sanitized)
+		assert.True(t, hasFinding(r, "variation_selector"))
+	})
+
+	t.Run("supplementary variation selectors removed", func(t *testing.T) {
+		r := n.Scan("a\U000E0100b")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "ab", r.Sanitized)
+		assert.True(t, hasFinding(r, "variation_selector"))
+	})
+
+	t.Run("remaining Cf format characters removed", func(t *testing.T) {
+		// U+110BD is Cf but not in the zero-width regex.
+		r := n.Scan("a\U000110BDb")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "ab", r.Sanitized)
+		assert.True(t, hasFinding(r, "zero_width"))
+	})
+
+	t.Run("NFKC expands ligature", func(t *testing.T) {
+		r := n.Scan("\ufb01le")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "file", r.Sanitized)
+		assert.True(t, hasFinding(r, "fullwidth"))
+	})
+
+	t.Run("NFKC composes combining mark", func(t *testing.T) {
+		r := n.Scan("e\u0301")
+		assert.False(t, r.Safe)
+		assert.Equal(t, "\u00e9", r.Sanitized)
+		assert.True(t, hasFinding(r, "fullwidth"))
 	})
 }
 
@@ -553,6 +672,19 @@ func hasFinding(r ScanResult, name string) bool {
 		}
 	}
 	return false
+}
+
+func assertNoRecognizedPayload(t *testing.T, text string) {
+	t.Helper()
+	assert.False(t, reANSI.MatchString(text), "CSI remains in %q", text)
+	assert.False(t, reSTTerminated.MatchString(text), "OSC remains in %q", text)
+	assert.False(t, reZeroWidth.MatchString(text), "zero-width remains in %q", text)
+	assert.False(t, reBidi.MatchString(text), "bidi remains in %q", text)
+	assert.False(t, reNull.MatchString(text), "NUL remains in %q", text)
+	for _, r := range text {
+		assert.False(t, r >= 0xE0000 && r <= 0xE007F, "tag char remains")
+		assert.False(t, r == 0, "NUL rune remains")
+	}
 }
 
 // unresolvableTestHost is a hostname guaranteed not to resolve, used across

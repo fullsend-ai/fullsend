@@ -13,6 +13,11 @@ import (
 // UnicodeNormalizer strips invisible Unicode characters and normalizes
 // fullwidth characters to prevent command obfuscation and hidden payload
 // injection. Adapted from Hermes Agent's approval.py.
+//
+// Control-character stripping runs to a fixpoint before and after NFKC so
+// a single non-overlapping substitution cannot leave a newly adjacent
+// CSI/OSC sequence (or any other recognized control/invisible payload)
+// in the emitted text. See #445.
 type UnicodeNormalizer struct{}
 
 // NewUnicodeNormalizer creates a UnicodeNormalizer.
@@ -21,6 +26,16 @@ func NewUnicodeNormalizer() *UnicodeNormalizer {
 }
 
 func (u *UnicodeNormalizer) Name() string { return "unicode_normalizer" }
+
+const (
+	// maxSanitizePasses bounds the strip fixpoint. Each pass strictly
+	// shortens the string when it matches, so this is defense in depth
+	// against a pathological input of adjacent reconstructed sequences.
+	maxSanitizePasses = 64
+	// maxDecodedLog bounds tag-character payloads recorded in findings.
+	// Decoded hidden text never enters Sanitized output.
+	maxDecodedLog = 200
+)
 
 var (
 	// Zero-width and invisible format characters (aligned with unicode_posttool.py).
@@ -61,74 +76,63 @@ func stripTerminalEscapes(text string) (string, int, int) {
 	return current, ansiCount, stCount
 }
 
-func (u *UnicodeNormalizer) Scan(text string) ScanResult {
-	result := ScanResult{Safe: true, Sanitized: text}
+func countRunesInMatches(text string, locs [][]int) int {
+	count := 0
+	for _, loc := range locs {
+		count += utf8.RuneCountInString(text[loc[0]:loc[1]])
+	}
+	return count
+}
+
+func appendFinding(findings []Finding, name, severity, detail, suffix string) []Finding {
+	return append(findings, Finding{
+		Scanner:  "unicode_normalizer",
+		Name:     name,
+		Severity: severity,
+		Detail:   detail + suffix,
+	})
+}
+
+// stripControlCharacters removes one pass of every control/invisible
+// category (null, ANSI/OSC, zero-width, bidi, tag, variation selectors,
+// remaining Cf). It does not apply NFKC.
+func stripControlCharacters(text, detailSuffix string) (string, []Finding) {
 	current := text
 	var findings []Finding
 
-	// Null bytes
 	if locs := reNull.FindAllStringIndex(current, -1); len(locs) > 0 {
 		count := 0
 		for _, loc := range locs {
 			count += loc[1] - loc[0]
 		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "null_byte",
-			Severity: "high",
-			Detail:   fmt.Sprintf("%d null bytes removed", count),
-		})
+		findings = appendFinding(findings, "null_byte", "high",
+			fmt.Sprintf("%d null bytes removed", count), detailSuffix)
 		current = reNull.ReplaceAllString(current, "")
 	}
 
-	// ANSI and ST-terminated escapes (OSC, DCS, APC, PM).
 	if stripped, ansiCount, stCount := stripTerminalEscapes(current); ansiCount > 0 || stCount > 0 {
 		if ansiCount > 0 {
-			findings = append(findings, Finding{
-				Scanner:  "unicode_normalizer",
-				Name:     "ansi_escape",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%d ANSI escape sequences removed", ansiCount),
-			})
+			findings = appendFinding(findings, "ansi_escape", "medium",
+				fmt.Sprintf("%d ANSI escape sequences removed", ansiCount), detailSuffix)
 		}
 		if stCount > 0 {
-			findings = append(findings, Finding{
-				Scanner:  "unicode_normalizer",
-				Name:     "osc_escape",
-				Severity: "medium",
-				Detail:   fmt.Sprintf("%d ST-terminated escape sequences removed", stCount),
-			})
+			findings = appendFinding(findings, "osc_escape", "medium",
+				fmt.Sprintf("%d ST-terminated escape sequences removed", stCount), detailSuffix)
 		}
 		current = stripped
 	}
 
-	// Zero-width characters
 	if locs := reZeroWidth.FindAllStringIndex(current, -1); len(locs) > 0 {
-		count := 0
-		for _, loc := range locs {
-			count += utf8.RuneCountInString(current[loc[0]:loc[1]])
-		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "zero_width",
-			Severity: "high",
-			Detail:   fmt.Sprintf("%d zero-width characters removed", count),
-		})
+		count := countRunesInMatches(current, locs)
+		findings = appendFinding(findings, "zero_width", "high",
+			fmt.Sprintf("%d zero-width characters removed", count), detailSuffix)
 		current = reZeroWidth.ReplaceAllString(current, "")
 	}
 
-	// Bidirectional overrides
 	if locs := reBidi.FindAllStringIndex(current, -1); len(locs) > 0 {
-		count := 0
-		for _, loc := range locs {
-			count += utf8.RuneCountInString(current[loc[0]:loc[1]])
-		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "bidi_override",
-			Severity: "high",
-			Detail:   fmt.Sprintf("%d bidirectional override characters removed", count),
-		})
+		count := countRunesInMatches(current, locs)
+		findings = appendFinding(findings, "bidi_override", "high",
+			fmt.Sprintf("%d bidirectional override characters removed", count), detailSuffix)
 		current = reBidi.ReplaceAllString(current, "")
 	}
 
@@ -148,33 +152,22 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 	if tagCount > 0 {
 		detail := fmt.Sprintf("%d tag characters removed", tagCount)
 		if d := decoded.String(); strings.TrimSpace(d) != "" {
+			if len(d) > maxDecodedLog {
+				d = d[:maxDecodedLog] + "..."
+			}
 			detail += fmt.Sprintf(" (decoded hidden text: %s)", d)
 		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "tag_char",
-			Severity: "critical",
-			Detail:   detail,
-		})
+		findings = appendFinding(findings, "tag_char", "critical", detail, detailSuffix)
 		current = tagStripped.String()
 	}
 
-	// BMP variation selectors (VS1-VS16)
 	if locs := reVariation.FindAllStringIndex(current, -1); len(locs) > 0 {
-		count := 0
-		for _, loc := range locs {
-			count += utf8.RuneCountInString(current[loc[0]:loc[1]])
-		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "variation_selector",
-			Severity: "medium",
-			Detail:   fmt.Sprintf("%d variation selectors removed", count),
-		})
+		count := countRunesInMatches(current, locs)
+		findings = appendFinding(findings, "variation_selector", "medium",
+			fmt.Sprintf("%d variation selectors removed", count), detailSuffix)
 		current = reVariation.ReplaceAllString(current, "")
 	}
 
-	// Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF).
 	var suppVSStripped strings.Builder
 	suppVSCount := 0
 	for _, r := range current {
@@ -185,16 +178,11 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 		}
 	}
 	if suppVSCount > 0 {
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "variation_selector",
-			Severity: "medium",
-			Detail:   fmt.Sprintf("%d supplementary variation selectors removed", suppVSCount),
-		})
+		findings = appendFinding(findings, "variation_selector", "medium",
+			fmt.Sprintf("%d supplementary variation selectors removed", suppVSCount), detailSuffix)
 		current = suppVSStripped.String()
 	}
 
-	// Remaining Cf (format) category characters (e.g. U+061C Arabic Letter Mark).
 	var cfStripped strings.Builder
 	cfCount := 0
 	for _, r := range current {
@@ -205,68 +193,75 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 		}
 	}
 	if cfCount > 0 {
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "zero_width",
-			Severity: "high",
-			Detail:   fmt.Sprintf("%d format (Cf) characters removed", cfCount),
-		})
+		findings = appendFinding(findings, "zero_width", "high",
+			fmt.Sprintf("%d format (Cf) characters removed", cfCount), detailSuffix)
 		current = cfStripped.String()
 	}
+
+	return current, findings
+}
+
+// stripUntilStable repeats stripControlCharacters until the text stops
+// changing or maxSanitizePasses is reached. A single regexp substitution
+// is non-overlapping, so ESC ESC [[[[ becomes ESC [[ after one pass —
+// itself a CSI sequence that a second pass must remove.
+func stripUntilStable(text, detailSuffix string) (string, []Finding) {
+	current := text
+	var findings []Finding
+	for range maxSanitizePasses {
+		next, extra := stripControlCharacters(current, detailSuffix)
+		findings = append(findings, extra...)
+		if next == current {
+			break
+		}
+		current = next
+	}
+	return current, findings
+}
+
+func nfkcDiffCount(original, nfkc string) int {
+	origRunes := []rune(original)
+	nfkcRunes := []rune(nfkc)
+	diffCount := 0
+	minLen := len(origRunes)
+	if len(nfkcRunes) < minLen {
+		minLen = len(nfkcRunes)
+	}
+	for i := 0; i < minLen; i++ {
+		if origRunes[i] != nfkcRunes[i] {
+			diffCount++
+		}
+	}
+	lenDiff := len(origRunes) - len(nfkcRunes)
+	if lenDiff < 0 {
+		lenDiff = -lenDiff
+	}
+	diffCount += lenDiff
+	if diffCount == 0 {
+		diffCount = 1
+	}
+	return diffCount
+}
+
+func (u *UnicodeNormalizer) Scan(text string) ScanResult {
+	result := ScanResult{Safe: true, Sanitized: text}
+
+	current, findings := stripUntilStable(text, "")
 
 	// NFKC normalization (fullwidth -> ASCII, compatibility decomposition)
 	nfkc := norm.NFKC.String(current)
 	if nfkc != current {
-		// Count differing runes by iterating both strings simultaneously.
-		origRunes := []rune(current)
-		nfkcRunes := []rune(nfkc)
-		diffCount := 0
-		minLen := len(origRunes)
-		if len(nfkcRunes) < minLen {
-			minLen = len(nfkcRunes)
-		}
-		for i := 0; i < minLen; i++ {
-			if origRunes[i] != nfkcRunes[i] {
-				diffCount++
-			}
-		}
-		// Account for length difference.
-		lenDiff := len(origRunes) - len(nfkcRunes)
-		if lenDiff < 0 {
-			lenDiff = -lenDiff
-		}
-		diffCount += lenDiff
-		if diffCount == 0 {
-			diffCount = 1
-		}
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "fullwidth",
-			Severity: "high",
-			Detail:   fmt.Sprintf("NFKC normalization applied (%d characters affected)", diffCount),
-		})
+		findings = appendFinding(findings, "fullwidth", "high",
+			fmt.Sprintf("NFKC normalization applied (%d characters affected)", nfkcDiffCount(current, nfkc)), "")
 		current = nfkc
 
-		// NFKC can reconstruct escape sequences from fullwidth characters.
-		if stripped, ansiCount, stCount := stripTerminalEscapes(current); ansiCount > 0 || stCount > 0 {
-			if ansiCount > 0 {
-				findings = append(findings, Finding{
-					Scanner:  "unicode_normalizer",
-					Name:     "ansi_escape",
-					Severity: "medium",
-					Detail:   fmt.Sprintf("%d ANSI escape sequences removed (post-NFKC)", ansiCount),
-				})
-			}
-			if stCount > 0 {
-				findings = append(findings, Finding{
-					Scanner:  "unicode_normalizer",
-					Name:     "osc_escape",
-					Severity: "medium",
-					Detail:   fmt.Sprintf("%d ST-terminated escape sequences removed (post-NFKC)", stCount),
-				})
-			}
-			current = stripped
-		}
+		// NFKC can reconstruct control sequences from fullwidth
+		// characters (ESC + U+FF3B → CSI). Re-check every category to
+		// a fixpoint so the last scan cannot leave a reconstructed
+		// payload in the emitted text.
+		stripped, extra := stripUntilStable(current, " (post-NFKC)")
+		findings = append(findings, extra...)
+		current = stripped
 	}
 
 	result.Findings = findings

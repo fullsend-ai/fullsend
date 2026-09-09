@@ -29,6 +29,9 @@ import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
+# Bound the strip fixpoint. Each pass strictly shortens on a match; this
+# caps pathological adjacent reconstructed sequences (see #445).
+MAX_SANITIZE_PASSES = 64
 
 # --- Unicode categories to detect ---
 # Aligned with Go UnicodeNormalizer (internal/security/unicode.go).
@@ -114,7 +117,8 @@ def decode_tag_chars(text: str) -> str:
     return decoded
 
 
-def scan_text(text: str) -> tuple[str, list[dict]]:
+def _sanitize_pass(text: str) -> tuple[str, list[dict]]:
+    """Apply every control/invisible category once. Does not NFKC."""
     findings: list[dict] = []
     result = text
 
@@ -166,12 +170,36 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
         )
         result = _SUPP_VS_STRIP_RE.sub("", result)
 
+    return result, findings
+
+
+def _sanitize_fixpoint(text: str) -> tuple[str, list[dict]]:
+    """Repeat _sanitize_pass until unchanged.
+
+    A single ``pattern.sub`` is non-overlapping, so ESC ESC [[[[ becomes
+    ESC [[ after one pass — itself a CSI sequence a second pass must remove.
+    """
+    findings: list[dict] = []
+    result = text
+    for _ in range(MAX_SANITIZE_PASSES):
+        nxt, extra = _sanitize_pass(result)
+        findings.extend(extra)
+        if nxt == result:
+            return result, findings
+        result = nxt
+    return result, findings
+
+
+def scan_text(text: str) -> tuple[str, list[dict]]:
+    result, findings = _sanitize_fixpoint(text)
+
     # Compatibility characters (fullwidth, ligatures, vulgar fractions) are
     # reported but kept: NFKC-rewriting a Read result hands the agent file
     # content that is not on disk (CJK punctuation, "ﬁ" → "fi"), and every
     # Edit it then composes misses. Detection that depends on the normalized
     # form (canary, secret patterns) runs on a normalized *copy* in the chain
-    # driver. The one rewrite kept is the escape-reassembly case below.
+    # driver. The one rewrite kept is reconstructed control/invisible payload
+    # below: the fullwidth form was a delivery vehicle, not content.
     nfkc = unicodedata.normalize("NFKC", result)
     if nfkc != result:
         diff_count = sum(1 for a, b in zip(result, nfkc, strict=False) if a != b)
@@ -187,29 +215,16 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
             }
         )
 
-        # NFKC can reconstruct escape sequences from fullwidth characters
-        # (ESC + fullwidth "[" → a valid CSI once normalized downstream).
-        for name, severity, pattern in _CHECKS:
-            if name not in ("ansi_escape", "osc_escape"):
-                continue
-            matches = pattern.findall(nfkc)
-            if not matches or "\x1b" not in result:
-                continue
-            total_chars = sum(len(m) for m in matches)
-            findings.append(
-                {
-                    "name": name,
-                    "severity": severity,
-                    "detail": (
-                        f"{total_chars} {name.replace('_', ' ')} character(s) "
-                        "removed (reassembled by NFKC; field normalized)"
-                    ),
-                }
-            )
-            # Attack case only: emit the normalized field with the sequence
-            # removed (the fullwidth form was a delivery vehicle, not content).
-            result = pattern.sub("", nfkc)
-            nfkc = result
+        # NFKC can reconstruct control sequences from fullwidth characters
+        # (ESC + fullwidth "[" → a valid CSI). Re-check every category to a
+        # fixpoint so the last scan cannot leave a reconstructed payload in
+        # the emitted field.
+        nfkc_stripped, nfkc_findings = _sanitize_fixpoint(nfkc)
+        if nfkc_findings:
+            for f in nfkc_findings:
+                f["detail"] += " (reassembled by NFKC; field normalized)"
+            findings.extend(nfkc_findings)
+            result = nfkc_stripped
 
     return result, findings
 

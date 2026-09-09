@@ -2760,6 +2760,13 @@ func TestSanitizeFeedbackUnicode(t *testing.T) {
 		assert.Greater(t, count, 0)
 	})
 
+	t.Run("strips NFKC-reconstructed CSI", func(t *testing.T) {
+		text, count := sanitizeFeedbackUnicode("~\x1b\x1b\uff3b\uff3b\uff3b\uff3b")
+		assert.Equal(t, "~", text)
+		assert.NotContains(t, text, "\x1b")
+		assert.Greater(t, count, 0)
+	})
+
 	t.Run("strips null bytes", func(t *testing.T) {
 		text, count := sanitizeFeedbackUnicode("hello\x00world")
 		assert.NotContains(t, text, "\x00")
