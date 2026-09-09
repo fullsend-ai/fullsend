@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fullsend.sh/schemas/entity-context/v1/index.schema.json",
-  "title": "Fullsend entity-context index v1",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/index.schema.json",
+  "title": "EntityContextIndex",
   "type": "object",
   "required": ["schema_version", "filter_version", "collection_profile", "source", "entity", "files", "records", "gaps"],
   "properties": {

@@ -166,13 +166,13 @@ line endings, have no byte-order mark, and end in exactly one LF. The pipeline
 applies size bounds, Unicode safety normalization, secret/sensitive-data
 redaction, and injection scanning in that order. `filter.status` is:
 
-All attacker-controlled strings in JSON metadata pass through the same pipeline
-before canonical serialization.
-
 - `unchanged`: emitted bytes equal normalized source bytes;
 - `modified`: one or more replacements or redactions were applied;
 - `truncated`: a size bound removed source bytes, whether or not other filters also changed them;
 - `rejected`: no content file is emitted because the source could not be represented safely.
+
+All attacker-controlled strings in JSON metadata pass through the same pipeline
+before canonical serialization.
 
 Every emitted file has a manifest `sha256` over its emitted bytes. A rejected
 source has a record but no content path or file entry.
@@ -213,7 +213,8 @@ cleanup errors, but never entity bodies, comment/review bodies, or logs.
 ## Compatibility
 
 Consumers must reject an unsupported `schema_version` or `filter_version`; they
-must ignore unknown object properties within v1. Adding an optional record kind
-or property is compatible. Changing existing path derivation, canonical bytes,
-required fields, field meaning, or ordering requires
+must validate every document against the v1 schemas. The schemas are closed:
+adding a property, record kind, enum value, or status is a breaking change.
+Changing path derivation, canonical bytes, required fields, field meaning, or
+ordering likewise requires
 `docs/normative/entity-context/v2/` and a superseding ADR.

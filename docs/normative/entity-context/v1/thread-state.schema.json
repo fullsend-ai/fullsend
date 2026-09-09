@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fullsend.sh/schemas/entity-context/v1/thread-state.schema.json",
-  "title": "Fullsend entity-context thread state v1",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/thread-state.schema.json",
+  "title": "ThreadState",
   "type": "object",
   "required": ["threads"],
   "properties": {
