@@ -411,7 +411,7 @@ func TestProjectNumberInputsAreOptional(t *testing.T) {
 
 	// Verify the prioritize job uses it (ADR 62: env var, not with:).
 	s := string(content)
-	assert.True(t, strings.Contains(s, "PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}"),
+	assert.Contains(t, s, "PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}",
 		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
 }
 
