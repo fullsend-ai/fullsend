@@ -5,7 +5,7 @@ description: >
   Tuesday-to-Tuesday recap, forum-host talk-track notes, or copy-paste
   HTML of shipped changes for users. Also use when the user says what's
   new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open /tmp/fullsend-whats-new-*), Bash(open /tmp/fullsend-whats-new-*)
+allowed-tools: Read, Write, Grep, Glob, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open /tmp/fullsend-whats-new-*), Bash(open /tmp/fullsend-whats-new-*)
 ---
 
 # User forum What's New
