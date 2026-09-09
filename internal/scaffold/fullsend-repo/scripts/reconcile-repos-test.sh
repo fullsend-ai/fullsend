@@ -603,7 +603,7 @@ echo "PASS: missing onboard branch cleanup is idempotent"
 # A failed PR close now falls through to an explicit branch delete. When the
 # branch is deletable, the repo still reconciles: the branch is removed (which
 # closes the PR on GitHub) rather than being left behind on a partial failure.
-rm -f "${TMPDIR}/branch-absent" "${TMPDIR}/branch-delete-fails" "${TMPDIR}/branch-delete-404"
+rm -f "${TMPDIR}/branch-absent" "${TMPDIR}/branch-delete-fails"
 touch "${TMPDIR}/stale-onboard-pr" "${TMPDIR}/cleanup-fails"
 rm -f "${GH_LOG}"
 
