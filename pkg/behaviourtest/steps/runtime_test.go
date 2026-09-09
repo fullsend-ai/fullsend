@@ -94,7 +94,7 @@ func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {
 	t.Parallel()
 	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
-	err := givenRepositoryRuntime(w, "opencode")
+	err := givenRepositoryRuntime(w, "nonexistent")
 	require.ErrorContains(t, err, "not one of")
 	assert.False(t, scmDriver.commitFileCalled, "nothing committed for an unknown runtime")
 	assert.False(t, w.RuntimeOverridden)
@@ -250,7 +250,7 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 
 func TestGivenRepositoryAgentSettings_RejectsWhatTheRunnerWouldReject(t *testing.T) {
 	t.Parallel()
-	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: opencode\n", "triage:\n  effort: turbo\n", ""} {
+	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", ""} {
 		scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 		err := givenRepositoryAgentSettings(w, doc)

@@ -836,7 +836,7 @@ func TestSetDefault_Runtime(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "runtime: pi")
 
-	err = SetDefault(path, "defaults.runtime", "opencode")
+	err = SetDefault(path, "defaults.runtime", "nonexistent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid runtime")
 

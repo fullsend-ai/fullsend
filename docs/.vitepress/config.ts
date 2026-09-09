@@ -246,6 +246,7 @@ export default defineConfig({
             { text: "Claude Code", link: "/runtimes/claude" },
             { text: "Pi", link: "/runtimes/pi" },
             { text: "Codex", link: "/runtimes/codex" },
+            { text: "OpenCode", link: "/runtimes/opencode" },
           ],
         },
         {

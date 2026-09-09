@@ -314,12 +314,12 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
-// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464)
-// and "codex" (#6920) are both opt-in per repo, per agent, or as a
-// repos.yaml default;
-// "dummy" and "dummy-playback" are for behaviour test orgs only.
+// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464),
+// "codex" (#6920), and "opencode" (#6035, unbound-force#510) are opt-in per
+// repo, per agent, or as a repos.yaml default; "dummy" and "dummy-playback"
+// are for behaviour tests only.
 func ValidRuntimes() []string {
-	return []string{"claude", "pi", "codex", "dummy", "dummy-playback"}
+	return []string{"claude", "pi", "codex", "opencode", "dummy", "dummy-playback"}
 }
 
 // validSubagentKey matches a sub-agent persona key: one or more segments

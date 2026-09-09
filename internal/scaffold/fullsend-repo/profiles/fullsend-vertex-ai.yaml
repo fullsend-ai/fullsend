@@ -1,7 +1,7 @@
 ---
 id: fullsend-vertex-ai
 display_name: Fullsend Vertex AI
-description: Anthropic API and Google Cloud APIs for inference
+description: Anthropic API and Google Cloud APIs for inference via Claude Code, pi, and OpenCode
 category: inference
 endpoints:
   - host: api.anthropic.com
@@ -22,4 +22,6 @@ binaries:
   - "**/claude"
   - "**/claude.exe"
   - "**/node"
+  - "**/opencode"
+  - "**/opencode.exe"
   - "**/pi"
