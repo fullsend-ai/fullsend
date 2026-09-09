@@ -22,7 +22,7 @@ in this repo — see [Tier Conventions](tier-conventions.md).
 |--------|---------|
 | **Prototype** | Custom agent, baking in a consumer repo. May become first-class. |
 | **First-class** | Ships in `fullsend-ai/agents` as part of the default catalog. |
-| **Custom** | Stays out of the catalog (internal or toolchain-specific). |
+| **Custom** | Not in the default catalog (includes dogfood, toolchain-specific, and not-yet-baked candidates). |
 
 Lifecycle: prototype as a custom agent → bake in production → promote, or
 remain custom. How to build and register the prototype is
@@ -119,6 +119,12 @@ As of this snapshot the catalog has 6 of the 15-agent soft cap.
    itself lands in fullsend's `eval/` tree
    ([ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md)), not
    in the agents repo.
+5. In the same change, update this repo's catalog-membership references —
+   the table in [`docs/agents/README.md`](../agents/README.md) and the
+   shipped-role list in
+   [escalation-ladder.md](../agents/topics/escalation-ladder.md) — so the
+   discovery filter above and the documented catalog stay in sync with the
+   new first-class agent.
 
 ## See also
 
