@@ -756,6 +756,8 @@ func TestPerRepoConfigHeaderPointsToUserDocs(t *testing.T) {
 		"per-repo config header must not reference internal ADRs")
 	assert.Contains(t, perRepoConfigHeader, "https://fullsend.sh/",
 		"per-repo config header should link to user-facing docs")
+	assert.Contains(t, perRepoConfigHeader, "/guides/user/fullsend-directory",
+		"per-repo config header should point at the generated-files guide")
 }
 
 func TestPerRepoConfig_RoundTrip(t *testing.T) {

@@ -3,6 +3,8 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+For which generated files you can edit, see
+[Working with the `.fullsend` directory](../guides/user/fullsend-directory.md).
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md).
 

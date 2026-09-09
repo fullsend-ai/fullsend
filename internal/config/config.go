@@ -864,7 +864,7 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 # https://github.com/fullsend-ai/fullsend
 #
 # This file configures fullsend for per-repo installation mode.
-# See https://fullsend.sh/docs/guides/infrastructure/layered-config-reference
+# See https://fullsend.sh/docs/guides/user/fullsend-directory
 `
 
 // NewPerRepoConfig creates a new perRepoConfig with the given roles.

@@ -5,8 +5,10 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
-installation variants, see [Advanced Setup](advanced-setup.md).
+[Configuring GitHub](../getting-started/configuring-github.md). For which
+generated files you can edit, see
+[Working with the `.fullsend` directory](../user/fullsend-directory.md).
+For advanced installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
 
@@ -412,6 +414,8 @@ compiled-in defaults apply:
 
 ## Related
 
+- [Working with the `.fullsend` directory](../user/fullsend-directory.md) —
+  which generated files are installer-managed versus safe to edit.
 - [Config Reference](../../reference/config-reference.md) — canonical
   user-facing reference for every `.fullsend/config.yaml` field.
 - [ADR 0069 — Ready-made configuration presets](../../ADRs/0069-ready-made-configuration-presets.md)

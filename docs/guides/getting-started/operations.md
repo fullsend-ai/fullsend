@@ -43,6 +43,11 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 
 ## Syncing workflow templates
 
+Managed workflow and CI templates (the files with a "managed by fullsend"
+header, plus GitLab `.gitlab/ci/fullsend-*.yml`) refresh on re-run.
+`.fullsend/config.yaml` is kept unless you pass a config-targeting flag.
+See [Working with the `.fullsend` directory](../user/fullsend-directory.md).
+
 After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
 
 ```bash

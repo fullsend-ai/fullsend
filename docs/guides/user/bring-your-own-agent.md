@@ -24,7 +24,7 @@ Building and deploying a custom agent takes four steps:
 ## Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates the `.fullsend/` directory with `policies/`, `providers/`, and `profiles/` from the scaffold. For a standalone agent repo, you can create these files manually (see [Minimum viable agent](#minimum-viable-agent)).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first. It writes `.fullsend/config.yaml` and the managed workflows; it does not copy `policies/`, `providers/`, or `profiles/`. See [Working with the `.fullsend` directory](fullsend-directory.md) and [Minimum viable agent](#minimum-viable-agent).
 - **GCP inference provisioned (CI only).** For agents running in GitHub Actions, run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
@@ -68,7 +68,7 @@ For local development and debugging, you can also run an agent directly with `fu
 
 ## Minimum viable agent
 
-You need a harness, an agent definition, and supporting scaffold files. If your repo was set up with `fullsend github setup`, the `.fullsend/` directory already contains `policies/`, `providers/`, and `profiles/` from the scaffold — you only need to add `harness/my-agent.yaml` and `agents/my-agent.md`. For a standalone agent repo, copy the scaffold files or create the full layout:
+You need a harness, an agent definition, and supporting scaffold files. Setup does **not** copy `policies/`, `providers/`, or `profiles/` into `.fullsend/` — those directories are layered defaults that built-in agents load at runtime. For a custom agent, copy the files you need from the [scaffold](https://github.com/fullsend-ai/fullsend/tree/main/internal/scaffold/fullsend-repo) or reference trusted URLs, then add `harness/my-agent.yaml` and `agents/my-agent.md`:
 
 ```
 .fullsend/
@@ -378,6 +378,7 @@ allowed_remote_resources:
 
 ## See also
 
+- [Working with the `.fullsend` directory](fullsend-directory.md) — which generated files you can edit
 - [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing

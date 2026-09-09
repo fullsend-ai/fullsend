@@ -18,7 +18,7 @@ Before enabling any agents, you need to get fullsend running in your environment
 2. [Provision inference access](../getting-started/getting-inference.md)
 3. [Configure GitHub](../getting-started/configuring-github.md) — Apps, permissions, webhooks
 
-These guides walk through each step in detail. Once installed, you're ready to prepare your repo.
+These guides walk through each step in detail. Once installed, [Working with the `.fullsend` directory](fullsend-directory.md) explains which generated files you can edit. Then prepare your repo.
 
 ### Prepare Your Repo
 
