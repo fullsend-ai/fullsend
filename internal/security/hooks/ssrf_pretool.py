@@ -279,6 +279,13 @@ def _parse_egress_allowlist() -> set[tuple[str, int]]:
                 and len(wc_host_clean) > 2
                 and "*" not in wc_host_clean[2:]
             ):
+                if wc_host_clean.count(".") < 2:
+                    print(
+                        f"WARNING: wildcard entry '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
+                        "is overly broad (e.g. *.com matches all .com domains) — "
+                        "consider using a more specific pattern like *.example.com",
+                        file=sys.stderr,
+                    )
                 entries.add((wc_host_clean, wc_port))
             else:
                 print(

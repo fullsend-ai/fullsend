@@ -1102,6 +1102,22 @@ class TestEgressAllowlistParsing:
             captured = capsys.readouterr()
             assert "wildcard entry '*..:443'" in captured.err
 
+    def test_overly_broad_wildcard_warns(self, hook, capsys):
+        """*.com (label depth < 2) is accepted but emits a warning."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.com:443,*.atlassian.net:443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            # Both entries are accepted
+            assert ("*.com", 443) in result
+            assert ("*.atlassian.net", 443) in result
+            captured = capsys.readouterr()
+            assert "overly broad" in captured.err
+            assert "*.com:443" in captured.err
+            # *.atlassian.net has depth >= 2, so no warning for it
+            assert "*.atlassian.net" not in captured.err
+
     def test_malformed_port_warns(self, hook, capsys):
         with mock.patch.dict(
             os.environ,
