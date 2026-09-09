@@ -283,6 +283,33 @@ func TestChildScriptEnv_StripsOIDCVars(t *testing.T) {
 	assert.True(t, hasRunner, "RunnerEnv var must survive")
 }
 
+func TestChildScriptEnv_StripsWorkflowToken(t *testing.T) {
+	t.Setenv(workflowTokenEnv, "ghs_workflow_token_value_xx")
+	t.Setenv("SAFE_VAR", "should-survive")
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.NotEqual(t, workflowTokenEnv, key, "FULLSEND_WORKFLOW_TOKEN must be stripped from child script env")
+	}
+
+	hasSafe, hasRunner := false, false
+	for _, e := range env {
+		if e == "SAFE_VAR=should-survive" {
+			hasSafe = true
+		}
+		if e == "RUNNER_VAR=present" {
+			hasRunner = true
+		}
+	}
+	assert.True(t, hasSafe, "non-denied process env var must survive")
+	assert.True(t, hasRunner, "RunnerEnv var must survive")
+}
+
 // TestChildScriptEnv_StripsOIDCFromRunnerEnv verifies that OIDC credential
 // vars injected via RunnerEnv are also stripped (#5832).
 func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {

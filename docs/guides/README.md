@@ -47,7 +47,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [Customizing agents overview](user/customizing-overview.md) — Quick decision guide for all customization approaches
 - [Configuring with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Configuring with skills](user/customizing-with-skills.md) — Extend built-in agent skills; [authoring augmentations](user/customizing-with-skills.md#authoring-skills-that-augment-defaults)
-- [Configuring agent behavior](user/customizing-agents.md) — Harness composition, status notifications, and disabling agents
+- [Configuring agent behavior](user/customizing-agents.md) — Harness composition, status notifications, disabling agents, and [GitHub Packages](user/customizing-agents.md#private-registries-and-github-packages)
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Build and register a custom agent from scratch
 - [Custom Agent Identity](user/custom-agent-identity.md) — Using a standalone mint for custom GitHub App identity
 - [Harness Field Reference](../reference/harness-reference.md) — Complete harness YAML field reference, merge rules, and resource referencing
