@@ -160,6 +160,8 @@ This principle aligns with what Yegge's Gas City project calls "Zero Framework C
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) is the useful contrast case. It uses an event-driven FastAPI/Redis/LangGraph worker and durable checkpoints to move work forward, which is operationally sensible, but it also centralizes workflow truth and treats Jira labels/comments as approval signals. Fullsend can borrow the event-driven resume mechanics without moving merge authority or intent authorization out of repository-visible controls.
 
+[OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
+
 ### How agents communicate
 
 Agents interact through GitHub's existing mechanisms:
