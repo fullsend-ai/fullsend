@@ -27,7 +27,7 @@ For field-by-field `config.yaml` documentation, see the
    ```
 
 3. If it does not have that header, it is yours (or a vendor preset you
-   treat as read-through — see [config.base.yaml](#configbaseyaml-vendor-preset) below).
+   treat as read-through — see [config.base.yaml](#config-base-yaml-vendor-preset) below).
 
 The `Upstream:` URL points at the scaffold inside the fullsend project.
 Adopters customize through `config.yaml` and harness overlays, not by
@@ -59,16 +59,24 @@ your-repo/
 |------|------|-------|
 | `.github/workflows/fullsend.yaml` | Event shim. Forwards GitHub events to the upstream reusable dispatch workflow. You do not add a workflow per agent. | No. Re-running setup refreshes it. |
 | `.github/workflows/prioritize.yml` | Thin caller so an org-level prioritize scheduler can `workflow_dispatch` this repo. | No. |
-| `.fullsend/config.yaml` | Overlay. Runtime, roles, registered agents, allowlists, inference, mint URL. Omitted keys fall through to `config.base.yaml` then code defaults. | **Yes.** Re-running setup keeps this file unless you pass a flag that targets a key (`--runtime`, `--agents`, `--mint-url`, `--inference-*`, `--openai-*`). |
+| `.fullsend/config.yaml` | Overlay. Runtime, roles, registered agents, allowlists, inference, mint URL. Omitted keys fall through to `config.base.yaml` then code defaults. The `mint_url` field is informational only — see below for what the managed shim actually reads. | **Yes.** Re-running setup keeps this file unless you pass a flag that targets a key (`--runtime`, `--agents`, `--mint-url`, `--inference-*`, `--openai-*`). |
 | `.fullsend/config.base.yaml` | Present only with `--config` (a vendor preset). Shared baseline. | Treat as read-through. Refresh it by re-running setup with `--config`. Put repo-specific values in `config.yaml`. |
 
-Repository **variables** and **secrets** (`FULLSEND_GCP_REGION`,
-`FULLSEND_REVIEW_CLIENT_ID`, `FULLSEND_PER_REPO_INSTALL`,
-`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`) are not files.
-Change them with `fullsend github set` — see
-[Operations](../getting-started/operations.md). The mint URL is not a
-`github set` key: it is the `mint_url` field in `.fullsend/config.yaml`,
-set via `fullsend github setup --mint-url`.
+Repository **variables** and **secrets** (`FULLSEND_MINT_URL`,
+`FULLSEND_GCP_REGION`, `FULLSEND_REVIEW_CLIENT_ID`,
+`FULLSEND_PER_REPO_INSTALL`, `FULLSEND_GCP_PROJECT_ID`,
+`FULLSEND_GCP_WIF_PROVIDER`) are not files. `FULLSEND_MINT_URL` and
+`FULLSEND_GCP_REGION` are what the managed shim actually reads for
+dispatch (`${{ vars.FULLSEND_MINT_URL }}` in the installed workflow
+templates) — not the `mint_url` field in `config.yaml`.
+
+Change most of these with `fullsend github set` — see
+[Operations](../getting-started/operations.md). `FULLSEND_MINT_URL` is
+not a `github set` key. To change the mint URL or inference region the
+shim uses, run `fullsend github setup --mint-url` / `--inference-region`,
+which updates the repo variable (`--mint-url` also writes the `mint_url`
+field in `.fullsend/config.yaml`). Hand-editing `mint_url` in
+`config.yaml` alone does not change what the shim dispatches with.
 
 ### config.yaml
 
@@ -102,7 +110,7 @@ Every supported key is in the [Config Reference](../../reference/config-referenc
 Layering rules (overlay → base → code defaults) are in the
 [Layered Config Reference](../infrastructure/layered-config-reference.md).
 
-### config.base.yaml (vendor preset)
+### config.base.yaml (vendor preset) {#config-base-yaml-vendor-preset}
 
 Skip this file unless your operator gave you a `--config` preset. The
 overlay (`config.yaml`) is the writable layer; the base is a shared
@@ -172,7 +180,12 @@ Uninstall and day-2 operations: [Operations](../getting-started/operations.md).
 2. Leave `.fullsend/config.yaml` unchanged, unless you pass a
    config-targeting flag (`--runtime`, `--agents`, `--mint-url`,
    `--inference-*`, `--openai-*`). Those flags change only the keys you named.
-3. Rewrite `.fullsend/config.base.yaml` when you pass `--config`.
+3. Always rewrite the `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` repo
+   variables to `--mint-url` / `--inference-region` (or the CLI defaults
+   when those flags are omitted) — even on a flag-less re-run. A
+   previously customized mint URL or region is reset unless you pass the
+   flag again.
+4. Rewrite `.fullsend/config.base.yaml` when you pass `--config`.
 
 A flag-less re-run prints `Keeping existing .fullsend/config.yaml` and
 still updates managed workflows. That is how you pick up scaffold fixes
