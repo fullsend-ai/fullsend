@@ -711,17 +711,16 @@ var piDefaultTools = []string{"read", "bash", "edit", "write", "grep", "find", "
 // SYSTEM.md) is never loaded in non-interactive modes; skills as slash
 // commands are irrelevant headless; retry/compaction stay on so a transient
 // provider error or a long session does not end the run
-// (parsePiStream models both). Retry numbers are raised above pi's
-// defaults (#7191): session maxRetries 8 at baseDelayMs 2000 (2/4/8/…/256 s)
-// recovers from a burst that exhausts the default 3×2/4/8 s window;
-// provider maxRetries 6 with maxRetryDelayMs 60000 absorbs consecutive
-// 429s inside one request and honours Retry-After (the provider layer is
-// the only one that does; pi leaves it off unless retry.provider.maxRetries
-// is set). A server delay above 60 s six times in a row means the model is
-// down — failing that attempt is better than sleeping through the iteration
-// budget. defaultTools activates every non-Windows built-in (see
-// piDefaultTools; pi also ships powershell) — --tools, when Run emits it,
-// still replaces this.
+// (parsePiStream models both). defaultTools activates every non-Windows
+// built-in (see piDefaultTools; pi also ships powershell); --tools, when
+// Run emits it, still replaces this.
+//
+// The retry block raises both of pi's retry layers above their defaults
+// (#7191): the provider layer retries one request and honours Retry-After
+// (off unless maxRetries is set); the session layer re-sends the turn with
+// 2/4/8/.../256 s backoff. Worst case without Retry-After is about 12 min;
+// with it, the iteration timeout is the bound. The numbers and trade-offs
+// are in docs/contributing/runtime-implementation.md.
 func piSettingsJSON() ([]byte, error) {
 	settings := map[string]any{
 		"defaultProjectTrust": "never",
