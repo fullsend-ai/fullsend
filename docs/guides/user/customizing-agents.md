@@ -137,13 +137,7 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-If the `profiles/` directory next to the harness also contains a file with the same `id` as a profile the harness already resolves, `fullsend run` warns:
-
-```text
-  ! Profile "fullsend-vertex-ai" is defined both in /work/.fullsend/profiles and by the harness (/work/.fullsend/.fullsend-cache/resources/sha256/fe4f748d…/content); whichever copy was imported most recently is live — delete the directory copy or keep it in sync
-```
-
-Delete the directory copy unless you mean to override the harness's. A stale copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
+Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly (e.g., `profiles/fullsend-vertex-ai.yaml`); the child-wins dedup rule applies by `id`.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 

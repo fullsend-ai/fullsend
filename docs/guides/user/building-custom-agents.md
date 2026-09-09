@@ -241,6 +241,8 @@ ls .fullsend/providers/     # provider definitions (name + type)
 ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
 ```
 
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
+
 For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
 ### Network access via inline policies (alternative)

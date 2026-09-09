@@ -75,7 +75,7 @@ You need a harness, an agent definition, and supporting scaffold files. If your 
 +-- harness/my-agent.yaml                  # Execution config (you create)
 +-- agents/my-agent.md                     # Agent prompt (you create)
 +-- providers/vertex-ai.yaml               # Provider definition (from scaffold)
-+-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold)
++-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold; see note below)
 +-- policies/base.yaml                     # Sandbox policy (from scaffold)
 ```
 
@@ -136,6 +136,8 @@ binaries:
   - "**/node"
   - "**/pi"
 ```
+
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/fullsend-vertex-ai.yaml`).
 
 > **Note (CI only):** the provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
 

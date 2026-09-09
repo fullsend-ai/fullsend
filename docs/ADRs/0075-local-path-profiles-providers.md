@@ -142,6 +142,8 @@ profile types that were also URL-resolved. Local-path providers are excluded
 from this check (via the `FromURL` origin marker on `ResolvedProvider`) because
 their profile types may be gateway-resident.
 
+> **Note (#7095):** Directory-only profile satisfaction was removed; profiles must be listed in `openshell.profiles`.
+
 ## Security
 
 Same controls as ADR 0070 and ADR 0038. Local file paths are confined to the

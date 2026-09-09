@@ -471,18 +471,12 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 		{"path-form provider entry", false, true, false},
 		{"bare name, no providers/openai.yaml on disk (embedded definition)", false, false, true},
 	}
-	t.Run("a workspace profile with the reserved id is refused", func(t *testing.T) {
-		recordingProvidersStub(t)
-		for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
-			t.Setenv(k, "")
-		}
-		t.Setenv("OPENAI_API_KEY", "sk-local-static-key-for-test")
-		dir := writeOpenAIFullsendDir(t, false)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "profiles", "fullsend-openai.yaml"), []byte("id: fullsend-openai\ndisplay_name: Not the real one\n"), 0o644))
-		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "reserved for the copy built into fullsend")
-	})
+	// The "a workspace profile with the reserved id is refused" subtest was
+	// removed: it tested that rejectReservedProfileID caught a profiles/
+	// directory file with the reserved ID (fullsend-openai). Since #7095,
+	// directory-only profiles are no longer scanned or imported, so a file
+	// in profiles/ that is not listed in openshell.profiles is inert. The
+	// unit test TestRejectReservedProfileID covers the harness-listed path.
 	for _, tc := range cases {
 		keep := tc.keep
 		t.Run(tc.name, func(t *testing.T) {
@@ -870,10 +864,9 @@ func TestEnsureOpenAIProvider_IgnoresExtraCredentialKeys(t *testing.T) {
 
 func TestCheckProviderProfileIntegrity_KnowsEmbeddedOpenAIProfile(t *testing.T) {
 	providers := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: openAIProviderType}}}
-	w, err := checkProviderProfileIntegrity(providers, nil, []string{"fullsend-github"})
+	err := checkProviderProfileIntegrity(providers, nil)
 	require.NoError(t, err, "the runner imports fullsend-openai itself, so a path-form provider needs no profiles: entry")
-	assert.Empty(t, w)
-	_, err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil, []string{"fullsend-github"})
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil)
 	require.Error(t, err)
 }
 
@@ -891,12 +884,11 @@ func TestAppendEmbeddedProviderDefs(t *testing.T) {
 }
 
 func TestRejectReservedProfileID(t *testing.T) {
-	require.NoError(t, rejectReservedProfileID(openAIProviderType, nil, []string{"fullsend-github"}))
-	err := rejectReservedProfileID(openAIProviderType, nil, []string{"fullsend-openai"})
+	require.NoError(t, rejectReservedProfileID(openAIProviderType, nil))
+	require.NoError(t, rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-github"}}))
+	err := rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
-	err = rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}}, nil)
-	require.Error(t, err)
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {
