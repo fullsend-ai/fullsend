@@ -19,6 +19,12 @@ func WithPersistHook(ctx context.Context, fn func()) context.Context {
 
 // MeasureFile parses telemetry, scores with the manifest, and writes local
 // eval-measurements.jsonl. Idempotent per ledger.
+//
+// For OTLP, this helper passes an empty serviceVersion into
+// MeasureAndExport, so BuildResource records service.version=unknown when
+// OTEL is configured. Prefer MeasureAndExport with the CLI Version() (same
+// string telemetry.Setup uses) so score resources share agent-trace
+// identity. MeasureFile is mainly for local/tests where OTLP is unset.
 func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
 	r, _, err := MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir, "")
 	return r, err
