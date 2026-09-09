@@ -593,9 +593,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// When --gitlab-url is provided, set the URL in-memory before
 	// creating the forge client factory so it captures the correct
 	// URL for GitLab API calls during repo probing and converge.
-	// Note: EnsurePlatform creates the GitLab section as a side
-	// effect, which intentionally allows the forge-inference logic
-	// below to infer --forge=gitlab when --gitlab-url is set.
+	// The forge-inference block below has an explicit guard that
+	// sets forgeName to ForgeGitLab when --gitlab-url is provided,
+	// so the EnsurePlatform side effect here is only for the URL.
 	if opts.gitlabURL != "" {
 		manifest.EnsurePlatform(repos.ForgeGitLab)
 		manifest.GitLab.URL = opts.gitlabURL
@@ -626,6 +626,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		if len(notInManifest) > 0 {
 			forgeName := opts.forge
+			if forgeName == "" && opts.gitlabURL != "" {
+				// --gitlab-url explicitly implies --forge=gitlab. Set it
+				// before the general inference so that manifests with
+				// existing GitHub repos don't pull the new repo into the
+				// wrong platform section.
+				forgeName = repos.ForgeGitLab
+			}
 			if forgeName == "" {
 				// Infer forge from platform sections that contain repos,
 				// falling back to section existence for empty manifests

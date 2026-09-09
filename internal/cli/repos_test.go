@@ -2154,27 +2154,60 @@ func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
 }
 
 func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
-	dir := t.TempDir()
-	manifestPath := filepath.Join(dir, "repos.yaml")
-	fc := newInstallFakeClient("group/project")
+	t.Run("empty manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, "repos.yaml")
+		fc := newInstallFakeClient("group/project")
 
-	// When --gitlab-url is provided without --forge, the forge should be
-	// inferred as gitlab because EnsurePlatform creates the GitLab section
-	// before forge inference runs.
-	_ = runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"group/project"},
-		gitlabURL:   "https://gitlab.example.com",
-		testClient:  fc,
+		// When --gitlab-url is provided without --forge on a fresh
+		// manifest, the forge should be inferred as gitlab.
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1)
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
 	})
 
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
-	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
-	assert.Len(t, m.GitLab.Repos, 1)
-	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	t.Run("manifest with existing GitHub repos", func(t *testing.T) {
+		// When the manifest already contains GitHub repos and --gitlab-url
+		// is passed without --forge, the new repo must land in the GitLab
+		// section, not GitHub.
+		existingManifest := `version: 1
+github:
+  repos:
+    - name: acme/web
+`
+		manifestPath := writeTestManifest(t, existingManifest)
+		fc := newInstallFakeClient("group/project")
+
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge even with existing GitHub repos")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1, "new repo should be in GitLab section")
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+		// The existing GitHub repo should still be there.
+		require.NotNil(t, m.GitHub)
+		assert.Len(t, m.GitHub.Repos, 1)
+		assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+	})
 }
 
 func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
