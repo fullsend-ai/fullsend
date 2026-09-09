@@ -495,7 +495,9 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	// Bot-authored issues skip issues.opened dispatch (ADR 0054). Apply
 	// ready-for-triage in a follow-up call so the shim receives issues.labeled
 	// (#2636).
-	issue, err := env.client.CreateIssue(ctx, env.org, e2etest.TestRepo, issueTitle, issueBody)
+	issue, err := createIssueWithRetry(ctx, func() (*forge.Issue, error) {
+		return env.client.CreateIssue(ctx, env.org, e2etest.TestRepo, issueTitle, issueBody)
+	}, time.After, t.Logf)
 	require.NoError(t, err, "creating test issue")
 	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
 	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, e2etest.TestRepo, "ready-for-triage"))
@@ -646,6 +648,35 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	}
 	assert.True(t, hasTriageLabel,
 		"issue should have a triage label (needs-info, ready-to-code, duplicate, or blocked), got: %v", labelNames)
+}
+
+// createIssueWithRetry retries the transient 401 observed after provisioning,
+// while preserving fail-fast behavior for all other GitHub API errors.
+func createIssueWithRetry(
+	ctx context.Context,
+	create func() (*forge.Issue, error),
+	after func(time.Duration) <-chan time.Time,
+	logf func(string, ...any),
+) (*forge.Issue, error) {
+	for attempt := range 3 {
+		issue, err := create()
+		if err == nil {
+			return issue, nil
+		}
+		var apiErr *gh.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized || attempt == 2 {
+			return nil, err
+		}
+
+		delay := time.Duration(attempt+1) * 10 * time.Second
+		logf("Create issue attempt %d failed with status %d, retrying in %s...", attempt+1, apiErr.StatusCode, delay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-after(delay):
+		}
+	}
+	panic("unreachable")
 }
 
 // saveWorkflowRunDebugInfo fetches logs and artifacts for a workflow run and
