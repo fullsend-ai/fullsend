@@ -31,18 +31,20 @@ and update the others as needed.
 |----------|------|---------|
 | `mergeBaseIntoChild` | `internal/harness/compose.go` | Merges base harness fields into child during `base:` composition |
 | `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` or overlay overrides onto top-level harness fields |
-| `mergeForgeConfigInto` | `internal/harness/compose.go` | Merges base `ForgeConfig` fields into child `ForgeConfig` during `base:` composition |
+| `mergeForgeConfigInto` | `internal/harness/compose.go` | **Deprecated** — was used to merge base `ForgeConfig` fields into child `ForgeConfig` during `base:` composition; no longer called after #6798 introduced per-layer resolution |
 | `mergeSkills` | `internal/harness/compose.go` | Deduplicates skills by basename (base + child); merges file-level override maps when both define the same basename (child keys win) |
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
-| `mergeForgeBlocks` | `internal/harness/compose.go` | Merges `forge:` maps key-by-key across base and child |
+| `mergeForgeBlocks` | `internal/harness/compose.go` | **Deprecated** — was used to merge `forge:` maps key-by-key across base and child; no longer called after #6798 introduced per-layer resolution |
 
-> **Note — overlay precedence during base composition.** When `overlays` are
-> concatenated during base composition, base entries are placed first and
-> child entries are appended. Because overlay resolution merges **all**
-> matching entries in order (later matches take precedence),
-> child overlay entries override base overlay entries with the same
-> condition. This follows the child-overrides-base convention used by
-> scalar and map merges.
+> **Note — layer-by-layer resolution.** Since #6798, each base layer's
+> forge and overlay blocks are resolved into top-level fields by
+> `resolveBaseForgeAndOverlays` **before** the base is merged into the
+> child. This means the child's own forge/overlay blocks are never
+> mixed with inherited base blocks — they operate independently at
+> different stages of the pipeline. Within a single layer, conditional
+> values (forge/overlay) override same-layer top-level values
+> (specificity). Across layers, child values override inherited base
+> values (derivation).
 
 ### Validation and resolution side
 
@@ -60,8 +62,19 @@ composition and how each field type is merged (scalar override, list
 append, map merge, struct replace).
 
 For example, if `mergeBaseIntoChild` gains handling for a new
-`foo_script` scalar field, then `mergeForgeConfigInto` must also
+`foo_script` scalar field, then `mergeForgeConfig` must also
 handle `foo_script` if it appears inside `ForgeConfig`.
+
+> **Note — resolve before merge.** Each base layer's forge and overlay
+> blocks are resolved (flattened into top-level fields) by
+> `resolveBaseForgeAndOverlays` in `loadBaseChain` **before** the base
+> is merged into the child via `mergeBaseIntoChild`
+> ([#6798](https://github.com/fullsend-ai/fullsend/issues/6798)).
+> This ensures base forge/overlay values participate in the merge as
+> top-level fields, not as forge/overlay blocks that would compete with
+> the child's own blocks during the final `ResolveForge`/`ResolveOverlays`.
+> When adding a new field to `ForgeConfig`, ensure `mergeForgeConfig`
+> handles it (the resolve step delegates to `mergeForgeConfig`).
 
 > **Note — removed counterparts.** Earlier versions of this document
 > referenced path-rewriting functions in `internal/cli/migrate.go` and
@@ -83,12 +96,9 @@ structs:
    composition.
 3. **Update `mergeForgeConfig`** if the field can appear under
    `forge.<platform>` blocks.
-4. **Update `mergeForgeConfigInto`** if the field appears in
-   `ForgeConfig` and participates in `base:` composition of forge
-   blocks.
-5. **Update tests** in `compose_test.go` and `forge_test.go` to cover
+4. **Update tests** in `compose_test.go` and `forge_test.go` to cover
    the new field in all affected functions.
-6. **Update the [Harness Field Reference](harness-fields.md)** — If the
+5. **Update the [Harness Field Reference](harness-fields.md)** — If the
    change adds a new field to `ForgeConfig`, moves a field between
    classification tiers (top-level-only → forge-overridable or vice
    versa), or changes merge semantics, update the relevant tables:

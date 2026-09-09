@@ -20,6 +20,7 @@ type Config struct {
 	FooterMarker string // optional footer delimiter, stripped before collapsing history
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
+	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
 }
 
 func (c Config) maxSize() int {
@@ -119,7 +120,32 @@ var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]
 // BuildUpdatedBody collapses the old comment body into a flat list of
 // <details> blocks and prepends the new body. Footer content (delimited
 // by FooterMarker) is stripped before collapsing and re-appended after.
+//
+// When cfg.KeepHistory is false, the old body is discarded entirely and
+// the new body is returned with footer re-appended (no "Previous run"
+// blocks).
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
+	// When history is disabled, replace the body entirely. We still
+	// need to preserve the footer from the old body if configured.
+	if !cfg.KeepHistory {
+		var footer string
+		if cfg.FooterMarker != "" {
+			stripped, _ := strings.CutPrefix(oldBody, cfg.Marker+"\n")
+			stripped, _ = strings.CutPrefix(stripped, cfg.Marker)
+			if idx := strings.Index(stripped, cfg.FooterMarker); idx >= 0 {
+				footer = stripped[idx:]
+			}
+		}
+		result := newBody
+		if footer != "" {
+			result += "\n\n" + footer
+		}
+		if len(result) > cfg.maxSize() {
+			result = TruncateBody(result, cfg.maxSize())
+		}
+		return result
+	}
+
 	// Strip marker from the old body (prefix-only to avoid matching
 	// the marker if it appears embedded in review content).
 	oldContent, _ := strings.CutPrefix(oldBody, cfg.Marker+"\n")

@@ -334,11 +334,10 @@ In `enabled` mode (the default), a hard crash or cancellation that happens befor
 As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
 
 ```yaml
-defaults:
-  status_notifications:
-    reaction:
-      start: enabled       # "enabled" | "disabled" (default)
-      completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+status_notifications:
+  reaction:
+    start: enabled       # "enabled" | "disabled" (default)
+    completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
 ```
 
 Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.
