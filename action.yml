@@ -527,6 +527,7 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
+        HARNESS_ROLE: ${{ steps.run.outputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
@@ -562,7 +563,8 @@ runs:
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
+        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
+        RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
         if [[ "${WAS_SKIPPED}" == "true" ]]; then

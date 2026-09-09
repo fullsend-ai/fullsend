@@ -1607,6 +1607,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone("Pre-script outputs relayed to GITHUB_OUTPUT")
 	}
 
+	// Emit the harness-resolved role as a step output so the finalize step
+	// in action.yml can pass it to reconcile-status --role instead of using
+	// the raw agent name. Custom agents (e.g., "grillme") may declare a
+	// role different from their name (e.g., "role: review"), and the mint
+	// service rejects unrecognized role names. See #7000.
+	if h.Role != "" {
+		if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+			if wErr := writeGitHubOutput(ghOutput, "role", h.Role); wErr != nil {
+				printer.StepWarn("Could not relay harness role to GITHUB_OUTPUT: " + wErr.Error())
+			}
+		}
+	}
+
 	if preResult.Skipped {
 		runSkipped = true
 		runSkipReason = preResult.Reason
