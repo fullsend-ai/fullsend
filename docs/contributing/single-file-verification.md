@@ -11,6 +11,12 @@ run. They are for fast iteration while editing. They do not replace
 Target under five seconds per file. Do not pass `./...` or `.` — those are
 full-tree invocations, not single-file checks.
 
+The [AGENTS.md topic-specific guidance table](../../AGENTS.md) also quotes
+these commands directly (rather than only pointing to this doc), so an
+AgentReady-style scan of AGENTS.md can match them without following the link.
+Keep the two copies in sync — the package-scoped-form caveat in particular —
+when editing either one.
+
 ## Go
 
 Prefer the package-scoped form. It matches `make go-vet` / `go vet ./...`
