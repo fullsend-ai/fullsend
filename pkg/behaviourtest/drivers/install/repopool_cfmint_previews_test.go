@@ -3,6 +3,8 @@ package install
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -481,18 +483,35 @@ func TestCFMintCollectLogs_NoCFCredentials(t *testing.T) {
 }
 
 func TestCFMintCollectLogs_WithCredentials(t *testing.T) {
-	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
-	t.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
-
-	d := newTestCFMintDriver(nil)
-	d.workerName = "bt-mint"
-	d.logf = t.Logf
+	// Exercise the collector directly with a test server to avoid
+	// hitting the real Cloudflare API (cfmintMintDriver.CollectLogs
+	// constructs the collector internally with http.DefaultClient).
+	eventsJSON := `{"result":[{"scriptName":"bt-mint","outcome":"ok"}],"success":true}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, eventsJSON)
+	}))
+	defer server.Close()
 
 	artifactDir := t.TempDir()
-	// Will fail because there's no real CF API, but should attempt the call.
-	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), artifactDir)
-	// Error is expected since we're hitting the real CF API without a valid token.
-	assert.Error(t, err)
+	collector := &cfWorkerLogCollector{
+		accountID:  "test-account",
+		apiToken:   "test-token",
+		baseURL:    server.URL,
+		httpClient: server.Client(),
+		logf:       t.Logf,
+	}
+
+	err := collector.Collect(context.Background(), "bt-mint", time.Now().Add(-10*time.Minute), artifactDir)
+	require.NoError(t, err)
+
+	// Verify the log file was written.
+	logPath := filepath.Join(artifactDir, "debug-mint-logs", "mint-events.json")
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, eventsJSON, string(data))
 }
 
 // --- NewRepoPoolCFMintPreviews factory tests ---
