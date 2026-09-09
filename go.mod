@@ -8,7 +8,7 @@ require (
 	github.com/cucumber/messages/go/v21 v21.0.1
 	github.com/google/cel-go v0.29.2
 	github.com/google/uuid v1.6.0
-	github.com/knights-analytics/hugot v0.7.7
+	github.com/knights-analytics/hugot v0.7.8
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/yuin/goldmark v1.8.5
