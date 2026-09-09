@@ -27,6 +27,12 @@ go vet ./path/to/pkg/
 golangci-lint run ./path/to/pkg/
 ```
 
+`internal/mint/`, `internal/mintcore/`, `cmd/mint/`, and `cmd/mint-wasm/` are
+separate Go modules (their own `go.mod`, no `go.work`) — a package-scoped path
+into one of these from the repo root does not vet that module. `cd` into the
+module root first, then run the same command (or a path relative to that
+module), the way `make go-test` already does for `internal/mintcore`.
+
 The file-path form is only reliable for single-file packages (for example
 `cmd/fullsend/main.go`). In multi-file packages — most of `internal/` and
 `cmd/` — passing just the changed file makes Go synthesize a package from
