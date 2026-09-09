@@ -553,15 +553,17 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	repoSecrets := make(map[string]string)
 	if !reuseProject {
-		// !reuseProject => cfg.inferenceProject != "" || presetProvidesProject,
-		// so layeredReader.ConfigInferenceProject() always returns a
-		// non-empty string here (flag value in overlay or preset in base).
+		// When reuseProject is false, either cfg.inferenceProject is
+		// non-empty or presetProvidesProject is true, so the layered
+		// reader always returns a non-empty string here (flag value in
+		// the overlay or preset value in the base layer).
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = layeredReader.ConfigInferenceProject()
 	}
 	if !reuseWIF {
-		// !reuseWIF => cfg.inferenceWIFProvider != "" || presetProvidesWIF,
-		// so layeredReader.ConfigInferenceWIFProvider() always returns a
-		// non-empty string here (flag value in overlay or preset in base).
+		// When reuseWIF is false, either cfg.inferenceWIFProvider is
+		// non-empty or presetProvidesWIF is true, so the layered
+		// reader always returns a non-empty string here (flag value in
+		// the overlay or preset value in the base layer).
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = layeredReader.ConfigInferenceWIFProvider()
 	}
 
