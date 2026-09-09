@@ -195,6 +195,8 @@ This adds a new composition model: **review + rewrite**. The review sub-agents i
 
 Whether this belongs in the review system or is a separate workflow operating on review output is an open question. For a fuller treatment of the salvage concept, including trade-offs and cost implications, see [contribution-volume.md](contribution-volume.md#the-salvage-question).
 
+A contributor (or agent) that always accepts review feedback in order to trigger salvage is indistinguishable from the [speed-to-merge gaming](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) pattern coordinated inauthentic actors use — apparent cooperation, optimized for getting merged quickly rather than for the change being sound.
+
 ## Open questions
 
 - Can we quantify review quality? How do we know if an agent's review is as good as a human's? [Review autonomy evidence](review-autonomy-evidence.md) tracks empirical observations from PRs where both agents and humans reviewed the same change.
