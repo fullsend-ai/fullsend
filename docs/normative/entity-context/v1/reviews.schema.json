@@ -14,9 +14,9 @@
           "id": { "type": "string", "minLength": 1 },
           "record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "state": { "type": "string", "minLength": 1 },
-          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
           "submitted_at": { "type": "string", "format": "date-time" },
-          "dismissed_at": { "type": ["string", "null"], "format": "date-time" }
+          "dismissed_at": { "type": "string", "format": "date-time" }
         },
         "additionalProperties": false
       }
@@ -50,14 +50,14 @@
           },
           "review_id": { "type": "string", "minLength": 1 },
           "review_record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
           "path": { "type": "string" },
-          "line": { "type": ["integer", "null"], "minimum": 1 },
-          "side": { "enum": ["left", "right", null] },
-          "start_line": { "type": ["integer", "null"], "minimum": 1 },
-          "original_line": { "type": ["integer", "null"], "minimum": 1 },
-          "original_start_line": { "type": ["integer", "null"], "minimum": 1 },
-          "original_side": { "enum": ["left", "right", null] }
+          "line": { "type": "integer", "minimum": 1 },
+          "side": { "enum": ["left", "right"] },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "original_line": { "type": "integer", "minimum": 1 },
+          "original_start_line": { "type": "integer", "minimum": 1 },
+          "original_side": { "enum": ["left", "right"] }
         },
         "additionalProperties": false
       }

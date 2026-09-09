@@ -164,6 +164,12 @@ JSON is UTF-8 serialized with the JSON Canonicalization Scheme (RFC 8785), with
 no byte-order mark or trailing newline. Arrays use the order defined below;
 objects use RFC 8785 member ordering.
 
+Properties marked required by a schema are always emitted. If a required
+property is nullable and its normalized source value is unavailable, it is
+emitted as JSON `null`. A non-required property is emitted only when its
+normalized source value is available; otherwise it is omitted and is never
+synthesized as `null` or with a default value.
+
 Text bodies and logs are UTF-8 after the v1 filter pipeline, use LF
 line endings, have no byte-order mark, and end in exactly one LF. The pipeline
 applies size bounds, Unicode safety normalization, secret/sensitive-data

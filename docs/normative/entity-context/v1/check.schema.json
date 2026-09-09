@@ -8,11 +8,11 @@
     "id": { "type": "string", "minLength": 1 },
     "name": { "type": "string" },
     "status": { "type": "string", "minLength": 1 },
-    "conclusion": { "type": ["string", "null"] },
+    "conclusion": { "type": "string" },
     "attempt": { "type": "integer", "minimum": 1 },
     "source_url": { "type": "string", "format": "uri" },
     "started_at": { "type": "string", "format": "date-time" },
-    "completed_at": { "type": ["string", "null"], "format": "date-time" }
+    "completed_at": { "type": "string", "format": "date-time" }
   },
   "additionalProperties": false
 }
