@@ -4,6 +4,7 @@ status: Accepted
 relates_to:
   - agent-architecture
   - testing-agents
+  - governance
 topics:
   - agents
   - catalog
@@ -24,14 +25,14 @@ New agents start as custom prototypes in a consumer repo
 ([ADR 0058](0058-agent-registration.md)), bake in production, and
 sometimes graduate into the default catalog in
 [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Prioritize
-and scribe already shipped that way without recorded criteria. The
-catalog is what every adopter sees; it has to stay small enough to
-learn by heart and general enough that most users want each entry.
+already shipped that way without recorded criteria. The catalog is
+what every adopter sees; it has to stay small enough to learn by heart
+and general enough that most users want each entry.
 
 ## Options
 
-**A. Promote ad hoc.** Fast, and how prioritize and scribe landed. The
-catalog grows without a shared definition of "first-class."
+**A. Promote ad hoc.** Fast, and how prioritize landed. The catalog
+grows without a shared definition of "first-class."
 
 **B. Criteria, maturity bar, and a memorability cap.** Promote only
 agents that expand the SDLC (or are broadly useful regardless of
@@ -64,7 +65,7 @@ agent is retired or merged in the same change.
 **Maturity bar.** Production bake in at least one non-eval repository
 covering the claimed triggers, with no open class of failure that
 would ship to every adopter; user-facing docs (purpose, triggers,
-extension points); script tests plus at least one functional eval
+extension points); script tests plus at least one functional test
 case ([ADR 0052](0052-functional-tests-for-agent-pipelines.md)); an
 output schema
 ([ADR 0022](0022-harness-level-output-schema-enforcement.md)); a
@@ -89,8 +90,6 @@ The operational checklist and a point-in-time classification live in
   toolchain-specific work;
   [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) is
   unchanged.
-- Existing catalog entries are not demoted. Scribe already ships
-  first-class and is toolchain-adjacent; a later ADR would be
-  required to retire it.
+- Existing catalog entries are not demoted by this ADR.
 - Experimental placement (directory layout, clutter) remains open in
   #1084.

@@ -64,7 +64,7 @@ just because the prototype is reliable.
 - [ ] No open class of failure that would ship to every adopter.
 - [ ] User-facing docs: purpose, triggers, and extension points.
 - [ ] Script tests for pre/post scripts.
-- [ ] At least one functional eval case
+- [ ] At least one functional test case
       ([ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md)).
 - [ ] Output schema
       ([ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)).
@@ -85,16 +85,16 @@ command above for the current first-class set.
 | fix | First-class | SDLC stage. In the catalog. |
 | retro | First-class | SDLC stage. In the catalog. |
 | prioritize | First-class | SDLC stage. Promoted from a prototype ([#329](https://github.com/fullsend-ai/fullsend/issues/329)) before these criteria existed. |
-| scribe | First-class | Meeting-to-backlog. Toolchain-adjacent (Google Meet / Drive). Promoted before these criteria; this ADR does not demote it. |
-| classify | Prototype candidate | Broadly useful if baked; not in the catalog. |
-| Specbot | Prototype candidate | Named in [#1084](https://github.com/fullsend-ai/fullsend/issues/1084). Must still pass catalog fit and the maturity bar. |
-| release | Prototype candidate | SDLC-adjacent if scoped as a general release stage; stays custom if it is product-specific. |
+| scribe | Custom | Mint-only dogfood role (see [Configuring Agent Behavior](../guides/user/customizing-agents.md)); not in the `docs/agents/README.md` catalog list or the escalation-ladder's shipped-role list. Not counted toward the cap. |
+| classify | Custom | Broadly useful if baked as a prototype; not currently in the catalog. |
+| Specbot | Custom | Named in [#1084](https://github.com/fullsend-ai/fullsend/issues/1084). Would need to bake as a prototype, then pass catalog fit and the maturity bar. |
+| release | Custom | SDLC-adjacent if scoped as a general release stage; stays custom if it is product-specific. |
 
 Roles described in [agent-architecture.md](../problems/agent-architecture.md)
 that have no harness (for example quality/drift detection) are not catalog
 entries. Building one would start as a prototype and need this checklist.
 
-As of this snapshot the catalog has 7 of the 15-agent soft cap.
+As of this snapshot the catalog has 6 of the 15-agent soft cap.
 
 ## How to propose a promotion
 
