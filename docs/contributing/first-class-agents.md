@@ -36,12 +36,17 @@ The agents repo is the source of truth. Do not copy harness names into docs
 as a living inventory — they go stale.
 
 ```bash
-# First-class agents are the harness files in fullsend-ai/agents
-gh api repos/fullsend-ai/agents/contents/harness --jq '.[].name'
+# List the YAML harness files in fullsend-ai/agents
+gh api repos/fullsend-ai/agents/contents/harness \
+  --jq '.[] | select(.type == "file" and (.name | endswith(".yaml"))) | .name | rtrimstr(".yaml")'
 ```
 
 A local clone works the same way: `ls harness/*.yaml` at the agents-repo
-root. See the [`author-fullsend-augmentations`](../../skills/author-fullsend-augmentations/SKILL.md)
+root (strip the `.yaml` suffix). Both commands enumerate harness files, used
+here as a proxy for first-class catalog membership — a harness file existing
+does not by itself confirm catalog-fit, but the harness directory is what
+"the catalog" means in practice. See the
+[`author-fullsend-augmentations`](../../skills/author-fullsend-augmentations/SKILL.md)
 skill for the full discovery pattern.
 
 ## Promotion checklist
@@ -100,11 +105,15 @@ As of this snapshot the catalog has 6 of the 15-agent soft cap.
 
 1. Confirm the prototype is registered as a custom agent and has baked.
 2. Open an issue that walks the checklist above. Link production evidence
-   (runs, failure classes, docs, tests, eval cases).
+   (runs, failure classes, docs, script tests, and the ADR 0052 functional
+   test case).
 3. If the catalog is at 15, name the first-class agent being retired or
-   merged, or file a follow-on ADR for an exception.
+   merged in the same change — that is the only way past the cap.
 4. Land the agent in `fullsend-ai/agents` (harness, definition, schema,
-   scripts, docs) only after maintainer sign-off.
+   scripts, docs) only after maintainer sign-off. The functional test case
+   itself lands in fullsend's `eval/` tree
+   ([ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md)), not
+   in the agents repo.
 
 ## See also
 

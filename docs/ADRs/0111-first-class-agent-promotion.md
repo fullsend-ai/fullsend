@@ -76,8 +76,9 @@ maintainer sign-off that catalog fit still holds.
 **Soft cap.** The default catalog stays at or below **15** first-class
 agents. Users should be able to name them from memory; each entry
 carries a harness, identity, docs, evals, and support cost. Exceeding
-15 requires retiring or merging an existing entry, or a follow-on ADR
-recording an exception.
+15 requires retiring or merging an existing entry in the same change,
+per catalog-fit criterion (3) above — there is no other path past the
+cap.
 
 The operational checklist and a point-in-time classification live in
 [first-class-agents.md](../contributing/first-class-agents.md).
