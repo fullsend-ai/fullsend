@@ -495,9 +495,30 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// through this reader so dual-write values match the layered config
 	// the repo reads at runtime (ADR 0069 Decision 1).
 	var layeredReader config.PerRepoConfigReader
-	if existingCfg != nil {
-		// Re-run: existing config was kept or modified in-place and
-		// already has the parent chain (overlay → base → defaults).
+	if existingCfg != nil && presetData != nil {
+		// Re-run with a new preset: the existing config was loaded with
+		// the OLD config.base.yaml as its parent chain, but the NEW
+		// preset will be committed as config.base.yaml. Reconstruct the
+		// layered reader so dual-write values resolve through the new
+		// preset's base layer instead of the stale one.
+		overlayData := cfgYAML
+		if overlayData == nil {
+			// keepExistingConfig: overlay was not modified, marshal it
+			// so we can reconstruct with the new base layer.
+			var marshalErr error
+			overlayData, marshalErr = existingCfg.Marshal()
+			if marshalErr != nil {
+				return fmt.Errorf("marshaling existing config for layered reader: %w", marshalErr)
+			}
+		}
+		lr, lrErr := config.ParsePerRepoConfigWriterLayered(overlayData, presetData)
+		if lrErr != nil {
+			return fmt.Errorf("constructing layered config reader: %w", lrErr)
+		}
+		layeredReader = lr
+	} else if existingCfg != nil {
+		// Re-run without a new preset: existing config already has the
+		// correct parent chain (overlay → base → defaults).
 		layeredReader = existingCfg
 	} else if cfgYAML != nil {
 		lr, lrErr := config.ParsePerRepoConfigWriterLayered(cfgYAML, presetData)

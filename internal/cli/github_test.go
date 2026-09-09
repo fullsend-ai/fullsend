@@ -2069,6 +2069,76 @@ inference:
 	assert.Contains(t, err.Error(), "preset config:")
 }
 
+func TestRunGitHubSetupPerRepo_ConfigDriven_RerunNewPreset(t *testing.T) {
+	// Re-run with a new preset: the existing config was installed with
+	// preset A (old base layer). A re-run with preset B should use
+	// preset B's values for dual-write vars/secrets, not preset A's.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	// Existing overlay config (from a prior install with preset A).
+	existingOverlay := "# fullsend per-repo configuration\nversion: \"1\"\nruntime: claude\n"
+	// Existing base config (preset A).
+	existingBase := `# fullsend per-repo configuration
+version: "1"
+mint_url: https://old-preset-mint.example.com
+inference:
+  provider: vertex
+  project: old-preset-project
+  region: us-east1
+  wif_provider: projects/111222333/locations/global/workloadIdentityPools/old-pool/providers/old-oidc
+`
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml":      []byte(existingOverlay),
+		"acme/widget/.fullsend/config.base.yaml": []byte(existingBase),
+	}
+
+	// New preset (preset B) with different values.
+	newPreset := presetWithInference(t)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: newPreset,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+
+	// Verify the new preset is committed as config.base.yaml.
+	baseContent, basePresent := committedScaffoldFile(client, ".fullsend/config.base.yaml")
+	assert.True(t, basePresent, "new preset should be committed as config.base.yaml")
+	assert.Contains(t, string(baseContent), "preset-mint.example.com",
+		"config.base.yaml should contain the new preset's mint URL")
+
+	// Verify dual-write vars use the NEW preset values (not the old ones).
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://preset-mint.example.com", varNames["FULLSEND_MINT_URL"],
+		"dual-write mint URL should come from new preset, not old base")
+	assert.Equal(t, "us-west1", varNames["FULLSEND_GCP_REGION"],
+		"dual-write region should come from new preset, not old base")
+
+	// Verify dual-write secrets use the NEW preset values.
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "preset-project", secretNames["FULLSEND_GCP_PROJECT_ID"],
+		"dual-write project should come from new preset, not old base")
+	assert.Contains(t, secretNames["FULLSEND_GCP_WIF_PROVIDER"], "preset-pool",
+		"dual-write WIF should come from new preset, not old base")
+}
+
 func TestRunGitHubSetupPerRepo_LayeredReader_DualWrite(t *testing.T) {
 	// Verify that dual-write vars/secrets are read through the layered
 	// config reader (overlay → base → defaults) rather than ad-hoc
