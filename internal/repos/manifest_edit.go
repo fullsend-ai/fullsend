@@ -464,7 +464,7 @@ func validateDefaultValue(key, value string) error {
 			return fmt.Errorf("%s must be a valid HTTPS URL, got %q", key, value)
 		}
 		if key == "github.url" || key == "gitlab.url" {
-			if err := rejectExtraneousURLParts(u, key); err != nil {
+			if err := RejectExtraneousURLParts(u, key); err != nil {
 				return err
 			}
 		}

@@ -121,6 +121,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. By default, the binary is auto-resolved from `--fullsend-ref`; use `--fullsend-binary` or `--fullsend-source` to provide it explicitly. |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving (requires `--vendor`) |
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
+| `--gitlab-url` | | GitLab instance URL (e.g. `https://gitlab.example.com`); sets `gitlab.url` in the manifest and implies `--forge=gitlab` when no forge is specified |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
 
 ### GitLab bot token
@@ -168,7 +169,7 @@ fullsend repos install acme/api acme/web
 Add a GitLab repo and install it:
 
 ```bash
-fullsend repos install group/project --forge gitlab --direct
+fullsend repos install group/project --forge gitlab --gitlab-url https://gitlab.example.com --direct
 ```
 
 ## `repos status`
