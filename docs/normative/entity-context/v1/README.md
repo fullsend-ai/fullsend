@@ -55,9 +55,12 @@ forge identifier, canonical repository identifier, record kind, forge record ID
 ```
 
 The forge record ID is the platform's immutable opaque ID, not a mutable URL,
-ordinal, database row position, or display number. Record kinds are `comment`,
-`review`, `check`, `thread`, and `entity`. This derivation makes paths safe and
-stable without requiring consumers to parse forge-specific IDs.
+ordinal, database row position, or display number. Source kinds used in this
+derivation are `comment`, `review`, `check`, `thread`, and `entity`. Manifest
+record entries use only `entity`, `comment`, `review`, and `check`; `thread`
+keys identify relationship and ordering data under `relations/` and `threads/`,
+not files under `records/`. This derivation makes paths safe and stable without
+requiring consumers to parse forge-specific IDs.
 
 The tree contains forge entity state that is not reconstructible from the
 target Git checkout. Diffs, commits, changed-file lists, branches, and revision
