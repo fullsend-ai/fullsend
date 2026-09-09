@@ -815,11 +815,19 @@ type perRepoConfig struct {
 	// jira) for `fullsend issues` commands' --tracker flag. Distinct
 	// from Forge, which is the repo's hosting platform — a repo can be
 	// hosted on GitHub but track issues in Jira.
-	Tracker    string       `yaml:"tracker,omitempty"`
-	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
-	Runtime    string       `yaml:"runtime,omitempty"`
-	Roles      []string     `yaml:"roles,omitempty"`
-	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	Tracker    string `yaml:"tracker,omitempty"`
+	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
+	Runtime    string `yaml:"runtime,omitempty"`
+
+	// KeepHistory controls whether sticky comment updates append the
+	// previous body as a collapsed "Previous run" <details> block. When
+	// nil (omitted), falls through to parent (code default true —
+	// history appended). When explicitly false, updates replace the body
+	// in-place with no history.
+	KeepHistory *bool `yaml:"keep_history,omitempty"`
+
+	Roles  []string     `yaml:"roles,omitempty"`
+	Agents []AgentEntry `yaml:"agents,omitempty"`
 	// AllowedRemoteResources holds the locally-set allowed remote
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
@@ -1022,6 +1030,7 @@ type perRepoConfigMarshal struct {
 	Tracker                string                    `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
+	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
@@ -1044,6 +1053,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Tracker:             c.Tracker,
 		KillSwitch:          c.KillSwitch,
 		Runtime:             c.Runtime,
+		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,

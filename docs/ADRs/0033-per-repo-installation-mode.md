@@ -66,6 +66,8 @@ Use one GitHub App for triage, code, review, and fix roles to simplify per-repo 
 
 **Rejected**: GitHub suppresses events triggered by pushes made with any `GITHUB_TOKEN` or GitHub App installation token, to prevent infinite loops. Two separate Apps work because a push made with App-A's token _does_ generate events that trigger workflows authenticated as App-B. The fix→review loop requires the coder/fix agent to push commits that trigger review — if both roles share one App, the push token matches the workflow's App and the event is silently suppressed, breaking the feedback cycle. At minimum, coder and review must be separate Apps.
 
+> **Note (2026-09):** The first sentence overstates the suppression scope. GitHub's event suppression applies only to `GITHUB_TOKEN` pushes; GitHub App installation token pushes _do_ trigger new workflow runs regardless of App identity — the observed [scaffold-sync dispatch recursion](../contributing/bot-identities.md#app-token-push-recursion) confirms this. The separate-Apps conclusion still holds for permission isolation ([ADR 0007](0007-per-role-github-apps.md)), but the suppression-based rationale above was incorrect. See also [`platform-nativeness.md`](../problems/platform-nativeness.md), which notes this overstatement.
+
 ### Alternative 3: Per-repo as a separate codebase
 
 Build a standalone per-repo tool or action that does not share infrastructure with per-org fullsend.
@@ -334,6 +336,8 @@ Ordered by the project's threat priority (external injection > insider > drift >
 - **Insider — workflow and config modification**: In per-repo mode, `.github/workflows/fullsend.yml` and `.fullsend/` live alongside code. A contributor with write access could modify agent behavior, sandbox policies, or the workflow trigger in a PR. Without CODEOWNERS protection, these changes could be merged by any approver.
 - **`event_payload` size**: Per-org's `dispatch.yml` builds a minimal payload from `$GITHUB_EVENT_PATH` (extracting only `issue`, `pull_request`, and `comment` fields), avoiding the 65KB `workflow_call` input limit. Per-repo's shim forwards `event_action` via `workflow_call` and `reusable-dispatch.yml` reads remaining context from `github.event.*` expressions, following the same pattern. Large PR event payloads are unlikely to be an issue since the shim does not pass the full payload as an input.
 - **App identity confusion**: Users unfamiliar with the fix→review loop requirement may attempt a single-App setup and get silent failures (no review triggered after fix pushes).
+
+> **Note (2026-09):** The "silent failures" failure mode described above is incorrect. GitHub's event suppression applies only to `GITHUB_TOKEN` pushes; App installation token pushes _do_ trigger new workflow runs regardless of App identity (see [correction note in Alternative 2](#alternative-2-single-github-app-for-all-roles)). A single-App fix push would therefore trigger the review workflow. The actual risk of a single-App setup is that it grants every role the union of all permissions — violating least-privilege ([ADR 0007](0007-per-role-github-apps.md)) — and that GitHub's `422 Can not approve your own pull request` error blocks one identity from both authoring and approving a PR.
 
 ### Mitigations
 

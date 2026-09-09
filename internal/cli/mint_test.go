@@ -2320,9 +2320,17 @@ func TestMintDeployCmd_NoWarningForCorrectPlatformFlags(t *testing.T) {
 
 // --- lookupAppID tests ---
 
+// withNoToken overrides lookupTokenFn to return no token, simulating an
+// environment with no GitHub credentials. Restores the original on cleanup.
+func withNoToken(t *testing.T) {
+	t.Helper()
+	orig := lookupTokenFn
+	lookupTokenFn = func() (string, error) { return "", fmt.Errorf("no token") }
+	t.Cleanup(func() { lookupTokenFn = orig })
+}
+
 func TestLookupAppID_Success(t *testing.T) {
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "")
+	withNoToken(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/apps/fullsend-ai-coder", r.URL.Path)
@@ -2397,8 +2405,7 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 		{"TooManyRequests", http.StatusTooManyRequests},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("GH_TOKEN", "")
-			t.Setenv("GITHUB_TOKEN", "")
+			withNoToken(t)
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
@@ -2413,6 +2420,8 @@ func TestLookupAppID_RateLimit(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "rate limit")
 			assert.Contains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN")
+			assert.Contains(t, err.Error(), "gh auth login",
+				"unauthenticated rate limit error should suggest gh auth login")
 		})
 	}
 }
@@ -2496,6 +2505,31 @@ func TestLookupAppID_RateLimitAuthenticated(t *testing.T) {
 	assert.Contains(t, err.Error(), "rate limit")
 	assert.NotContains(t, err.Error(), "set GH_TOKEN or GITHUB_TOKEN",
 		"authenticated rate limit error should not suggest setting a token")
+}
+
+func TestLookupAppID_UsesResolveTokenFallback(t *testing.T) {
+	// Simulate the gh auth token fallback: both env vars are unset, but
+	// the token resolver returns a token (as resolveToken would when
+	// gh auth login has been run).
+	orig := lookupTokenFn
+	lookupTokenFn = func() (string, error) { return "ghp_from_gh_auth", nil }
+	t.Cleanup(func() { lookupTokenFn = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer ghp_from_gh_auth", r.Header.Get("Authorization"),
+			"lookupAppID should authenticate using the token from the resolution chain")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id": 88}`)
+	}))
+	defer srv.Close()
+
+	origBase := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = origBase }()
+
+	appID, err := lookupAppID(context.Background(), "test-app")
+	require.NoError(t, err)
+	assert.Equal(t, 88, appID)
 }
 
 // --- verifyPEMMatchesApp tests ---

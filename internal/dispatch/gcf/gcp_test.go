@@ -2965,6 +2965,56 @@ func TestLiveGCFClient_DeleteWIFPool(t *testing.T) {
 	})
 }
 
+// --- IAM quota retry (429) for CreateWIFPool and CreateServiceAccount ---
+
+func TestLiveGCFClient_CreateWIFPool_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/pool-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFPool(context.Background(), "123", "pool", "Pool")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
+func TestLiveGCFClient_CreateServiceAccount_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"email":"sa@proj.iam.gserviceaccount.com"}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateServiceAccount(context.Background(), "proj", "sa", "SA")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
 // --- encodeBase64 ---
 
 func TestEncodeBase64(t *testing.T) {

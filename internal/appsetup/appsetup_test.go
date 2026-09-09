@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1416,6 +1417,192 @@ func TestSetup_FindExistingInstallation_NonGitHub_ReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, found)
 	assert.Nil(t, inst)
+}
+
+// delayedReadyClient wraps a FakeClient but makes GetAppClientID return
+// ErrNotFound for the first readyAfter calls, simulating the delay GitHub
+// has when provisioning a newly created app.
+type delayedReadyClient struct {
+	*forge.FakeClient
+	readyAfter int
+	mu         sync.Mutex
+	callCount  int
+}
+
+func (d *delayedReadyClient) GetAppClientID(ctx context.Context, slug string) (string, error) {
+	d.mu.Lock()
+	d.callCount++
+	count := d.callCount
+	d.mu.Unlock()
+	if count <= d.readyAfter {
+		return "", fmt.Errorf("%w: app %s", forge.ErrNotFound, slug)
+	}
+	return d.FakeClient.GetAppClientID(ctx, slug)
+}
+
+func TestWaitForAppReady_ImmediatelyAvailable(t *testing.T) {
+	client := &forge.FakeClient{
+		AppClientIDs: map[string]string{"test-app": "Iv1.test123"},
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{client: client, ui: printer}
+
+	err := s.waitForAppReady(context.Background(), client, "test-app")
+	assert.NoError(t, err)
+}
+
+func TestWaitForAppReady_BecomesAvailableAfterRetries(t *testing.T) {
+	innerClient := &forge.FakeClient{
+		AppClientIDs: map[string]string{"test-app": "Iv1.test123"},
+	}
+	client := &delayedReadyClient{
+		FakeClient: innerClient,
+		readyAfter: 2, // first 2 calls return not-found, 3rd succeeds
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{client: client, ui: printer}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := s.waitForAppReady(ctx, client, "test-app")
+	assert.NoError(t, err)
+
+	client.mu.Lock()
+	calls := client.callCount
+	client.mu.Unlock()
+	assert.Equal(t, 3, calls, "expected 3 GetAppClientID calls: 1 quick check + 2 polls")
+}
+
+func TestWaitForAppReady_Timeout(t *testing.T) {
+	client := &forge.FakeClient{
+		// No AppClientIDs — GetAppClientID always returns ErrNotFound.
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{client: client, ui: printer, readinessTimeout: 200 * time.Millisecond}
+
+	err := s.waitForAppReady(context.Background(), client, "nonexistent-app")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out waiting for app nonexistent-app")
+}
+
+func TestEnsureInstalled_WaitsForAppReady(t *testing.T) {
+	// Simulate an app that takes a couple of polls to become available,
+	// then gets installed when the browser opens.
+	innerClient := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		AppClientIDs:  map[string]string{"test-app": "Iv1.test123"},
+	}
+	client := &delayedReadyClient{
+		FakeClient: innerClient,
+		readyAfter: 1, // first call returns not-found, second succeeds
+	}
+	browser := &installOnOpenBrowser{
+		client: innerClient,
+		inst:   forge.Installation{ID: 1, AppID: 42, AppSlug: "test-app"},
+		urlCh:  make(chan string, 1),
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{client: client, browser: browser, ui: printer}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := s.ensureInstalled(ctx, "myorg", "test-app")
+	require.NoError(t, err)
+
+	// Verify the browser was opened with the install URL.
+	select {
+	case url := <-browser.urlCh:
+		assert.Contains(t, url, "/apps/test-app/installations/new")
+	default:
+		t.Error("browser.Open was never called")
+	}
+
+	// Verify GetAppClientID was called more than once (readiness poll happened).
+	client.mu.Lock()
+	calls := client.callCount
+	client.mu.Unlock()
+	assert.GreaterOrEqual(t, calls, 2, "expected at least 2 GetAppClientID calls for readiness check")
+}
+
+func TestEnsureInstalled_ProceedsWhenReadinessTimesOut(t *testing.T) {
+	// When the readiness check times out, ensureInstalled should still
+	// open the browser and proceed with the installation poll.
+	innerClient := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		// No AppClientIDs — GetAppClientID always returns ErrNotFound,
+		// so waitForAppReady will time out.
+	}
+	browser := &installOnOpenBrowser{
+		client: innerClient,
+		inst:   forge.Installation{ID: 1, AppID: 42, AppSlug: "test-app"},
+		urlCh:  make(chan string, 1),
+	}
+	var output bytes.Buffer
+	printer := ui.New(&output)
+	s := &Setup{
+		client:           innerClient,
+		browser:          browser,
+		ui:               printer,
+		readinessTimeout: 200 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := s.ensureInstalled(ctx, "myorg", "test-app")
+	require.NoError(t, err)
+
+	// Verify the browser was opened despite the readiness timeout.
+	select {
+	case url := <-browser.urlCh:
+		assert.Contains(t, url, "/apps/test-app/installations/new")
+	default:
+		t.Error("browser.Open should be called even when readiness check times out")
+	}
+
+	// Verify the warning about readiness timeout was printed.
+	assert.Contains(t, output.String(), "readiness check failed")
+}
+
+func TestEnsureInstalled_ReturnsEarlyOnContextCancel(t *testing.T) {
+	// When the parent context is cancelled, ensureInstalled should return
+	// the context error immediately instead of opening the browser.
+	innerClient := &forge.FakeClient{
+		Installations: []forge.Installation{},
+		// No AppClientIDs — GetAppClientID always returns ErrNotFound,
+		// so waitForAppReady will keep polling until the context is cancelled.
+	}
+	browser := &installOnOpenBrowser{
+		client: innerClient,
+		inst:   forge.Installation{ID: 1, AppID: 42, AppSlug: "test-app"},
+		urlCh:  make(chan string, 1),
+	}
+	printer := ui.New(&discardWriter{})
+	s := &Setup{
+		client:           innerClient,
+		browser:          browser,
+		ui:               printer,
+		readinessTimeout: 5 * time.Second,
+	}
+
+	// Cancel the context immediately so waitForAppReady exits via
+	// the parent context rather than its own readiness timeout.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.ensureInstalled(ctx, "myorg", "test-app")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// Verify the browser was NOT opened.
+	select {
+	case <-browser.urlCh:
+		t.Error("browser.Open should not be called when context is cancelled")
+	default:
+		// expected — no browser opened
+	}
 }
 
 // discardWriter implements io.Writer, discarding all output.
