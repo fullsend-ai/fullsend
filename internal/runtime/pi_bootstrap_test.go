@@ -124,6 +124,7 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	assert.Equal(t, "never", settings["defaultProjectTrust"])
 	assert.Equal(t, false, settings["enableSkillCommands"])
 	assert.Equal(t, []any{"read", "bash", "edit", "write", "grep", "find", "ls"}, settings["defaultTools"])
+	assertPiRetrySettings(t, settings["retry"])
 
 	ext := string(storedUpload(t, store, cfg+"/fullsend-hooks.js"))
 	assert.Contains(t, ext, "export default function")
@@ -154,6 +155,31 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	assert.Contains(t, logStr, cfg+"/hooks/tirith_check.py", "hook scripts are installed under the pi config dir")
 	// Skills go through the tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
+}
+
+// TestPiSettingsJSON_RetryPolicy is the unit check for #7191: Bootstrap's
+// settings.json must carry session and provider retry numbers, not pi's
+// defaults (session 3×2 s, provider retries off).
+func TestPiSettingsJSON_RetryPolicy(t *testing.T) {
+	t.Parallel()
+	data, err := piSettingsJSON()
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	assertPiRetrySettings(t, settings["retry"])
+}
+
+func assertPiRetrySettings(t *testing.T, raw any) {
+	t.Helper()
+	retry, ok := raw.(map[string]any)
+	require.True(t, ok, "retry must be a JSON object, got %T", raw)
+	assert.Equal(t, true, retry["enabled"])
+	assert.Equal(t, float64(8), retry["maxRetries"])
+	assert.Equal(t, float64(2000), retry["baseDelayMs"])
+	provider, ok := retry["provider"].(map[string]any)
+	require.True(t, ok, "retry.provider must be a JSON object, got %T", retry["provider"])
+	assert.Equal(t, float64(6), provider["maxRetries"])
+	assert.Equal(t, float64(60000), provider["maxRetryDelayMs"])
 }
 
 func TestPiRuntimeBootstrap_NoSecurityNoHooks(t *testing.T) {

@@ -711,16 +711,33 @@ var piDefaultTools = []string{"read", "bash", "edit", "write", "grep", "find", "
 // SYSTEM.md) is never loaded in non-interactive modes; skills as slash
 // commands are irrelevant headless; retry/compaction stay on so a transient
 // provider error or a long session does not end the run
-// (parsePiStream models both); defaultTools activates every non-Windows
-// built-in (see piDefaultTools; pi also ships powershell) — --tools, when Run emits it, still replaces this.
+// (parsePiStream models both). Retry numbers are raised above pi's
+// defaults (#7191): session maxRetries 8 at baseDelayMs 2000 (2/4/8/…/256 s)
+// recovers from a burst that exhausts the default 3×2/4/8 s window;
+// provider maxRetries 6 with maxRetryDelayMs 60000 absorbs consecutive
+// 429s inside one request and honours Retry-After (the provider layer is
+// the only one that does; pi leaves it off unless retry.provider.maxRetries
+// is set). A server delay above 60 s six times in a row means the model is
+// down — failing that attempt is better than sleeping through the iteration
+// budget. defaultTools activates every non-Windows built-in (see
+// piDefaultTools; pi also ships powershell) — --tools, when Run emits it,
+// still replaces this.
 func piSettingsJSON() ([]byte, error) {
 	settings := map[string]any{
 		"defaultProjectTrust": "never",
 		"quietStartup":        true,
 		"enableSkillCommands": false,
 		"defaultTools":        piDefaultTools,
-		"retry":               map[string]any{"enabled": true},
-		"compaction":          map[string]any{"enabled": true},
+		"retry": map[string]any{
+			"enabled":     true,
+			"maxRetries":  8,
+			"baseDelayMs": 2000,
+			"provider": map[string]any{
+				"maxRetries":      6,
+				"maxRetryDelayMs": 60000,
+			},
+		},
+		"compaction": map[string]any{"enabled": true},
 	}
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
