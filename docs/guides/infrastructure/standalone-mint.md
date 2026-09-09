@@ -91,7 +91,8 @@ cp ~/Downloads/myorg-triage.2026-06-18.private-key.pem pems/triage.pem
 ## Step 3: Build the standalone mint
 
 ```bash
-cd cmd/mint
+git clone https://github.com/fullsend-ai/fullsend.git
+cd fullsend/cmd/mint
 go build -o fullsend-mint .
 ```
 
@@ -370,7 +371,8 @@ cp ~/Downloads/myorg-scanner.private-key.pem pems/scanner.pem
 chmod 600 pems/*.pem
 
 # 3. Build
-cd cmd/mint && go build -o fullsend-mint .
+git clone https://github.com/fullsend-ai/fullsend.git
+cd fullsend/cmd/mint && go build -o fullsend-mint .
 
 # 4. Run
 export ALLOWED_ORGS="myorg"
