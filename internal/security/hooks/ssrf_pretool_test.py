@@ -1091,7 +1091,7 @@ class TestEgressAllowlistParsing:
             assert ("*.atlassian.net", 0) in result
 
     def test_trailing_dot_wildcard_collapses_rejected(self, hook, capsys):
-        """*..:443 must not silently become ('*', 443) after rstrip('.')."""
+        """Trailing-dot collapse `*..:443` must not silently become (`*`, 443)."""
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*..:443,exact.host:8443"},
@@ -1103,7 +1103,7 @@ class TestEgressAllowlistParsing:
             assert "wildcard entry '*..:443'" in captured.err
 
     def test_overly_broad_wildcard_rejected(self, hook, capsys):
-        """*.com (label depth < 2) is rejected with a warning."""
+        """Overly broad pattern `*.com` (label depth < 2) is rejected with a warning."""
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*.com:443,*.atlassian.net:443"},
@@ -1131,6 +1131,19 @@ class TestEgressAllowlistParsing:
             assert "malformed port" in captured.err
             assert "host.internal:notaport" in captured.err
 
+    def test_wildcard_malformed_port_warns(self, hook, capsys):
+        """Wildcard entry with non-numeric port is rejected with a warning."""
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:notaport,good.host:443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert len(result) == 1
+            assert ("good.host", 443) in result
+            captured = capsys.readouterr()
+            assert "malformed port" in captured.err
+            assert "*.atlassian.net:notaport" in captured.err
+
 
 class TestWildcardAllowlistMatching:
     """Verify wildcard suffix matching in _is_host_allowlisted."""
@@ -1150,7 +1163,7 @@ class TestWildcardAllowlistMatching:
             assert hook._is_host_allowlisted("sub.redhat.atlassian.net", 443) is True
 
     def test_wildcard_does_not_match_base_domain(self, hook):
-        """*.atlassian.net must not match atlassian.net (no subdomain)."""
+        """Wildcard `*.atlassian.net` must not match atlassian.net (no subdomain)."""
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
@@ -1158,7 +1171,7 @@ class TestWildcardAllowlistMatching:
             assert hook._is_host_allowlisted("atlassian.net", 443) is False
 
     def test_wildcard_does_not_match_suffix_spoof(self, hook):
-        """*.atlassian.net must not match atlassian.net.evil.com."""
+        """Wildcard `*.atlassian.net` must not match atlassian.net.evil.com."""
         with mock.patch.dict(
             os.environ,
             {"FULLSEND_EGRESS_ALLOWLIST": "*.atlassian.net:443"},
