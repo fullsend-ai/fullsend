@@ -322,6 +322,52 @@ func TestInjectFrontmatterSkills_MultilineFlowStyle(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
+func TestInjectFrontmatterSkills_MultilineFlowStyleBlankLine(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\n  skill-a,\n\n]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.NotContains(t, got, "skill-a,")
+	assert.NotContains(t, got, "]")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_MultilineFlowStyleMultipleBlankLines(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\n  skill-a,\n\n\n]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.NotContains(t, got, "skill-a,")
+	assert.NotContains(t, got, "]")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_FlowStyleFollowedByBlankLine(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [skill-a]\n\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.Contains(t, got, "model: opus")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
 func TestInjectFrontmatterSkills_InvalidSkillName(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\n---\nBody\n"

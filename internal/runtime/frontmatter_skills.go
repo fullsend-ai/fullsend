@@ -228,9 +228,6 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	// items (e.g., YAML anchors: "skills: &defaults\n  - skill-a").
 	if flowStyleSkills && lastSkillLineIdx >= 0 {
 		for j := lastSkillLineIdx + 1; j < len(frontLines); j++ {
-			if len(frontLines[j]) == 0 {
-				break
-			}
 			jTrimmed := strings.TrimSpace(string(frontLines[j]))
 			if jTrimmed == "" {
 				flowEndIdx = j
