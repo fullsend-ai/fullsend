@@ -23,9 +23,6 @@ context/
 │   └── reviews/<record-key>.order
 ├── relations/reviews.json
 ├── history/agent-runs.json
-├── changes/
-│   ├── diff.patch
-│   └── commits.json
 ├── checks/<record-key>/
 │   ├── metadata.json
 │   └── log.txt
@@ -36,12 +33,11 @@ context/
 `index.json` conforms to
 [`index.schema.json`](index.schema.json) and enumerates every other staged file.
 `entity/metadata.json`, `relations/reviews.json`,
-`history/agent-runs.json`, `changes/commits.json`, check metadata, and
+`history/agent-runs.json`, check metadata, and
 `state/threads.json` conform respectively to
 [`entity.schema.json`](entity.schema.json),
 [`reviews.schema.json`](reviews.schema.json),
 [`agent-runs.schema.json`](agent-runs.schema.json),
-[`commits.schema.json`](commits.schema.json),
 [`check.schema.json`](check.schema.json), and
 [`thread-state.schema.json`](thread-state.schema.json). `summary.md` is a
 bounded navigation view generated only from the manifest and state documents;
@@ -62,6 +58,13 @@ The forge record ID is the platform's immutable opaque ID, not a mutable URL,
 ordinal, database row position, or display number. Record kinds are `comment`,
 `review`, `check`, `thread`, and `entity`. This derivation makes paths safe and
 stable without requiring consumers to parse forge-specific IDs.
+
+The tree contains forge entity state that is not reconstructible from the
+target Git checkout. Diffs, commits, changed-file lists, branches, and revision
+topology are repository context and are not staged here. Fullsend provides the
+required Git objects and refs separately, and controllers may derive filtered
+diff or history projections outside this tree. Git object IDs occur here only
+as relationship values in review, thread, and agent-run documents.
 
 Comment and review Markdown files are self-contained records with this exact
 UTF-8 layout; header values are canonical JSON strings (or `null`) on one line:
@@ -132,7 +135,7 @@ record ID and therefore a new record key.
 ## Relationships, history, and collection profiles
 
 `relations/reviews.json` preserves formal review outcomes and the association
-between reviews, replies, reviewed revisions, and diff locations separately
+between reviews, replies, reviewed revisions, and code locations separately
 from mutable resolution state. Location fields are optional because forges
 expose different subsets. `history/agent-runs.json` contains only immutable,
 forge-observable Fullsend run receipts and relates an agent result to its input
@@ -158,7 +161,7 @@ JSON is UTF-8 serialized with the JSON Canonicalization Scheme (RFC 8785), with
 no byte-order mark or trailing newline. Arrays use the order defined below;
 objects use RFC 8785 member ordering.
 
-Text bodies, patches, and logs are UTF-8 after the v1 filter pipeline, use LF
+Text bodies and logs are UTF-8 after the v1 filter pipeline, use LF
 line endings, have no byte-order mark, and end in exactly one LF. The pipeline
 applies size bounds, Unicode safety normalization, secret/sensitive-data
 redaction, and injection scanning in that order. `filter.status` is:
@@ -182,16 +185,15 @@ requires a new filter version. Removing or reinterpreting a status requires v2.
 Manifest record arrays and record filenames are sorted by source `created_at`,
 then by the record key's ASCII byte order. The reserved entity-body order key
 sorts before them. Thread arrays use thread creation time and then thread ID;
-`record_keys` and thread `.order` lines preserve forge thread order. Commit
-arrays preserve forge history order. Agent receipts sort by completion time and
-ID; manifest files sort by path, gaps by scope and code, and filter findings by
-code. Other arrays state their ordering in their owning schema before being
-added to v1.
+`record_keys` and thread `.order` lines preserve forge thread order. Agent
+receipts sort by completion time and ID; manifest files sort by path, gaps by
+scope and code, and filter findings by code. Other arrays state their ordering
+in their owning schema before being added to v1.
 
 `generated_at` or another runner-clock value is forbidden anywhere under the
 context root. Acquisition timing belongs in run telemetry outside the staged
-tree. Source-provided timestamps, entity update time, PR head SHA, and check
-attempt IDs are permitted because they describe forge state. With identical
+tree. Source-provided timestamps, entity update time, Git object IDs used as
+relationship values, and check attempt IDs are permitted. With identical
 forge responses, `collection_profile`, size bounds, and `filter_version`, the
 complete tree has identical paths and bytes.
 
@@ -206,7 +208,7 @@ startup after an unclean termination.
 
 Artifact collectors must exclude entity-context trees. Retained diagnostics
 may contain bounded record counts, content digests, filter codes/counts, and
-cleanup errors, but never entity bodies, comment/review bodies, diffs, or logs.
+cleanup errors, but never entity bodies, comment/review bodies, or logs.
 
 ## Compatibility
 

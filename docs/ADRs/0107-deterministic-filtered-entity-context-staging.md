@@ -23,7 +23,7 @@ Accepted
 
 [Issue #6407](https://github.com/fullsend-ai/fullsend/issues/6407) identifies
 that agents and harness scripts repeatedly fetch the issue or change proposal
-they are handling, including comments, reviews, diffs, checks, and logs. Those
+they are handling, including comments, reviews, checks, and logs. Those
 tool calls spend tokens, make runs depend on runtime network access, and give
 each consumer a different view when the entity changes during a run.
 
@@ -63,12 +63,19 @@ or review body. No runner-clock timestamp enters the staged tree. Given the
 same forge state and filter version, implementations produce the same paths
 and bytes; breaking that guarantee requires a new major specification.
 
+The snapshot contains forge state that cannot be reconstructed from the target
+Git checkout. It does not copy diffs, commit history, changed-file manifests,
+or repository revision metadata. Fullsend provisions sufficient Git objects and
+refs separately; controllers derive and filter diffs or commit projections for
+agents and sub-agents that need them. Git object IDs appear in entity context
+only to relate reviews, threads, comments, and agent runs to repository state.
+
 Each comment and review is a self-contained attributed record whose filename
 sorts chronologically. The initial body uses the same record format and sorts
 first. Order files define whole-conversation and review-focused projections and
 refer to the same records rather than copying content. New replies append
 without rewriting unchanged record files. Review-thread relationships, commit
-history, and immutable Fullsend agent-run receipts preserve enough provenance
+references, and immutable Fullsend agent-run receipts preserve enough provenance
 to relate a finding, the reviewed revision, a subsequent fix, and a re-review.
 
 The pre-script may inspect the host snapshot and skip the run. It cannot mutate
@@ -89,13 +96,12 @@ removes the sandbox copy after its last sandbox consumer and the host copy after
 the post-script, on success, failure, skip, or handled cancellation; startup
 also scavenges orphaned context directories after abnormal termination. Context
 is excluded from retained run artifacts by construction. Diagnostics may retain
-only bounded counts, digests, and filtering findings, never bodies, diffs, or
-logs.
+only bounded counts, digests, and filtering findings, never bodies or logs.
 
 ## Consequences
 
 - Agents start with one filtered, versioned view and avoid duplicate forge reads, but token and provider-cache savings are conditional on selective projections and segmented runtime injection rather than automatic consequences of staging files.
-- Fullsend must add collection profiles, segmented context input and cache-boundary support to runtime backends, and telemetry for forge calls, staged/read bytes, input/cache tokens, latency, cost, and history-recall quality before claiming an efficiency improvement.
+- Fullsend must provision the Git objects and refs required by each run, let controllers derive and filter repository projections on demand, and add segmented context input, cache-boundary support, and efficiency telemetry before claiming an improvement.
 - Shipped and custom review, fix, and code agents must migrate from mutable sticky summaries and single-body hand-offs to discovered entity-context projections, publish immutable per-run result receipts while retaining human-facing summaries, and anchor decisions to record keys and revisions.
-- Forge adapters must expose review/reply relationships, locations, reviewed revisions, commits, comparisons, checks, and immutable agent-result references through `forge.Client`; unavailable or unrecoverable edit and force-push history is an explicit manifest gap, not a silent omission.
+- Forge adapters must expose review/reply relationships, locations, reviewed-revision references, checks, and immutable agent-result references through `forge.Client`; unavailable or unrecoverable forge history is an explicit manifest gap, not a silent omission.
 - Snapshot assembly adds bounded startup latency and storage and can become stale, so collection profiles avoid indiscriminate log/history fetching and deterministic post-processing still validates relevant revisions before any forge mutation.

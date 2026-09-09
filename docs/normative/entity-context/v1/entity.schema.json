@@ -19,10 +19,7 @@
       "type": "array",
       "items": { "type": "string" },
       "uniqueItems": true
-    },
-    "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
-    "head_ref": { "type": "string" },
-    "base_ref": { "type": "string" }
+    }
   },
   "additionalProperties": false
 }

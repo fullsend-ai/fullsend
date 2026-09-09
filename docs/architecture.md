@@ -173,9 +173,11 @@ repo baseline and overrides)
 - Deterministic entity context: before the pre-script, the runner fetches one
   bounded entity snapshot through `forge.Client`, filters untrusted content,
   and stages a versioned per-record file tree with relationship, projection,
-  and immutable agent-run lineage metadata outside the repository. Scripts and
-  the sandbox use `FULLSEND_CONTEXT_DIR` with the same relative paths; runtimes
-  may inject ordered records as separate cacheable input blocks
+  and immutable agent-run lineage metadata outside the repository. Repository
+  diffs and commit history remain derived from the separately provisioned Git
+  checkout; entity context carries Git object IDs only as relationship anchors.
+  Scripts and the sandbox use `FULLSEND_CONTEXT_DIR` with the same relative
+  paths; runtimes may inject ordered records as separate cacheable input blocks
   ([ADR 0107](ADRs/0107-deterministic-filtered-entity-context-staging.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors

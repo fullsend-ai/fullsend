@@ -52,7 +52,6 @@
           "review_record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
           "path": { "type": "string" },
-          "diff_hunk": { "type": "string" },
           "line": { "type": ["integer", "null"], "minimum": 1 },
           "side": { "enum": ["left", "right", null] },
           "start_line": { "type": ["integer", "null"], "minimum": 1 },
