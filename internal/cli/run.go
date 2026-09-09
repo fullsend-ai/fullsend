@@ -2253,30 +2253,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
-		// Short-circuit on context cancellation: persist partial metrics
-		// and finalize the agent span immediately, before extraction and
-		// validation that would be pointless on a dead sandbox. GitHub
-		// Actions cancellation (SIGTERM) terminates the process shortly
-		// after — writing metrics here ensures the artifact upload step
-		// (if: always()) captures the partial usage data (#6936).
-		//
-		// NOTE: TotalCostUSD will be zero in the persisted metrics because
-		// dollar cost is only available from the terminal ResultEvent,
-		// which a cancelled run never emits. Token counts (input, output,
-		// cache_read, cache_creation) are captured via the deferred
-		// TokensEvent and will be non-zero. See #6936 for background.
-		if cancelErr := ctx.Err(); cancelErr != nil {
-			if runErr == nil {
-				runErr = cancelErr
-			}
-			attachIterationContent("error")
-			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
-			lastExitCode = exitCode
-			printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
-			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
-				printer.StepWarn("Failed to write metrics.json: " + err.Error())
-			}
-			return fmt.Errorf("run cancelled (iteration %d): %w", iteration, runErr)
+		if cancelled, cancelExitCode, cancelledErr := handleRunCancellation(
+			ctx, runErr, iteration, exitCode, rt.System(), rt.Name(),
+			&metrics, aggMetrics, runDir, agentSpan, attachIterationContent,
+			printer, lastIterElapsed,
+		); cancelled {
+			lastExitCode = cancelExitCode
+			return cancelledErr
 		}
 
 		if runErr != nil {
@@ -3700,6 +3683,52 @@ func finalizeSandboxSpan(span trace.Span, err error) {
 // agent-written result line could otherwise flood the CI job log.
 func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 	return truncateStatusMsgTo(te.DisplayMessage(), maxSpanEventMsgLen)
+}
+
+// handleRunCancellation short-circuits the per-iteration loop in runAgent on
+// context cancellation: it persists partial metrics and finalizes the agent
+// span immediately, before extraction and validation that would be
+// pointless on a dead sandbox. GitHub Actions cancellation (SIGTERM)
+// terminates the process shortly after — writing metrics here ensures the
+// artifact upload step (if: always()) captures the partial usage data
+// (#6936).
+//
+// NOTE: TotalCostUSD will be zero in the persisted metrics because dollar
+// cost is only available from the terminal ResultEvent, which a cancelled
+// run never emits. Token counts (input, output, cache_read, cache_creation)
+// are captured via the deferred TokensEvent and will be non-zero. See #6936
+// for background.
+//
+// cancelled is false when ctx is still live, in which case the caller's
+// normal control flow continues unchanged; the other return values are
+// meaningless in that case.
+func handleRunCancellation(
+	ctx context.Context,
+	runErr error,
+	iteration, exitCode int,
+	system, runtimeName string,
+	metrics *agentruntime.RunMetrics,
+	aggMetrics aggregateMetrics,
+	runDir string,
+	agentSpan trace.Span,
+	attachIterationContent func(finishReason string),
+	printer *ui.Printer,
+	lastIterElapsed time.Duration,
+) (cancelled bool, lastExitCode int, err error) {
+	cancelErr := ctx.Err()
+	if cancelErr == nil {
+		return false, 0, nil
+	}
+	if runErr == nil {
+		runErr = cancelErr
+	}
+	attachIterationContent("error")
+	finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, system, runtimeName, metrics, "")
+	printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
+	if writeErr := writeMetricsJSON(runDir, aggMetrics); writeErr != nil {
+		printer.StepWarn("Failed to write metrics.json: " + writeErr.Error())
+	}
+	return true, exitCode, fmt.Errorf("run cancelled (iteration %d): %w", iteration, runErr)
 }
 
 // finalizeAgentSpan records the end-of-iteration attributes and status on an

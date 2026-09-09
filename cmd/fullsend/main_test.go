@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -69,20 +70,40 @@ func TestSignalContext_AbsorbsSubsequentSignals(t *testing.T) {
 }
 
 // TestSignalContext_CleanupStopsForwarding verifies that after cleanup() is
-// called, signal forwarding is disabled. This ensures signalContext does not
-// leak a global signal registration.
+// called, signal forwarding to signalContext's channel is disabled: a signal
+// sent after cleanup() must not cancel ctx. A probe registered independently
+// via signal.Notify confirms the signal was actually delivered by the OS
+// (so the assertion isn't vacuously true because the signal never arrived),
+// without relying on ctx or signalContext's own (now-detached) channel and
+// without killing the test process.
 func TestSignalContext_CleanupStopsForwarding(t *testing.T) {
 	ctx, cleanup := signalContext()
-
-	// Call cleanup before sending any signal.
 	cleanup()
 
-	// After cleanup, the context should not yet be cancelled
-	// (no signal was sent before cleanup).
+	probe := make(chan os.Signal, 1)
+	signal.Notify(probe, syscall.SIGINT)
+	defer signal.Stop(probe)
+
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("FindProcess: %v", err)
+	}
+	if err := proc.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+
+	select {
+	case <-probe:
+		// Expected: the OS still delivered SIGINT to an independent
+		// receiver, so the process is alive and the signal was sent.
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe did not receive SIGINT within 2s; signal was never delivered")
+	}
+
 	select {
 	case <-ctx.Done():
-		t.Fatal("context was cancelled before any signal was sent")
+		t.Fatal("context was cancelled after cleanup(); signal.Stop did not disable forwarding")
 	default:
-		// Expected: context still active.
+		// Expected: forwarding disabled, context still active.
 	}
 }
