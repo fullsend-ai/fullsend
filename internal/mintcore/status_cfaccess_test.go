@@ -375,7 +375,7 @@ func TestStatusCFAccess_JWKSEndpointError_Returns401(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Host, team+".cloudflareaccess.com") {
