@@ -27,7 +27,7 @@ For field-by-field `config.yaml` documentation, see the
    ```
 
 3. If it does not have that header, it is yours (or a vendor preset you
-   treat as read-through — see [config.base.yaml](#configbaseyaml-vendor-preset) below).
+   treat as read-through — see [config.base.yaml](#config-base-yaml-vendor-preset) below).
 
 The `Upstream:` URL points at the scaffold inside the fullsend project.
 Adopters customize through `config.yaml` and harness overlays, not by
@@ -62,10 +62,13 @@ your-repo/
 | `.fullsend/config.yaml` | Overlay. Runtime, roles, registered agents, allowlists, inference, mint URL. Omitted keys fall through to `config.base.yaml` then code defaults. | **Yes.** Re-running setup keeps this file unless you pass a flag that targets a key (`--runtime`, `--agents`, `--mint-url`, `--inference-*`, `--openai-*`). |
 | `.fullsend/config.base.yaml` | Present only with `--config` (a vendor preset). Shared baseline. | Treat as read-through. Refresh it by re-running setup with `--config`. Put repo-specific values in `config.yaml`. |
 
-Repository **variables** and **secrets** (`FULLSEND_MINT_URL`,
-`FULLSEND_GCP_REGION`, `FULLSEND_GCP_PROJECT_ID`,
-`FULLSEND_GCP_WIF_PROVIDER`, and similar) are not files. Change them with
-`fullsend github set` — see [Operations](../getting-started/operations.md).
+Repository **variables** and **secrets** (`FULLSEND_GCP_REGION`,
+`FULLSEND_REVIEW_CLIENT_ID`, `FULLSEND_PER_REPO_INSTALL`,
+`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`) are not files.
+Change them with `fullsend github set` — see
+[Operations](../getting-started/operations.md). The mint URL is not a
+`github set` key: it is the `mint_url` field in `.fullsend/config.yaml`,
+set via `fullsend github setup --mint-url`.
 
 ### config.yaml
 

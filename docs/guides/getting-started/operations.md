@@ -48,7 +48,7 @@ header, plus GitLab `.gitlab/ci/fullsend-*.yml`) refresh on re-run.
 `.fullsend/config.yaml` is kept unless you pass a config-targeting flag.
 See [Working with the `.fullsend` directory](../user/fullsend-directory.md).
 
-After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo. Omit config-targeting flags (`--inference-project`, `--inference-wif-provider`, `--runtime`, `--agents`, and similar) for a workflow-only sync — the existing `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` secrets are reused:
+After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo. Omit config-targeting flags (`--inference-project`, `--inference-wif-provider`, `--runtime`, `--agents`, and similar) to keep `.fullsend/config.yaml` untouched and reuse the existing `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` secrets. This is not a fully side-effect-free sync, though: the `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` repo variables are always rewritten to their effective values, falling back to the CLI defaults if `--mint-url`/`--inference-region` are omitted — so a flag-less re-run silently resets a previously customized mint URL or region. If the repo was vendored, also pass `--vendor` again; otherwise this run removes the vendored assets (see [Optional vendored files](../user/fullsend-directory.md#optional-vendored-files)).
 
 ```bash
 fullsend github setup "$OWNER/$REPO"
