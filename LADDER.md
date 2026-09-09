@@ -15,8 +15,7 @@ nomination process, and what maintainers do — see
 
 **What it means:** You have been approved to submit pull requests from
 your own fork, including work produced manually or with tools outside
-Fullsend. The Write role is required to invoke Fullsend's mutation
-agents, which can push code to branches in the main repository.
+Fullsend.
 
 **What it unlocks:**
 
@@ -46,10 +45,6 @@ repository.
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
 - Automatic e2e CI triggering on your PRs (no maintainer label needed)
-
-These are observation and moderation capabilities across both issues and
-PRs. They do not let agents create or modify repository branches; that
-mutation boundary starts at the Write role.
 
 **Criteria:**
 
