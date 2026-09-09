@@ -668,7 +668,7 @@ func TestBuildWASM(t *testing.T) {
 		assert.NotContains(t, args, "-tags cfaccess")
 	})
 
-	t.Run("includes cfaccess build tag when StatusCFAccess.Aud is set", func(t *testing.T) {
+	t.Run("includes cfaccess build tag when Aud and Team are both set", func(t *testing.T) {
 		origExec := execCombinedOutputFn
 		var capturedCmd *exec.Cmd
 		execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
