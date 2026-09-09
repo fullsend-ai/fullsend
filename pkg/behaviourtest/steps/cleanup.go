@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -45,6 +46,39 @@ func cleanupRetry(logf func(string, ...any), desc string, fn func() error) error
 		}
 	}
 	return lastErr
+}
+
+// ValidateSlotClean reads the repo slot's config and fails if a previous
+// scenario left mutable state behind (e.g. kill switch on, OWNERS auth
+// enabled). Called before every scenario so stale state is caught
+// immediately rather than causing silent false positives downstream.
+func ValidateSlotClean(w *world.World) error {
+	// Unit tests construct bare worlds with no SCM driver;
+	// there is no remote repo to validate in that case.
+	if w.SCM == nil || w.Org == "" || w.RepoName == "" {
+		return nil
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(),
+		w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return nil
+	}
+	var stale []string
+	if cfg.IsKillSwitchActive() {
+		stale = append(stale, "kill_switch is active")
+	}
+	if cfg.AuthorizationOwnersFile() {
+		stale = append(stale, "owners_file authorization is enabled")
+	}
+	if len(stale) > 0 {
+		return fmt.Errorf("repo slot has stale state from a previous scenario (cleanup likely failed): %s", strings.Join(stale, ", "))
+	}
+	return nil
 }
 
 func CleanupScenario(w *world.World) {
@@ -242,6 +276,11 @@ func CleanupScenario(w *world.World) {
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: restore agents: %v", err)
 		}
+	}
+
+	// --- OWNERS auth cleanup ---
+	if w.OwnersAuthActivated {
+		cleanupOwnersAuth(w)
 	}
 
 	// --- Reaction notification cleanup ---

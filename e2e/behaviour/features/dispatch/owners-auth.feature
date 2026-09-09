@@ -1,0 +1,81 @@
+Feature: OWNERS file authorization for bash routing
+
+  Verify that the OWNERS-file authorization path fires when
+  owners_file is in the authorization providers list in config.yaml. Scenarios
+  trigger via issues.opened, which unconditionally calls
+  is_event_actor_authorized and exercises has_repo_permission.
+
+  The outsider identity (TEST_ACTOR_OUTSIDER_PAT) has no collaborator
+  access, so authorization succeeds only through OWNERS — the denial
+  scenario verifies a reviewer cannot escalate to write-level access.
+  The write actor (TEST_ACTOR_WRITE_PAT) has write-level collaborator
+  access and is NOT in OWNERS, so fallthrough scenarios verify that
+  OWNERS misses correctly fall back to the collaborator API.
+
+  Background:
+    Given the enrolled test repository
+
+  Scenario: Triage dispatches via OWNERS approver path when enabled
+    Given an OWNERS file listing the outsider as an approver
+    And OWNERS authorization is enabled
+    And a dummy agent that would:
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+    When the outsider opens an issue for OWNERS auth testing
+    Then the triage workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as approver (requested: triage)"
+
+  Scenario: OWNERS alias resolves to grant access
+    Given an OWNERS file with alias "test-team" as approver
+    And an OWNERS_ALIASES file mapping "test-team" to the outsider
+    And OWNERS authorization is enabled
+    And a dummy agent that would:
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+    When the outsider opens an issue for OWNERS auth testing
+    Then the triage workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as approver (requested: triage)"
+
+  Scenario: OWNERS reviewer can triage
+    Given an OWNERS file listing the outsider as a reviewer only
+    And OWNERS authorization is enabled
+    And a dummy agent that would:
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+    When the outsider opens an issue for OWNERS auth testing
+    Then the triage workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as reviewer (requested: triage)"
+
+  Scenario: OWNERS reviewer is denied write-level access
+    Given an OWNERS file listing the outsider as a reviewer
+    And OWNERS authorization is enabled
+    And an issue
+    When the outsider posts "/fs-code" on the issue
+    Then the dispatch run does not authorize via OWNERS
+
+  Scenario: Unlisted collaborator falls through to API authorization
+    Given an OWNERS file listing the outsider as a reviewer only
+    And OWNERS authorization is enabled
+    And a dummy agent that would:
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+    When the write actor opens an issue for OWNERS auth testing
+    Then the triage workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
+
+  Scenario: Triage dispatches without OWNERS path when not opted in
+    Given an OWNERS file listing the outsider as an approver
+    And a dummy agent that would:
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+    When the write actor opens an issue for OWNERS auth testing
+    Then the triage workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
