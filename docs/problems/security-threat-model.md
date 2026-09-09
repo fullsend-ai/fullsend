@@ -411,6 +411,8 @@ DOS has elements that touch several existing threats:
 
 ## Threat 7: Coordinated inauthentic contributions
 
+*A distinct threat class, not a ranked item — see [Threat priority](#threat-priority-ranked).*
+
 ### The attack
 
 An attacker — an agent, or a human using agents — systematically targets a project's issue tracker, PR queue, and adjacent repositories to manufacture credibility, exhaust maintainer attention, and promote competing work. The colloquial name in the wild is "claws." Luke Hinds's ["The Day of the Claws"](https://decodebytes.substack.com/p/the-day-of-the-claws) is a first-person account of this pattern against sigstore, in-toto, and SLSA.
