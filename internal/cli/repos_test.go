@@ -2181,22 +2181,32 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 	tests := []struct {
 		name      string
 		url       string
+		forge     string
 		wantError string
 	}{
 		{
 			name:      "non-HTTPS scheme",
 			url:       "http://gitlab.example.com",
+			forge:     repos.ForgeGitLab,
 			wantError: "--gitlab-url must be a valid HTTPS URL",
 		},
 		{
 			name:      "invalid URL",
 			url:       "not-a-url",
+			forge:     repos.ForgeGitLab,
 			wantError: "--gitlab-url must be a valid HTTPS URL",
 		},
 		{
 			name:      "URL with path",
 			url:       "https://gitlab.example.com/some/path",
+			forge:     repos.ForgeGitLab,
 			wantError: "--gitlab-url must not contain a path component",
+		},
+		{
+			name:      "conflicts with --forge=github",
+			url:       "https://gitlab.example.com",
+			forge:     repos.ForgeGitHub,
+			wantError: "--gitlab-url cannot be combined with --forge=github",
 		},
 	}
 
@@ -2206,7 +2216,7 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 				manifest:    filepath.Join(t.TempDir(), "repos.yaml"),
 				concurrency: 4,
 				repoFilter:  []string{"group/project"},
-				forge:       repos.ForgeGitLab,
+				forge:       tt.forge,
 				gitlabURL:   tt.url,
 				testClient:  newInstallFakeClient("group/project"),
 			})

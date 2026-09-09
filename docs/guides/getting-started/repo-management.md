@@ -97,7 +97,8 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
 `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
 none are set. You can also pass `--gitlab-url` to `fullsend repos install`
-to set `gitlab.url` in the manifest during bootstrapping.
+to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
+when no forge is specified).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value

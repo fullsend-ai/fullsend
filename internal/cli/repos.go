@@ -496,7 +496,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
-	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest when bootstrapping GitLab repos")
+	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
@@ -528,6 +528,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 	if opts.gitlabURL != "" {
+		if opts.forge == repos.ForgeGitHub {
+			return fmt.Errorf("--gitlab-url cannot be combined with --forge=github")
+		}
 		gu, guErr := url.Parse(opts.gitlabURL)
 		if guErr != nil || gu.Scheme != "https" || gu.Host == "" {
 			return fmt.Errorf("--gitlab-url must be a valid HTTPS URL, got %q", opts.gitlabURL)
@@ -719,7 +722,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				opts.repoFilter = filtered
 				if len(filtered) == 0 {
-					announceGitlabURLDryRun(printer, opts.gitlabURL)
+					announceGitLabURLDryRun(printer, opts.gitlabURL)
 					printer.Blank()
 					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
 						len(newlyAdded)))
@@ -735,7 +738,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if opts.gitlabURL != "" {
 		if len(manifest.GitLab.Repos) > 0 {
 			if opts.dryRun {
-				announceGitlabURLDryRun(printer, opts.gitlabURL)
+				announceGitLabURLDryRun(printer, opts.gitlabURL)
 			} else {
 				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
 					return fmt.Errorf("writing gitlab.url to manifest: %w", err)
@@ -1282,11 +1285,11 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 	return wifProvider, nil
 }
 
-// announceGitlabURLDryRun prints a dry-run preview message for --gitlab-url
+// announceGitLabURLDryRun prints a dry-run preview message for --gitlab-url
 // when the flag is set. Centralizes the message and guard so both the
 // early-return path and the main --gitlab-url handler share a single
 // definition.
-func announceGitlabURLDryRun(printer *ui.Printer, gitlabURL string) {
+func announceGitLabURLDryRun(printer *ui.Printer, gitlabURL string) {
 	if gitlabURL != "" {
 		printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", gitlabURL))
 	}
