@@ -23,7 +23,27 @@ Follow these steps in order. Do not skip steps.
 Determine which repository should receive this issue:
 
 - If the user specifies a repo, use it.
-- If the current working directory is a git repo, default to its `origin` remote.
+- **fullsend-ai/experiments vs fullsend-ai/fullsend:** These are sibling
+  repositories. `experiments/` in a fullsend checkout is a git submodule of
+  [`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments).
+  Choose the tracker by what would change, not by the current working
+  directory:
+
+  | File in `fullsend-ai/experiments` | File in `fullsend-ai/fullsend` |
+  |-----------------------------------|--------------------------------|
+  | Experiment source, conventions, lint scripts, CI, or config **inside** the experiments repository | Submodule integration: `.gitmodules`, CODEOWNERS for `experiments`, Renovate bump PRs, `docs/experiments` symlink, ignore rules, docs-site wiring |
+  | New spikes and prototypes that live as experiment directories | Fullsend product or platform work that cites an experiment as research or evidence |
+
+  When the current directory is the experiments submodule or a clone of
+  `fullsend-ai/experiments`, still apply this table — submodule-integration
+  work belongs in fullsend even if you are standing in the submodule.
+  Canonical policy: [CONTRIBUTING.md](../../CONTRIBUTING.md#where-to-file-experiments-related-issues).
+- If the item is experiments-related but the table above does not decide a
+  single tracker, file in `fullsend-ai/fullsend` and link the
+  [experiments issue tracker](https://github.com/fullsend-ai/experiments/issues)
+  in the body.
+- If the current working directory is a git repo and the table above does not
+  apply, default to its `origin` remote.
 - If neither applies, ask.
 
 Run `gh repo view` to confirm you have access and note the repo's full `owner/name`.
@@ -39,6 +59,10 @@ gh issue list --repo <owner/name> --state all --search "<key terms>"
 Try at least two different search queries using different terms from the user's
 description. Search broadly — use core nouns and verbs, not the user's exact
 phrasing.
+
+If the topic mentions experiments, spikes, or the `experiments/` submodule,
+search **both** `fullsend-ai/fullsend` and `fullsend-ai/experiments`. The same
+work may already be tracked in the other repository.
 
 **If you find related issues:**
 
