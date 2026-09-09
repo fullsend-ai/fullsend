@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -2301,6 +2302,97 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
 	}
 	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv], "FULLSEND_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
+}
+
+func TestProviderOnlyKeys_WorkflowToken(t *testing.T) {
+	assert.True(t, providerOnlyKeys[workflowTokenEnv])
+	assert.True(t, reservedSandboxKeys[workflowTokenEnv], "env.sandbox must not inject FULLSEND_WORKFLOW_TOKEN")
+	assert.True(t, harnessExpansionDenied(workflowTokenEnv))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv])
+
+	t.Setenv("SAFE_VAR", "ok")
+	val, ok := harnessEnvLookup("SAFE_VAR")
+	assert.True(t, ok)
+	assert.Equal(t, "ok", val)
+	assert.Equal(t, "ok", harnessEnvExpand("SAFE_VAR"))
+
+	_, ok = harnessEnvLookup(workflowTokenEnv)
+	assert.False(t, ok, "lookup must fail closed so harness validation rejects the reference")
+}
+
+func TestHarnessExpansion_RefusesWorkflowTokenAtEachSite(t *testing.T) {
+	const token = "ghs_workflow_token_value_xx"
+	t.Setenv(workflowTokenEnv, token)
+
+	t.Run("runner_env validation", func(t *testing.T) {
+		h := &harness.Harness{RunnerEnv: map[string]string{"X": "${" + workflowTokenEnv + "}"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.runner validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.sandbox validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("host_files src validation", func(t *testing.T) {
+		h := &harness.Harness{HostFiles: []harness.HostFile{{Src: "${" + workflowTokenEnv + "}", Dest: "/tmp/x"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("validation_loop.schema validation", func(t *testing.T) {
+		h := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Schema: "${" + workflowTokenEnv + "}/schema.json"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("runner_env env.runner env.sandbox schema expansion", func(t *testing.T) {
+		assert.Empty(t, harnessEnvExpand(workflowTokenEnv))
+		assert.NotContains(t, os.Expand("${"+workflowTokenEnv+"}", harnessEnvExpand), token)
+	})
+	t.Run("host_files src expansion", func(t *testing.T) {
+		assert.Empty(t, safeExpandEnv("${"+workflowTokenEnv+"}"))
+		assert.NotContains(t, safeExpandEnv("${"+workflowTokenEnv+"}"), token)
+	})
+	t.Run("host_files content expansion", func(t *testing.T) {
+		got := shellSafeExpandEnv("token=${" + workflowTokenEnv + "}")
+		assert.NotContains(t, got, token)
+	})
+}
+
+func TestBuildSandboxEnvLines_SkipsWorkflowToken(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "coder",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":     "allowed",
+				workflowTokenEnv: "ghs_should_not_land_in_sandbox",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestStripOIDCEnv_StripsWorkflowToken(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		workflowTokenEnv + "=ghs_workflow_token_value_xx",
+		"SAFE_VAR=value",
+	}
+	result := stripOIDCEnv(env)
+	assert.Equal(t, []string{"PATH=/usr/bin", "SAFE_VAR=value"}, result)
 }
 
 func TestNeedsCrossCompilation(t *testing.T) {
@@ -2869,8 +2961,18 @@ func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
 	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
 }
 
+func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
+	const token = "ghs_workflow_redact_me_xx"
+	t.Setenv(workflowTokenEnv, token)
+	out := redactFeedback("leaked "+token+" here", nil)
+	assert.NotContains(t, out, token)
+	assert.Contains(t, out, "[REDACTED:"+workflowTokenEnv+"]")
+	assert.Contains(t, out, "leaked ")
+	assert.Contains(t, out, " here")
+}
+
 func TestSensitiveEnvKey(t *testing.T) {
-	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS"} {
+	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "FULLSEND_WORKFLOW_TOKEN"} {
 		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)
 	}
 	for _, k := range []string{"TARGET_BRANCH", "REPO_FULL_NAME", "ISSUE_NUMBER", "KEYCHAIN"} {
@@ -5354,6 +5456,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	}
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GH_TOKEN", "ghp_original_pat")
 	t.Setenv("PUSH_TOKEN", "ghp_original_push")
 	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
@@ -5371,6 +5474,111 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
 	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
 	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "non-Actions mint must not derive FULLSEND_WORKFLOW_TOKEN from a local PAT")
+}
+
+func TestMintAgentToken_PreservesWorkflowTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const workflowToken = "ghs_actions_workflow_token_xx"
+	const mintedToken = "ghs_coder_minted_token_xx"
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		return &mintclient.MintResult{Token: mintedToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", workflowToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, mintedToken, os.Getenv("GH_TOKEN"), "minted token still lands in GH_TOKEN")
+	assert.Equal(t, mintedToken, os.Getenv("PUSH_TOKEN"), "minted token still lands in PUSH_TOKEN")
+	assert.Equal(t, "github-app", os.Getenv("PUSH_TOKEN_SOURCE"))
+	assert.Equal(t, workflowToken, os.Getenv(workflowTokenEnv), "pre-mint GH_TOKEN is preserved for provider credentials")
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	assert.Contains(t, buf.String(), "::add-mask::"+mintedToken)
+	assert.Contains(t, buf.String(), "::add-mask::"+workflowToken)
+
+	// Post-agent output scan uses SecretRedactor; the preserved value is
+	// registered so it is stripped from artifacts even without a prefix match.
+	scan := security.NewSecretRedactor().Scan("log " + workflowToken + " here")
+	assert.NotContains(t, scan.Sanitized, workflowToken)
+
+	cleanup()
+	assert.Equal(t, workflowToken, os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup should unset FULLSEND_WORKFLOW_TOKEN when it was not preset")
+}
+
+func TestMintAgentToken_DoesNotDeriveWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not copy a local PAT into FULLSEND_WORKFLOW_TOKEN")
+}
+
+func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const preset = "ghs_caller_set_workflow_token_xx"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, preset)
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "caller-set FULLSEND_WORKFLOW_TOKEN is left alone outside Actions")
+
+	cleanup()
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "cleanup must not unset a caller-set token outside Actions")
 }
 
 func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {

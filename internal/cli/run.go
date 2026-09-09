@@ -891,25 +891,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
-		// Refuse OIDC credential vars so ${VAR} expansion in harness
-		// YAML cannot leak mint-usable credentials (#5832).
-		if oidcDenyKeys[key] {
-			return ""
-		}
-		return os.Getenv(key)
+		// Refuse OIDC credential vars and provider-only keys so ${VAR}
+		// expansion in harness YAML cannot leak mint-usable or workflow
+		// credentials (#5832, #6649).
+		return harnessEnvExpand(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
 		}
-		// Refuse OIDC credential vars (#5832).
+		// Refuse OIDC credential vars and provider-only keys (#5832, #6649).
 		// Unlike expander (which silently returns "" to produce an empty
 		// expansion), lookup returns false so ValidateRunnerEnvWith treats
 		// the reference as an unresolvable variable and fails validation.
-		if oidcDenyKeys[key] {
-			return "", false
-		}
-		return os.LookupEnv(key)
+		return harnessEnvLookup(key)
 	}
 	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
 		printer.StepFail("Environment validation failed")
@@ -2733,8 +2728,10 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // MAINTENANCE: when new OIDC-related credential env vars are introduced
 // (e.g. by mint infrastructure changes), add them here. By convention the
 // vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
-// expansion site in this file consults this map, so a single addition
-// propagates to all deny checks.
+// expansion site in this file consults harnessExpansionDenied, which
+// includes this map, so a single addition propagates to all deny checks.
+// Keys that provider credentials must still expand belong in
+// providerOnlyKeys, not here (#6649).
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
@@ -2751,6 +2748,44 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+}
+
+// workflowTokenEnv is the Actions workflow token preserved across minting
+// so provider credentials can authenticate to GitHub Packages. See #6649.
+const workflowTokenEnv = "FULLSEND_WORKFLOW_TOKEN"
+
+// providerOnlyKeys are runner credentials that harness-controlled ${}
+// expansion must refuse (same sites as oidcDenyKeys) but that provider
+// credential expansion may still read. Unlike oidcDenyKeys these are NOT
+// pushed to sandbox.DenyExpansionKeys. See #6649.
+var providerOnlyKeys = map[string]bool{
+	workflowTokenEnv: true,
+}
+
+// harnessExpansionDenied reports whether a ${VAR} reference must be refused
+// at every harness-controlled expansion site (runner_env, env.runner,
+// env.sandbox, host_files, validation_loop.schema) and stripped from
+// pre/post/validation child environments.
+func harnessExpansionDenied(key string) bool {
+	return oidcDenyKeys[key] || providerOnlyKeys[key]
+}
+
+// harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
+func harnessEnvExpand(key string) string {
+	if harnessExpansionDenied(key) {
+		return ""
+	}
+	return os.Getenv(key)
+}
+
+// harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
+// return false so a harness that references them fails validation rather
+// than expanding empty.
+func harnessEnvLookup(key string) (string, bool) {
+	if harnessExpansionDenied(key) {
+		return "", false
+	}
+	return os.LookupEnv(key)
 }
 
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
@@ -2779,6 +2814,7 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
+	// FULLSEND_WORKFLOW_TOKEN is reserved through providerOnlyKeys (merged by init()).
 }
 
 func init() {
@@ -2792,6 +2828,12 @@ func init() {
 	}
 	sandbox.DenyExpansionKeys(denied...)
 	for k := range oidcDenyKeys {
+		reservedSandboxKeys[k] = true
+	}
+	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
+	// inject them) but must remain expandable by expandProviderValue, so
+	// they are not passed to DenyExpansionKeys (#6649).
+	for k := range providerOnlyKeys {
 		reservedSandboxKeys[k] = true
 	}
 }
@@ -3089,16 +3131,11 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 }
 
 // safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
-// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
-// instead of os.ExpandEnv at any site where the expanded value may reach
-// user-controlled or sandbox-visible contexts. See #5832.
+// OIDC credential vars and provider-only keys, expanding them to empty.
+// Use this instead of os.ExpandEnv at any site where the expanded value
+// may reach user-controlled or sandbox-visible contexts. See #5832, #6649.
 func safeExpandEnv(s string) string {
-	return os.Expand(s, func(key string) string {
-		if oidcDenyKeys[key] {
-			return ""
-		}
-		return os.Getenv(key)
-	})
+	return os.Expand(s, harnessEnvExpand)
 }
 
 // shellSafeExpandEnv expands ${VAR} references in text using the host
@@ -3106,12 +3143,13 @@ func safeExpandEnv(s string) string {
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
-// OIDC credential vars are refused (expand to empty) to prevent leaking
-// mint-usable credentials into sandbox-bound files (#5832).
+// OIDC credential vars and provider-only keys are refused (expand to
+// empty) to prevent leaking mint-usable or workflow credentials into
+// sandbox-bound files (#5832, #6649).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if oidcDenyKeys[key] {
+		if harnessExpansionDenied(key) {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -3304,6 +3342,16 @@ func redactFeedback(feedback string, runnerEnv map[string]string) string {
 		}
 		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
 	}
+	// Provider-only keys live in the process environment, not RunnerEnv.
+	// Redact their literals the same way so they cannot reach the agent
+	// prompt or the uploaded run directory (#6649).
+	for key := range providerOnlyKeys {
+		value := os.Getenv(key)
+		if len(value) < minRedactableSecretLen {
+			continue
+		}
+		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
+	}
 	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
 	// original text is the fallback — not an empty prompt.
 	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
@@ -3389,14 +3437,14 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
 
-// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
-// Use this to filter os.Environ() slices in contexts where childScriptEnv is
-// not applicable (e.g., validation scripts that compose their env differently).
-// See #5832.
+// stripOIDCEnv returns a copy of env with OIDC credential entries and
+// provider-only keys removed. Use this to filter os.Environ() slices in
+// contexts where childScriptEnv is not applicable (e.g., validation scripts
+// that compose their env differently). See #5832, #6649.
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
 			continue
 		}
 		result = append(result, e)
@@ -3885,9 +3933,11 @@ func stripControlChars(s string) string {
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
 //
-// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
-// scripts and validation/preflight commands cannot mint their own tokens.
-// The parent harness process retains them for mintAgentToken. See #5832.
+// OIDC credential vars and provider-only keys are stripped so user-authored
+// pre/post scripts and validation/preflight commands cannot mint their own
+// tokens or read the preserved workflow token. The parent harness process
+// retains them for mintAgentToken and provider credential expansion.
+// See #5832, #6649.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
@@ -3895,8 +3945,8 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars from child script env (#5832).
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
 			continue
 		}
 		env = append(env, e)
@@ -5043,6 +5093,8 @@ var roleTokenVars = map[string][]tokenVar{
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
+// On GitHub Actions the pre-mint GH_TOKEN is copied to FULLSEND_WORKFLOW_TOKEN
+// for provider credential expansion (#6649); cleanup unsets it.
 func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, printer *ui.Printer) (bool, func(), error) {
 	if mintURL == "" || role == "" {
 		return false, func() {}, nil
@@ -5076,6 +5128,21 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 	envVars := []string{"GH_TOKEN"}
 	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
 		originals["GH_TOKEN"] = v
+	}
+	// Preserve the Actions workflow token before GH_TOKEN is replaced so
+	// provider credentials can authenticate to GitHub Packages. Outside
+	// Actions leave a caller-set value alone and never derive one from a
+	// local PAT (#6649).
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		if preMint := originals["GH_TOKEN"]; preMint != "" {
+			if v, ok := os.LookupEnv(workflowTokenEnv); ok {
+				originals[workflowTokenEnv] = v
+			}
+			os.Setenv(workflowTokenEnv, preMint)
+			envVars = append(envVars, workflowTokenEnv)
+			security.RegisterRuntimeSecret(preMint)
+			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", preMint)
+		}
 	}
 	os.Setenv("GH_TOKEN", result.Token)
 

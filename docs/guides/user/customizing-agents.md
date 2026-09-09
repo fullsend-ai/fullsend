@@ -19,6 +19,7 @@ Common configuration goals:
 | Change model, timeout, or image | Override scalar fields via `base:` composition |
 | Add org-specific skills | Add entries to the `skills:` list |
 | Add environment variables | Add entries under `env.runner` or `env.sandbox` |
+| Install GitHub Packages npm dependencies | Add a repo-level GitHub Packages provider (see [Private registries and GitHub Packages](#private-registries-and-github-packages)) |
 | Extend the sandbox with packages | Build a custom image and set `image:` |
 | Add executables to the sandbox | Use `host_files` to copy scripts to `/sandbox/workspace/bin` |
 | Disable a built-in agent | Set `enabled: false` in `config.yaml` |
@@ -146,6 +147,116 @@ If the `profiles/` directory next to the harness also contains a file with the s
 Delete the directory copy unless you mean to override the harness's. A stale copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
+
+### Private registries and GitHub Packages
+
+A minted GitHub App token can read packages owned by the organization the App
+is installed in. It cannot read a public npm package on GitHub Packages that
+another organization owns — `npm.pkg.github.com` returns 403 for installation
+tokens across orgs. The Actions workflow token (`packages: read`) can, and
+fullsend preserves it as `FULLSEND_WORKFLOW_TOKEN` for **provider credentials
+only**.
+
+`${FULLSEND_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+`env.sandbox`, `host_files`, and `validation_loop.schema`. Pre/post/validation
+scripts never see it. `gh` keeps using the minted App token in `GH_TOKEN`.
+Outside GitHub Actions the variable is left alone: a local PAT is never copied
+into it. Set `FULLSEND_WORKFLOW_TOKEN` yourself only if you intend a local run
+to hit GitHub Packages.
+
+Same-org packages also work with `${GH_TOKEN}` (the App token) and need no
+workflow token. The shipped code and fix workflows already grant
+`packages: read`. The workflow token is the repository's own, and `.fullsend`
+is read from the trusted ref, so a pull request cannot redirect the provider at
+a different credential.
+
+This provider is **not** shipped by default. Add the files below to your
+repository (or config repo) and overlay them onto `code` and `fix`.
+
+**`.fullsend/providers/github-packages.yaml`:**
+
+```yaml
+---
+name: github-packages
+type: fullsend-github-packages
+credentials:
+  GITHUB_TOKEN: "${FULLSEND_WORKFLOW_TOKEN}"
+```
+
+**`.fullsend/profiles/fullsend-github-packages.yaml`:**
+
+```yaml
+---
+id: fullsend-github-packages
+display_name: Fullsend GitHub Packages
+description: GitHub Packages npm registry for cross-org public packages
+category: data
+credentials:
+  - name: github_token
+    description: Actions workflow token with packages:read
+    env_vars: [GITHUB_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: npm.pkg.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    allow_encoded_slash: true
+  - host: pkg-npm.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/node"
+  - "**/npm"
+  - "**/pnpm"
+  - "**/corepack"
+  - "**/yarn"
+```
+
+`npm.pkg.github.com` is credential-bound. `pkg-npm.githubusercontent.com` is
+not: the tarball redirect carries a pre-signed URL, so no credential is
+attached. `allow_encoded_slash: true` is required because scoped package names
+use `%2F` in the registry URL.
+
+**`.fullsend/env/npmrc-github-packages`:**
+
+```
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+```
+
+Keep `expand: false` on the `host_files` entry. The file holds no secret;
+pnpm still expands `${GITHUB_TOKEN}` in user-level `~/.npmrc`. Inside the
+sandbox that value is the provider placeholder, not the real token. Project
+`.npmrc` files are not expanded by pnpm ≥ 10.34.2
+([GHSA-3qhv-2rgh-x77r](https://github.com/advisories/GHSA-3qhv-2rgh-x77r)).
+
+**`.fullsend/harness/code.yaml`** (and the same overlay for `fix.yaml`):
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
+
+providers:
+  - providers/github-packages.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-github-packages.yaml
+host_files:
+  - src: env/npmrc-github-packages
+    dest: /home/sandbox/.npmrc
+    expand: false
+```
+
+Register the overlay in `.fullsend/config.yaml` as usual (`name: code` /
+`name: fix` with `source: harness/code.yaml` / `harness/fix.yaml`). Pin the
+`base:` URL to a SHA as shown in [Configuration with `base:` composition](#configuration-with-base-composition).
+
+The sandbox user is `sandbox` (uid 998); `/home/sandbox/.npmrc` is that user's
+`$HOME/.npmrc`.
 
 ### Tuning agents with augmentation skills
 
