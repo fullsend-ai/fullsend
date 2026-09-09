@@ -154,6 +154,8 @@ To find open issues for human contribution, use the [contributor issue search](h
 
 ### Where to file experiments-related issues
 
+> **Status: proposed, pending maintainer confirmation.** The split below documents the de facto filing pattern observed since `fullsend-ai/experiments` became a submodule of this repository. A maintainer has not yet confirmed it as the intended policy — see [#588](https://github.com/fullsend-ai/fullsend/issues/588). Treat this section as a proposal until that confirmation lands.
+
 [`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments) is a separate repository, vendored here as the `experiments/` git submodule and published on the docs site. File issues in the repository that owns the code or configuration being changed:
 
 | File in | When the work is |
