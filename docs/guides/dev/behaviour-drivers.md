@@ -33,7 +33,7 @@ BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ENVIRONMENT=dev                   # mint/infra target: dev (default) or stage
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) calls `behaviourtest.RunSuite`, which acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, selects an `install.Factory` from `ENVIRONMENT` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown, constructs SCM and CI drivers from `BEHAVIOUR_SCM` / `BEHAVIOUR_CI`, and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
 
 ### Install driver (unified)
 
@@ -60,7 +60,7 @@ Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and p
 ## Adding an SCM driver
 
 1. Implement `scm.Driver` in `pkg/behaviourtest/drivers/scm/<vendor>/`.
-2. Register the driver in the suite runner when `BEHAVIOUR_SCM=<vendor>`.
+2. Register the driver in `behaviourtest.RunSuite` when `BEHAVIOUR_SCM=<vendor>`.
 3. Document the env var value here.
 4. Add `@skip:<vendor>` tags on scenarios that cannot run until the driver is complete.
 
@@ -70,7 +70,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
 2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from `e2e/admin/admin_test.go`.
-3. Register in suite init for the matching `BEHAVIOUR_CI` value.
+3. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
 
