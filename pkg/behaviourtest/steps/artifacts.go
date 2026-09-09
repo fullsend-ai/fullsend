@@ -33,6 +33,7 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 		return err
 	}
 	w.WorkflowRun = run
+	saveWorkflowRunLogs(ctx, w, "triage", run)
 	return nil
 }
 

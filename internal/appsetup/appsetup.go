@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -127,17 +128,18 @@ func (StdinPrompter) ReadLine(prompt string) (string, error) {
 
 // Setup orchestrates the creation or reuse of GitHub Apps for agent roles.
 type Setup struct {
-	client       forge.Client
-	prompter     Prompter
-	browser      BrowserOpener
-	ui           *ui.Printer
-	knownSlugs   map[string]string
-	secretExists SecretExistsFunc
-	storeSecret  StoreSecretFunc
-	permErrors   []string
-	publicApps   bool
-	appSet       string
-	storedAppIDs map[string]string // role → app_id from ROLE_APP_IDS
+	client           forge.Client
+	prompter         Prompter
+	browser          BrowserOpener
+	ui               *ui.Printer
+	knownSlugs       map[string]string
+	secretExists     SecretExistsFunc
+	storeSecret      StoreSecretFunc
+	permErrors       []string
+	publicApps       bool
+	appSet           string
+	storedAppIDs     map[string]string // role → app_id from ROLE_APP_IDS
+	readinessTimeout time.Duration     // 0 → use default appReadyTimeout
 }
 
 // NewSetup creates a new Setup instance.
@@ -911,6 +913,58 @@ const installPollInterval = 2 * time.Second
 // installPollTimeout is how long we wait for the user to install the app.
 const installPollTimeout = 5 * time.Minute
 
+// appReadyInitialInterval is the initial backoff interval when waiting for
+// the GitHub App page to become available after creation.
+const appReadyInitialInterval = 500 * time.Millisecond
+
+// appReadyMaxInterval caps exponential backoff when polling app readiness.
+const appReadyMaxInterval = 5 * time.Second
+
+// appReadyTimeout is how long we wait for the app page to be provisioned.
+const appReadyTimeout = 30 * time.Second
+
+// waitForAppReady polls GetAppClientID with bounded exponential backoff
+// until the app page is reachable. GitHub sometimes needs a few seconds to
+// provision a newly created app, and opening the browser before it's ready
+// results in a 404.
+func (s *Setup) waitForAppReady(ctx context.Context, ghExt forge.GitHubExtensions, slug string) error {
+	// Quick check — the app may already be available.
+	if _, err := ghExt.GetAppClientID(ctx, slug); err == nil {
+		return nil
+	}
+
+	s.ui.StepStart(fmt.Sprintf("Waiting for app %s to become available...", slug))
+
+	timeout := appReadyTimeout
+	if s.readinessTimeout > 0 {
+		timeout = s.readinessTimeout
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	interval := appReadyInitialInterval
+	for {
+		select {
+		case <-pollCtx.Done():
+			// Distinguish parent-context cancellation from readiness timeout.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("timed out waiting for app %s to become available on GitHub", slug)
+		case <-time.After(interval):
+			if _, err := ghExt.GetAppClientID(pollCtx, slug); err == nil {
+				s.ui.StepDone(fmt.Sprintf("App %s is available", slug))
+				return nil
+			}
+			// Exponential backoff, capped at appReadyMaxInterval.
+			interval *= 2
+			if interval > appReadyMaxInterval {
+				interval = appReadyMaxInterval
+			}
+		}
+	}
+}
+
 func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	ghExt, ok := s.client.(forge.GitHubExtensions)
 	if !ok {
@@ -927,6 +981,19 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 			s.ui.StepDone(fmt.Sprintf("App %s is installed on %s", slug, org))
 			return nil
 		}
+	}
+
+	// Wait for the app page to be provisioned before opening the browser.
+	// After the manifest flow, GitHub may take a few seconds to make the
+	// app page available — opening the install URL before that returns 404.
+	if err := s.waitForAppReady(ctx, ghExt, slug); err != nil {
+		// waitForAppReady returns ctx.Err() for parent cancellation, so
+		// context errors propagate directly without a separate guard.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		s.ui.StepWarn(fmt.Sprintf("App readiness check failed: %v", err))
+		s.ui.StepInfo("Proceeding to open browser anyway — the page may require a manual refresh.")
 	}
 
 	// App not installed — open browser and poll until it appears.

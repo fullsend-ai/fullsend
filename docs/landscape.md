@@ -120,6 +120,7 @@ OpenClaw's scale (389K+ stars, 3M+ active users) validates broad interest in AI 
 - **OpenAI Codex** — Triggered by `@codex review` in GitHub PRs. Behaves as an additional reviewer focused on high-severity issues.
 - **Bito** — Uses Claude Sonnet for human-like review. GitHub, GitLab, Bitbucket integration.
 - **Caveman** — Output token compression via prompt engineering (~65% savings). Constrains agent output to terse, technical language while preserving reasoning depth. The `caveman-review` format (single-line, emoji-coded comments) is a concrete output format for review sub-agents. [GitHub](https://github.com/juliusbrussee/caveman)
+- **PatchPatrol** — AI-powered commit review via pre-commit hooks with local (ONNX, llama.cpp) and cloud (Gemini) inference, offering code quality and OWASP security modes. Local backends eliminate cloud API credential requirements; does not address review decomposition or merge authority. [GitHub](https://github.com/4383/patchpatrol)
 
 ## Production agent orchestration systems
 
