@@ -287,6 +287,40 @@ runs:
         DOWNLOAD_OUTCOME: ${{ steps.download-release.outcome }}
       run: |
         set -euo pipefail
+
+        # retry_git: retry a git command up to max_attempts times with exponential
+        # backoff for transient errors (e.g. HTTP 403/5xx). Permanent failures
+        # (bad ref, auth) return immediately without retrying.
+        # Usage: retry_git [git args...]
+        retry_git() {
+          local max_attempts=3
+          local attempt=1
+          local delay=5
+          local output
+          while true; do
+            if output=$(git "$@" 2>&1); then
+              printf '%s\n' "${output}" >&2
+              return 0
+            fi
+            # Don't retry permanent failures (bad ref, wrong credentials).
+            if printf '%s' "${output}" | grep -qE \
+                "not our ref|no such remote ref|couldn't find remote ref|does not appear to be a git repository|Authentication failed"; then
+              printf '%s\n' "${output}" >&2
+              return 1
+            fi
+            if (( attempt >= max_attempts )); then
+              echo "::error::git command failed after ${max_attempts} attempts" >&2
+              printf '%s\n' "${output}" >&2
+              return 1
+            fi
+            echo "::warning::git attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
+            printf '%s\n' "${output}" >&2
+            sleep "${delay}"
+            (( attempt++ ))
+            (( delay *= 3 ))
+          done
+        }
+
         if [[ "${DOWNLOAD_OUTCOME}" == "failure" ]]; then
           echo "::warning::Release download failed; falling back to source build"
         fi
@@ -298,10 +332,10 @@ runs:
         git -C "${SRC}" remote add origin "${REMOTE}"
         # Shallow fetch works for branch/tag refs but not bare commit SHAs (GitHub disallows
         # unadvertised SHA fetches). Fall back to a full clone when shallow fetch fails.
-        if ! git -C "${SRC}" fetch --depth 1 origin "${SOURCE_REF}"; then
+        if ! retry_git -C "${SRC}" fetch --depth 1 origin "${SOURCE_REF}"; then
           echo "Shallow fetch failed (ref may be a commit SHA); falling back to full clone"
           rm -rf "${SRC}"
-          git clone "${REMOTE}" "${SRC}"
+          retry_git clone "${REMOTE}" "${SRC}"
           git -C "${SRC}" checkout "${SOURCE_REF}"
         else
           git -C "${SRC}" checkout FETCH_HEAD
