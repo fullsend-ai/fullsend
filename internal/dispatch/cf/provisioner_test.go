@@ -527,8 +527,8 @@ func TestWasmLDFlags(t *testing.T) {
 
 	t.Run("non-empty CF Access config", func(t *testing.T) {
 		flags := wasmLDFlags("1.0.0", "def456", StatusGitHubAuth{}, StatusCFAccessAuth{Aud: "cf-aud-123", Team: "myteam"})
-		assert.Contains(t, flags, `-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessAud="cf-aud-123"`)
-		assert.Contains(t, flags, `-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessTeam="myteam"`)
+		assert.Contains(t, flags, `-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessAud=cf-aud-123`)
+		assert.Contains(t, flags, `-X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessTeam=myteam`)
 	})
 }
 
@@ -648,6 +648,24 @@ func TestBuildWASM(t *testing.T) {
 
 		args := strings.Join(capturedCmd.Args, " ")
 		assert.NotContains(t, args, "-tags")
+	})
+
+	t.Run("omits cfaccess build tag when Team is empty", func(t *testing.T) {
+		origExec := execCombinedOutputFn
+		var capturedCmd *exec.Cmd
+		execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+			capturedCmd = cmd
+			return nil, nil
+		}
+		t.Cleanup(func() { execCombinedOutputFn = origExec })
+
+		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{}, StatusCFAccessAuth{Aud: "cf-aud", Team: ""})
+		require.NoError(t, err)
+		require.NotNil(t, capturedCmd)
+
+		args := strings.Join(capturedCmd.Args, " ")
+		assert.NotContains(t, args, "-tags cfaccess")
 	})
 
 	t.Run("includes cfaccess build tag when StatusCFAccess.Aud is set", func(t *testing.T) {

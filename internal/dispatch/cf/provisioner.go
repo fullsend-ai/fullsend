@@ -547,10 +547,10 @@ func wasmLDFlags(version, commit string, statusGitHub StatusGitHubAuth, statusCF
 		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusGitHubGroup=%s", statusGitHub.Group)
 	}
 	if statusCFAccess.Aud != "" {
-		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessAud=%q", statusCFAccess.Aud)
+		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessAud=%s", statusCFAccess.Aud)
 	}
 	if statusCFAccess.Team != "" {
-		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessTeam=%q", statusCFAccess.Team)
+		flags += fmt.Sprintf(" -X github.com/fullsend-ai/fullsend/internal/mintcore.StatusCFAccessTeam=%s", statusCFAccess.Team)
 	}
 	return flags
 }

@@ -2030,7 +2030,7 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 
 	// Select the correct status CF Access file based on config.
 	statusCFAccessFile := "status_cfaccess_stub.go"
-	if statusCFAccess.Aud != "" {
+	if statusCFAccess.Aud != "" && statusCFAccess.Team != "" {
 		statusCFAccessFile = "status_cfaccess.go"
 	}
 	statusCFAccessData, err := os.ReadFile(filepath.Join(mintcoreDir, statusCFAccessFile))
@@ -2038,7 +2038,7 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 		if err := writeBuildConstraintStrippedFileToZip(w, statusCFAccessData, "mintcore/"+statusCFAccessFile); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", statusCFAccessFile, err)
 		}
-	} else if statusCFAccess.Aud != "" {
+	} else if statusCFAccess.Aud != "" && statusCFAccess.Team != "" {
 		return nil, fmt.Errorf("reading %s: %w", statusCFAccessFile, err)
 	}
 
@@ -2140,7 +2140,7 @@ func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubA
 	// Determine which CF Access file to include.
 	wantCFAccessFile := "mintcore/status_cfaccess_stub.go"
 	skipCFAccessFile := "mintcore/status_cfaccess.go"
-	if statusCFAccess.Aud != "" {
+	if statusCFAccess.Aud != "" && statusCFAccess.Team != "" {
 		wantCFAccessFile = "mintcore/status_cfaccess.go"
 		skipCFAccessFile = "mintcore/status_cfaccess_stub.go"
 	}
