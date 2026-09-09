@@ -2,6 +2,8 @@
 
 Conventions for GitHub Actions workflows under `.github/workflows/`. Follow these conventions when adding or modifying workflows.
 
+Installer-managed workflows (those whose first line is `# This file is managed by fullsend. Do not edit it directly.`) are deployed copies. Edit the templates in `internal/scaffold/` instead — see the scaffold-managed files guidance in [AGENTS.md](../../AGENTS.md).
+
 ## Concurrency groups
 
 - Use `${{ github.workflow }}` as the workflow identifier — never duplicate the workflow name as a hardcoded string prefix (see [exception for `workflow_call`-only workflows](#reusable-workflow-concurrency) below).
