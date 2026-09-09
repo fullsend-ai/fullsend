@@ -557,6 +557,23 @@ role: test
 	require.NoError(t, err)
 }
 
+func TestLoadWithBase_LocalBase_MissingBaseWithWorkspaceSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	path := writeTestHarness(t, realDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: missing.yaml
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading base harness")
+}
+
 func TestLoadWithBase_LocalBase_SymlinkEscapeRejected(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()

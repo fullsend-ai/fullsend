@@ -415,15 +415,22 @@ func loadBaseChain(
 		// macOS's /var and /private/var forms compare consistently.
 		resolvedBasePath, resolveErr := filepath.EvalSymlinks(absBasePath)
 		if resolveErr != nil {
-			// Keep rejecting lexical escapes before returning a missing-path
-			// error, preserving the containment error for traversal attempts.
-			rel, err := filepath.Rel(absWorkspace, absBasePath)
-			if err != nil || strings.HasPrefix(rel, "..") {
-				return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			// The base file may not exist yet, but its parent should still be
+			// canonicalized so workspace aliases compare consistently.
+			resolvedBaseDir, dirErr := filepath.EvalSymlinks(filepath.Dir(absBasePath))
+			if dirErr != nil {
+				// Keep rejecting lexical escapes before returning a missing-path
+				// error, preserving the containment error for traversal attempts.
+				rel, relErr := filepath.Rel(absWorkspace, absBasePath)
+				if relErr != nil || strings.HasPrefix(rel, "..") {
+					return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+				}
+				return nil, nil, fmt.Errorf("resolving base path symlinks: %w", dirErr)
 			}
-			return nil, nil, fmt.Errorf("resolving base path symlinks: %w", resolveErr)
+			absBasePath = filepath.Join(resolvedBaseDir, filepath.Base(absBasePath))
+		} else {
+			absBasePath = resolvedBasePath
 		}
-		absBasePath = resolvedBasePath
 		rel, err := filepath.Rel(absWorkspace, absBasePath)
 		if err != nil || strings.HasPrefix(rel, "..") {
 			return nil, nil, fmt.Errorf("base path %q escapes workspace root via symlink", baseRef)
