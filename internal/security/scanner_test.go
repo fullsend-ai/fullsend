@@ -187,6 +187,11 @@ func TestUnicodeNormalizer(t *testing.T) {
 		r := n.Scan(payload)
 		assert.False(t, r.Safe)
 		assert.NotContains(t, r.Sanitized, "\x1b")
+		// Pin the exact residual: after 64 passes the leftover is the
+		// live CSI "\x1b[[", which the fail-closed backstop reduces to
+		// "[[". Asserting only "no ESC" would also pass if the backstop's
+		// character class were mis-scoped to strip more than ESC/C1.
+		assert.Equal(t, "[[", r.Sanitized)
 		assertNoRecognizedPayload(t, r.Sanitized)
 	})
 
@@ -198,6 +203,24 @@ func TestUnicodeNormalizer(t *testing.T) {
 		r := n.Scan(payload)
 		assert.False(t, r.Safe)
 		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.Equal(t, "[[", r.Sanitized)
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
+
+	t.Run("pass cap exceeded fails closed with C1 byte and ASCII witness", func(t *testing.T) {
+		// Same ESC/bracket shape as above, plus a trailing true C1 rune
+		// (U+009B) and an ordinary uppercase-letter/bracket witness
+		// ("HELLO"). reESCOrC1 must remove exactly the ESC run and the
+		// C1 rune and nothing else: a backstop mis-scoped to ASCII
+		// "@"-"_" (which overlaps "[" and "HELLO") would instead strip
+		// the witness text and leave the C1 rune behind.
+		payload := strings.Repeat("\x1b", 65) + strings.Repeat("[", 130) + "\u009bHELLO"
+		r := n.Scan(payload)
+		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "\x1b")
+		assert.NotContains(t, r.Sanitized, "\u009b")
+		assert.Equal(t, "[[HELLO", r.Sanitized)
+		assert.True(t, hasFinding(r, "ansi_escape"))
 		assertNoRecognizedPayload(t, r.Sanitized)
 	})
 }

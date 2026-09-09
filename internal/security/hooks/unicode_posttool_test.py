@@ -310,6 +310,12 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         payload = ("\x1b" * n) + ("[" * (2 * n))
         result, findings = scan_text(payload)
         self.assertNotIn("\x1b", result)
+        # Pin the exact residual: after MAX_SANITIZE_PASSES passes the
+        # leftover is the live CSI "\x1b[[", which the fail-closed
+        # backstop reduces to "[[". Asserting only "no ESC" would also
+        # pass if the backstop's character class were mis-scoped to strip
+        # more than ESC/C1.
+        self.assertEqual(result, "[[")
         names = [f["name"] for f in findings]
         self.assertIn("ansi_escape", names)
         assert_no_recognized_payload(self, result)
@@ -321,9 +327,30 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         payload = ("\x1b" * n) + ("［" * (2 * n))
         result, findings = scan_text(payload)
         self.assertNotIn("\x1b", result)
+        self.assertEqual(result, "[[")
         names = [f["name"] for f in findings]
         self.assertIn("ansi_escape", names)
         self.assertIn("fullwidth", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_pass_cap_exceeded_fails_closed_with_c1_and_ascii_witness(self):
+        """#445 follow-up: pin the fail-closed backstop's character class.
+
+        Same ESC/bracket shape as the ASCII pass-cap test, plus a
+        trailing true C1 rune (U+009B) and an ordinary uppercase-letter
+        witness ("HELLO"). ``_ESC_C1_STRIP_RE`` must remove exactly the
+        ESC run and the C1 rune and nothing else: a backstop mis-scoped
+        to ASCII "@"-"_" (which overlaps "HELLO") would instead strip the
+        witness text and leave the C1 rune behind.
+        """
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("[" * (2 * n)) + "HELLO"
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        self.assertNotIn("", result)
+        self.assertEqual(result, "[[HELLO")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
         assert_no_recognized_payload(self, result)
 
 
