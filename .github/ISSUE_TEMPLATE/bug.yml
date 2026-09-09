@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a defect in existing behavior
+labels:
+  - type/bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Please search
+        [existing issues](https://github.com/fullsend-ai/fullsend/issues)
+        first.
+
+        **Security vulnerabilities** must be reported privately via
+        [SECURITY.md](https://github.com/fullsend-ai/fullsend/blob/main/SECURITY.md).
+        Do not file them as public issues.
+
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens
+      description: >
+        The current behavior, stated as fact. Include error messages,
+        symptoms, or the observable gap.
+      placeholder: "When I run `fullsend ...`, I get..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-should-happen
+    attributes:
+      label: What should happen
+      description: >
+        The expected behavior. Be specific enough that someone could
+        verify a fix against this description.
+      placeholder: "The command should..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        Numbered steps from a clean state. Include the environment,
+        version, and configuration that matter.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Version and environment
+      description: >
+        fullsend version (`fullsend version` or git SHA), where it
+        happened (CLI, GitHub Actions, docs site), and OS if relevant.
+      placeholder: |
+        fullsend version:
+        Where it happened:
+        OS:
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: >
+        Why this matters, who it affects, related issues, logs, or
+        screenshots.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true

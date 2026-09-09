@@ -1,0 +1,60 @@
+name: Feature request
+description: Request a new capability
+labels:
+  - type/feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a new capability. Please search
+        [existing issues](https://github.com/fullsend-ai/fullsend/issues)
+        first. Describe the problem; solutions belong in follow-up
+        discussion or a linked PR.
+
+  - type: textarea
+    id: what-is-missing
+    attributes:
+      label: What is missing
+      description: >
+        The gap in current behavior. State it as fact, not as a
+        proposed implementation.
+      placeholder: "There is no way to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-should-happen
+    attributes:
+      label: What should happen
+      description: >
+        The desired behavior. Be specific enough that someone could
+        verify an implementation against this description.
+      placeholder: "A user should be able to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: >
+        Who is affected and what prompted this request. Link related
+        issues or docs if they exist.
+      placeholder: "This affects anyone who..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: >
+        Examples, constraints, related work, or open questions.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true
