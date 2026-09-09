@@ -60,6 +60,19 @@ var (
 	// BMP variation selectors (VS1-VS16).
 	reVariation = regexp.MustCompile("[\uFE00-\uFE0F]+")
 
+	// reC1 matches bare C1 control bytes (U+0080-U+009F) on their own,
+	// independent of a leading ESC. reANSI and reSTTerminated only
+	// recognize the 7-bit ESC-prefixed forms of CSI/OSC/DCS/ST/PM/APC; the
+	// 8-bit C1 introducers (U+009B CSI, U+009D OSC, U+0090 DCS, U+009C ST,
+	// U+009E PM, U+009F APC) are complete, live introducers on their own
+	// and would otherwise stabilize unnoticed on the very first pass,
+	// bypassing stripUntilStable's fail-closed backstop entirely (it only
+	// runs when the fixpoint loop fails to stabilize). Stripping every C1
+	// byte unconditionally on every pass removes the introducer regardless
+	// of what follows it, the same guarantee reESCOrC1 already relies on
+	// for the backstop case.
+	reC1 = regexp.MustCompile("[\u0080-\u009F]+")
+
 	// reESCOrC1 is the fail-closed backstop for stripUntilStable. A single
 	// non-overlapping ReplaceAllStringFunc pass on an adjacent-ESC run
 	// (e.g. ESC*65 + "["*130, where "[" is itself a valid ECMA-48 CSI
@@ -130,6 +143,18 @@ func stripControlCharacters(text, detailSuffix string) (string, []Finding) {
 				fmt.Sprintf("%d ST-terminated escape sequences removed", stCount), detailSuffix)
 		}
 		current = stripped
+	}
+
+	// Bare C1 control bytes (U+0080-U+009F), independent of a leading ESC.
+	// reANSI/reSTTerminated only recognize 7-bit ESC-prefixed introducers;
+	// an 8-bit C1 introducer (e.g. U+009B CSI) forms a complete sequence on
+	// its own and would otherwise never change across a pass, stabilizing
+	// on pass 1 and bypassing the fail-closed backstop entirely (#445).
+	if locs := reC1.FindAllStringIndex(current, -1); len(locs) > 0 {
+		count := countRunesInMatches(current, locs)
+		findings = appendFinding(findings, "ansi_escape", "high",
+			fmt.Sprintf("%d C1 control byte(s) removed", count), detailSuffix)
+		current = reC1.ReplaceAllString(current, "")
 	}
 
 	if locs := reZeroWidth.FindAllStringIndex(current, -1); len(locs) > 0 {

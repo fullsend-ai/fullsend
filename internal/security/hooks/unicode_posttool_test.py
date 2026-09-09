@@ -353,6 +353,26 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         self.assertIn("ansi_escape", names)
         assert_no_recognized_payload(self, result)
 
+    def test_lone_c1_introducer_without_esc_is_stripped_on_happy_path(self):
+        """#445 follow-up: a bare C1 introducer must not rely on the
+        pass-cap backstop.
+
+        No ESC byte at all, well under MAX_SANITIZE_PASSES: a bare C1 CSI
+        introducer (U+009B) is itself a complete, live sequence on its
+        own. Before this fix, ``_CHECKS`` only recognized 7-bit
+        ESC-prefixed introducers, so this payload never changed across a
+        pass, "stabilized" on pass 1, and the fail-closed backstop (which
+        only runs once the pass budget is exhausted) never triggered.
+        """
+        c1_csi = chr(0x9B)
+        payload = c1_csi + "31mHELLO"
+        result, findings = scan_text(payload)
+        self.assertNotIn(c1_csi, result)
+        self.assertEqual(result, "31mHELLO")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+
 
 class TestOSCPerformance(unittest.TestCase):
     def test_unterminated_osc_linear_time(self):

@@ -90,6 +90,18 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
         "high",
         re.compile("\x00+"),
     ),
+    # Bare C1 control bytes (0x80-0x9f), independent of a leading ESC.
+    # The two patterns above only recognize 7-bit ESC-prefixed
+    # introducers; an 8-bit C1 introducer (e.g. 0x9b CSI) forms a
+    # complete sequence on its own and would otherwise never change
+    # across a pass, stabilizing on pass 1 and bypassing the
+    # _ESC_C1_STRIP_RE fail-closed backstop entirely, which only runs
+    # once the pass budget is exhausted (#445).
+    (
+        "ansi_escape",
+        "high",
+        re.compile("[\x80-\x9f]+"),
+    ),
 ]
 
 

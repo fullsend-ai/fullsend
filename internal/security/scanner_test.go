@@ -223,6 +223,21 @@ func TestUnicodeNormalizer(t *testing.T) {
 		assert.True(t, hasFinding(r, "ansi_escape"))
 		assertNoRecognizedPayload(t, r.Sanitized)
 	})
+
+	t.Run("lone C1 introducer without ESC is stripped on the happy path", func(t *testing.T) {
+		// No ESC byte at all, well under maxSanitizePasses: a bare C1 CSI
+		// introducer (U+009B) is itself a complete, live sequence and must
+		// not rely on the pass-cap backstop (which never runs here, since
+		// stripControlCharacters would otherwise leave this payload
+		// unchanged and "stabilize" on the very first pass).
+		payload := "31mHELLO"
+		r := n.Scan(payload)
+		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "")
+		assert.Equal(t, "31mHELLO", r.Sanitized)
+		assert.True(t, hasFinding(r, "ansi_escape"))
+		assertNoRecognizedPayload(t, r.Sanitized)
+	})
 }
 
 func TestContextInjectionScanner(t *testing.T) {
