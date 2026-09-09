@@ -38,8 +38,8 @@ GitHub Actions contexts describe different parts of an invocation. Do not treat 
 | Repository that triggered the workflow | `github.repository` |
 | Repository containing the action currently being executed | `github.action_repository` |
 | Ref used to invoke the action currently being executed | `github.action_ref` |
-| Repository containing the workflow file that defines the current job | `job.workflow_repository` |
-| Commit containing the workflow file that defines the current job | `job.workflow_sha` |
+| Repository containing the workflow file that defines the current job on GitHub.com | `job.workflow_repository` |
+| Commit containing the workflow file that defines the current job on GitHub.com | `job.workflow_sha` |
 
 In a reusable workflow, the caller-scoped subset of `github.*` — including
 `github.repository`, `github.sha`, `github.ref`, `github.workflow`, and
@@ -55,12 +55,14 @@ actions invoked with `uses: ./...`, those two properties are empty; pass an
 explicit input or environment value when the action needs its repository or
 revision identity.
 
-`job.workflow_repository` and `job.workflow_sha` identify the repository and
-commit containing the workflow file that defines the current job. They are
-workflow-definition context, not action-execution context, and must never
-substitute for `github.action_repository` or `github.action_ref`, even on
-GitHub.com. They are also unavailable on GitHub Enterprise Server, so they
-cannot serve as a documented fallback across platforms.
+On GitHub.com, `job.workflow_repository` and `job.workflow_sha` identify the
+repository and commit containing the workflow file that defines the current
+job. In a reusable workflow invoked through `workflow_call`, they identify the
+reusable workflow rather than the caller workflow. They are workflow-definition
+context, not action-execution context, and must never substitute for
+`github.action_repository` or `github.action_ref`. They are unavailable on
+GitHub Enterprise Server, so they cannot serve as a documented fallback across
+platforms.
 
 When refactoring between action types, audit every `job.*` and `github.*` reference for its execution context. Add an explicit input or fallback only when the action supports invocation modes where the preferred context can be absent, and validate that the fallback refers to the same repository and revision intended by the operation.
 
