@@ -342,11 +342,13 @@ continue using the mint's rollout warning path.
 enrolled on a test mint, update the PEM secret there as well.
 
 **Cloudflare test token rotation:** Create a new Account API token with Workers
-Edit (or the Edit Cloudflare Workers template), store it as
-`TEST_CLOUDFLARE_API_TOKEN`, and keep `TEST_CLOUDFLARE_ACCOUNT_ID` aligned with
-the account that hosts Workers `mint-test` and `stage-mint`. The token must
-cover both Workers. Do not put the new value into site-deploy
-`CLOUDFLARE_API_TOKEN`.
+Edit (or the Edit Cloudflare Workers template) **and Workers Observability read**
+permissions, store it as `TEST_CLOUDFLARE_API_TOKEN`, and keep
+`TEST_CLOUDFLARE_ACCOUNT_ID` aligned with the account that hosts Workers
+`mint-test` and `stage-mint`. The token must cover both Workers. Workers
+Observability read is required for mint trace log collection during behaviour
+test teardown (`cfWorkerLogCollector`); without it, log collection is skipped
+gracefully. Do not put the new value into site-deploy `CLOUDFLARE_API_TOKEN`.
 
 **Installing on a new pool org:** Install each app via its public install
 URL:

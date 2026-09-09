@@ -376,8 +376,8 @@ func TestComposedDriver_SuiteStartIsRecorded(t *testing.T) {
 
 	cd := d.(*composedDriver)
 	assert.False(t, cd.suiteStart.IsZero(), "suiteStart should be set")
-	assert.True(t, !cd.suiteStart.Before(before), "suiteStart should be >= before")
-	assert.True(t, !cd.suiteStart.After(after), "suiteStart should be <= after")
+	assert.False(t, cd.suiteStart.Before(before), "suiteStart should be >= before")
+	assert.False(t, cd.suiteStart.After(after), "suiteStart should be <= after")
 }
 
 // failingEnsurer always returns an error.
