@@ -175,6 +175,8 @@ Uninstall and day-2 operations: [Operations](../getting-started/operations.md).
 
 ## What re-running setup does
 
+Re-running `fullsend github setup` on an already-installed repo:
+
 1. Refresh managed workflow / CI templates to the CLI version you are
    running.
 2. Leave `.fullsend/config.yaml` unchanged, unless you pass a
@@ -191,23 +193,31 @@ A flag-less re-run prints `Keeping existing .fullsend/config.yaml` and
 still updates managed workflows. That is how you pick up scaffold fixes
 without losing hand-written overlay comments or `agents:` entries.
 
-Fleet installs (`fullsend repos install`) also repair drifted managed
-files. See [Repo Management](../getting-started/repo-management.md).
+Fleet installs (`fullsend repos install`) behave differently from item 3
+above: they repair drifted managed files and reconcile `FULLSEND_MINT_URL`
+to the `repos.yaml` manifest's `mint_url` value, not to a CLI default. See
+[Repo Management](../getting-started/repo-management.md).
 
 ## Optional vendored files
 
-`fullsend github setup --vendor` (and the same flag on `repos install`)
-adds extra managed assets so CI can run a pinned CLI instead of a
-GitHub release:
+`fullsend github setup --vendor` and `fullsend repos install` (when the
+manifest's `vendor` setting, or an explicit `--vendor` CLI override,
+resolves to true for a repo) add extra managed assets so CI can run a
+pinned CLI instead of a GitHub release:
 
 - `.fullsend/bin/fullsend` — vendored binary
 - `.defaults/` — mirrored upstream content used at runtime
 - Reusable workflow copies under `.github/workflows/`
 
-Do not edit these. They refresh on the next vendored install. Without
-`--vendor`, a later setup removes every safe path recorded in the vendor
-manifest — the vendored binary, `.defaults/`, the reusable workflow copies,
-and the vendor manifest itself — not just the binary.
+Do not edit these. They refresh on the next vendored install.
+
+Cleanup differs by command. Without `--vendor`, a later `fullsend github
+setup` removes every safe path recorded in the vendor manifest — the
+vendored binary, `.defaults/`, the reusable workflow copies, and the vendor
+manifest itself — not just the binary. `fullsend repos install` does not
+do this cleanup: omitting `--vendor` on a `repos install` run leaves a
+previously vendored tree in place unchanged; it only adds vendored assets
+when the manifest `vendor` setting or an explicit override says to.
 
 ## Files that are not source
 

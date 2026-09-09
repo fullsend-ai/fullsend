@@ -228,6 +228,13 @@ set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
 
+For GitHub per-repo installs, this field does not control dispatch: the
+managed shim reads the `FULLSEND_MINT_URL` repository variable instead,
+which is set with `fullsend github setup --mint-url` (not a
+`fullsend github set` key). Editing `mint_url` here alone does not change
+what the shim dispatches with. See
+[Working with the `.fullsend` directory](../guides/user/fullsend-directory.md#what-setup-writes-github).
+
 ### `inference`
 
 Groups inference backend settings under a single key. Each subfield resolves
