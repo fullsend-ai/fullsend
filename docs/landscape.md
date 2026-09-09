@@ -245,7 +245,7 @@ Against other entries here: [Gas City](#gas-town--gas-city) also has a controlle
 
 The Elixir README claims safer-than-spec Codex defaults when fields are omitted (`approval_policy` reject, `thread_sandbox` workspace-write). The shipped [`WORKFLOW.md`](https://github.com/openai/symphony/blob/main/elixir/WORKFLOW.md) overrides them: `approval_policy: never` auto-approves every command, and `shell_environment_policy.inherit=all` inherits the host environment — including secrets in the operator's shell — into Codex. Safer defaults apply only if those fields are deleted; the demo ships permissive.
 
-[Section 15.3](https://github.com/openai/symphony/blob/main/SPEC.md#153-secret-handling) requires that provider-native tracker tools execute in the Symphony host process and that tracker credentials MUST NOT be passed through the coding-agent child environment. Adapters declare secret environment names so launchers can strip them. That is credential isolation for *tracker tokens*, not the four-tier credential delivery in [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md).
+[Section 15.3](https://github.com/openai/symphony/blob/main/SPEC.md#153-secret-handling) requires that provider-native tracker tools execute in the Symphony host process and that tracker credentials MUST NOT be passed through the coding-agent child environment. Adapters declare secret environment names so launchers can strip them. That is credential isolation for *tracker tokens*, not the four-tier credential delivery in [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md) (extending [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)).
 
 Mapping onto fullsend's [threat model](problems/security-threat-model.md) (priority: external injection > insider > DoS > drift > supply chain; plus [Threat 5](problems/security-threat-model.md#threat-5-agent-to-agent-prompt-injection) for inter-agent trust):
 
@@ -254,12 +254,13 @@ Mapping onto fullsend's [threat model](problems/security-threat-model.md) (prior
 - *Insider threats.* Anyone with commit rights to `WORKFLOW.md` can change the prompt body, the hooks (`sh -lc` scripts), or the Codex policy. Fullsend's analog — [CODEOWNERS for agent config](problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials) — is a load-bearing defense. Symphony has nothing equivalent.
 - *Agent drift.* Not addressed. Reconciliation is state-level (is the run still alive?), not behavioral. Fullsend's [quality/drift detection agent](problems/agent-architecture.md#qualitydrift-detection-agent) and [Threat 3](problems/security-threat-model.md#threat-3-agent-drift) call for periodic human review and quality-trend observation.
 - *Supply chain.* Implicit trust set: the Codex app-server, the targeted Codex version, and whatever `hooks.after_create` pulls over the network.
+- *Denial of Service / Resource Exhaustion.* Not addressed. The orchestrator's concurrency limits ([SPEC Section 7](https://github.com/openai/symphony/blob/main/SPEC.md#7-orchestration-state-machine)) bound simultaneous runs, but nothing in the spec defends against tracker-side event flooding, cost-amplifying task descriptions, or cascading retry loops — the vectors in fullsend's [Threat 6](problems/security-threat-model.md#threat-6-denial-of-service-dos--resource-exhaustion).
 
 This is the difference between *secure by construction* and *configurable to be secure*. [vision.md](vision.md#principles): "Security is not a layer — it's the foundation."
 
 **Isolation:** Symphony's isolation primitive is cwd discipline plus path containment, not containment proper. [SPEC Section 9.5](https://github.com/openai/symphony/blob/main/SPEC.md#95-safety-invariants) requires: (1) run the coding agent only in the per-issue workspace path, (2) workspace path MUST stay inside workspace root, (3) workspace keys are sanitized to `[A-Za-z0-9._-]`, with a hash suffix of at least 64 bits of entropy when sanitization changes the identifier, so keys remain collision-resistant. OS-level isolation (dedicated user, restricted permissions, dedicated volume) is RECOMMENDED, not REQUIRED ([Section 15.2](https://github.com/openai/symphony/blob/main/SPEC.md#152-filesystem-safety-requirements)). Workspaces persist across successful runs and are reused for the same issue.
 
-[ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md) takes the opposite position: each agent role gets its own sandbox with role-specific policies. [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) defines a four-tier credential delivery model where credentials never enter the sandbox in the preferred tiers. The sandbox is a containment primitive, not a cwd-validation pattern.
+[ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md) takes the opposite position: each agent role gets its own sandbox with role-specific policies. [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md) defines a four-tier credential delivery model (extending [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)) where credentials never enter the sandbox in the preferred tiers. The sandbox is a containment primitive, not a cwd-validation pattern.
 
 Isolation and *per-repo autonomy* are different axes. Execution isolation is the unit-of-work boundary; per-repo autonomy is the trust boundary that decides whether agents may merge. Symphony has nothing on the second axis. Fullsend's [autonomy-spectrum.md](problems/autonomy-spectrum.md) is binary per-repo with CODEOWNERS as the escape hatch, plus a [shadow-mode probationary period](problems/autonomy-spectrum.md#the-probationary-period) and [graduation criteria](problems/autonomy-spectrum.md#graduation-criteria). Symphony's trust is set per-deployment via the workflow's Codex policy and applies uniformly to every issue the daemon picks up.
 
@@ -583,7 +584,7 @@ The framework does not address fullsend's core differentiators (zero-trust agent
 
 ## Architectural patterns in the field
 
-Five distinct approaches:
+Seven distinct approaches:
 
 ### 1. Specialized sub-agent decomposition (Sourcery, CodeRabbit, Qodo)
 
