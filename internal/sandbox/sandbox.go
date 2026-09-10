@@ -1375,8 +1375,14 @@ const execPIDFile = "/tmp/.fullsend_exec.pid"
 // necessary because SIGINT to the openshell CLI does not propagate through
 // gRPC to in-sandbox processes. The openshell relay process is left running
 // so it continues piping stdout (e.g. Claude Code's terminal result event
-// with cost data). A 5-second WaitDelay allows the graceful shutdown to
+// with cost data). An 8-second WaitDelay allows the graceful shutdown to
 // complete; after that Go kills the openshell process.
+//
+// stderrW must be safe for concurrent use: the cancel goroutine and the
+// openshell subprocess both write to it simultaneously.
+//
+// The PID file path is a fixed singleton inside the sandbox. This function
+// must not be called concurrently for the same sandbox.
 func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
@@ -1409,7 +1415,9 @@ func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout 
 		go func() {
 			defer killCancel()
 			killScript := fmt.Sprintf(
-				"PID=$(cat %s 2>/dev/null); echo \"sandbox-cancel: pid=$PID\" >&2; "+
+				"PID=$(cat %s 2>/dev/null); "+
+					"if [ -z \"$PID\" ]; then echo \"sandbox-cancel: pid-file missing or empty\" >&2; exit 1; fi; "+
+					"echo \"sandbox-cancel: pid=$PID\" >&2; "+
 					"kill -INT $PID 2>&1; echo \"sandbox-cancel: kill=$?\" >&2",
 				execPIDFile)
 			killCmd := exec.CommandContext(killCtx, "openshell", "sandbox", "exec", //nolint:gosec // sandboxName is not user input

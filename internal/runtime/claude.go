@@ -352,6 +352,8 @@ func buildRunCommand(params RunParams) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
+	// exec replaces the shell so ExecStreamReader's PID file points to
+	// claude, not sh — required for the SIGINT-into-sandbox cancel mechanism.
 	parts := []string{
 		fmt.Sprintf("cd %s && . %s && exec claude", params.RepoDir, envFile),
 		"--print",
