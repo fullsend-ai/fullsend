@@ -5,7 +5,8 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
+[Configuring GitHub](../getting-started/configuring-github.md) or
+[Configuring GitLab](../getting-started/configuring-gitlab.md). For advanced
 installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
@@ -419,4 +420,6 @@ compiled-in defaults apply:
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)
   — per-repo config file location and format.
 - [Configuring GitHub](../getting-started/configuring-github.md) — initial
+  per-repo setup guide.
+- [Configuring GitLab](../getting-started/configuring-gitlab.md) — initial
   per-repo setup guide.

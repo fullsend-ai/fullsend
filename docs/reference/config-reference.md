@@ -4,7 +4,8 @@ Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 For initial setup, see
-[Configuring GitHub](../guides/getting-started/configuring-github.md).
+[Configuring GitHub](../guides/getting-started/configuring-github.md) or
+[Configuring GitLab](../guides/getting-started/configuring-gitlab.md).
 
 ```yaml
 # ── Schema ───────────────────────────────────────────────────
@@ -289,6 +290,8 @@ code defaults. For complete merge rules, see
 - [Harness Field Reference](harness-reference.md) — fields available in harness
   YAML files (per-agent configuration)
 - [Configuring GitHub](../guides/getting-started/configuring-github.md) —
+  initial per-repo setup
+- [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) —
   initial per-repo setup
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — agent
   registration and harness authoring

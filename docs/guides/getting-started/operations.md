@@ -79,7 +79,8 @@ To remove fullsend from a single repository:
 
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
-4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+4. If you installed using the Free-tier PAT fallback (`--gitlab-bot-token`/`FULLSEND_GITLAB_BOT_TOKEN` — see [Configuring GitLab § Free-tier bot token](configuring-gitlab.md#free-tier-bot-token)), also revoke that personal access token on the dedicated bot account (User Settings → Access Tokens, or Group Access Tokens if group-scoped). Deleting the `FULLSEND_FORGE_TOKEN` CI/CD variable in step 2 does not revoke the underlying PAT — it remains valid until revoked directly on the account that issued it.
+5. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
