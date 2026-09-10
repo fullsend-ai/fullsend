@@ -73,6 +73,15 @@ weakens the cap. Per-runtime coverage, per
 `fullsend run` emits a warning when a cap is set and a completed iteration
 reports no cost, so an inert cap is at least visible in the run log.
 
+The trust runs in both directions. fullsend does not cross-check the reported
+total, so an over-reporting runtime trips the cap before real spend reaches it
+and suppresses retries the budget would have allowed; nothing in the run log
+distinguishes that from a genuine overrun. One such report is open upstream:
+[anthropics/claude-code#53371](https://github.com/anthropics/claude-code/issues/53371)
+(`total_cost_usd` about 10x too high) was closed as a duplicate of an
+unrelated, unfixed issue, so it has no confirmed fix. Whether the Claude Code
+version pinned in the sandbox image is affected has not been verified.
+
 ## The `over_budget` marker
 
 `metrics.json` records `over_budget: true` **if and only if** the cap
