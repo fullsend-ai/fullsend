@@ -152,6 +152,21 @@ When in doubt about whether something warrants a PR, start with an issue. Issues
 
 To find open issues for human contribution, use the [contributor issue search](https://github.com/fullsend-ai/fullsend/issues?q=is%3Aissue%20is%3Aopen%20-author%3Aapp%2Ffullsend-ai-fullsend%20-author%3Aapp%2Ffullsend-ai-triage%20-author%3Aapp%2Ffullsend-ai-review%20-author%3Aapp%2Ffullsend-ai-prioritize%20-author%3Aapp%2Ffullsend-ai-coder%20-author%3Aapp%2Ffullsend-ai-retro%20-label%3Aready-to-code). This search excludes issues reserved for agents.
 
+### Where to file experiments-related issues
+
+> **Status: proposed, pending maintainer confirmation.** The split below documents the de facto filing pattern observed since `fullsend-ai/experiments` became a submodule of this repository. A maintainer has not yet confirmed it as the intended policy — see [#588](https://github.com/fullsend-ai/fullsend/issues/588). Treat this section as a proposal until that confirmation lands.
+
+[`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments) is a separate repository, vendored here as the `experiments/` git submodule and published on the docs site. File issues in the repository that owns the code or configuration being changed:
+
+| File in | When the work is |
+|---------|------------------|
+| [`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments/issues) | Experiment source, conventions, lint scripts, CI, or config **inside** the experiments repository (the `experiments/` tree), including new spikes and prototypes. |
+| [`fullsend-ai/fullsend`](https://github.com/fullsend-ai/fullsend/issues) | How this repository consumes the submodule: `.gitmodules`, CODEOWNERS entries, Renovate bump/auto-merge policy, the `docs/experiments` symlink, ignore rules, and docs-site wiring. Also file here for fullsend product or platform work that cites an experiment as evidence. |
+
+When the right tracker is unclear, file in this repository and link the [experiments issue tracker](https://github.com/fullsend-ai/experiments/issues) in the body. Search both repositories before filing — the same topic may already exist in the other tracker.
+
+The [`filing-issues`](skills/filing-issues/SKILL.md) skill encodes this split for automated filing.
+
 ## Maintainers
 
 See [MAINTAINERS.md](MAINTAINERS.md) for the maintainer role, eligibility

@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -4850,6 +4851,241 @@ func TestWriteMetricsJSON(t *testing.T) {
 	}
 	if got.ToolCalls != 34 {
 		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
+}
+
+// TestAggregateRunMetrics_PartialCancelledRun verifies that partial token
+// metrics from a cancelled run (no ResultEvent, only TokensEvent) are folded
+// into the aggregate correctly. This is the core data-flow assertion for #6936:
+// the cancellation short-circuit writes metrics using the aggregate, so the
+// aggregate must contain the partial tokens.
+func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Simulate a cancelled run: metrics populated via TokensEvent (no
+	// ResultEvent, so NumTurns/TotalCostUSD stay zero).
+	m := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m.ToolCalls.Store(10)
+
+	aggregateRunMetrics(&agg, &m, 1)
+
+	if agg.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", agg.TokenUsage.CacheRead)
+	}
+	if agg.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", agg.ToolCalls)
+	}
+	if agg.Model != "claude-opus-4-6" {
+		t.Errorf("model = %q, want claude-opus-4-6", agg.Model)
+	}
+	if agg.NumTurns != 0 {
+		t.Errorf("num_turns = %d, want 0 (cancelled run has no ResultEvent)", agg.NumTurns)
+	}
+	if agg.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (cancelled run has no ResultEvent)", agg.TotalCostUSD)
+	}
+}
+
+// TestAggregateRunMetrics_MultiIterationCancel verifies that when a first
+// iteration completes normally and the second is cancelled (partial tokens,
+// no ResultEvent), the aggregate reflects both iterations' tokens and the
+// cost from the successful iteration. This exercises the real-world
+// cancellation scenario from #6936: the cleanup path writes the aggregate,
+// so it must combine all iterations faithfully.
+func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Iteration 1: normal completion with a ResultEvent.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled — TokensEvent only (no ResultEvent).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	// Token usage must reflect both iterations.
+	if agg.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 198_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 198943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 683_298 {
+		t.Errorf("token_usage.cache_read = %d, want 683298", agg.TokenUsage.CacheRead)
+	}
+
+	// Cost comes only from the successful iteration (cancelled run has zero cost).
+	if agg.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", agg.TotalCostUSD)
+	}
+	if agg.NumTurns != 5 {
+		t.Errorf("num_turns = %d, want 5 (cancelled iteration contributes zero turns)", agg.NumTurns)
+	}
+	if agg.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", agg.ToolCalls)
+	}
+	if agg.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", agg.Iterations)
+	}
+}
+
+// TestWriteMetricsJSON_CancelledRunPartialTokens verifies that partial
+// metrics from a cancelled run round-trip through writeMetricsJSON and
+// contain the expected token values but zero cost. This is the persistence
+// assertion for #6936: the artifact must contain non-zero token usage even
+// when TotalCostUSD is unavailable.
+func TestWriteMetricsJSON_CancelledRunPartialTokens(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build aggregate matching the cancelled-run evidence from #6936.
+	m := aggregateMetrics{
+		Iterations: 1,
+		ToolCalls:  10,
+		Model:      "claude-opus-4-6",
+	}
+	m.TokenUsage.Input = 599
+	m.TokenUsage.Output = 119
+	m.TokenUsage.CacheCreation = 148_943
+	m.TokenUsage.CacheRead = 583_298
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Token usage must be non-zero — the primary assertion for #6936.
+	if got.TokenUsage.Input == 0 {
+		t.Error("expected non-zero token_usage.input in cancelled-run metrics")
+	}
+	if got.TokenUsage.Output == 0 {
+		t.Error("expected non-zero token_usage.output in cancelled-run metrics")
+	}
+	if got.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", got.TokenUsage.Output)
+	}
+	if got.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", got.TokenUsage.CacheCreation)
+	}
+	if got.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", got.TokenUsage.CacheRead)
+	}
+	if got.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (dollar cost unavailable on cancellation)", got.TotalCostUSD)
+	}
+	if got.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", got.ToolCalls)
+	}
+}
+
+// TestWriteMetricsJSON_MultiIterationCancelRoundTrip verifies the full
+// data path for #6936: aggregate two iterations (one complete, one
+// cancelled), write metrics.json, read it back, and verify the combined
+// values survive serialization. This is the integration assertion — the
+// cancellation short-circuit calls aggregateRunMetrics then writeMetricsJSON,
+// so the round-trip must preserve both iterations' data.
+func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	var agg aggregateMetrics
+
+	// Iteration 1: complete.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled (partial tokens only).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:  599,
+		OutputTokens: 119,
+		Model:        "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	if err := writeMetricsJSON(dir, agg); err != nil {
+		t.Fatalf("writeMetricsJSON: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Combined token usage from both iterations.
+	if got.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", got.TokenUsage.Output)
+	}
+	// Cost from completed iteration only.
+	if got.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", got.TotalCostUSD)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", got.ToolCalls)
 	}
 }
 

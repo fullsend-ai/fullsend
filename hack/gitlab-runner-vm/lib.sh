@@ -3,7 +3,13 @@
 # lib.sh — Shared helpers for GitLab Runner VM provisioning scripts.
 #
 # Source this file at the top of any script that needs gl_curl(),
-# validate_runner_scope(), or build_scope_args().
+# validate_runner_scope(), build_scope_args(), or uses_runner_token().
+
+# uses_runner_token reports whether RUNNER_TOKEN is set, selecting the
+# join-existing-pool (runner-hub) path over GitLab API registration.
+uses_runner_token() {
+  [ -n "${RUNNER_TOKEN:-}" ]
+}
 
 # Wrap curl with GL_TOKEN passed via a temp config file to avoid
 # exposing the token in /proc/<pid>/cmdline.
