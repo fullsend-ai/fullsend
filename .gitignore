@@ -26,4 +26,9 @@ docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
 coverage.out
-outputs/
+# QualityFlow intermediates (STP/STD/reviews). outputs/<id>/{go,python}-tests/
+# is the agent's documented fallback for the generated tests themselves and
+# stays committable so a fallback-mode run fails visibly in CI, not silently.
+**/outputs/*/stp/
+**/outputs/*/std/
+**/outputs/*/reviews/
