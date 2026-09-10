@@ -630,6 +630,8 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
 
     def test_jwt_fixture_in_read_not_rewritten(self):
         with checkout() as (repo, _):
+            with open(f"{repo}/x_test.go", "w", encoding="utf-8") as fh:
+                fh.write("x")  # the skip needs a real file: the hook runs after the tool
             rc, stdout, _ = run_hook(
                 CHAIN_HOOK,
                 read_payload(f'\t{{name: "valid", input: "{JWT}"}},\n'),
@@ -781,6 +783,8 @@ class TestPostToolUseFailure(unittest.TestCase):
         body = self._body(f'parse error near: tok := "{JWT}"')
         body["tool_name"] = "Read"
         with checkout() as (repo, _):
+            with open(f"{repo}/f", "w", encoding="utf-8") as fh:
+                fh.write("x")  # the skip needs a real file: the hook runs after the tool
             body["tool_input"] = {"file_path": f"{repo}/f"}
             body["cwd"] = repo
             rc, stdout, _ = run_raw(body)

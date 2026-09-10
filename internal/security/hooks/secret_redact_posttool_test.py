@@ -655,6 +655,52 @@ class TestBareJwtToolScope(unittest.TestCase):
         self.assertIsNone(sr.sandbox_workspace_from_argv(["--sandbox-workspace", self.ws]))
         self.assertIsNone(sr.sandbox_workspace_from_argv([]))
 
+    def test_unicode_space_twin_of_a_symlink_never_skips(self):
+        # pi replaces the spaces in its class with an ASCII space before
+        # opening, so "a<NBSP>b/token" opens the ASCII-space entry —
+        # here a symlink out of the checkout to the runner's token — while
+        # the raw path names nothing inside the checkout; the hook must not
+        # skip on a path it cannot have resolved the way pi did.
+        import secret_redact_posttool as sr
+
+        os.symlink(self.ws, os.path.join(self.repo, "a b"))
+        # The 15 code points pi normalizes.
+        pi_class = ["\u00a0", "\u202f", "\u205f", "\u3000"]
+        pi_class += [chr(c) for c in range(0x2000, 0x200B)]
+        for space in pi_class:
+            with self.subTest(space=hex(ord(space))):
+                # The raw name also exists inside the checkout, so only the
+                # whitespace refusal stands between the twin and the skip.
+                twin = os.path.join(self.repo, "a" + space + "b")
+                os.makedirs(twin, exist_ok=True)
+                Path(twin, ".gcp-oidc-token").write_text("decoy")
+                path = os.path.join(twin, ".gcp-oidc-token")
+                read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": path}}
+                self.assertEqual(sr.content_skips(read), frozenset())
+        # The ASCII-space form resolves out of the checkout and masks too.
+        plain = os.path.join(self.repo, "a b", ".gcp-oidc-token")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", plain)), frozenset())
+
+    def test_non_ascii_fixture_name_still_skips(self):
+        # Only whitespace is refused: a fixture whose name carries accented
+        # or non-Latin letters is opened by pi as named and keeps the skip.
+        import secret_redact_posttool as sr
+
+        fixture = os.path.join(self.repo, "pkg", "donn\u00e9es_\u30c6\u30b9\u30c8_test.go")
+        Path(fixture).write_text("x")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", fixture)), {"jwt"})
+
+    def test_missing_target_never_skips(self):
+        # A pi Read of a missing name retries variants (NFD, curly quote,
+        # narrow NBSP before AM/PM), so a path that resolves to nothing inside
+        # the checkout may still have opened something else; the hook runs
+        # after the tool, so a real target exists by then.
+        import secret_redact_posttool as sr
+
+        missing = os.path.join(self.repo, "pkg", "nope_test.go")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", missing)), frozenset())
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture)), {"jwt"})
+
     def test_checkout_outside_the_workspace_never_skips(self):
         # A .git-bearing directory that is not under the sandbox workspace is
         # not a checkout the skip may trust, however it was reached.

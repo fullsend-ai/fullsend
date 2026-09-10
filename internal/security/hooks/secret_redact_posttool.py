@@ -90,15 +90,16 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
 # direction. A path is normalized before it is resolved, because the runtime
 # opens the normalized path while a bare realpath would follow a symlink
 # before applying '..'; and any '..' segment refuses the skip outright, as no
-# fixture needs one. So do the forms a runtime rewrites before opening (pi
-# strips a leading '@', expands '~' and turns a file:// URL into a path, while
-# its adapter forwards the raw argument): the hook can only scope what it was
-# sent. A copy, hard link or move of an outside file into the checkout is file
-# content like any other and is not distinguished — the same class as a Bash
-# transform of the token (base64, cut), which the hook never caught. An
-# adapter that sends no cwd gets no skip, i.e. masks; Claude Code sends its
-# working directory, the pi adapter its process working directory, and the
-# codex adapter the cwd of codex's own hook input — which scopes nothing there
+# fixture needs one. So do the forms a runtime rewrites before opening — see
+# _REWRITTEN_PATH — and any path whose resolved target does not exist: the
+# hook can only scope what it was sent, and pi opens a different entry for a
+# Unicode-space name, and may for a missing one, than the raw path names. A
+# copy, hard link or move of an outside file into the checkout is file content
+# like any other and is not distinguished — the same class as a Bash transform
+# of the token (base64, cut), which the hook never caught. An adapter that
+# sends no cwd gets no skip, i.e. masks; Claude Code sends its working
+# directory, the pi adapter its process working directory, and the codex
+# adapter the cwd of codex's own hook input — which scopes nothing there
 # today, since codex's apply_patch input carries no file path and its reads
 # are shell output. Adapters translate tool names to Claude's vocabulary
 # before the chain runs, so the names here apply everywhere.
@@ -112,10 +113,19 @@ _TOOL_PATH_KEY = {
     "Grep": "path",
 }
 _CHECKOUT_SKIPS = frozenset({"jwt"})
-# Path forms a runtime rewrites before opening: pi strips a leading '@',
-# expands '~' and turns a file:// URL into a path, while its adapter forwards
-# the raw argument, so the hook cannot see what was opened and never skips
-# them. Any URL scheme is refused, broader than pi's rewrite on purpose.
+# Path forms a runtime rewrites before opening, while its adapter forwards the
+# raw argument, so the hook cannot see what was opened. The rewrites pi 0.85.0
+# applies (dist/utils/paths.js, dist/core/tools/path-utils.js): every file
+# tool strips a leading '@', expands '~', turns a file:// URL into a path and
+# replaces the Unicode spaces U+00A0, U+2000-U+200A, U+202F, U+205F and U+3000
+# with an ASCII space; a Read of a missing name additionally retries variants
+# (NFD, curly quote, narrow NBSP before AM/PM, NFD with curly quote). The hook
+# refuses the first three forms here (any URL scheme, broader than pi's
+# rewrite on purpose), refuses any non-ASCII whitespace in content_skips, and
+# grants the skip only for a resolved target that exists: the hook runs after
+# the tool, so the file pi opened exists by then, and a missing target means a
+# Read may have opened a variant of the name. A rewrite this list does not
+# name is caught only if it leaves the raw name unresolvable.
 _REWRITTEN_PATH = re.compile(r"^(?:@|[A-Za-z][A-Za-z0-9+.\-]*://)")
 
 # The sandbox workspace: the checkout lives in a proper subdirectory of it and
@@ -128,21 +138,21 @@ _REWRITTEN_PATH = re.compile(r"^(?:@|[A-Za-z][A-Za-z0-9+.\-]*://)")
 # the pi adapter build without it. It is not read from environment variables:
 # Claude Code applies a checkout's .claude/settings.json env block to hook
 # processes over the launch environment (observed locally on 2.1.235; the
-# sandbox image pins 2.1.260), and the sandbox .env every launch command
-# sources lives in the sandbox user's workspace. A checkout's settings can
-# also add hook invocations of their own, with any argv; one that skips prints
-# nothing, which the protocol reads as unchanged, so it does not undo the
-# runner's rewrite — repo-supplied hooks are the exposure
-# docs/runtimes/claude.md already names. Not covered here is the interpreter
-# itself: under claude and pi the hook runs as a bare python3 resolved through
-# a PATH that puts the agent-writable workspace bin first, with PYTHONPATH and
-# the user site directory honoured, so code the agent controls can run inside
-# any hook process (codex isolates its adapter, see codex_config.go); that
-# predates this change. Residual: the boundary is the workspace, not the
-# checkout, so a .git planted in another runner-owned subdirectory (.env.d,
-# host_files credentials) can still be a root through a plain cd into it or an
-# in-checkout symlink; only a bare JWT no structural shape covers would skip
-# there, and only for files under that subdirectory.
+# sandbox image pins CLAUDE_CODE_VERSION in images/sandbox/Containerfile), and
+# the sandbox .env every launch command sources lives in the sandbox user's
+# workspace. A checkout's settings can also add hook invocations of their own,
+# with any argv; one that skips prints nothing, which the protocol reads as
+# unchanged, so it does not undo the runner's rewrite — repo-supplied hooks
+# are the exposure docs/runtimes/claude.md already names. Not covered here is
+# the interpreter itself: under claude and pi the hook runs as a bare python3
+# resolved through a PATH that puts the agent-writable workspace bin first,
+# with PYTHONPATH and the user site directory honoured, so code the agent
+# controls can run inside any hook process (codex isolates its adapter, see
+# codex_config.go); that predates this change. Residual: the boundary is the
+# workspace, not the checkout, so a .git planted in another runner-owned
+# subdirectory (.env.d, host_files credentials) can still be a root through a
+# plain cd into it or an in-checkout symlink; only a bare JWT no structural
+# shape covers would skip there, and only for files under that subdirectory.
 SANDBOX_WORKSPACE: str = "/sandbox/workspace"
 _WORKSPACE_FLAG = "--sandbox-workspace="
 
@@ -206,12 +216,16 @@ def content_skips(hook_input: dict) -> frozenset[str]:
         return frozenset()
     if path.startswith("~") or _REWRITTEN_PATH.match(path) or ".." in path.split("/"):
         return frozenset()
+    if any(ch.isspace() and ord(ch) > 0x7F for ch in path):
+        return frozenset()
     try:
         base = os.path.realpath(cwd)
         root = _checkout_root(base, os.path.realpath(SANDBOX_WORKSPACE))
         if root is None:
             return frozenset()
         target = os.path.realpath(os.path.normpath(os.path.join(base, path)))
+        if not os.path.exists(target):
+            return frozenset()
         inside = os.path.commonpath([root, target]) == root
     except (ValueError, OSError):
         return frozenset()
