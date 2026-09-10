@@ -1360,29 +1360,74 @@ func ExecContext(ctx context.Context, sandboxName, command string, timeout time.
 	return stdoutBuf.String(), stderrBuf.String(), exitCode, nil
 }
 
+// execPIDFile is the path inside the sandbox where the exec'd process PID
+// is recorded so the cancel function can send SIGINT to it.
+const execPIDFile = "/tmp/.fullsend_exec.pid"
+
 // ExecStreamReader runs a command inside a sandbox, returning an io.ReadCloser for
 // stdout so the caller can parse structured output. Stderr is forwarded to the
 // given writer. The caller must read stdout to completion, then call cmd.Wait().
 //
 // The parent context is used as the base for the timeout context, so
 // cancelling the parent (e.g. on SIGTERM) terminates the subprocess. On
-// context cancellation, SIGINT is sent instead of the default SIGKILL so that
-// openshell can forward the signal into the sandbox and the subprocess (e.g.
-// Claude Code) has a chance to flush its final output (including cost data).
-// A 5-second WaitDelay allows the graceful shutdown to complete before a
-// force-kill.
+// context cancellation, a separate openshell exec call sends SIGINT to the
+// in-sandbox process (identified by a PID file written at startup). This is
+// necessary because SIGINT to the openshell CLI does not propagate through
+// gRPC to in-sandbox processes. The openshell relay process is left running
+// so it continues piping stdout (e.g. Claude Code's terminal result event
+// with cost data). A 5-second WaitDelay allows the graceful shutdown to
+// complete; after that Go kills the openshell process.
 func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
+
+	// Prepend a PID-file write so the cancel function can target the
+	// in-sandbox process. Callers that use "exec" in their command (e.g.
+	// buildRunCommand) replace the shell, so the PID file points to the
+	// final process.
+	wrapped := fmt.Sprintf("echo $$ > %s; %s", execPIDFile, command)
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "exec",
 		"--name", sandboxName,
 		"--no-tty",
 		"--timeout", timeoutSecs,
-		"--", "sh", "-c", command,
+		"--", "sh", "-c", wrapped,
 	)
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGINT) }
-	cmd.WaitDelay = 5 * time.Second
+	// Put openshell in its own session so process-group-wide signals
+	// (SIGINT from GHA cancellation) don't kill it before cmd.Cancel
+	// has a chance to send SIGINT into the sandbox and relay the
+	// result event through stdout.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		fmt.Fprintf(stderrW, "  sandbox cancel: sending SIGINT into %s\n", sandboxName)
+		// Send SIGINT to the in-sandbox process so it can flush final
+		// output (e.g. Claude Code's result event with total_cost_usd).
+		// A background context is required because the parent is already
+		// cancelled. The goroutine runs concurrently so Cancel returns
+		// immediately and WaitDelay starts without blocking.
+		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		go func() {
+			defer killCancel()
+			killScript := fmt.Sprintf(
+				"PID=$(cat %s 2>/dev/null); echo \"sandbox-cancel: pid=$PID\" >&2; "+
+					"kill -INT $PID 2>&1; echo \"sandbox-cancel: kill=$?\" >&2",
+				execPIDFile)
+			killCmd := exec.CommandContext(killCtx, "openshell", "sandbox", "exec", //nolint:gosec // sandboxName is not user input
+				"--name", sandboxName,
+				"--no-tty",
+				"--timeout", "5",
+				"--", "sh", "-c", killScript,
+			)
+			killCmd.Stdout = stderrW
+			killCmd.Stderr = stderrW
+			if err := killCmd.Run(); err != nil {
+				fmt.Fprintf(stderrW, "  sandbox cancel: kill-exec failed: %v\n", err)
+			}
+		}()
+		cmd.Process.Signal(syscall.SIGINT) //nolint:errcheck // best-effort; may already be dead
+		return nil
+	}
+	cmd.WaitDelay = 8 * time.Second
 	cmd.Stderr = stderrW
 
 	stdout, err := cmd.StdoutPipe()

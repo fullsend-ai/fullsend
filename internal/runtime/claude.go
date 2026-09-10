@@ -177,7 +177,9 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 		innerHandler(evt)
 	}
 
-	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
+	parseErr := parseClaudeStream(r, handler)
+	fmt.Fprintf(os.Stderr, "  stream ended: parseErr=%v ctxErr=%v cost=%.4f\n", parseErr, ctx.Err(), metrics.TotalCostUSD)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, r)
@@ -188,6 +190,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
 	}
+	fmt.Fprintf(os.Stderr, "  wait done: exitCode=%d waitErr=%v\n", exitCode, waitErr)
 
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -350,7 +353,7 @@ func buildRunCommand(params RunParams) string {
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
 	parts := []string{
-		fmt.Sprintf("cd %s && . %s && claude", params.RepoDir, envFile),
+		fmt.Sprintf("cd %s && . %s && exec claude", params.RepoDir, envFile),
 		"--print",
 		"--verbose",
 		"--output-format stream-json",

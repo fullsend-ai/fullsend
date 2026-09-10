@@ -310,21 +310,31 @@ func TestExecStreamReader_SendsSIGINTOnCancel(t *testing.T) {
 
 	bin := t.TempDir()
 	script := filepath.Join(bin, "openshell")
-	// Use a busy-wait loop instead of sleep so the script works with a
-	// restricted PATH that doesn't include /usr/bin.
+	// Fake openshell: pass-through that runs whatever comes after "--".
+	// This lets the cancel function's separate "openshell sandbox exec"
+	// call also go through the fake and execute the kill command.
 	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
-trap 'echo "flushed-after-sigint"; exit 0' INT
-echo "ready"
-while true; do :; done
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--" ]; then
+        shift
+        exec "$@"
+    fi
+    shift
+done
+echo "no -- found" >&2; exit 1
 `), 0o755))
-	t.Setenv("PATH", bin)
+	t.Setenv("PATH", bin+":/bin:/usr/bin")
+	defer os.Remove(execPIDFile)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stdout, cmd, cleanup, err := ExecStreamReader(ctx, "test-sandbox", "echo hello", 30*time.Second, os.Stderr)
+	// The command traps SIGINT and flushes output, simulating Claude Code's
+	// graceful shutdown that emits the result event with cost data.
+	testCmd := "trap 'echo flushed-after-sigint; exit 0' INT; echo ready; while true; do :; done"
+	stdout, cmd, cleanup, err := ExecStreamReader(ctx, "test-sandbox", testCmd, 30*time.Second, os.Stderr)
 	require.NoError(t, err)
 	defer cleanup()
 
-	buf := make([]byte, 64)
+	buf := make([]byte, 256)
 	n, err := stdout.Read(buf)
 	require.NoError(t, err)
 	assert.Contains(t, string(buf[:n]), "ready")
@@ -342,12 +352,12 @@ while true; do :; done
 		}
 	}
 	assert.Contains(t, string(all), "flushed-after-sigint",
-		"subprocess should receive SIGINT (not SIGKILL) and have time to flush output")
+		"in-sandbox process should receive SIGINT via the kill-exec mechanism and flush output")
 
 	waitErr := cmd.Wait()
 	_ = waitErr
 
-	assert.Equal(t, 5*time.Second, cmd.WaitDelay,
+	assert.Equal(t, 8*time.Second, cmd.WaitDelay,
 		"WaitDelay should give the subprocess time to flush before force-kill")
 }
 
