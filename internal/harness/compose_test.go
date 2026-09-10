@@ -537,6 +537,48 @@ base: ../outside.yaml
 	assert.Contains(t, err.Error(), "escapes workspace root")
 }
 
+// TestLoadWithBase_LocalBase_ConventionalBaseResolvesAgainstFullsendDir
+// covers a base hosted at the conventional <fullsendDir>/harness/ location
+// that is inherited by a child hosted at a non-conventional location (a
+// custom agents/<agent>/ subdirectory, per #7206). The base's own relative
+// fields (agent, policy) must resolve against fullsendDir — where they
+// live on disk — not against the child's own directory, even though the
+// caller (mirroring internal/cli/run.go and lock.go) only ever calls
+// ResolveRelativeToBounded once, joining against the child's own join
+// base. Regression test for the logic error where mergeBaseIntoChild
+// copied the base's relative strings onto the child unresolved.
+func TestLoadWithBase_LocalBase_ConventionalBaseResolvesAgainstFullsendDir(t *testing.T) {
+	fullsendDir := t.TempDir()
+
+	writeTestHarness(t, fullsendDir, "harness/common.yaml", `
+agent: agents/foo.md
+role: fix
+policy: policies/p.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(fullsendDir, "policies"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(fullsendDir, "policies", "p.yaml"), []byte("allow: []\n"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(fullsendDir, "agents"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(fullsendDir, "agents", "foo.md"), []byte("# foo\n"), 0644))
+
+	childPath := writeTestHarness(t, fullsendDir, "agents/custom/custom.yaml", `
+base: ../../harness/common.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), childPath, ComposeOpts{
+		WorkspaceRoot: fullsendDir,
+	})
+	require.NoError(t, err)
+
+	// Mirrors internal/cli/run.go and lock.go: resolve the merged harness's
+	// remaining relative paths exactly once, against the child's own join
+	// base.
+	joinBase := JoinBaseForHarness(childPath, fullsendDir)
+	require.NoError(t, h.ResolveRelativeToBounded(joinBase, fullsendDir))
+
+	assert.Equal(t, filepath.Join(fullsendDir, "agents", "foo.md"), h.Agent)
+	assert.Equal(t, filepath.Join(fullsendDir, "policies", "p.yaml"), h.Policy)
+}
+
 func TestLoadWithBase_DepthExceeded(t *testing.T) {
 	dir := t.TempDir()
 

@@ -200,7 +200,21 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 	visited[absPath] = true // Mark child as visited to detect self-reference
 
-	base, deps, err := loadBaseChain(ctx, child.Base, childDir, allowlist, opts, visited, 1)
+	// The join base the caller (run.go/lock.go) will eventually use for its
+	// own top-level ResolveRelativeToBounded call, computed the same way
+	// they compute it (JoinBaseForHarness on this same path/WorkspaceRoot
+	// pair). Threaded through loadBaseChain so a local base hosted in a
+	// different directory than this top-level harness can have its own
+	// relative paths absolutized now — otherwise the caller would later
+	// join them against its own (wrong) join base. See the comment on the
+	// base-resolution block inside loadBaseChain for why bases that share
+	// the top harness's join base are left untouched.
+	topJoinBase := ""
+	if opts.WorkspaceRoot != "" {
+		topJoinBase = JoinBaseForHarness(path, opts.WorkspaceRoot)
+	}
+
+	base, deps, err := loadBaseChain(ctx, child.Base, childDir, allowlist, opts, visited, 1, topJoinBase)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading base chain: %w", err)
 	}
@@ -295,6 +309,7 @@ func loadBaseChain(
 	opts ComposeOpts,
 	visited map[string]bool,
 	depth int,
+	topJoinBase string,
 ) (*Harness, []Dependency, error) {
 	if depth > MaxBaseDepth {
 		return nil, nil, fmt.Errorf("exceeded maximum base depth of %d", MaxBaseDepth)
@@ -303,6 +318,7 @@ func loadBaseChain(
 	var base *Harness
 	var deps []Dependency
 	var baseDir string
+	var localBasePath string // set only for the local-path branch; used to absolutize base's own relative paths below
 
 	// Reject non-HTTPS URLs before they get treated as local paths
 	if strings.HasPrefix(baseRef, "http://") {
@@ -423,11 +439,12 @@ func loadBaseChain(
 		}
 
 		baseDir = filepath.Dir(absBasePath)
+		localBasePath = absBasePath
 	}
 
 	// If base has its own base, recurse
 	if base.Base != "" {
-		ancestorBase, ancestorDeps, err := loadBaseChain(ctx, base.Base, baseDir, allowlist, opts, visited, depth+1)
+		ancestorBase, ancestorDeps, err := loadBaseChain(ctx, base.Base, baseDir, allowlist, opts, visited, depth+1, topJoinBase)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -449,6 +466,42 @@ func loadBaseChain(
 	// ResolveForge — which is the bug described in #6798.
 	if err := resolveBaseForgeAndOverlays(base, opts); err != nil {
 		return nil, nil, err
+	}
+
+	// A local base's own relative paths (e.g. a policy or skill sitting
+	// next to the base file, not the child) are still relative strings at
+	// this point — LoadRaw does not resolve them, and mergeBaseIntoChild
+	// only copies string values. The caller (run.go/lock.go) resolves the
+	// fully-merged harness exactly once, joining against
+	// JoinBaseForHarness(<originally-requested harness path>, fullsendDir)
+	// — i.e. topJoinBase. That is correct for base's own fields only when
+	// this base's join base happens to be the same directory (the common
+	// case: a conventional harness/common.yaml base inherited by a
+	// conventional top-level harness, or any base co-located with the
+	// harness that ultimately requested it). It is wrong whenever this
+	// base layer resolves to a *different* join base than the top-level
+	// harness — e.g. a conventional harness/common.yaml base inherited by
+	// a child hosted under a custom agents/<agent>/ subdirectory: the
+	// caller would join the base's policies/p.yaml against the child's
+	// own directory instead of fullsendDir. Absolutize base's
+	// still-relative fields now, against this base file's own join base,
+	// whenever that differs from topJoinBase — the same resolve-before-merge
+	// contract URL bases already get via
+	// resolveBase{Resources,Scripts,HostFiles,Profiles,Providers,Plugins}
+	// above. Skipping the common (matching) case keeps existing behavior
+	// — and existing tests asserting fields stay relative — unchanged.
+	// Fields already made absolute by an ancestor merge or already
+	// URL/cache paths are left untouched by ResolveRelativeToBounded.
+	// Skipped entirely when WorkspaceRoot isn't set, matching the
+	// containment root fallback above (there is no authoritative boundary
+	// to resolve against, and topJoinBase is "" in that case too).
+	if localBasePath != "" && opts.WorkspaceRoot != "" {
+		baseJoinBase := JoinBaseForHarness(localBasePath, opts.WorkspaceRoot)
+		if baseJoinBase != topJoinBase {
+			if err := base.ResolveRelativeToBounded(baseJoinBase, opts.WorkspaceRoot); err != nil {
+				return nil, nil, fmt.Errorf("resolving local base %s: %w", localBasePath, err)
+			}
+		}
 	}
 
 	return base, deps, nil
