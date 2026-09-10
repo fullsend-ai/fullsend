@@ -133,6 +133,27 @@ changed page, incurred only when a review would otherwise have run.
 This skip is per-repo only — see Consequences for why it is not mirrored
 into the per-org scaffold.
 
+### 4. A skipped push still clears the merge labels
+
+`docs/architecture.md` holds that each review run start clears
+`ready-for-merge` together with `ready-for-review`, so merge approval is
+never stale after new commits. That clearing lives in the review run itself,
+so every skip above would have left a `ready-for-merge` applied to an earlier
+head standing on commits nobody reviewed — a draft push is caught by GitHub's
+own draft merge block, but a push to a `fullsend-no-review` PR or a
+prose-only push is not.
+
+A `clear-stale-merge-labels` job in `reusable-dispatch.yml` therefore runs on
+every `pull_request_target` `synchronize` whose composite stage output is not
+`review` — which covers the three skips and, as a side effect, a push by an
+actor below triage that never routed — and removes both labels via the
+issues API, treating a 404 as "not present" and any other failure as a job
+failure so the stale label is visible. It is a job of its own rather than a
+step in `route` so the route job, which parses untrusted event data, keeps
+its read-only token; the per-repo shim already grants the dispatch job
+`issues: write` and `pull-requests: write`. The scaffold mirrors it as a last
+step of its single job, whose token is widened the same way.
+
 ## Consequences
 
 - Automatic review stops running on drafts, on `fullsend-no-review`-labeled
@@ -154,6 +175,9 @@ into the per-org scaffold.
   PR, or a prose-only PR at any time.
 - `fullsend-no-review` must be created and applied by hand until an
   `/fs-review-stop` command exists, unlike `/fs-fix-stop`.
+- A push that is skipped still invalidates the previous verdict: the labels
+  are cleared, but nothing re-applies them until a round runs — `/fs-review`,
+  marking the PR ready, or removing `fullsend-no-review` and pushing again.
 - The prose skip is per-repo only because the per-org mode is deprecated
   ([ADR 0044](0044-deprecate-per-org-installation-mode.md)) and
   `docs/contributing/workflow-contracts.md` scopes cross-mode sync to payload
