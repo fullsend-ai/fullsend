@@ -52,6 +52,16 @@ const STDERR_TAIL_BYTES = 4 * 1024;
 const LOG_PREFIX = "[fullsend-agent]";
 const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_TIMEOUT_SECONDS = 900;
+// DEFAULT_LIVENESS_MS paces the progress updates run() emits through pi's
+// onUpdate while a child is running. A child's stdout is consumed here, not
+// forwarded, so without them the parent's JSON stream is silent for the whole
+// child — up to timeoutSeconds, which equals the runner's default stall
+// timeout (FULLSEND_STALL_TIMEOUT, 15m) — and the stall watchdog would kill a
+// parent whose only fault was waiting on a long sub-agent. Each update is a
+// tool_execution_update line on the parent's stream, which the runner counts
+// as liveness; 30s matches the watchdog's poll cap. A child that is itself
+// wedged is bounded by its own timeoutSeconds, not by the watchdog.
+const DEFAULT_LIVENESS_MS = 30_000;
 const DEFAULT_THINKING = "medium";
 const DEFAULT_EXPLORE_TOOLS = ["read", "grep", "find", "ls"];
 // Claude Code's built-in agent types, as the fleet's pinned CLI (2.1.258)
@@ -474,7 +484,7 @@ function signalChild(child, signal) {
 // `now` are injectable for tests. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS, livenessMs = DEFAULT_LIVENESS_MS, manifestPath = "", manifestSum = "" } = {}) {
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
@@ -686,7 +696,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       child.once("close", (code, signal) => finish(code, signal, undefined));
     });
 
-  const run = async (params, { parentModel, signal } = {}) => {
+  const run = async (params, { parentModel, signal, onUpdate } = {}) => {
     const id = ++seq;
     const description = typeof params?.description === "string" ? params.description : "";
     const subagentType = typeof params?.subagent_type === "string" ? params.subagent_type.trim() : "";
@@ -774,7 +784,21 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
         }
         log(`${LOG_PREFIX} #${id}${persona ? ` [${subagentType}]` : ""} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
-        outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? subagentType.trim().toLowerCase() : "");
+        // Liveness for the runner's stall watchdog (see DEFAULT_LIVENESS_MS);
+        // unref'd so a pending tick never holds the parent open.
+        const startedAt = now();
+        const liveness = typeof onUpdate === "function"
+          ? setInterval(() => onUpdate({
+            content: [{ type: "text", text: `sub-agent #${id} running ${Math.round((now() - startedAt) / 1000)}s` }],
+            details: { seq: id, model: modelSpec },
+          }), livenessMs)
+          : undefined;
+        if (liveness && typeof liveness.unref === "function") liveness.unref();
+        try {
+          outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? subagentType.trim().toLowerCase() : "");
+        } finally {
+          if (liveness) clearInterval(liveness);
+        }
       } finally {
         release();
       }
@@ -864,12 +888,12 @@ export default function (pi) {
   }
   const tool = createAgentTool(manifest, { manifestPath, manifestSum });
 
-  const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
+  const execute = async (_toolCallId, params, signal, onUpdate, ctx) => {
     const m = ctx?.model;
     const parentModel = m && typeof m.provider === "string" && typeof m.id === "string" ? `${m.provider}/${m.id}` : "";
     // pi aborts a tool call when the turn is cancelled; without this the
     // child would keep running (and spending) until its own timeout.
-    const res = await tool.run(params ?? {}, { parentModel, signal });
+    const res = await tool.run(params ?? {}, { parentModel, signal, onUpdate });
     if (res.isError) {
       throw new Error(res.text ? `${res.error}\n\n${res.text}` : res.error);
     }

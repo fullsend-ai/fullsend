@@ -320,6 +320,24 @@ test("run: success returns the child's final text, trimmed, and records usage", 
   assert.match(logs[1], /^\[fullsend-agent\] #1 done \d+ms stop$/);
 });
 
+test("run: a running child emits liveness through onUpdate, and none after it is gone", async () => {
+  const { manifest } = fixture();
+  manifest.agent.timeoutSeconds = 0.3;
+  const tool = createAgentTool(manifest, { ...quiet, livenessMs: 20 });
+  const updates = [];
+  const res = await tool.run({ prompt: "hang" }, { onUpdate: (u) => updates.push(u) });
+  assert.equal(res.stopReason, "timeout");
+  assert.ok(updates.length >= 3, `expected liveness updates every 20ms across a 300ms child, got ${updates.length}`);
+  assert.equal(updates[0].content[0].type, "text");
+  assert.match(updates[0].content[0].text, /^sub-agent #1 running \d+s$/);
+  assert.equal(updates[0].details.seq, 1);
+  const seen = updates.length;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(updates.length, seen, "the interval is cleared once the child is gone");
+  const silent = await tool.run({ prompt: "ok" }, {});
+  assert.equal(silent.isError, false, "onUpdate is optional");
+});
+
 test("run: error stopReason → isError with the child's message", async () => {
   const { manifest } = fixture();
   const tool = createAgentTool(manifest, quiet);
