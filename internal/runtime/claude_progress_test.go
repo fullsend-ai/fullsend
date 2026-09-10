@@ -1325,3 +1325,79 @@ func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
 		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
 	}
 }
+
+func TestParseClaudeStreamAssistantUsageFallback(t *testing.T) {
+	// When stream_event events are absent (stream-json format), usage
+	// should be extracted from assistant message events.
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":3000,"output_tokens":500,"cache_read_input_tokens":12000,"cache_creation_input_tokens":2000}}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":4000,"output_tokens":800,"cache_read_input_tokens":14000,"cache_creation_input_tokens":1000}}}`,
+		// No result event — cancelled run.
+	}
+
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+
+	if len(tokens) == 0 {
+		t.Fatal("expected at least one TokensEvent from assistant usage fallback")
+	}
+	last := tokens[len(tokens)-1]
+	// Cumulative: msg1 input=3000+msg2 input=4000=7000
+	if last.InputTokens != 7000 {
+		t.Errorf("expected 7000 cumulative input tokens, got %d", last.InputTokens)
+	}
+	// Cumulative: msg1 output=500+msg2 output=800=1300
+	if last.OutputTokens != 1300 {
+		t.Errorf("expected 1300 cumulative output tokens, got %d", last.OutputTokens)
+	}
+	// Cumulative cache read: 12000+14000=26000
+	if last.CacheRead != 26000 {
+		t.Errorf("expected 26000 cumulative cache read, got %d", last.CacheRead)
+	}
+	// Cumulative cache write: 2000+1000=3000
+	if last.CacheWrite != 3000 {
+		t.Errorf("expected 3000 cumulative cache write, got %d", last.CacheWrite)
+	}
+}
+
+func TestProgressParserCancelledRunCapturesTokensFromAssistant(t *testing.T) {
+	// End-to-end test: progressParser should populate RunMetrics from
+	// assistant-event usage when no stream_events are present.
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":5000,"output_tokens":1000,"cache_read_input_tokens":10000,"cache_creation_input_tokens":3000}}}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.InputTokens != 5000 {
+		t.Errorf("expected 5000 input tokens, got %d", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 1000 {
+		t.Errorf("expected 1000 output tokens, got %d", metrics.OutputTokens)
+	}
+	if metrics.CacheReadInputTokens != 10000 {
+		t.Errorf("expected 10000 cache read tokens, got %d", metrics.CacheReadInputTokens)
+	}
+	if metrics.CacheCreationInputTokens != 3000 {
+		t.Errorf("expected 3000 cache creation tokens, got %d", metrics.CacheCreationInputTokens)
+	}
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("expected model claude-opus-4-6, got %s", metrics.Model)
+	}
+}

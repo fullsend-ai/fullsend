@@ -446,7 +446,11 @@ runs:
         if [[ -n "${MINT_URL}" ]]; then
           MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
-        fullsend run "${AGENT}" \
+        # exec replaces the shell so signals (SIGINT/SIGTERM from GHA
+        # cancellation) go directly to fullsend, preventing it from being
+        # orphaned and killed before its cleanup path can flush telemetry
+        # and metrics (#6936).
+        exec fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \

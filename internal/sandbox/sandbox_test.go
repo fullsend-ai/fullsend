@@ -303,6 +303,54 @@ func TestExecStreamReader_OpenshellNotInPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestExecStreamReader_SendsSIGINTOnCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT not supported on Windows")
+	}
+
+	bin := t.TempDir()
+	script := filepath.Join(bin, "openshell")
+	// Use a busy-wait loop instead of sleep so the script works with a
+	// restricted PATH that doesn't include /usr/bin.
+	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+trap 'echo "flushed-after-sigint"; exit 0' INT
+echo "ready"
+while true; do :; done
+`), 0o755))
+	t.Setenv("PATH", bin)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout, cmd, cleanup, err := ExecStreamReader(ctx, "test-sandbox", "echo hello", 30*time.Second, os.Stderr)
+	require.NoError(t, err)
+	defer cleanup()
+
+	buf := make([]byte, 64)
+	n, err := stdout.Read(buf)
+	require.NoError(t, err)
+	assert.Contains(t, string(buf[:n]), "ready")
+
+	cancel()
+
+	var all []byte
+	for {
+		n, err = stdout.Read(buf)
+		if n > 0 {
+			all = append(all, buf[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	assert.Contains(t, string(all), "flushed-after-sigint",
+		"subprocess should receive SIGINT (not SIGKILL) and have time to flush output")
+
+	waitErr := cmd.Wait()
+	_ = waitErr
+
+	assert.Equal(t, 5*time.Second, cmd.WaitDelay,
+		"WaitDelay should give the subprocess time to flush before force-kill")
+}
+
 func TestOsRootContainment(t *testing.T) {
 	dir := t.TempDir()
 

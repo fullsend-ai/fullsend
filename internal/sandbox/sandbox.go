@@ -1365,9 +1365,12 @@ func ExecContext(ctx context.Context, sandboxName, command string, timeout time.
 // given writer. The caller must read stdout to completion, then call cmd.Wait().
 //
 // The parent context is used as the base for the timeout context, so
-// cancelling the parent (e.g. on SIGTERM) terminates the subprocess. This
-// allows CLI-level signal handling to propagate into long-running sandbox
-// commands.
+// cancelling the parent (e.g. on SIGTERM) terminates the subprocess. On
+// context cancellation, SIGINT is sent instead of the default SIGKILL so that
+// openshell can forward the signal into the sandbox and the subprocess (e.g.
+// Claude Code) has a chance to flush its final output (including cost data).
+// A 5-second WaitDelay allows the graceful shutdown to complete before a
+// force-kill.
 func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout time.Duration, stderrW io.Writer) (io.ReadCloser, *exec.Cmd, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	timeoutSecs := fmt.Sprintf("%d", int(timeout.Seconds()))
@@ -1378,6 +1381,8 @@ func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout 
 		"--timeout", timeoutSecs,
 		"--", "sh", "-c", command,
 	)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGINT) }
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stderr = stderrW
 
 	stdout, err := cmd.StdoutPipe()

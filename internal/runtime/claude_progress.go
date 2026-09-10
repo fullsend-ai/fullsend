@@ -63,6 +63,12 @@ type assistantMessage struct {
 	Message struct {
 		Content json.RawMessage `json:"content"`
 		Model   string          `json:"model"`
+		Usage   struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 }
 
@@ -343,6 +349,32 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			// Emit InitEvent from assistant message model as fallback.
 			if msg.Message.Model != "" {
 				onEvent(InitEvent{Model: msg.Message.Model})
+			}
+
+			// Track usage from assistant messages when stream_events
+			// are not present (stream-json output format).
+			u := msg.Message.Usage
+			if u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 {
+				cumulativeInput += totalInput
+				cumulativeOutput += totalOutput
+				cumulativeCacheRead += totalCacheRead
+				cumulativeCacheWrite += totalCacheWrite
+				totalInput = u.InputTokens
+				totalOutput = u.OutputTokens
+				totalCacheRead = u.CacheReadInputTokens
+				totalCacheWrite = u.CacheCreationInputTokens
+
+				total := cumulativeInput + totalInput + cumulativeOutput + totalOutput +
+					cumulativeCacheRead + totalCacheRead + cumulativeCacheWrite + totalCacheWrite
+				if total-lastEmittedTotal >= tokenThreshold {
+					lastEmittedTotal = total
+					onEvent(TokensEvent{
+						InputTokens:  cumulativeInput + totalInput,
+						OutputTokens: cumulativeOutput + totalOutput,
+						CacheRead:    cumulativeCacheRead + totalCacheRead,
+						CacheWrite:   cumulativeCacheWrite + totalCacheWrite,
+					})
+				}
 			}
 
 			// Real Claude Code output nests content under "message";
