@@ -96,12 +96,18 @@ GitHub repos use a token mint for authentication. The
 `mint_mode` and `mint_url` can be overridden per-repo.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
-is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
-`GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
-none are set. You can also pass `--gitlab-url` to `fullsend repos install`
-to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
-when no forge is specified).
+`--gitlab-token` to `fullsend repos` subcommands. `gitlab.url` is
+required in the manifest whenever GitLab repos are present — even for
+gitlab.com — and manifest validation fails with `gitlab.url is
+required when GitLab repos are present` if it's omitted; nothing
+auto-populates it. Pass `--gitlab-url` to `fullsend repos install` to
+set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
+when no forge is specified), or set it later with
+`fullsend repos set-default gitlab.url <url>`. The env-var fallback
+chain (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`,
+defaulting to `gitlab.com`) applies only to the agent runtime's
+forge-client construction when no manifest URL is set — it does not
+apply to manifest validation.
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value

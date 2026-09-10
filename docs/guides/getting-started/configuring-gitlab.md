@@ -17,7 +17,12 @@ GitHub repositories use a different command (`fullsend github setup`). See
   [Getting Inference](getting-inference.md). GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
   `repos install --inference-project` (see [Inference setup](#inference-setup)
-  below).
+  below). Unless you also pass `--inference-wif-provider` (see
+  [Inference setup](#inference-setup)), `repos install` derives the
+  project number from `--inference-project` via the GCP Resource
+  Manager API, so the machine running `repos install` needs
+  Application Default Credentials with `cloudresourcemanager.googleapis.com`
+  `projects.get` access on that project.
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * A GitLab personal or group access token with `api` scope and
   Maintainer (or Owner) role on the target project. The CLI does **not**
@@ -193,7 +198,7 @@ issuer, id-token claims, and an explicit allowed audience instead:
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
-export GROUP_PATH="<group>"              # e.g. "my-group" or "my-group/subgroup"
+export GROUP_PATH="<group>"              # the project's immediate parent namespace path, e.g. "my-group" or "my-group/subgroup" — not an ancestor group
 
 gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --location=global \
@@ -204,6 +209,18 @@ gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --attribute-condition="assertion.namespace_path == '$GROUP_PATH'" \
   --project="$GCP_PROJECT"
 ```
+
+GitLab's `namespace_path` ID-token claim is the project's immediate
+parent namespace path (for example, a project at
+`my-group/subgroup/project` has `namespace_path=my-group/subgroup`) —
+it is not any ancestor group. `GROUP_PATH` above must equal that exact
+path; setting it to a higher-level group (`my-group`) to try to cover
+every project underneath it will not match, and jobs from nested
+projects will be rejected at STS. To authorize an entire group tree,
+use a CEL condition such as
+`assertion.namespace_path == 'my-group' || assertion.namespace_path.startsWith('my-group/')`
+(with a matching `principalSet`), or create a separate provider or
+condition per namespace level.
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -265,9 +282,16 @@ fullsend repos status -f repos.yaml
 
 Confirm:
 
-* Status is `installed` with `DRIFT` `none`.
+* Status is `installed` with `DRIFT` `none`. On instances where schedule
+  creation failed (expected on GitLab.com Free), `repos status` will show
+  `schedule:slash-poll`/`schedule:event-poll` drift instead — that is
+  expected; verify off-system `fullsend poll` instead, per
+  [Off-system polling](#off-system-polling) above.
 * **Pipeline schedules** — Settings → CI/CD → Pipeline schedules shows
-  `fullsend slash poll` and `fullsend event poll`, both active.
+  `fullsend slash poll` and `fullsend event poll`, both active. On
+  instances where schedule creation failed (expected on GitLab.com Free),
+  this page will be empty — that is expected; verify off-system
+  `fullsend poll` instead.
 * **Bot token** — Settings → Access Tokens shows `fullsend-bot` (skipped
   on Free when you passed `--gitlab-bot-token`).
 * **CI/CD variables** — `FULLSEND_FORGE_TOKEN`, `FULLSEND_GCP_PROJECT_ID`,
