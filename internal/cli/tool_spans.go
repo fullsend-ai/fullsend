@@ -40,22 +40,25 @@ const maxToolSpanNameBytes = 128
 // gate is on.
 //
 // A span starts when the ToolUseEvent arrives and ends when the matching
-// ToolResultEvent arrives, so both timestamps are runner-side receipt
-// instants on one clock: tool_use arrival is arguments-complete rather
-// than execution start, and tool_result arrival trails execution end by
-// the pipe latency. Calls are keyed by id because the stream interleaves
-// several open calls (parallel sub-agent dispatch); a call that never gets
-// a result — the runtime was stopped, or its result line exceeded the
-// parser's 1 MiB cap — is ended by Finish as error.type=unanswered, and a
-// result whose call was never seen (its tool_use line was skipped) becomes
-// a marked span of near-zero duration. Events without an id — pi and codex
-// emit none, and server-side tools get none because their result never
-// arrives as a tool_result — produce no span. The name and the call id go
-// through the same output pipeline as span content (Unicode normalization,
-// then secret redaction): the name is bounded, the id is dropped on any
-// finding (safeID) — both land on a Level 1 span in the telemetry file the
-// output scan exempts on the strength of that treatment. Delivery is
-// synchronous on one goroutine, so no lock.
+// ToolResultEvent arrives, so both timestamps are runner-side receipt instants
+// on the parent agent span's clock — no cross-host skew, and the one source
+// every runtime provides (Claude Code's tool_use and tool_result lines carry
+// sandbox-clock timestamps the parser does not decode; pi's tool-execution
+// lines and codex's items carry none). The cost is bracketing: tool_use
+// arrival is arguments-complete rather than execution start, and tool_result
+// arrival trails execution end by the pipe latency. Calls are keyed by id
+// because the stream interleaves several open calls (parallel sub-agent
+// dispatch); a call that never gets a result — the runtime was stopped, or its
+// result line exceeded the parser's 1 MiB cap — is ended by Finish as
+// error.type=unanswered, and a result whose call was never seen (its tool_use
+// line was skipped) becomes a marked span of near-zero duration. Events
+// without an id — pi and codex emit none, and server-side tools get none
+// because their result never arrives as a tool_result — produce no span. The
+// name and the call id go through the same output pipeline as span content
+// (Unicode normalization, then secret redaction): the name is bounded, the id
+// is dropped on any finding (safeID) — both land on a Level 1 span in the
+// telemetry file the output scan exempts on the strength of that treatment.
+// Delivery is synchronous on one goroutine, so no lock.
 type toolSpanTracker struct {
 	tracer   trace.Tracer
 	ctx      context.Context

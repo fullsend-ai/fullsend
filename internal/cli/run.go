@@ -2326,7 +2326,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if cancelled, cancelExitCode, cancelledErr := handleRunCancellation(
 			ctx, runErr, iteration, exitCode, rt.System(), rt.Name(),
-			&metrics, aggMetrics, runDir, agentSpan, attachIterationContent,
+			&metrics, aggMetrics, runDir, agentSpan, toolSpans, attachIterationContent,
 			printer, lastIterElapsed,
 		); cancelled {
 			lastExitCode = cancelExitCode
@@ -2335,8 +2335,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if runErr != nil {
 			attachIterationContent("error")
-			recordToolSpanOverflow(agentSpan, toolSpans.Finish())
-			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "", toolSpans)
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
@@ -2383,8 +2382,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			contentFinishReason = "error"
 		}
 		attachIterationContent(contentFinishReason)
-		recordToolSpanOverflow(agentSpan, toolSpans.Finish())
-		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg)
+		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg, toolSpans)
 
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
@@ -3793,6 +3791,7 @@ func handleRunCancellation(
 	aggMetrics aggregateMetrics,
 	runDir string,
 	agentSpan trace.Span,
+	toolSpans *toolSpanTracker,
 	attachIterationContent func(finishReason string),
 	printer *ui.Printer,
 	lastIterElapsed time.Duration,
@@ -3805,7 +3804,7 @@ func handleRunCancellation(
 		runErr = cancelErr
 	}
 	attachIterationContent("error")
-	finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, system, runtimeName, metrics, "")
+	finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, system, runtimeName, metrics, "", toolSpans)
 	printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
 	if writeErr := writeMetricsJSON(runDir, aggMetrics); writeErr != nil {
 		printer.StepWarn("Failed to write metrics.json: " + writeErr.Error())
@@ -3817,7 +3816,12 @@ func handleRunCancellation(
 // agent span and ends it. transcriptErr is non-empty when the transcript
 // reported a failure the process exit code did not (#2786): exit_code keeps
 // the raw process exit and fullsend.transcript_error marks the override.
-func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics, transcriptErr string) {
+func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics, transcriptErr string, toolSpans *toolSpanTracker) {
+	// Every path that ends the agent span ends its open tool spans first and
+	// records the overflow, so a cancelled iteration (SIGINT, or the Actions
+	// SIGTERM handleRunCancellation names) still lands its unanswered calls
+	// in the file sink before the process goes.
+	recordToolSpanOverflow(span, toolSpans.Finish())
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, runtimeName, m)...)
 	switch {
 	case runErr != nil:

@@ -32,8 +32,11 @@ Opt-In and Development. Review of #6603 asked why tool calls are not spans.
 
 fullsend observes the runtime's stream rather than executing tools. The
 normalized `ToolUseEvent`/`ToolResultEvent` pairs carry a call id, a tool
-name and an `is_error` flag; `tool_use` lines carry no timestamp and
-`tool_result` lines carry a sandbox-clock one; several calls are open at
+name and an `is_error` flag; Claude Code's `assistant` (tool_use) and
+`user` (tool_result) stream lines each carry a sandbox-clock `timestamp`
+the parser does not decode, pi's tool-execution lines carry none (pi
+stamps only its session header and assistant messages) and codex's items
+none; several calls are open at
 once (parallel sub-agent dispatch); `parent_tool_use_id` is dropped at
 decode; the pi and codex parsers pass no call ids through.
 
@@ -56,24 +59,27 @@ decode; the pi and codex parsers pass no call ids through.
 Option 2. `toolSpanTracker` (`internal/cli/tool_spans.go`) opens an
 `execute_tool <tool name>` span (kind Internal) when the runtime reports a
 call and ends it when the result arrives. Both timestamps are runner-side
-receipt instants — one clock — so the span brackets execution rather than
-measuring it, and the start is arguments-complete. Attributes follow semconv
-v1.37.0: `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
+receipt instants: the parent `agent` span's clock, so a child never falls
+outside its parent through cross-host skew, and the one source every runtime
+provides. The cost is looser bracketing — receipt trails the sandbox's own
+timestamps by the pipe latency — and the start is arguments-complete.
+Decoding Claude Code's timestamps into `trace.WithTimestamp` would tighten
+that runtime alone and is left open. Attributes follow semconv v1.37.0:
+`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
 `gen_ai.tool.call.id`; a result flagged `is_error` sets
 `error.type=tool_error` and status Error. Calls that never get a result
 close as `error.type=unanswered`, results for calls never reported are
 marked `fullsend.tool.unmatched`, and events without a call id (pi, codex,
-server-side tools) get no span — the edge cases are specified in the
-[dev guide](../guides/dev/tracing.md#execute_tool-spans). Names and call ids
-pass through the same sanitizer as span content — names bounded, ids dropped
-on any finding; at most 1,024
-spans are recorded per iteration, so an agent-controlled burst cannot fill
-the OTLP batch queue and evict the `agent` span, with the overflow counted
-in `fullsend.tool_spans.dropped`. The spans are Level 1 metadata, emitted
-regardless of the content gate. Tool content — results now, full arguments
-next — stays on the `agent` span's `gen_ai.output.messages` record, which
-is the scorer contract
-([ADR 0087](0087-eval-measurements-online-trace-scoring.md)).
+server-side tools) get no span — the edge cases are specified in the [dev
+guide](../guides/dev/tracing.md#execute_tool-spans). Names and call ids pass
+through the same sanitizer as span content — names bounded, ids dropped on
+any finding; at most 1,024 spans are recorded per iteration, so an agent-
+controlled burst cannot fill the OTLP batch queue and evict the `agent`
+span, with the overflow counted in `fullsend.tool_spans.dropped`. The spans
+are Level 1 metadata, emitted regardless of the content gate. Tool content —
+results now, full arguments next — stays on the `agent` span's
+`gen_ai.output.messages` record, which is the scorer contract ([ADR
+0087](0087-eval-measurements-online-trace-scoring.md)).
 
 Option 3 is the candidate to revisit once the runtime's tracing is stable and
 a redaction stage outside fullsend is designed; option 4 waits for the
