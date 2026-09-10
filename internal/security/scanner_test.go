@@ -158,6 +158,20 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "google_oauth_token"))
 	})
 
+	t.Run("sts type segments", func(t *testing.T) {
+		// Google's workforce STS response carries ya29.dr.<blob>; any one-
+		// or two-letter type segment defeats the length floor the same way.
+		for _, tok := range []string{
+			"ya29.dr.AaT61Tc6Ntv1ktbGkaQ9U_MQfiQwXyZ0123456789",
+			"ya29.d.AaT61Tc6Ntv1ktbGkaQ9U_MQfiQwXyZ0123456789",
+		} {
+			result := r.Scan("access_token " + tok)
+			if !hasFinding(result, "google_oauth_token") || strings.Contains(result.Sanitized, tok) {
+				t.Errorf("%s not redacted: findings=%d sanitized=%q", tok[:8], len(result.Findings), result.Sanitized)
+			}
+		}
+	})
+
 	t.Run("google oauth token does not swallow adjacent prose", func(t *testing.T) {
 		// A dot inside the character class would run the match through
 		// sentence punctuation into the following word.

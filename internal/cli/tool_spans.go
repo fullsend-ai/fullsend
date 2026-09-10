@@ -18,7 +18,9 @@ import (
 // ends: the OTLP batch processor's queue (2048 by default) drops newest
 // spans when full, so an unbounded burst would evict the agent span — the
 // one carrying the iteration's content. Half the queue leaves room for the
-// rest of the trace; real review iterations run 117-255 calls.
+// rest of the trace (the PR's evidence review run made 47 calls). This
+// assumes the default OTEL_BSP_MAX_QUEUE_SIZE; a smaller queue lowers the
+// protection.
 const maxToolSpansPerIteration = 1024
 
 // maxToolNameBytes bounds gen_ai.tool.name. The name comes from the

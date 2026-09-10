@@ -32,13 +32,13 @@ Opt-In and Development. Review of #6603 asked why tool calls are not spans.
 
 fullsend observes the runtime's stream rather than executing tools. The
 normalized `ToolUseEvent`/`ToolResultEvent` pairs carry a call id, a tool
-name and an `is_error` flag; Claude Code's `assistant` (tool_use) and
-`user` (tool_result) stream lines each carry a sandbox-clock `timestamp`
-the parser does not decode, pi's tool-execution lines carry none (pi
-stamps only its session header and assistant messages) and codex's items
-none; several calls are open at
-once (parallel sub-agent dispatch); `parent_tool_use_id` is dropped at
-decode; the pi and codex parsers pass no call ids through.
+name and an `is_error` flag; Claude Code's `assistant` (tool_use) and `user`
+(tool_result) stream lines each carry a sandbox-clock `timestamp` the parser
+does not decode; pi's tool_execution lines — the only pi lines the parser
+reads for calls — carry none (its session header and message lines do) and
+codex's items carry none; several calls are open at once (parallel sub-agent
+dispatch); `parent_tool_use_id` is dropped at decode; the pi and codex
+parsers pass no call ids through.
 
 ## Options
 
@@ -64,7 +64,10 @@ outside its parent through cross-host skew, and the one source every runtime
 provides. The cost is looser bracketing — receipt trails the sandbox's own
 timestamps by the pipe latency — and the start is arguments-complete.
 Decoding Claude Code's timestamps into `trace.WithTimestamp` would tighten
-that runtime alone and is left open. Attributes follow semconv v1.37.0:
+that runtime alone and is left open; upstream documents the assistant-line
+field as optional, host-clock and display-only, and the user-line field as
+optional with a receive-time fallback, so a decode must fall back to receipt
+time. Attributes follow semconv v1.37.0:
 `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
 `gen_ai.tool.call.id`; a result flagged `is_error` sets
 `error.type=tool_error` and status Error. Calls that never get a result
@@ -75,11 +78,12 @@ guide](../guides/dev/tracing.md#execute_tool-spans). Names and call ids pass
 through the same sanitizer as span content — names bounded, ids dropped on
 any finding; at most 1,024 spans are recorded per iteration, so an agent-
 controlled burst cannot fill the OTLP batch queue and evict the `agent`
-span, with the overflow counted in `fullsend.tool_spans.dropped`. The spans
-are Level 1 metadata, emitted regardless of the content gate. Tool content —
-results now, full arguments next — stays on the `agent` span's
-`gen_ai.output.messages` record, which is the scorer contract ([ADR
-0087](0087-eval-measurements-online-trace-scoring.md)).
+span, with the overflow counted in `fullsend.tool_spans.dropped`; the cap
+assumes the default `OTEL_BSP_MAX_QUEUE_SIZE` (2048), and a smaller queue
+lowers the protection. The spans are Level 1 metadata, emitted regardless of
+the content gate. Tool content — results now, full arguments next — stays on
+the `agent` span's `gen_ai.output.messages` record, which is the scorer
+contract ([ADR 0087](0087-eval-measurements-online-trace-scoring.md)).
 
 Option 3 is the candidate to revisit once the runtime's tracing is stable and
 a redaction stage outside fullsend is designed; option 4 waits for the

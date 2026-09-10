@@ -195,7 +195,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
 | `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
-| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, or a kept tool result is a parser-side fragment (`fullsend.truncated` on the part; no byte count) |
 | `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes (content and ids) removed by the size budget |
 | `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
 | `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
@@ -207,7 +207,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
-| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or the result line exceeded the 1 MiB stream cap); absent on success |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or the result line exceeded the 1 MiB stream cap) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
 
 ### Resource attributes
 

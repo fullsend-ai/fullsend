@@ -211,7 +211,8 @@ type contentResult struct {
 	// DroppedBytes counts raw part bytes removed by the size budget
 	// (content, tool name, summary, tool response, and id bytes alike).
 	DroppedBytes int
-	// Truncated reports whether the budget cut or dropped anything.
+	// Truncated reports whether the budget cut or dropped anything, or a
+	// kept tool result was a parser-side fragment (its part is marked).
 	Truncated bool
 	// Findings are the security findings raised during redaction.
 	Findings []security.Finding

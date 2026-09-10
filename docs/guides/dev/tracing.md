@@ -146,11 +146,12 @@ arguments-complete, not execution start. Attributes:
 `error.type=tool_error` and status Error. A call still open when the
 iteration ends — the runtime was stopped, or its result line exceeded the
 parser's 1 MiB cap — is closed by `Finish()` as `error.type=unanswered`; a
-result with no matching call (its `tool_use` line was skipped) becomes a
+call superseded by a second `tool_use` with the same id is ended the same
+way at the reuse; a result with no matching call (its `tool_use` line was skipped) becomes a
 near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without
-an id — pi and codex emit none, and the parser gives server-side tools
-(`server_tool_use`) none because their result never arrives as a
-`tool_result` — produce no span, so the child count can be below
+an id — pi and codex emit none — produce no span, and a `server_tool_use`
+block on an `assistant` line produces no event at all (its result never
+arrives as a `tool_result`), so the child count can be below
 `fullsend.tool_calls`. The name passes through `security.OutputPipeline()`
 — Unicode normalization, then secret redaction, the same pipeline as span
 content — and is bounded to 256 bytes before it becomes the attribute; the

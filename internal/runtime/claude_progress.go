@@ -57,7 +57,8 @@ type streamError struct {
 
 // assistantMessage contains tool_use blocks from complete assistant messages.
 // Claude Code's stream-json nests the content array (and model) under "message";
-// older/flat shapes put content at the top level. We accept both.
+// a top-level content key is accepted as a defensive fallback (no observed
+// version emits it).
 type assistantMessage struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
@@ -67,10 +68,10 @@ type assistantMessage struct {
 	} `json:"message"`
 }
 
-// userMessage contains tool_result blocks from user messages. As with
-// assistantMessage, Claude Code's stream-json nests the content array
-// under "message"; older/flat shapes put content at the top level. We
-// accept both.
+// userMessage contains tool_result blocks from user messages. Claude
+// Code's stream-json nests the content array under "message"; a
+// top-level content key is accepted as a defensive fallback (no observed
+// version emits it).
 type userMessage struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
@@ -137,6 +138,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 
 	var (
 		seenStreamEvent bool
+		// Single-slot: correct only because buildRunCommand never passes
+		// --include-partial-messages, so no stream_event blocks interleave;
+		// interleaved events would need keying by index.
 		currentToolName string
 		currentToolID   string
 		toolInputJSON   strings.Builder
@@ -384,7 +388,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			}
 
 			// Real Claude Code output nests content under "message";
-			// fall back to the top-level "content" for older/flat shapes.
+			// the top-level "content" is a defensive fallback.
 			content := msg.Message.Content
 			if len(content) == 0 {
 				content = msg.Content
