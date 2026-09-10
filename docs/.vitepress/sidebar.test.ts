@@ -172,6 +172,13 @@ describe("getMarkdownFiles", () => {
       "dir",
     );
 
-    expect(() => getMarkdownFiles("section", "section", docsRoot)).not.toThrow();
+    let items: ReturnType<typeof getMarkdownFiles> = [];
+    expect(() => {
+      items = getMarkdownFiles("section", "section", docsRoot);
+    }).not.toThrow();
+
+    // The cycling `cycle` symlink must be omitted entirely rather than
+    // published as a duplicate `/section/real/cycle/` leaf under `real`.
+    expect(items).toEqual([{ text: "Real", link: "/section/real/" }]);
   });
 });

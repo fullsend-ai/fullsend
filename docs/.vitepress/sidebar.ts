@@ -77,6 +77,18 @@ export function getMarkdownFiles(
     }
     if (entry.startsWith(".") || !isDirectory) continue;
 
+    let realEntryPath: string;
+    try {
+      realEntryPath = fs.realpathSync(entryPath);
+    } catch {
+      continue;
+    }
+    // A directory symlink that resolves back to an ancestor already on the
+    // walk stack is a cycle. Skip it entirely here (rather than recursing
+    // and inspecting the empty result) so it isn't mistaken for a
+    // README-only leaf and published as a duplicate sidebar entry.
+    if (nextVisited.has(realEntryPath)) continue;
+
     const childItems = getMarkdownFiles(
       path.join(dir, entry),
       `${base}/${entry}`,
