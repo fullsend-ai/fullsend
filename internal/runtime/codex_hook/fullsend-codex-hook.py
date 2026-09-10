@@ -374,12 +374,13 @@ def rewrite_note(output: Any, script: str) -> str:
 
 
 def _cwd(hook_input: dict[str, Any]) -> dict[str, str]:
-    """codex's hook input carries its working directory — the checkout, which
-    codex is started in — and the wire protocol has adapters forward it as
-    `cwd`, as Claude Code's hooks and the pi adapter do; the redact stage
-    scopes its checkout-only bare-JWT skip on it. Under codex that scopes
-    nothing today: apply_patch's tool_input is the patch text with no file
-    path, and reads are shell output, which is never skipped."""
+    """codex's hook input carries its working directory — the checkout,
+    which codex is started in — and the wire protocol has adapters forward
+    it as `cwd`, as Claude Code's hooks do (the pi adapter on PostToolUse
+    only); the redact stage scopes its checkout-only bare-JWT skip on it.
+    Under codex that scopes nothing today: apply_patch's tool_input is the
+    patch text with no file path, and reads are shell output, which is
+    never skipped."""
     cwd = hook_input.get("cwd")
     return {"cwd": cwd} if isinstance(cwd, str) else {}
 

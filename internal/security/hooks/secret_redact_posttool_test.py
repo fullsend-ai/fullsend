@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for secret_redact_posttool.py hook."""
 
+import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -325,6 +327,13 @@ class TestVerifyRound(unittest.TestCase):
         # segment must not defeat the match (mirrors the Go redactor).
         ya29c = "ya29.c." + "b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS"
         _, stdout, _ = run_hook(f"got token {ya29c} from the metadata server\n")
+        # Google's workforce STS response carries ya29.dr.<blob>; any one- or
+        # two-letter type segment defeats the length floor the same way.
+        for prefix in ("ya29.dr.", "ya29.d."):
+            tok = prefix + "AaT61Tc6Ntv1ktbGkaQ9U_MQfiQwXyZ0123456789"
+            _, out, _ = run_hook(f"access_token {tok}\n")
+            self.assertTrue(out, prefix)
+            self.assertNotIn(tok, json.loads(out)["tool_result"], prefix)
         self.assertTrue(stdout)
         self.assertNotIn(ya29c, json.loads(stdout)["tool_result"])
 
@@ -486,6 +495,10 @@ class TestBareJwtToolScope(unittest.TestCase):
         import secret_redact_posttool as sr
 
         dotted = os.path.join(self.repo, "pkg", "..", "pkg", "x_test.go")
+        # A literal "~" directory inside the checkout: the refusal, not a
+        # missing file, is what denies the skip.
+        os.makedirs(os.path.join(self.repo, "~"), exist_ok=True)
+        Path(self.repo, "~", "x_test.go").write_text("x")
         for path in (dotted, "pkg/../pkg/x_test.go", "~/x_test.go"):
             with self.subTest(path=path):
                 self.assertEqual(sr.content_skips(self._hook_input("Read", path)), frozenset())
@@ -582,6 +595,11 @@ class TestBareJwtToolScope(unittest.TestCase):
             "file://" + self.fixture,
         ):
             with self.subTest(path=path):
+                # The raw name exists inside the checkout, so only the refusal
+                # of the form stands between it and the skip.
+                raw = os.path.normpath(os.path.join(self.repo, path))
+                os.makedirs(os.path.dirname(raw), exist_ok=True)
+                Path(raw).write_text("decoy")
                 read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": path}}
                 grep = {"tool_name": "Grep", "cwd": self.repo, "tool_input": {"path": path}}
                 self.assertEqual(sr.content_skips(read), frozenset())
@@ -624,6 +642,14 @@ class TestBareJwtToolScope(unittest.TestCase):
             timeout=10,
             env=env,
         )
+        # The module reads no environment variable for the boundary under any
+        # name: its only environ read is the trace id, and getenv is unused.
+        src = inspect.getsource(sr)
+        self.assertEqual(
+            set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', src)), {"FULLSEND_TRACE_ID"}
+        )
+        self.assertNotIn("os.environ[", src)
+        self.assertNotIn("getenv", src)
         env_only = run(env={**os.environ, "FULLSEND_SANDBOX_WORKSPACE": self.ws})
         self.assertEqual(env_only.returncode, 0, env_only.stderr)
         self.assertNotIn(self.JWT, env_only.stdout)

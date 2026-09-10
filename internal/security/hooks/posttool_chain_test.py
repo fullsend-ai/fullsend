@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -662,6 +664,21 @@ class TestContentPreservedAndRewriteNotes(unittest.TestCase):
         # under Claude Code, so the chain takes the boundary only from its own
         # command line: with the environment alone naming this workspace, the
         # checkout is not below the real boundary and the JWT masks.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("chain_under_test", CHAIN_HOOK)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # The chain's only environ reads are the trace id and the canary
+        # token; no boundary read under any name, and getenv is unused.
+        src = inspect.getsource(mod)
+        self.assertEqual(
+            set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', src)),
+            {"FULLSEND_TRACE_ID", "FULLSEND_CANARY_TOKEN"},
+        )
+        self.assertNotIn("os.environ[", src)
+        self.assertNotIn("getenv", src)
         with checkout() as (repo, _token):
             fixture = os.path.join(repo, "x_test.go")
             with open(fixture, "w", encoding="utf-8") as f:

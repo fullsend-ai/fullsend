@@ -47,10 +47,11 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}")),
     ("gitlab_pat", re.compile(r"gl(?:pat|rt|ptt|dt|ft|soat|cs)-[A-Za-z0-9_-]{20,}")),
     # Mirrors the pattern #6603 adds to the Go redactor (main's has no
-    # ya29 shape yet): the literal c. alternative covers service-account
-    # tokens, whose one-char first segment would otherwise defeat the
-    # length quantifier.
-    ("google_oauth_token", re.compile(r"ya29\.(?:c\.)?[A-Za-z0-9_-]{20,}")),
+    # ya29 shape yet). The optional one- or two-letter type segment covers
+    # service-account tokens (ya29.c.) and STS-minted ones (Google's
+    # workforce doc shows ya29.dr.), whose short first segment would
+    # otherwise defeat the length quantifier.
+    ("google_oauth_token", re.compile(r"ya29\.(?:[a-z]{1,2}\.)?[A-Za-z0-9_-]{20,}")),
     # Bare three-segment JWTs (and OIDC/WIF STS tokens) carry no
     # surrounding context for the structural patterns to anchor on; the
     # Go side of this shape is likewise in #6603, not on main. Skipped for
