@@ -154,6 +154,49 @@ func TestNewReconcileStatusCmd_MintSuccess(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestNewReconcileStatusCmd_MintSuccess_CustomRole verifies that a custom
+// harness role (e.g., "review" declared by a "grillme" agent) is passed
+// through to the MintRequest correctly, not the raw agent name. This is the
+// scenario from #7000: grillme declares role: review, and the reconcile step
+// must use "review" — not "grillme" — when minting tokens.
+func TestNewReconcileStatusCmd_MintSuccess_CustomRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	var captured mintclient.MintRequest
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		captured = req
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(token string) forge.Client {
+		return gh.New(token).WithBaseURL(srv.URL)
+	}
+	defer func() { reconcileNewForgeClient = origForge }()
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", srv.URL,
+		"--role", "review",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "review", captured.Role, "custom harness role should pass through to MintRequest without aliasing")
+}
+
 func TestNewReconcileStatusCmd_MintSuccessCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
