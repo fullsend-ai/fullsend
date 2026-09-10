@@ -28,11 +28,18 @@ GitHub repositories use a different command (`fullsend github setup`). See
   are usually not enough (polling consumes CI minutes). See
   [Runner configuration](#runner-configuration).
 
-> **GitLab tier:** Project access tokens and 5-minute pipeline schedules
-> require GitLab Premium or Ultimate. On Free or Community Edition, pass
-> `--gitlab-bot-token` with a personal access token that has `api` scope,
-> and expect slower slash-command pickup (GitLab Free's schedule minimum
-> is 60 minutes). Self-hosted runners are required on Free.
+> **GitLab tier:** Project access tokens require GitLab Premium or
+> Ultimate. `repos install` also creates two pipeline schedules with
+> sub-hourly cron intervals (`*/5 * * * *` and `2,17,32,47 * * * *`);
+> GitLab.com Free and Community Edition typically reject schedules
+> below their 60-minute minimum, so install will fail to create them.
+> On Free or Community Edition, pass `--gitlab-bot-token` with a
+> personal access token that has `api` scope, and run `fullsend poll`
+> on an external scheduler (a VM cron job or Kubernetes CronJob)
+> instead of relying on in-CI pipeline schedules — see
+> [ADR 0067](../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for
+> the off-system polling setup. Self-hosted runners are required on
+> Free.
 
 ## Installing Fullsend
 
@@ -112,14 +119,35 @@ fullsend repos install <group/project> \
 
 `FULLSEND_GITLAB_BOT_TOKEN` is the equivalent environment variable.
 
+> **Warning:** This PAT is stored as `FULLSEND_FORGE_TOKEN` and used by
+> autonomous agents processing untrusted issue and merge request
+> comments. Use a token from a dedicated bot account scoped to the
+> target project or group — not your personal account or an admin
+> PAT — since a PAT typically carries its owner's access across every
+> project and group they can reach.
+
 ## Inference setup
 
 Pass `--inference-project` so install writes `FULLSEND_GCP_PROJECT_ID`
-and `FULLSEND_GCP_WIF_PROVIDER`. GitLab uses a shared WIF provider named
-`gitlab-oidc` in the `fullsend-inference` pool — not the per-repo GitHub
-providers created by `fullsend inference provision`. Agent jobs obtain a
-GitLab `id_tokens` OIDC token (`FULLSEND_ID_TOKEN`, audience `fullsend`)
-and exchange it through that provider.
+and `FULLSEND_GCP_WIF_PROVIDER`. **This only writes CI/CD variables
+that reference the shared `gitlab-oidc` provider's resource name — it
+does not create the Workload Identity Pool, the `gitlab-oidc`
+provider, or its IAM bindings.** GitLab has no equivalent of
+`fullsend inference provision` (which auto-provisions that
+infrastructure for GitHub); a platform operator must create the
+shared `gitlab-oidc` provider once per GCP project before agent jobs
+can exchange tokens through it, or the CI/CD variables above will
+point at a provider that doesn't exist and token exchange will fail
+at runtime even though install succeeds.
+
+To create it, adapt the manual `gcloud` steps in
+[Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration):
+use GitLab's OIDC issuer for the target instance instead of GitHub's,
+name the provider `gitlab-oidc`, and scope the attribute condition and
+principal binding to the GitLab `id_tokens` claims (audience
+`fullsend`) instead of GitHub's `assertion.repository*` claims. Agent
+jobs then obtain a GitLab `id_tokens` OIDC token (`FULLSEND_ID_TOKEN`,
+audience `fullsend`) and exchange it through that provider.
 
 If a platform operator already provisioned a WIF provider, pass the full
 resource name instead of relying on the default `gitlab-oidc` path:
@@ -171,17 +199,23 @@ Confirm:
 * **Bot token** — Settings → Access Tokens shows `fullsend-bot` (skipped
   on Free when you passed `--gitlab-bot-token`).
 * **CI/CD variables** — `FULLSEND_FORGE_TOKEN`, `FULLSEND_GCP_PROJECT_ID`,
-  and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected (inference
-  secrets are also masked).
+  and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected. All three,
+  including `FULLSEND_FORGE_TOKEN`, are also requested as masked, but
+  GitLab silently falls back to unmasked if it rejects a value (for
+  example, one that doesn't meet its masking character-set rules) — treat
+  masking as best-effort rather than a pass/fail check.
 
 ## Testing Fullsend
 
 After the scaffold merge request is merged (or after a `--direct`
 install), comment `/fs-triage` on an issue. GitLab has no issue-comment
 webhook equivalent — the slash-command schedule polls every 5 minutes
-on Premium (60 minutes on Free). Visit **Build → Pipelines** to watch
-the poll and agent jobs. In some minutes the `fullsend-bot` identity
-should post a comment on the issue.
+on Premium/Ultimate. Visit **Build → Pipelines** to watch the poll and
+agent jobs. In some minutes the `fullsend-bot` identity should post a
+comment on the issue. On Free or Community Edition, where `repos
+install` cannot create the in-CI schedules (see the GitLab tier note
+under [Prerequisites](#prerequisites)), run `fullsend poll` on your
+external scheduler instead and check its output for the same comment.
 
 ## Differences from GitHub
 
@@ -216,7 +250,7 @@ Pass `--gitlab-url` at install time to record the instance URL in
 `repos.yaml` (`gitlab.url`):
 
 ```bash
-fullsend repos install group/project \
+fullsend repos install <group/project> \
   --gitlab-url https://gitlab.example.com \
   --inference-project "<gcp-project>"
 ```
