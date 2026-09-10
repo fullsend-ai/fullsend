@@ -208,6 +208,8 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 `GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
 
+If you installed via [`fullsend repos install`](../../cli/repos.md#repos-install) (see [Configuring GitLab](configuring-gitlab.md)), you don't need to separately provision `GITLAB_TOKEN`: install already creates the protected, masked `FULLSEND_FORGE_TOKEN` CI/CD variable, and the generated `.gitlab/ci/fullsend-*.yml` scaffold exports `GITLAB_TOKEN` from it at runtime. The variable above only needs manual provisioning when wiring fullsend into GitLab CI outside of that scaffold.
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation

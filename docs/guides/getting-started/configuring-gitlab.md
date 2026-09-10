@@ -29,17 +29,23 @@ GitHub repositories use a different command (`fullsend github setup`). See
   [Runner configuration](#runner-configuration).
 
 > **GitLab tier:** Project access tokens require GitLab Premium or
-> Ultimate. `repos install` also creates two pipeline schedules with
-> sub-hourly cron intervals (`*/5 * * * *` and `2,17,32,47 * * * *`);
-> GitLab.com Free and Community Edition typically reject schedules
-> below their 60-minute minimum, so install will fail to create them.
-> On Free or Community Edition, pass `--gitlab-bot-token` with a
-> personal access token that has `api` scope, and run `fullsend poll`
-> on an external scheduler (a VM cron job or Kubernetes CronJob)
-> instead of relying on in-CI pipeline schedules — see
+> Ultimate **on gitlab.com**; self-managed Community Edition can create
+> them without a paid tier. `repos install` also creates two pipeline
+> schedules with sub-hourly cron intervals (`*/5 * * * *` and
+> `2,17,32,47 * * * *`); **GitLab.com Free** typically rejects schedules
+> below its 60-minute minimum, so install will fail to create them
+> there — self-managed Community Edition does not carry that documented
+> restriction, so install usually succeeds on it. Treat
+> `--gitlab-bot-token` and off-system polling below as fallbacks for
+> when schedule creation or PAT provisioning actually fails on your
+> instance (expected on GitLab.com Free), not as the default path for
+> every Free/CE install. When they're needed, pass `--gitlab-bot-token`
+> with a personal access token that has `api` scope, and run
+> `fullsend poll` on an external scheduler (a VM cron job or Kubernetes
+> CronJob) instead of relying on in-CI pipeline schedules — see
+> [Off-system polling](#off-system-polling) below and
 > [ADR 0067](../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for
-> the off-system polling setup. Self-hosted runners are required on
-> Free.
+> the design. Self-hosted runners are required on GitLab.com Free.
 
 ## Installing Fullsend
 
@@ -48,6 +54,7 @@ Run the command:
 ```bash
 fullsend repos install <group/project> \
   --forge gitlab \
+  --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>"
 ```
 
@@ -55,9 +62,13 @@ Where `<group/project>` is the GitLab project path (nested groups are
 supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
 
-On gitlab.com you can omit `--gitlab-url`. For a self-hosted instance, add
-`--gitlab-url https://gitlab.example.com` (this also implies
-`--forge=gitlab` when no forge is specified).
+`--gitlab-url` is required in every case, including gitlab.com: `repos.yaml`
+fails validation (`gitlab.url is required when GitLab repos are present`)
+whenever it's omitted, and nothing auto-populates it. Pass
+`https://gitlab.com` for gitlab.com, or your instance URL for a self-hosted
+install (`--gitlab-url https://gitlab.example.com`); either form also
+implies `--forge=gitlab` when no forge is specified. You can set it after
+the fact instead with `fullsend repos set-default gitlab.url <url>`.
 
 The command bootstraps a `repos.yaml` manifest if one does not exist,
 then converges the project:
@@ -126,6 +137,33 @@ fullsend repos install <group/project> \
 > PAT — since a PAT typically carries its owner's access across every
 > project and group they can reach.
 
+### Off-system polling
+
+`fullsend poll` is a **hidden command** — it won't appear in `fullsend
+--help` — for running the same poll loop that `repos install`'s pipeline
+schedules would otherwise run in-CI. Use it when schedule creation fails
+(the expected case on GitLab.com Free; see the [GitLab tier
+note](#prerequisites) above), from cron on a VM, a Kubernetes CronJob, or
+any scheduler with network access to your GitLab instance:
+
+```bash
+export FULLSEND_FORGE_TOKEN="<bot-pat>"   # not GITLAB_TOKEN
+export CI_DEFAULT_BRANCH="main"           # or set CI_COMMIT_REF_NAME
+
+fullsend poll \
+  --forge gitlab \
+  --fullsend-dir /path/to/.fullsend \
+  --project "<group/project>" \
+  --gitlab-url https://gitlab.example.com   # omit for gitlab.com
+```
+
+`--forge gitlab` and `--fullsend-dir` are required flags. `FULLSEND_FORGE_TOKEN`
+(the same bot PAT from [Free-tier bot token](#free-tier-bot-token) above,
+**not** the `GITLAB_TOKEN` named in [Prerequisites](#prerequisites)) must be
+set in the environment. `--project` falls back to `CI_PROJECT_PATH`, and the
+pipeline-ref falls back to `CI_COMMIT_REF_NAME` then `CI_DEFAULT_BRANCH` —
+one of each pair is required or the command errors.
+
 ## Inference setup
 
 Pass `--inference-project` so install writes `FULLSEND_GCP_PROJECT_ID`
@@ -140,14 +178,44 @@ can exchange tokens through it, or the CI/CD variables above will
 point at a provider that doesn't exist and token exchange will fail
 at runtime even though install succeeds.
 
-To create it, adapt the manual `gcloud` steps in
-[Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration):
-use GitLab's OIDC issuer for the target instance instead of GitHub's,
-name the provider `gitlab-oidc`, and scope the attribute condition and
-principal binding to the GitLab `id_tokens` claims (audience
-`fullsend`) instead of GitHub's `assertion.repository*` claims. Agent
-jobs then obtain a GitLab `id_tokens` OIDC token (`FULLSEND_ID_TOKEN`,
-audience `fullsend`) and exchange it through that provider.
+To create it, add a GitLab-specific provider to the same
+`fullsend-inference` pool described in
+[Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration).
+The GitHub recipe there does not carry over as-is: it points the issuer
+at GitHub, maps `assertion.repository*` claims that GitLab tokens don't
+have, and omits `--allowed-audiences`, so a naively adapted provider
+rejects the `aud: "fullsend"` token agent jobs present. Use GitLab's
+issuer, id-token claims, and an explicit allowed audience instead:
+
+```bash
+export GCP_PROJECT="<gcp-project>"
+export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
+export GROUP_PATH="<group>"              # e.g. "my-group" or "my-group/subgroup"
+
+gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --issuer-uri="$GITLAB_URL" \
+  --allowed-audiences="fullsend" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --attribute-condition="assertion.namespace_path == '$GROUP_PATH'" \
+  --project="$GCP_PROJECT"
+```
+
+```bash
+export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
+export WIF_PRINCIPAL="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.namespace_path/$GROUP_PATH"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --role="roles/aiplatform.user" \
+  --member="$WIF_PRINCIPAL" \
+  --condition=None
+```
+
+Create the `fullsend-inference` pool first if it doesn't already exist
+(see the Advanced setup steps linked above). Agent jobs obtain a GitLab
+`id_tokens` OIDC token (`FULLSEND_ID_TOKEN`, audience `fullsend`) and
+exchange it through this provider.
 
 If a platform operator already provisioned a WIF provider, pass the full
 resource name instead of relying on the default `gitlab-oidc` path:
@@ -212,10 +280,11 @@ install), comment `/fs-triage` on an issue. GitLab has no issue-comment
 webhook equivalent — the slash-command schedule polls every 5 minutes
 on Premium/Ultimate. Visit **Build → Pipelines** to watch the poll and
 agent jobs. In some minutes the `fullsend-bot` identity should post a
-comment on the issue. On Free or Community Edition, where `repos
-install` cannot create the in-CI schedules (see the GitLab tier note
-under [Prerequisites](#prerequisites)), run `fullsend poll` on your
-external scheduler instead and check its output for the same comment.
+comment on the issue. On instances where `repos install` couldn't create
+the in-CI schedules (expected on GitLab.com Free; see the [GitLab tier
+note](#prerequisites) under Prerequisites), run `fullsend poll` on your
+external scheduler instead — see [Off-system polling](#off-system-polling)
+— and check its output for the same comment.
 
 ## Differences from GitHub
 
@@ -255,9 +324,14 @@ fullsend repos install <group/project> \
   --inference-project "<gcp-project>"
 ```
 
-When the manifest has no URL, the CLI falls back through
-`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, then
-defaults to `gitlab.com`. You can also set the URL later:
+That env-var fallback (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` →
+`CI_SERVER_URL`, then `gitlab.com`) is used by the agent's runtime
+forge-client construction inside CI jobs — it does **not** apply to
+`repos.yaml` manifest validation. `gitlab.url` must be set in the
+manifest whenever GitLab repos are present; there is no default, and
+`repos install`/`repos status` fail with `gitlab.url is required when
+GitLab repos are present` otherwise. Set it via `--gitlab-url` at
+install time, or later with:
 
 ```bash
 fullsend repos set-default gitlab.url https://gitlab.example.com
