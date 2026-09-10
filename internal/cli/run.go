@@ -2268,15 +2268,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// Record per-model rates from successful runs for future cost
-		// estimation; estimate USD cost from cached rates when the
-		// authoritative cost is missing (cancelled runs). Each call
-		// is a no-op when its precondition doesn't hold.
-		if err := recordModelRates(absFullsendDir, &metrics); err != nil {
-			printer.StepWarn(fmt.Sprintf("pricing rate cache: %v", err))
-		}
-		estimateRunMetricsCost(absFullsendDir, &metrics)
-
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
@@ -3720,11 +3711,11 @@ func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 // artifact upload step (if: always()) captures the partial usage data
 // (#6936).
 //
-// NOTE: TotalCostUSD is estimated from cached per-model rates derived
-// from prior successful runs when the authoritative cost is missing
-// (cancelled runs never emit the terminal ResultEvent). The estimate
-// is zero if no cached rate exists for the model. See
-// recordModelRates, estimateRunMetricsCost, and #6936 for background.
+// NOTE: TotalCostUSD is now reported by the SIGINT-into-sandbox
+// mechanism (#6936): on cancellation, SIGINT is sent to the in-sandbox
+// claude process, which flushes its ResultEvent (with cost data) before
+// exiting. If the SIGINT delivery fails, TotalCostUSD falls back to
+// zero — token counts are still captured via the deferred TokensEvent.
 //
 // cancelled is false when ctx is still live, in which case the caller's
 // normal control flow continues unchanged; the other return values are
