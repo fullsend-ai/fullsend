@@ -402,6 +402,61 @@ func TestResolveRelativeToBounded_FieldTraversalRejected(t *testing.T) {
 	assert.Nil(t, h.Skills[0].Overrides["gone"])
 }
 
+func TestJoinBaseForHarness_SymlinkedBoundary(t *testing.T) {
+	// Simulates a symlinked --fullsend-dir (e.g. macOS's /tmp -> /private/tmp,
+	// which docs/guides/user/running-agents-locally.md documents as a
+	// --fullsend-dir target). Config-registered local harness sources are
+	// resolved through containedRegisteredPath/containedLocalPath, which call
+	// filepath.EvalSymlinks and hand back the canonicalized path, while
+	// --fullsend-dir itself is only ever filepath.Abs'd. JoinBaseForHarness
+	// must still recognize the conventional harness/ layout in that case,
+	// and ResolveRelativeToBounded must still accept the resulting join base.
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "harness", "code.yaml"), []byte("agent: agents/foo.md\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "agents", "foo.md"), []byte("You are an agent."), 0o644))
+
+	symlinkDir := filepath.Join(root, "symlinked-fullsend-dir")
+	require.NoError(t, os.Symlink(real, symlinkDir))
+
+	// containedRegisteredPath/containedLocalPath return the EvalSymlinks-
+	// resolved path; simulate that here.
+	harnessPath, err := filepath.EvalSymlinks(filepath.Join(symlinkDir, "harness", "code.yaml"))
+	require.NoError(t, err)
+
+	// boundaryDir mirrors absFullsendDir: filepath.Abs'd, never EvalSymlinks'd.
+	boundaryDir := symlinkDir
+
+	joinBase := JoinBaseForHarness(harnessPath, boundaryDir)
+	assert.Equal(t, filepath.Clean(boundaryDir), joinBase,
+		"conventional harness/ layout should join against the boundary, not the harness's own (canonical) directory")
+
+	h := &Harness{Agent: "agents/foo.md"}
+	require.NoError(t, h.ResolveRelativeToBounded(joinBase, boundaryDir))
+	assert.Equal(t, filepath.Join(joinBase, "agents", "foo.md"), h.Agent)
+}
+
+func TestResolveRelativeToBounded_SymlinkedJoinBaseStillBounded(t *testing.T) {
+	// Even when joinBase is already symlink-resolved (canonical) while
+	// boundaryDir is not, traversal outside the boundary must still be
+	// rejected.
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "agents", "custom"), 0o755))
+	symlinkDir := filepath.Join(root, "symlinked-fullsend-dir")
+	require.NoError(t, os.Symlink(real, symlinkDir))
+
+	joinBase, err := filepath.EvalSymlinks(filepath.Join(symlinkDir, "agents", "custom"))
+	require.NoError(t, err)
+
+	h := &Harness{Agent: "../../../etc/shadow.md"}
+	err = h.ResolveRelativeToBounded(joinBase, symlinkDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
+}
+
 func TestLoad_FileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	require.Error(t, err)

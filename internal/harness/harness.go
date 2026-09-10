@@ -590,6 +590,35 @@ func (h *Harness) validateSecurity() error {
 	return nil
 }
 
+// canonicalDir resolves symlinks in dir so path comparisons stay stable
+// across symlinked ancestors (e.g. macOS's /tmp -> /private/tmp). Local
+// sources registered in config.yaml are resolved through
+// containedRegisteredPath/containedLocalPath, which call filepath.EvalSymlinks
+// and hand back the canonicalized path; --fullsend-dir itself is only ever
+// filepath.Abs'd. Comparing those two forms lexically breaks whenever an
+// ancestor of --fullsend-dir is a symlink. If dir cannot be resolved (it
+// does not exist yet, or a component is missing), fall back to
+// filepath.Clean so comparisons still degrade to lexical matching rather
+// than erroring out.
+func canonicalDir(dir string) string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return real
+	}
+	return filepath.Clean(dir)
+}
+
+// pathWithinBoundary reports whether candidate is boundary itself or a
+// descendant of it, comparing canonicalized (symlink-resolved) forms so a
+// symlinked ancestor on either side of the comparison doesn't produce a
+// false rejection or false acceptance.
+func pathWithinBoundary(candidate, boundary string) bool {
+	rel, err := filepath.Rel(canonicalDir(boundary), canonicalDir(candidate))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 // JoinBaseForHarness returns the directory that relative paths named by the
 // harness at harnessPath should be joined against. boundaryDir is the
 // --fullsend-dir containment root.
@@ -600,10 +629,20 @@ func (h *Harness) validateSecurity() error {
 // resources such as agents/foo.md relative to --fullsend-dir (the parent of
 // harness/). When the harness file lives in <boundaryDir>/harness/, the join
 // base is boundaryDir so existing top-level harnesses keep working.
+//
+// The conventional-layout check compares canonicalized (symlink-resolved)
+// directories: harnessPath may already be symlink-resolved (config-registered
+// local sources go through containedRegisteredPath/containedLocalPath, which
+// call filepath.EvalSymlinks) while boundaryDir is typically only
+// filepath.Abs'd. Comparing raw strings would fail to recognize the
+// conventional layout whenever an ancestor of boundaryDir is a symlink (e.g.
+// macOS's /tmp -> /private/tmp), silently falling through to the
+// subdirectory branch and then rejecting every relative path in
+// ResolveRelativeToBounded.
 func JoinBaseForHarness(harnessPath, boundaryDir string) string {
 	dir := filepath.Dir(filepath.Clean(harnessPath))
 	cleanBoundary := filepath.Clean(boundaryDir)
-	if dir == filepath.Join(cleanBoundary, "harness") {
+	if canonicalDir(dir) == filepath.Join(canonicalDir(cleanBoundary), "harness") {
 		return cleanBoundary
 	}
 	return dir
@@ -622,15 +661,17 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // JoinBaseForHarness(harnessPath, fullsendDir) as joinBase and --fullsend-dir
 // as boundaryDir, so a subdirectory-hosted harness finds sibling companions
 // without being able to escape the fullsend directory.
+//
+// The containment check canonicalizes both sides (see pathWithinBoundary)
+// so it stays correct even when joinBase is already symlink-resolved but
+// boundaryDir is not (or vice versa).
 func (h *Harness) ResolveRelativeToBounded(joinBase, boundaryDir string) error {
-	cleanBoundary := filepath.Clean(boundaryDir) + string(filepath.Separator)
-
 	resolve := func(field, p string) (string, error) {
 		if p == "" || filepath.IsAbs(p) || IsURL(p) {
 			return p, nil
 		}
 		resolved := filepath.Join(joinBase, p)
-		if !strings.HasPrefix(filepath.Clean(resolved), cleanBoundary) {
+		if !pathWithinBoundary(resolved, boundaryDir) {
 			return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
 		}
 		return resolved, nil
