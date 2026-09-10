@@ -579,6 +579,62 @@ base: ../../harness/common.yaml
 	assert.Equal(t, filepath.Join(fullsendDir, "policies", "p.yaml"), h.Policy)
 }
 
+// TestLoadWithBase_LocalBase_ThreeLevelChain_MixedJoinBases covers a 3-level
+// local base chain where the top-level harness and its immediate base share
+// one join base but the base's own ancestor does not:
+//
+//	harness/child.yaml (conventional, join base == fullsendDir)
+//	  -> agents/custom/mid.yaml (non-conventional, join base == agents/custom)
+//	    -> harness/common.yaml (conventional, join base == fullsendDir)
+//
+// common.yaml's join base matches the top-level child's join base
+// (fullsendDir), so its own fields are deliberately left relative for the
+// caller's single top-level ResolveRelativeToBounded call to resolve later
+// -- see the comment in loadBaseChain. mid.yaml's join base does NOT match
+// the top-level child's, so a prior, now-fixed version of this logic that
+// compared each layer only against the *original* child's join base would
+// treat the already-correctly-relative fields it just inherited from
+// common.yaml as if they were mid.yaml's own, and resolve them against
+// agents/custom instead of fullsendDir. Regression test for that bug: after
+// composition, common.yaml's inherited agent/policy must resolve under
+// fullsendDir, while mid.yaml's own companion path must resolve under
+// agents/custom.
+func TestLoadWithBase_LocalBase_ThreeLevelChain_MixedJoinBases(t *testing.T) {
+	fullsendDir := t.TempDir()
+
+	writeTestHarness(t, fullsendDir, "harness/common.yaml", `
+agent: agents/foo.md
+role: fix
+policy: policies/p.yaml
+`)
+	writeTestHarness(t, fullsendDir, "agents/custom/mid.yaml", `
+base: ../../harness/common.yaml
+pre_script: scripts/mid.sh
+`)
+	childPath := writeTestHarness(t, fullsendDir, "harness/child.yaml", `
+base: ../agents/custom/mid.yaml
+role: fix
+`)
+
+	h, _, err := LoadWithBase(context.Background(), childPath, ComposeOpts{
+		WorkspaceRoot: fullsendDir,
+	})
+	require.NoError(t, err)
+
+	// Mirrors internal/cli/run.go and lock.go: resolve the merged harness's
+	// remaining relative paths exactly once, against the child's own join
+	// base.
+	joinBase := JoinBaseForHarness(childPath, fullsendDir)
+	require.NoError(t, h.ResolveRelativeToBounded(joinBase, fullsendDir))
+
+	// Inherited from common.yaml: must resolve under fullsendDir, not under
+	// mid.yaml's agents/custom directory.
+	assert.Equal(t, filepath.Join(fullsendDir, "agents", "foo.md"), h.Agent)
+	assert.Equal(t, filepath.Join(fullsendDir, "policies", "p.yaml"), h.Policy)
+	// mid.yaml's own field: must resolve under its own directory.
+	assert.Equal(t, filepath.Join(fullsendDir, "agents", "custom", "scripts", "mid.sh"), h.PreScript)
+}
+
 func TestLoadWithBase_DepthExceeded(t *testing.T) {
 	dir := t.TempDir()
 
@@ -8871,7 +8927,14 @@ base: base.yaml
 		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	// base.yaml's own overlay-derived pre_script is absolutized against the
+	// base's own join base (here, the same directory as the child) when it
+	// is flattened out of the overlay, before mergeBaseIntoChild copies it
+	// onto the child. It is no longer a bare relative string at this point
+	// (see the local-base absolutization block in loadBaseChain), though
+	// the final resolved value is unchanged from before this test started
+	// asserting against the raw string.
+	assert.Equal(t, filepath.Join(dir, "scripts", "gh.sh"), h.PreScript)
 }
 
 func TestLoadWithBase_OverlayConcatOnlyChildHasOverlays(t *testing.T) {
