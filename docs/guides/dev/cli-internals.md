@@ -82,6 +82,7 @@ fullsend
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
+│   │   ├── --direct                         #   Push file deletions to default branch (skip PR)
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest

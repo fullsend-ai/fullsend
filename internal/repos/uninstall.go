@@ -75,9 +75,13 @@ func ScaffoldPathsForForge(forgeName string) []string {
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {
-	Manifest       *Manifest
-	Repos          []string
-	DryRun         bool
+	Manifest *Manifest
+	Repos    []string
+	DryRun   bool
+	// Direct controls scaffold file removal: true pushes deletions
+	// directly to the default branch; false creates a PR. Variable
+	// and secret deletions are API-only and always happen immediately.
+	Direct         bool
 	MaxConcurrency int
 }
 
@@ -95,14 +99,16 @@ type UninstallResult struct {
 // Uninstall tears down fullsend from the specified repos.
 //
 // It runs in a single phase: parallel per-repo cleanup (bounded by
-// MaxConcurrency) deletes the workflow file, then deletes variables and
-// secrets.
+// MaxConcurrency) removes scaffold files via commitScaffold (PR by
+// default, or a direct push when cfg.Direct is true), then deletes
+// variables and secrets via the forge API.
 //
 // GCP WIF cleanup is handled separately via `inference deprovision`.
 //
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
 	clients ForgeClientFactory,
+	commitScaffold ScaffoldCommitFunc,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -137,6 +143,9 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 		}
 		return results, nil
 	}
+	if commitScaffold == nil {
+		return nil, fmt.Errorf("scaffold commit function is required")
+	}
 
 	// Parallel per-repo cleanup.
 	results := make([]UninstallResult, len(parsed))
@@ -170,7 +179,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
 				return
 			}
-			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, progress)
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, cfg.Direct, commitScaffold, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
@@ -184,15 +193,17 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 	return results, nil
 }
 
-func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
+func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool, commitScaffold ScaffoldCommitFunc, progress ProgressFunc) UninstallResult {
 	owner, repo := cfg.Owner, cfg.Repo
 	client := cfg.ForgeConfig.Client
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	// Delete scaffold files. For GitHub this is the workflow paths from
-	// ForgeConfig plus any per-repo thin callers; for GitLab the full
-	// scaffold set is needed.
+	// Collect scaffold file removals. For GitHub this is the workflow
+	// paths from ForgeConfig plus any per-repo thin callers; for GitLab
+	// the full scaffold set is needed. Delivery goes through
+	// commitScaffold so the caller can open a PR (default) or push
+	// directly (--direct), matching repos install.
 	deletePaths := ScaffoldPathsForForge(cfg.Forge)
 	if len(deletePaths) == 0 {
 		deletePaths = cfg.ForgeConfig.WorkflowPaths
@@ -200,50 +211,42 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
 		deletePaths = slices.Concat(deletePaths, scaffold.PerRepoThinCallerPaths())
 	}
-	progress(fullName, "workflow", "Deleting scaffold files")
-	deleteMsg := "chore: remove fullsend workflow"
-	if cfg.Forge == ForgeGitLab {
-		deleteMsg += " [skip ci]"
+	files := make([]forge.TreeFile, 0, len(deletePaths)+1)
+	for _, p := range deletePaths {
+		files = append(files, forge.TreeFile{Path: p, Delete: true})
 	}
-	_, err := client.DeleteFiles(ctx, owner, repo, deleteMsg, deletePaths)
-	if err != nil {
-		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
-		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
-		return result
-	}
-	result.WorkflowDeleted = true
-	progress(fullName, "workflow", "Scaffold files deleted")
 
-	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml.
-	// The root file is user-owned: we remove only fullsend's include
-	// directive and workflow:rules entries rather than deleting the
-	// entire file. If the file is empty after cleanup, delete it.
+	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
+	// in the same commit as the scaffold deletes. The root file is
+	// user-owned: we remove only fullsend's include directive and
+	// workflow:rules entries rather than deleting the entire file.
+	// If the file is empty after cleanup, delete it.
 	if cfg.Forge == ForgeGitLab {
 		cleaned, cleanErr := unmergeGitLabRootCI(ctx, client, owner, repo)
 		if cleanErr != nil {
 			// Best-effort: log and continue. The fullsend-owned files
-			// are already deleted, so the root include will be broken
-			// but harmless.
+			// are still removed below, so the root include will be
+			// broken but harmless until the user cleans it up.
 			progress(fullName, "workflow", fmt.Sprintf("Warning: could not clean .gitlab-ci.yml: %v", cleanErr))
 		} else if cleaned == nil {
-			// File is empty after cleanup — delete it.
-			_, delErr := client.DeleteFiles(ctx, owner, repo, deleteMsg, []string{".gitlab-ci.yml"})
-			if delErr != nil {
-				progress(fullName, "workflow", fmt.Sprintf("Warning: could not delete empty .gitlab-ci.yml: %v", delErr))
-			}
+			files = append(files, forge.TreeFile{Path: ".gitlab-ci.yml", Delete: true})
 		} else {
-			// Write the cleaned file back. Use a tree commit with the
-			// updated content.
-			updateFiles := []forge.TreeFile{{
+			files = append(files, forge.TreeFile{
 				Path:    ".gitlab-ci.yml",
 				Content: cleaned,
 				Mode:    "100644",
-			}}
-			if _, commitErr := client.CommitFiles(ctx, owner, repo, "chore: remove fullsend entries from .gitlab-ci.yml [skip ci]", updateFiles); commitErr != nil {
-				progress(fullName, "workflow", fmt.Sprintf("Warning: could not update .gitlab-ci.yml: %v", commitErr))
-			}
+			})
 		}
 	}
+
+	progress(fullName, "workflow", "Removing scaffold files")
+	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
+		result.Error = fmt.Errorf("removing scaffold files: %w", err)
+		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
+		return result
+	}
+	result.WorkflowDeleted = true
+	progress(fullName, "workflow", "Scaffold files removed")
 
 	forgeVars := UninstallVarsForForge(cfg.Forge)
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)

@@ -918,6 +918,10 @@ func TestReposUninstallCmd_Flags(t *testing.T) {
 	yesFlag := cmd.Flags().Lookup("yes")
 	require.NotNil(t, yesFlag)
 
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag)
 }
@@ -984,6 +988,55 @@ func TestRunReposUninstall_Success(t *testing.T) {
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
+}
+
+func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "default uninstall should open a PR for file deletions")
+	assert.Equal(t, "chore: remove fullsend workflow", fc.CreatedProposals[0].Title)
+	// Uninstall reuses DefaultScaffoldBranch (not a distinct uninstall
+	// branch) so the already-deployed per-repo shim exclusion also covers
+	// uninstall PRs.
+	assert.Equal(t, repos.DefaultScaffoldBranch, fc.CreatedProposals[0].Head)
+	assert.Empty(t, fc.CommittedFiles, "default path should not push deletions to the default branch")
+	assert.NotEmpty(t, fc.DeletedVariables, "variables should still be deleted immediately")
+	assert.NotEmpty(t, fc.DeletedSecrets, "secrets should still be deleted immediately")
+}
+
+func TestRunReposUninstall_DirectPushesToDefaultBranch(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		direct:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.CreatedProposals, "--direct should not open a PR")
+	require.NotEmpty(t, fc.CommittedFiles, "--direct should commit deletions to the default branch")
+	hasDelete := false
+	for _, rec := range fc.CommittedFiles {
+		for _, f := range rec.Files {
+			if f.Delete {
+				hasDelete = true
+			}
+		}
+	}
+	assert.True(t, hasDelete, "--direct commit should include file deletions")
 }
 
 func TestRunReposUninstall_NoMatch(t *testing.T) {
@@ -1846,7 +1899,7 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.DeleteFilesErrors = map[string]error{
+	fc.CreateBranchErrors = map[string]error{
 		"acme/api": errors.New("simulated workflow deletion failure"),
 	}
 
@@ -1903,6 +1956,47 @@ gitlab:
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to uninstall")
+}
+
+func TestRunReposUninstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "expected an uninstall PR to be created")
+	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
+		"GitLab uninstall MR title must include [skip ci]")
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected the uninstall branch commit to be recorded")
+	assert.Contains(t, fc.CommittedFilesToBranch[0].Message, "[skip ci]",
+		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
 }
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {

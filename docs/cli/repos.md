@@ -213,7 +213,11 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+
+File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately.
+
+Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
 
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
@@ -225,6 +229,7 @@ fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
 fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
+fullsend repos uninstall acme/old-api --direct
 ```
 
 For GitLab repos with nested group paths, use the full path:
@@ -252,6 +257,7 @@ fullsend repos uninstall group/subgroup/project
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
+| `--direct` | `false` | Push file deletions to the default branch instead of opening a PR |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--manifest-only` | `false` | Remove from manifest without tearing down |
 | `--uninstall-only` | `false` | Tear down without removing from manifest |
