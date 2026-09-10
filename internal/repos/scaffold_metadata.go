@@ -42,6 +42,15 @@ const (
 	// DefaultScaffoldBranch is the branch name for fresh installations.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
 
+	// DefaultUninstallBranch is the branch name for scaffold file removal.
+	DefaultUninstallBranch = "fullsend/scaffold-uninstall"
+
+	// defaultUninstallPRBody is the PR body for uninstall file removals.
+	defaultUninstallPRBody = "This PR removes the fullsend scaffold files from this repository.\n\n" +
+		"Merge this PR to complete the workflow teardown. Repository variables " +
+		"and secrets are removed separately by `repos uninstall` and do not " +
+		"require this PR to merge first."
+
 	// ScaffoldBumpBranchPrefix is the branch prefix for version upgrades.
 	ScaffoldBumpBranchPrefix = "fullsend/bump-"
 )
@@ -86,6 +95,16 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 		oldVersion = detectExistingVersion(ctx, client, owner, repo)
 	}
 	return upgradeMetadata(oldVersion, upstreamTag)
+}
+
+// UninstallPRMetadata returns commit/PR metadata for scaffold file removal.
+func UninstallPRMetadata() ScaffoldPRMetadata {
+	return ScaffoldPRMetadata{
+		CommitMsg: "chore: remove fullsend workflow",
+		PRTitle:   "chore: remove fullsend workflow",
+		PRBody:    defaultUninstallPRBody,
+		Branch:    DefaultUninstallBranch,
+	}
 }
 
 // freshInstallMetadata returns metadata for a fresh per-repo installation.

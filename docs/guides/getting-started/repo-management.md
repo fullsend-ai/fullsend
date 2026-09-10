@@ -273,10 +273,11 @@ flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --direct
 ```
 
 When targeting multiple repos (via globs or bulk lists), the command

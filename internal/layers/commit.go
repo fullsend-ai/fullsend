@@ -60,10 +60,11 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 // knownScaffoldBranches lists all branch names that have been used to deliver
 // scaffold files across different install modes. Per-org mode uses
 // "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
-// "fullsend/scaffold-install" (via the Go CLI).
+// "fullsend/scaffold-install" and "fullsend/scaffold-uninstall" (via the Go CLI).
 var knownScaffoldBranches = []string{
 	"fullsend/scaffold-install",
 	"fullsend/onboard",
+	repos.DefaultUninstallBranch,
 }
 
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
@@ -332,13 +333,13 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		}
 		if branchCommitted {
 			printer.StepDone("Scaffold PR already exists — updated with new files")
-			printer.StepInfo("Merge the PR to activate fullsend workflows")
+			printer.StepInfo("Merge the PR to apply these changes")
 		} else {
 			printer.StepDone("Scaffold branch and PR up to date")
 		}
 	} else {
 		printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
-		printer.StepInfo("Merge the PR to activate fullsend workflows")
+		printer.StepInfo("Merge the PR to apply these changes")
 	}
 	return false, nil
 }

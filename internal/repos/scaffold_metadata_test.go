@@ -25,6 +25,16 @@ func TestBuildScaffoldPRMetadata_FreshInstall(t *testing.T) {
 	assert.Equal(t, "fullsend/scaffold-install", meta.Branch)
 }
 
+func TestUninstallPRMetadata(t *testing.T) {
+	meta := UninstallPRMetadata()
+
+	assert.Equal(t, "chore: remove fullsend workflow", meta.CommitMsg)
+	assert.Equal(t, "chore: remove fullsend workflow", meta.PRTitle)
+	assert.Contains(t, meta.PRBody, "removes the fullsend scaffold files")
+	assert.Contains(t, meta.PRBody, "variables")
+	assert.Equal(t, DefaultUninstallBranch, meta.Branch)
+}
+
 func TestBuildScaffoldPRMetadata_FreshInstallNoOpts(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// No opts → defaults to fresh install.

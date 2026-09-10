@@ -213,7 +213,9 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+
+File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately.
 
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
@@ -225,6 +227,7 @@ fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
 fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
+fullsend repos uninstall acme/old-api --direct
 ```
 
 For GitLab repos with nested group paths, use the full path:
@@ -252,6 +255,7 @@ fullsend repos uninstall group/subgroup/project
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
+| `--direct` | `false` | Push file deletions to the default branch instead of opening a PR |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--manifest-only` | `false` | Remove from manifest without tearing down |
 | `--uninstall-only` | `false` | Tear down without removing from manifest |
