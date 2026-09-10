@@ -110,7 +110,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `RUNNER_TOKEN` | yes (create)² | — | GitLab runner authentication token (`glrt-*`). When set, the VM joins an existing runner pool and `GL_TOKEN` / `PROJECT_ID` / `GROUP_ID` are not required |
-| `GL_TOKEN` | yes (create)² | — | GitLab PAT (Owner role on the target group or project, scopes: `create_runner` + `manage_runner` + `api`). Required unless `RUNNER_TOKEN` is set |
+| `GL_TOKEN` | yes (create²/delete) | — | GitLab PAT (Owner role on the target group or project, scopes: `create_runner` + `manage_runner` + `api`). In create mode, required unless `RUNNER_TOKEN` is set; delete scripts always require it (they don't accept `RUNNER_TOKEN`) |
 | `PROJECT_ID` | yes (create)¹ | — | GitLab project ID — registers a project-scoped runner (`locked=true`) |
 | `GROUP_ID` | yes (create)¹ | — | GitLab group ID — registers a group-scoped runner (`locked=false`). Recommended for platform-service deployments |
 | `GITLAB_URL` | yes | — | GitLab instance URL |

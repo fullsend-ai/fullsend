@@ -152,6 +152,11 @@ assert_fails_with \
   with_clean_env RUNNER_TOKEN=glrt-xxx bash "${CREATE_OCP}"
 
 assert_fails_with \
+  "ocp: RUNNER_TOKEN wins over GL_TOKEN (no scope required)" \
+  "GITLAB_URL is required" \
+  with_clean_env RUNNER_TOKEN=glrt-xxx GL_TOKEN=glpat-xxx bash "${CREATE_OCP}"
+
+assert_fails_with \
   "ocp: RUNNER_TOKEN invalid characters" \
   "RUNNER_TOKEN contains invalid characters" \
   with_clean_env RUNNER_TOKEN='glrt-xxx;evil' bash "${CREATE_OCP}"
@@ -197,6 +202,16 @@ if grep -Fq 'joined existing pool' "${CREATE_GCP}" \
   pass "both create scripts print joined-existing-pool in RUNNER_TOKEN mode"
 else
   fail "create scripts missing 'joined existing pool' final output"
+fi
+
+# Later trap sites (step 5 onward) call cleanup_runner unconditionally, so the
+# RUNNER_TOKEN branch must alias it to cleanup_vm before those traps install —
+# pin the alias down so a future refactor can't drop or reorder it silently.
+if grep -Fq 'cleanup_runner() { cleanup_vm; }' "${CREATE_GCP}" \
+  && grep -Fq 'cleanup_runner() { cleanup_vm; }' "${CREATE_OCP}"; then
+  pass "both create scripts alias cleanup_runner to cleanup_vm in RUNNER_TOKEN mode"
+else
+  fail "create scripts missing 'cleanup_runner() { cleanup_vm; }' alias in RUNNER_TOKEN mode"
 fi
 
 if [ "${FAILURES}" -ne 0 ]; then
