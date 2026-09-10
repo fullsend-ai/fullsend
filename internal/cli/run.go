@@ -2250,6 +2250,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
+		// Estimate USD cost from tokens when the authoritative cost is
+		// missing (zero) — e.g. cancelled runs that never receive the
+		// result event. On successful runs this is a no-op.
+		estimateRunMetricsCost(&metrics)
+
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
@@ -3693,11 +3698,11 @@ func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 // artifact upload step (if: always()) captures the partial usage data
 // (#6936).
 //
-// NOTE: TotalCostUSD will be zero in the persisted metrics because dollar
-// cost is only available from the terminal ResultEvent, which a cancelled
-// run never emits. Token counts (input, output, cache_read, cache_creation)
-// are captured via the deferred TokensEvent and will be non-zero. See #6936
-// for background.
+// NOTE: TotalCostUSD is estimated from token counts and the published
+// rate table when the authoritative cost is missing (cancelled runs never
+// emit the terminal ResultEvent). The estimate uses 5-minute cache-write
+// rates and is zero if the model is unrecognized. See estimateRunMetricsCost
+// and #6936 for background.
 //
 // cancelled is false when ctx is still live, in which case the caller's
 // normal control flow continues unchanged; the other return values are
