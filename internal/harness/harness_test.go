@@ -457,6 +457,42 @@ func TestResolveRelativeToBounded_SymlinkedJoinBaseStillBounded(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
 }
 
+func TestResolveRelativeToBounded_SymlinkedBoundaryMissingOptionalTarget(t *testing.T) {
+	// Regression test: conventional harness/ layout under a symlinked
+	// --fullsend-dir (e.g. macOS's /tmp -> /private/tmp), resolving an
+	// optional host_files path whose target does not exist yet. host_files
+	// "may not exist until runtime" (see TestValidateFilesExist_SkipsOptionalPaths),
+	// and internal/cli/run.go calls ResolveRelativeToBounded before
+	// ValidateFilesExist. JoinBaseForHarness returns the non-canonical
+	// boundary for this layout; pathWithinBoundary's canonicalDir falls back
+	// to filepath.Clean (no symlink resolution) for a missing candidate, so
+	// without canonicalizing joinBase up front in ResolveRelativeToBounded,
+	// the Clean-only candidate would be compared against the canonical
+	// (symlink-resolved) boundary and be spuriously rejected.
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "harness", "code.yaml"), []byte("agent: agents/foo.md\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "agents", "foo.md"), []byte("You are an agent."), 0o644))
+
+	symlinkDir := filepath.Join(root, "symlinked-fullsend-dir")
+	require.NoError(t, os.Symlink(real, symlinkDir))
+
+	harnessPath, err := filepath.EvalSymlinks(filepath.Join(symlinkDir, "harness", "code.yaml"))
+	require.NoError(t, err)
+
+	boundaryDir := symlinkDir
+	joinBase := JoinBaseForHarness(harnessPath, boundaryDir)
+
+	h := &Harness{
+		Agent:     "agents/foo.md",
+		HostFiles: []HostFile{{Src: "env/later.env", Dest: "/sandbox/workspace/.env"}},
+	}
+	require.NoError(t, h.ResolveRelativeToBounded(joinBase, boundaryDir))
+	assert.Equal(t, filepath.Join(joinBase, "env", "later.env"), h.HostFiles[0].Src)
+}
+
 func TestLoad_FileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	require.Error(t, err)

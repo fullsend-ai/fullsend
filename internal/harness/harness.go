@@ -664,14 +664,30 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 //
 // The containment check canonicalizes both sides (see pathWithinBoundary)
 // so it stays correct even when joinBase is already symlink-resolved but
-// boundaryDir is not (or vice versa).
+// boundaryDir is not (or vice versa). That per-call canonicalization only
+// helps when the resolved candidate already exists: pathWithinBoundary's
+// canonicalDir falls back to filepath.Clean (no symlink resolution) when
+// the candidate is missing, e.g. an optional host_files target that isn't
+// created until runtime. If joinBase is the non-canonical boundary (the
+// conventional harness/ layout branch of JoinBaseForHarness) and boundaryDir
+// resolves through a symlink (macOS's /tmp -> /private/tmp), a missing
+// candidate compares its Clean-only form against the canonical boundary and
+// is rejected even though it is well within bounds. Canonicalize joinBase
+// once up front, purely for that containment check, so the check always
+// compares canonical-vs-canonical (or, when the target is missing,
+// canonical-vs-Clean-of-an-already-canonical-path, which match) regardless
+// of whether the candidate exists yet. The resolved path returned to the
+// caller keeps using the original (possibly non-canonical) joinBase so
+// stored paths stay stable.
 func (h *Harness) ResolveRelativeToBounded(joinBase, boundaryDir string) error {
+	canonicalJoinBase := canonicalDir(joinBase)
 	resolve := func(field, p string) (string, error) {
 		if p == "" || filepath.IsAbs(p) || IsURL(p) {
 			return p, nil
 		}
 		resolved := filepath.Join(joinBase, p)
-		if !pathWithinBoundary(resolved, boundaryDir) {
+		checkCandidate := filepath.Join(canonicalJoinBase, p)
+		if !pathWithinBoundary(checkCandidate, boundaryDir) {
 			return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
 		}
 		return resolved, nil
