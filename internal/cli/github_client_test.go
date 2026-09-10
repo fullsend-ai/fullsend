@@ -167,6 +167,7 @@ func TestGitHubTokenFlagError(t *testing.T) {
 	assert.Contains(t, err.Error(), "GITHUB_TOKEN")
 	assert.Contains(t, err.Error(), "--token")
 	assert.Contains(t, err.Error(), "gh auth login")
+	assert.ErrorIs(t, err, errGitHubTokenMissing)
 }
 
 // TestCLIGitHubAuth_NoDirectCredentialReads is the regression guard for
@@ -180,11 +181,23 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 	forbidden := []string{
 		`os.Getenv("GH_TOKEN")`,
 		`os.Getenv("GITHUB_TOKEN")`,
+		`os.LookupEnv("GH_TOKEN")`,
+		`os.LookupEnv("GITHUB_TOKEN")`,
 		`exec.Command("gh", "auth", "token")`,
 		`ghAuthTokenCmd(`,
+		`envGitHubToken(`,
 	}
 	allowed := map[string]bool{
 		"github_client.go": true,
+	}
+	// allowedPattern grants narrow, reviewed exceptions: a specific file
+	// may contain a specific forbidden pattern without failing the scan,
+	// while every other forbidden pattern in that file still fails it.
+	allowedPattern := map[string]map[string]bool{
+		// run.go saves and restores the caller's pre-existing GH_TOKEN
+		// around minting an agent token; it does not read the credential
+		// to authenticate a GitHub client.
+		"run.go": {`os.LookupEnv("GH_TOKEN")`: true},
 	}
 
 	var violations []string
@@ -201,6 +214,9 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 		src := string(data)
 		for _, pat := range forbidden {
 			if strings.Contains(src, pat) {
+				if allowedPattern[name][pat] {
+					continue
+				}
 				violations = append(violations, name+": "+pat)
 			}
 		}

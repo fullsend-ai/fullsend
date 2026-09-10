@@ -343,12 +343,11 @@ Inference authentication:
 				return err
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -674,11 +673,11 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 		printer = c.testPrinter
 	} else {
-		token, tokenErr := resolveToken()
+		ghClient, tokenErr := newAuthenticatedGitHubClient("", "")
 		if tokenErr != nil {
 			return tokenErr
 		}
-		client = gh.New(token)
+		client = ghClient
 		printer = ui.New(os.Stdout)
 	}
 
@@ -1282,12 +1281,11 @@ func newUninstallCmd() *cobra.Command {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -1335,12 +1333,11 @@ func newAnalyzeCmd() *cobra.Command {
 				return err
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -2424,12 +2421,11 @@ func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc
 				repos = args[1:]
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 

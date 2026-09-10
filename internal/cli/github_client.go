@@ -105,10 +105,25 @@ func newAuthenticatedGitHubClient(explicitToken, baseURL string) (*gh.LiveClient
 	return newGitHubLiveClient(token, baseURL), nil
 }
 
+// githubTokenMissingFlagError formats a user-facing missing-token message
+// that names the command's explicit-token flag, while preserving
+// errGitHubTokenMissing in the error chain so errors.Is still matches it.
+type githubTokenMissingFlagError struct {
+	flag string
+}
+
+func (e *githubTokenMissingFlagError) Error() string {
+	return fmt.Sprintf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, pass %s, or run 'gh auth login'", e.flag)
+}
+
+func (e *githubTokenMissingFlagError) Unwrap() error {
+	return errGitHubTokenMissing
+}
+
 // githubTokenFlagError wraps errGitHubTokenMissing with the command's
 // explicit-token flag so user guidance names every supported source.
 func githubTokenFlagError(flag string) error {
-	return fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, pass %s, or run 'gh auth login'", flag)
+	return &githubTokenMissingFlagError{flag: flag}
 }
 
 // newGitHubLiveClient builds a GitHub API client. The manifestURL
