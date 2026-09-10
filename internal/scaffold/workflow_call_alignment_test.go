@@ -790,8 +790,9 @@ func docsSkipStepRun(t *testing.T) string {
 // an explicit /fs-review. What the step *decides* is not observable from the
 // YAML text — TestReviewRoutingDocsSkipRuntime executes it instead.
 //
-// Deliberately not mirrored into the deprecated per-org scaffold/dispatch.yml
-// (ADR 0044); the ADR records that as follow-up.
+// Deliberately not mirrored into the deprecated per-org scaffold/dispatch.yml:
+// the scaffold gets correctness parity (routing, gates, labels), not spend
+// optimisations — docs/contributing/workflow-contracts.md and ADR 0096.
 func TestReviewRoutingDocsSkip(t *testing.T) {
 	s := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 

@@ -178,8 +178,16 @@ step of its single job, whose token is widened the same way.
 - A push that is skipped still invalidates the previous verdict: the labels
   are cleared, but nothing re-applies them until a round runs — `/fs-review`,
   marking the PR ready, or removing `fullsend-no-review` and pushing again.
-- The prose skip is per-repo only because the per-org mode is deprecated
-  ([ADR 0044](0044-deprecate-per-org-installation-mode.md)) and
-  `docs/contributing/workflow-contracts.md` scopes cross-mode sync to payload
-  construction, stage routing, and secret threading — the draft and label
-  checks, being stage routing, are mirrored into the scaffold as usual.
+- The prose skip is per-repo only. The rule that decides what the
+  deprecated per-org scaffold ([ADR 0044](0044-deprecate-per-org-installation-mode.md))
+  receives is *correctness parity, not optimisations*: everything that
+  decides whether an event may dispatch at all — the routing script (which
+  carries the draft and label skips, and which `TestReviewRoutingSkips` pins
+  in both files), the role/agent/PR enablement gates, payload construction,
+  secret threading, and the merge-label backstop in §4 — is mirrored, because
+  the two modes must route the same event to the same stage and leave the
+  same labels behind. `docs-lockfile-check` decides nothing about validity;
+  it declines a dispatch that would be correct to make, to save inference
+  spend, at the cost of a paginated listing and a content read per page. A
+  mode scheduled for removal does not get spend optimisations, and
+  `docs/contributing/workflow-contracts.md` now says so.
