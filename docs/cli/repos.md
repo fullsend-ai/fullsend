@@ -217,6 +217,8 @@ Tear down fullsend from the specified repos and remove them from the manifest. B
 
 File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately.
 
+Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
+
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.

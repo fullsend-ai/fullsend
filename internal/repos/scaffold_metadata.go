@@ -106,6 +106,19 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 // head.ref == "fullsend/scaffold-install". A separate uninstall branch name
 // would fail open and let the teardown PR trigger the fullsend dispatch job
 // (with live WIF/mint credentials) against itself.
+//
+// Known limitation: because install and uninstall share a branch, an
+// in-flight PR from one operation is not closed or relabeled when the other
+// operation runs against the same repo (closeStaleScaffoldPRs in
+// internal/layers/commit.go skips the current branch, and
+// commitBranchAndPR treats an "already exists" PR as success without
+// updating its title or body). If `repos install`/`converge` and
+// `repos uninstall` race on the same repo, the surviving PR's title and body
+// can describe the opposite of what its diff now does (e.g., an
+// "initialize fullsend" PR whose diff deletes the workflow files, or vice
+// versa). This is accepted for now — see docs/cli/repos.md's `repos
+// uninstall` section — rather than adding branch-content detection or a
+// forge "update PR title/body" call.
 func UninstallPRMetadata() ScaffoldPRMetadata {
 	return ScaffoldPRMetadata{
 		CommitMsg: "chore: remove fullsend workflow",
