@@ -268,10 +268,11 @@ func (d *cfmintMintDriver) Teardown(_ context.Context) error {
 	return d.teardownPreview()
 }
 
-// CollectLogs queries the Cloudflare Workers Observability API for
-// trace events from this preview mint's Worker and writes them to
-// artifactDir. Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
-// to be set; skips gracefully when credentials are unavailable.
+// CollectLogs queries the Cloudflare Workers Observability Telemetry
+// Query API for log/event records from this preview mint's Worker and
+// writes them to artifactDir. Requires CLOUDFLARE_ACCOUNT_ID and
+// CLOUDFLARE_API_TOKEN to be set; skips gracefully when credentials
+// are unavailable.
 func (d *cfmintMintDriver) CollectLogs(ctx context.Context, since time.Time, artifactDir string) error {
 	collector := newCFWorkerLogCollector(d.logf)
 	if collector == nil {

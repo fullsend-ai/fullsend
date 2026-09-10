@@ -55,7 +55,7 @@ The Factory takes the allocated org name plus runtime dependencies (forge client
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-`Finalize` (RepoPoolCFMintPreviews) first collects mint trace logs when `BEHAVIOUR_ARTIFACT_DIR` is set (via the Workers Observability telemetry events API), then abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. Log collection is best-effort — errors are logged but do not fail the suite. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs); log collection is skipped because the stage mint uses distributed tracing. The RepoPoolExternalMint driver's teardown and log collection are both no-ops.
+`Finalize` (RepoPoolCFMintPreviews) first collects mint log/event records when `BEHAVIOUR_ARTIFACT_DIR` is set (via the Workers Observability Telemetry Query API), then abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. Log collection is best-effort — errors are logged but do not fail the suite. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs); log collection is skipped because the stage mint uses distributed tracing. The RepoPoolExternalMint driver's teardown and log collection are both no-ops.
 
 ## Adding an SCM driver
 

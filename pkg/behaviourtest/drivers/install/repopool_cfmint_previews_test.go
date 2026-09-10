@@ -486,12 +486,28 @@ func TestCFMintCollectLogs_WithCredentials(t *testing.T) {
 	// Exercise the collector directly with a test server to avoid
 	// hitting the real Cloudflare API (cfmintMintDriver.CollectLogs
 	// constructs the collector internally with http.DefaultClient).
-	eventsJSON := `{"result":[{"scriptName":"bt-mint","outcome":"ok"}],"success":true}`
+	//
+	// Response shape matches the documented Telemetry Query API: a
+	// Cloudflare envelope wrapping "result.events" for the "events"
+	// view.
+	responseJSON := `{
+		"success": true,
+		"errors": [],
+		"result": {
+			"events": {
+				"count": 1,
+				"events": [
+					{"dataset": "cloudflare-workers", "timestamp": 1700000000000, "source": {"message": "ok"}, "$metadata": {"id": "evt-1", "service": "bt-mint", "type": "cf-worker-event"}}
+				]
+			}
+		}
+	}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/accounts/test-account/workers/observability/telemetry/query", r.URL.Path)
 		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, eventsJSON)
+		fmt.Fprint(w, responseJSON)
 	}))
 	defer server.Close()
 
@@ -507,11 +523,11 @@ func TestCFMintCollectLogs_WithCredentials(t *testing.T) {
 	err := collector.Collect(context.Background(), "bt-mint", time.Now().Add(-10*time.Minute), artifactDir)
 	require.NoError(t, err)
 
-	// Verify the log file was written.
+	// Verify the log file was written with the extracted event records.
 	logPath := filepath.Join(artifactDir, "debug-mint-logs", "mint-events.json")
 	data, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.JSONEq(t, eventsJSON, string(data))
+	assert.JSONEq(t, `[{"dataset": "cloudflare-workers", "timestamp": 1700000000000, "source": {"message": "ok"}, "$metadata": {"id": "evt-1", "service": "bt-mint", "type": "cf-worker-event"}}]`, string(data))
 }
 
 // --- NewRepoPoolCFMintPreviews factory tests ---
