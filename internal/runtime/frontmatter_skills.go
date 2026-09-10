@@ -38,6 +38,79 @@ func isValidSkillName(name string) bool {
 	return true
 }
 
+// rewriteFrontmatterSkills updates the skills sequence in a parsed YAML
+// document and marshals the complete frontmatter back to bytes. Using the
+// YAML node tree keeps flow-style continuations, quoted keys, and spacing
+// variants out of the reconstruction logic.
+func rewriteFrontmatterSkills(frontBytes []byte, added []string, eol string) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(frontBytes, &doc); err != nil {
+		return nil, fmt.Errorf("parsing frontmatter: %w", err)
+	}
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("frontmatter must be a YAML mapping")
+	}
+
+	mapping := doc.Content[0]
+	skillsIdx := -1
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "skills" {
+			// Keep the last occurrence to match YAML's last-key-wins behavior.
+			skillsIdx = i
+		}
+	}
+
+	var sequence *yaml.Node
+	if skillsIdx >= 0 {
+		value := mapping.Content[skillsIdx+1]
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+			sequence = &yaml.Node{
+				Kind:        yaml.SequenceNode,
+				Tag:         "!!seq",
+				HeadComment: value.HeadComment,
+				LineComment: value.LineComment,
+			}
+			mapping.Content[skillsIdx+1] = sequence
+		} else if value.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("skills field must be a YAML list")
+		} else {
+			sequence = value
+		}
+		sequence.Style = 0 // Always emit the injected result in block form.
+	} else {
+		sequence = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		mapping.Content = append(mapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "skills"},
+			sequence,
+		)
+	}
+
+	for _, name := range added {
+		sequence.Content = append(sequence.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: name,
+		})
+	}
+
+	var marshaledBuffer bytes.Buffer
+	encoder := yaml.NewEncoder(&marshaledBuffer)
+	encoder.SetIndent(2)
+	err := encoder.Encode(&doc)
+	closeErr := encoder.Close()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling frontmatter: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("closing frontmatter encoder: %w", closeErr)
+	}
+	marshaled := marshaledBuffer.Bytes()
+	if eol == "\r\n" {
+		marshaled = bytes.ReplaceAll(marshaled, []byte("\n"), []byte("\r\n"))
+	}
+	return marshaled, nil
+}
+
 // injectFrontmatterSkills adds skill names derived from skillDirs into the
 // agent definition's YAML frontmatter `skills:` section. Existing entries
 // are preserved; new names are appended with deduplication by basename.
@@ -85,6 +158,9 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 
 	// Check for existing frontmatter.
 	lines := bytes.SplitAfter(content, []byte("\n"))
+	if bytes.HasPrefix(content, []byte("---")) && !isFrontmatterFence(lines[0]) {
+		return nil, fmt.Errorf("agent definition: first line starts with --- but is not a frontmatter fence: %q", strings.TrimRight(string(lines[0]), "\r\n"))
+	}
 
 	hasFrontmatter := len(lines) > 0 && isFrontmatterFence(lines[0])
 
@@ -155,139 +231,13 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		return content, nil
 	}
 
-	// Reconstruct the frontmatter by injecting skills.
-	// Strategy: if the frontmatter already has a skills: section, append
-	// the new entries after its last entry. If not, append a skills:
-	// section before the closing fence.
-	frontLines := bytes.Split(frontBytes, []byte("\n"))
-	// Strip trailing \r from each line so the eol variable controls line
-	// endings consistently — without this, CRLF files would produce
-	// doubled \r when eol is "\r\n".
-	for i := range frontLines {
-		frontLines[i] = bytes.TrimRight(frontLines[i], "\r")
+	updatedFrontmatter, err := rewriteFrontmatterSkills(frontBytes, added, eol)
+	if err != nil {
+		return nil, err
 	}
 	var result bytes.Buffer
-
-	// Write the opening fence.
 	result.Write(lines[0])
-
-	skillsInjected := false
-	inSkillsBlock := false
-	flowStyleSkills := false
-	flowEndIdx := -1
-	lastSkillLineIdx := -1
-
-	// Find the skills block boundaries. Match only top-level (unindented)
-	// skills: keys to avoid false matches inside block scalar continuations
-	// (e.g., "description: >-\n  skills: are critical").
-	for i, line := range frontLines {
-		trimmed := strings.TrimSpace(string(line))
-		if bytes.HasPrefix(line, []byte("skills:")) {
-			lastSkillLineIdx = i
-			// Extract the value portion after "skills:" to distinguish
-			// block form from flow-style arrays. Without this check,
-			// lines like "skills: # comment" or "skills: null" would
-			// be misclassified as flow-style, causing subsequent
-			// frontmatter keys to be silently skipped.
-			rest := strings.TrimSpace(trimmed[len("skills:"):])
-			if rest == "" || strings.HasPrefix(rest, "#") {
-				// Block mapping form (bare "skills:", trailing whitespace,
-				// or YAML comment) — list items follow on subsequent lines.
-				inSkillsBlock = true
-			} else if strings.HasPrefix(rest, "[") {
-				// Flow-style value (e.g. `skills: [a, b]` or `skills: []`).
-				// The YAML parser already captured the values into fm.Skills;
-				// we will rewrite this line as block form in the output loop.
-				flowStyleSkills = true
-			} else {
-				// Non-list value (e.g. "skills: null") — rewrite as block
-				// form. The YAML parser already validated the field; we
-				// replace this line the same way as flow-style.
-				flowStyleSkills = true
-			}
-			continue
-		}
-		if inSkillsBlock {
-			if strings.HasPrefix(trimmed, "- ") {
-				lastSkillLineIdx = i
-				continue
-			}
-			// YAML comments are valid inside the skills block.
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			// End of skills block (non-list-item, non-blank, non-comment).
-			if trimmed != "" {
-				inSkillsBlock = false
-			}
-		}
-	}
-
-	// When replacing the skills line (flowStyleSkills), determine how many
-	// subsequent lines belong to the original value and should be skipped.
-	// Uses indentation to identify continuation content rather than scanning
-	// for "]", which breaks when "]" appears inside YAML comments on
-	// continuation lines. Also handles non-list values followed by block
-	// items (e.g., YAML anchors: "skills: &defaults\n  - skill-a").
-	if flowStyleSkills && lastSkillLineIdx >= 0 {
-		for j := lastSkillLineIdx + 1; j < len(frontLines); j++ {
-			jTrimmed := strings.TrimSpace(string(frontLines[j]))
-			if jTrimmed == "" {
-				flowEndIdx = j
-				continue
-			}
-			if frontLines[j][0] == ' ' || frontLines[j][0] == '\t' {
-				flowEndIdx = j
-				continue
-			}
-			if strings.HasPrefix(jTrimmed, "]") {
-				flowEndIdx = j
-				break
-			}
-			break
-		}
-	}
-
-	// Write the frontmatter lines, injecting new skills after the last
-	// existing skill entry.
-	for i, line := range frontLines {
-		// Skip the trailing empty line from bytes.Split if it exists.
-		if i == len(frontLines)-1 && len(line) == 0 {
-			continue
-		}
-
-		// Skip continuation lines of multi-line flow-style arrays.
-		if flowEndIdx >= 0 && i > lastSkillLineIdx && i <= flowEndIdx {
-			continue
-		}
-
-		if i == lastSkillLineIdx && flowStyleSkills {
-			// Replace the flow-style skills line with block form,
-			// expanding existing entries parsed by yaml.Unmarshal.
-			fmt.Fprintf(&result, "skills:%s", eol)
-			for _, s := range fm.Skills {
-				fmt.Fprintf(&result, "  - %s%s", s, eol)
-			}
-		} else {
-			result.Write(line)
-			result.WriteString(eol)
-		}
-
-		if i == lastSkillLineIdx && !skillsInjected {
-			for _, name := range added {
-				fmt.Fprintf(&result, "  - %s%s", name, eol)
-			}
-			skillsInjected = true
-		}
-	}
-
-	// If there was no skills block, add one at the end of frontmatter.
-	if !skillsInjected {
-		fmt.Fprintf(&result, "skills:%s", eol)
-		for _, name := range added {
-			fmt.Fprintf(&result, "  - %s%s", name, eol)
-		}
-	}
+	result.Write(updatedFrontmatter)
 
 	// Write the closing fence and everything after it.
 	for i := closingIdx; i < len(lines); i++ {

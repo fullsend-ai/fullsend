@@ -331,6 +331,38 @@ func TestInjectFrontmatterSkills_MultilineFlowStyle(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
+func TestInjectFrontmatterSkills_UnindentedMultilineFlowStyle(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills: [\nskill-a,\nskill-b\n]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-c"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.Contains(t, got, "  - skill-c")
+	assert.NotContains(t, got, "skill-a,")
+	assert.Contains(t, got, "model: opus")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_AlternateSkillsKeySyntax(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{
+		"---\nname: test\n\"skills\": [skill-a]\nmodel: opus\n---\nBody\n",
+		"---\nname: test\nskills : [skill-a]\nmodel: opus\n---\nBody\n",
+	} {
+		result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+		require.NoError(t, err)
+
+		got := string(result)
+		assert.Contains(t, got, "  - skill-a")
+		assert.Contains(t, got, "  - skill-b")
+		assert.Contains(t, got, "model: opus")
+		assertValidFrontmatter(t, result)
+	}
+}
+
 func TestInjectFrontmatterSkills_MultilineFlowStyleBlankLine(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills: [\n  skill-a,\n\n]\nmodel: opus\n---\nBody\n"
@@ -446,6 +478,17 @@ func TestInjectFrontmatterSkills_SkillsNull(t *testing.T) {
 	assert.Contains(t, got, "model: opus")
 	assert.Contains(t, got, "Body")
 	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_MalformedOpeningFenceFailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{
+		"----\nname: test\ntools: Bash\n---\nBody\n",
+		"--- # comment\nname: test\ntools: Bash\n---\nBody\n",
+	} {
+		_, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+		require.ErrorContains(t, err, "not a frontmatter fence")
+	}
 }
 
 func TestInjectFrontmatterSkills_CRLFLineEndings(t *testing.T) {
