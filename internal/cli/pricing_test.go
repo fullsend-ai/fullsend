@@ -2,6 +2,8 @@ package cli
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -11,113 +13,148 @@ func almostEqual(a, b, tol float64) bool {
 	return math.Abs(a-b) < tol
 }
 
-func TestLookupRates_ExactMatch(t *testing.T) {
-	r, ok := lookupRates("claude-sonnet-5")
-	if !ok {
-		t.Fatal("expected match for claude-sonnet-5")
+func seedCache(t *testing.T, dir string, model string, cost float64, input, output, cacheWrite, cacheRead int) {
+	t.Helper()
+	m := &agentruntime.RunMetrics{
+		TotalCostUSD:             cost,
+		Model:                    model,
+		InputTokens:              input,
+		OutputTokens:             output,
+		CacheCreationInputTokens: cacheWrite,
+		CacheReadInputTokens:     cacheRead,
 	}
-	if r.Input != 2 || r.Output != 10 {
-		t.Errorf("got Input=%v Output=%v, want 2/10", r.Input, r.Output)
-	}
-}
-
-func TestLookupRates_DateSuffix(t *testing.T) {
-	r, ok := lookupRates("claude-haiku-4-5-20251001")
-	if !ok {
-		t.Fatal("expected match for claude-haiku-4-5-20251001")
-	}
-	if r.Input != 1 || r.Output != 5 {
-		t.Errorf("got Input=%v Output=%v, want 1/5", r.Input, r.Output)
+	if err := recordModelRates(dir, m); err != nil {
+		t.Fatalf("seedCache: %v", err)
 	}
 }
 
-func TestLookupRates_ProviderPrefix(t *testing.T) {
-	r, ok := lookupRates("anthropic-vertex/claude-opus-4-6")
-	if !ok {
-		t.Fatal("expected match for anthropic-vertex/claude-opus-4-6")
-	}
-	if r.Input != 5 || r.Output != 25 {
-		t.Errorf("got Input=%v Output=%v, want 5/25", r.Input, r.Output)
-	}
-}
+func TestRecordAndEstimate_SingleModel(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "claude-opus-4-6", 0.50, 10000, 5000, 2000, 8000)
 
-func TestLookupRates_ProviderPrefixWithDate(t *testing.T) {
-	r, ok := lookupRates("anthropic/claude-sonnet-4-5-20241022")
-	if !ok {
-		t.Fatal("expected match for anthropic/claude-sonnet-4-5-20241022")
-	}
-	if r.Input != 3 || r.Output != 15 {
-		t.Errorf("got Input=%v Output=%v, want 3/15", r.Input, r.Output)
-	}
-}
-
-func TestLookupRates_CompoundSuffix(t *testing.T) {
-	r, ok := lookupRates("claude-opus-4-6-exp-20250826")
-	if !ok {
-		t.Fatal("expected match for claude-opus-4-6-exp-20250826")
-	}
-	if r.Input != 5 {
-		t.Errorf("got Input=%v, want 5", r.Input)
-	}
-}
-
-func TestLookupRates_Unknown(t *testing.T) {
-	_, ok := lookupRates("gpt-4o")
-	if ok {
-		t.Fatal("expected no match for gpt-4o")
-	}
-}
-
-func TestLookupRates_Empty(t *testing.T) {
-	_, ok := lookupRates("")
-	if ok {
-		t.Fatal("expected no match for empty string")
-	}
-}
-
-func TestEstimateCostFromTokens(t *testing.T) {
-	cost := estimateCostFromTokens("claude-sonnet-5", 10000, 5000, 0, 0, 0)
-	if !almostEqual(cost, 0.07, 0.0001) {
-		t.Errorf("got %v, want 0.07", cost)
-	}
-}
-
-func TestEstimateCostFromTokens_WithCache(t *testing.T) {
-	cost := estimateCostFromTokens("claude-opus-5", 5000, 2000, 0, 10000, 20000)
-	if !almostEqual(cost, 0.1475, 0.0001) {
-		t.Errorf("got %v, want 0.1475", cost)
-	}
-}
-
-func TestEstimateCostFromTokens_WithReasoning(t *testing.T) {
-	cost := estimateCostFromTokens("claude-sonnet-5", 1000, 500, 2000, 0, 0)
-	if !almostEqual(cost, 0.027, 0.0001) {
-		t.Errorf("got %v, want 0.027", cost)
-	}
-}
-
-func TestEstimateCostFromTokens_UnknownModel(t *testing.T) {
-	cost := estimateCostFromTokens("unknown-model", 10000, 5000, 0, 0, 0)
-	if cost != 0 {
-		t.Errorf("expected 0 for unknown model, got %v", cost)
-	}
-}
-
-func TestEstimateRunMetricsCost(t *testing.T) {
 	m := &agentruntime.RunMetrics{
 		Model:                    "claude-opus-4-6",
 		InputTokens:              20000,
-		OutputTokens:             8000,
-		CacheCreationInputTokens: 5000,
-		CacheReadInputTokens:     50000,
+		OutputTokens:             10000,
+		CacheCreationInputTokens: 4000,
+		CacheReadInputTokens:     16000,
 	}
-	estimateRunMetricsCost(m)
-	if !almostEqual(m.TotalCostUSD, 0.35625, 0.001) {
-		t.Errorf("got %v, want 0.35625", m.TotalCostUSD)
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD <= 0 {
+		t.Fatal("expected non-zero estimated cost")
+	}
+	// rate = 0.50 / 25000 = 0.00002; cost = 0.00002 * 50000 = 1.00
+	if !almostEqual(m.TotalCostUSD, 1.0, 0.001) {
+		t.Errorf("got %v, want ~1.0", m.TotalCostUSD)
 	}
 }
 
-func TestEstimateRunMetricsCost_PerModelUsage(t *testing.T) {
+func TestRecordAndEstimate_ProviderPrefix(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "anthropic-vertex/claude-opus-4-6", 0.25, 5000, 2500, 1000, 4000)
+
+	m := &agentruntime.RunMetrics{
+		Model:        "anthropic-vertex/claude-opus-4-6",
+		InputTokens:  5000,
+		OutputTokens: 2500,
+	}
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD <= 0 {
+		t.Fatal("expected non-zero cost")
+	}
+}
+
+func TestRecordAndEstimate_DateSuffixFallback(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "claude-haiku-4-5", 0.10, 10000, 5000, 0, 0)
+
+	m := &agentruntime.RunMetrics{
+		Model:        "claude-haiku-4-5-20260301",
+		InputTokens:  10000,
+		OutputTokens: 5000,
+	}
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD <= 0 {
+		t.Fatal("expected fallback to match claude-haiku-4-5")
+	}
+}
+
+func TestEstimate_NoCache(t *testing.T) {
+	dir := t.TempDir()
+	m := &agentruntime.RunMetrics{
+		Model:        "gpt-4o",
+		InputTokens:  10000,
+		OutputTokens: 5000,
+	}
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD != 0 {
+		t.Errorf("expected 0 with no cache, got %v", m.TotalCostUSD)
+	}
+}
+
+func TestEstimate_Noop_WhenCostPresent(t *testing.T) {
+	dir := t.TempDir()
+	m := &agentruntime.RunMetrics{
+		TotalCostUSD: 0.50,
+		Model:        "claude-opus-4-6",
+		InputTokens:  10000,
+		OutputTokens: 5000,
+	}
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD != 0.50 {
+		t.Errorf("cost changed from 0.50 to %v", m.TotalCostUSD)
+	}
+}
+
+func TestEstimate_Noop_EmptyDir(t *testing.T) {
+	m := &agentruntime.RunMetrics{
+		Model:        "claude-opus-4-6",
+		InputTokens:  10000,
+		OutputTokens: 5000,
+	}
+	estimateRunMetricsCost("", m)
+	if m.TotalCostUSD != 0 {
+		t.Errorf("expected 0 with empty dir, got %v", m.TotalCostUSD)
+	}
+}
+
+func TestRecord_Noop_ZeroCost(t *testing.T) {
+	dir := t.TempDir()
+	if err := recordModelRates(dir, &agentruntime.RunMetrics{
+		Model:        "claude-opus-4-6",
+		InputTokens:  10000,
+		OutputTokens: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.ReadFile(rateCachePath(dir))
+	if err == nil {
+		t.Fatal("expected no cache file when cost is zero")
+	}
+}
+
+func TestRecordAndEstimate_PerModelUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := recordModelRates(dir, &agentruntime.RunMetrics{
+		TotalCostUSD: 0.15,
+		InputTokens:  15000,
+		OutputTokens: 8000,
+		PerModelUsage: map[string]agentruntime.ModelUsage{
+			"anthropic-vertex/claude-sonnet-5": {
+				InputTokens:  10000,
+				OutputTokens: 5000,
+				CostUSD:      0.10,
+			},
+			"anthropic-vertex/claude-haiku-4-5": {
+				InputTokens:  5000,
+				OutputTokens: 3000,
+				CostUSD:      0.05,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	m := &agentruntime.RunMetrics{
 		InputTokens:  15000,
 		OutputTokens: 8000,
@@ -132,21 +169,22 @@ func TestEstimateRunMetricsCost_PerModelUsage(t *testing.T) {
 			},
 		},
 	}
-	estimateRunMetricsCost(m)
-	// sonnet: (10000*2 + 5000*10) / 1e6 = 0.07
-	// haiku:  (5000*1 + 3000*5) / 1e6 = 0.02
-	if !almostEqual(m.TotalCostUSD, 0.09, 0.001) {
-		t.Errorf("got %v, want 0.09", m.TotalCostUSD)
+	estimateRunMetricsCost(dir, m)
+
+	if m.TotalCostUSD <= 0 {
+		t.Fatal("expected non-zero total cost")
 	}
-	if !almostEqual(m.PerModelUsage["anthropic-vertex/claude-sonnet-5"].CostUSD, 0.07, 0.001) {
-		t.Errorf("sonnet cost = %v, want 0.07", m.PerModelUsage["anthropic-vertex/claude-sonnet-5"].CostUSD)
-	}
-	if !almostEqual(m.PerModelUsage["anthropic-vertex/claude-haiku-4-5"].CostUSD, 0.02, 0.001) {
-		t.Errorf("haiku cost = %v, want 0.02", m.PerModelUsage["anthropic-vertex/claude-haiku-4-5"].CostUSD)
+	sonnet := m.PerModelUsage["anthropic-vertex/claude-sonnet-5"]
+	haiku := m.PerModelUsage["anthropic-vertex/claude-haiku-4-5"]
+	if sonnet.CostUSD <= 0 || haiku.CostUSD <= 0 {
+		t.Errorf("per-model costs not filled: sonnet=%v haiku=%v", sonnet.CostUSD, haiku.CostUSD)
 	}
 }
 
-func TestEstimateRunMetricsCost_PerModelUsage_MixedCosts(t *testing.T) {
+func TestRecordAndEstimate_PerModelUsage_MixedCosts(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "claude-haiku-4-5", 0.05, 5000, 3000, 0, 0)
+
 	m := &agentruntime.RunMetrics{
 		InputTokens:  15000,
 		OutputTokens: 8000,
@@ -162,24 +200,134 @@ func TestEstimateRunMetricsCost_PerModelUsage_MixedCosts(t *testing.T) {
 			},
 		},
 	}
-	estimateRunMetricsCost(m)
-	if !almostEqual(m.TotalCostUSD, 0.09, 0.001) {
-		t.Errorf("got %v, want 0.09", m.TotalCostUSD)
-	}
+	estimateRunMetricsCost(dir, m)
+
 	if m.PerModelUsage["anthropic/claude-sonnet-5"].CostUSD != 0.07 {
 		t.Error("existing CostUSD was overwritten")
 	}
+	if m.PerModelUsage["anthropic/claude-haiku-4-5"].CostUSD <= 0 {
+		t.Error("haiku cost should be estimated from cache")
+	}
+	if m.TotalCostUSD <= 0.07 {
+		t.Error("total should include both models")
+	}
 }
 
-func TestEstimateRunMetricsCost_Noop_WhenCostPresent(t *testing.T) {
+func TestEMA_SmoothsRates(t *testing.T) {
+	dir := t.TempDir()
+	// First sample: rate = 0.10 / 10000 = 0.00001
+	seedCache(t, dir, "claude-opus-4-6", 0.10, 5000, 5000, 0, 0)
+	// Second sample: rate = 0.20 / 10000 = 0.00002
+	// EMA: 0.3 * 0.00002 + 0.7 * 0.00001 = 0.000013
+	seedCache(t, dir, "claude-opus-4-6", 0.20, 5000, 5000, 0, 0)
+
+	rc := loadRateCache(dir)
+	rate, ok := rc.Rates["claude-opus-4-6"]
+	if !ok {
+		t.Fatal("expected cached rate")
+	}
+	if !almostEqual(rate.RatePerToken, 0.000013, 0.0000001) {
+		t.Errorf("EMA rate = %v, want ~0.000013", rate.RatePerToken)
+	}
+	if rate.SampleCount != 2 {
+		t.Errorf("sample count = %d, want 2", rate.SampleCount)
+	}
+}
+
+func TestNormalizeModelKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"claude-opus-4-6", "claude-opus-4-6"},
+		{"anthropic-vertex/claude-opus-4-6", "claude-opus-4-6"},
+		{"anthropic/claude-sonnet-5", "claude-sonnet-5"},
+		{"gpt-4o", "gpt-4o"},
+		{"openai/gpt-4o", "gpt-4o"},
+	}
+	for _, tt := range tests {
+		got := normalizeModelKey(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeModelKey(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestLookupCachedRate_ExactThenSuffix(t *testing.T) {
+	rc := rateCache{Rates: map[string]cachedRate{
+		"claude-opus-4-6": {RatePerToken: 0.00002, SampleCount: 3},
+		"gpt-4o":          {RatePerToken: 0.00001, SampleCount: 2},
+	}}
+
+	if _, ok := lookupCachedRate(rc, "claude-opus-4-6"); !ok {
+		t.Error("exact match failed")
+	}
+	if _, ok := lookupCachedRate(rc, "anthropic-vertex/claude-opus-4-6"); !ok {
+		t.Error("provider-prefix match failed")
+	}
+	if _, ok := lookupCachedRate(rc, "claude-opus-4-6-20260301"); !ok {
+		t.Error("date-suffix fallback failed")
+	}
+	if _, ok := lookupCachedRate(rc, "anthropic/claude-opus-4-6-exp-20260301"); !ok {
+		t.Error("compound suffix fallback failed")
+	}
+	if _, ok := lookupCachedRate(rc, "uncached-model"); ok {
+		t.Error("expected no match for uncached model")
+	}
+}
+
+func TestLookupCachedRate_NoFalseMatchAcrossModels(t *testing.T) {
+	rc := rateCache{Rates: map[string]cachedRate{
+		"gpt-4o": {RatePerToken: 0.00001, SampleCount: 2},
+	}}
+
+	if _, ok := lookupCachedRate(rc, "gpt-4o-mini"); ok {
+		t.Error("gpt-4o-mini must NOT match gpt-4o (different model, ~30x price difference)")
+	}
+	if _, ok := lookupCachedRate(rc, "gpt-4o-mini-20260301"); ok {
+		t.Error("gpt-4o-mini-20260301 must NOT match gpt-4o")
+	}
+	if _, ok := lookupCachedRate(rc, "gpt-4o"); !ok {
+		t.Error("exact match for gpt-4o should still work")
+	}
+	if _, ok := lookupCachedRate(rc, "gpt-4o-20260301"); !ok {
+		t.Error("date-suffix fallback for gpt-4o should work")
+	}
+}
+
+func TestCacheFileAtomicity(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "claude-opus-4-6", 0.50, 10000, 5000, 0, 0)
+
+	p := rateCachePath(dir)
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("cache file missing: %v", err)
+	}
+	tmp := p + ".tmp"
+	if _, err := os.Stat(tmp); err == nil {
+		t.Error("tmp file should not persist after atomic write")
+	}
+
+	cacheDir := filepath.Dir(p)
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Fatalf("cache dir missing: %v", err)
+	}
+}
+
+func TestRecordAndEstimate_OpenAIModel(t *testing.T) {
+	dir := t.TempDir()
+	seedCache(t, dir, "openai/gpt-4o", 0.30, 20000, 10000, 0, 0)
+
 	m := &agentruntime.RunMetrics{
-		TotalCostUSD: 0.50,
-		Model:        "claude-sonnet-5",
+		Model:        "openai/gpt-4o",
 		InputTokens:  10000,
 		OutputTokens: 5000,
 	}
-	estimateRunMetricsCost(m)
-	if m.TotalCostUSD != 0.50 {
-		t.Errorf("cost changed from 0.50 to %v", m.TotalCostUSD)
+	estimateRunMetricsCost(dir, m)
+	if m.TotalCostUSD <= 0 {
+		t.Fatal("expected non-zero cost for cached OpenAI model")
+	}
+	if !almostEqual(m.TotalCostUSD, 0.15, 0.001) {
+		t.Errorf("got %v, want ~0.15", m.TotalCostUSD)
 	}
 }

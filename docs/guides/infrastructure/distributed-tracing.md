@@ -249,11 +249,15 @@ example, two iterations at `$0.414` and `$0.415` round individually to
 `$0.83` — or, with different fractional values, the aggregate may round
 differently than the sum of parts.
 
-### No pricing-table fallback
+### Estimated cost on cancelled runs
 
-If a runtime does not report cost (returns zero or the field is absent),
-fullsend records zero. There is no fallback cost calculation from token
-counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+When a run completes normally, the runtime reports an authoritative cost
+via the terminal `ResultEvent`. When a run is cancelled before that event,
+fullsend estimates cost from cached per-model rates derived from prior
+successful runs. The rates are stored in `.fullsend-cache/pricing-rates.json`
+and update automatically via an exponential moving average. When no cached
+rate exists for a model (e.g. first run in a fresh CI environment), the
+cost remains `$0.00`.
 
 ### Distinction from backend-derived cost estimates
 
