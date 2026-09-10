@@ -316,6 +316,35 @@ skills:
 	assert.True(t, os.IsNotExist(err), "lock file should not be created for local-only harness")
 }
 
+func TestRunLock_SubdirHarnessCompanionPaths(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "custom")
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(agentDir, "agent.md"),
+		[]byte("You are a custom agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(agentDir, "custom.yaml"),
+		[]byte("agent: agent.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - agents/custom/custom.yaml\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "custom", dir, "", false, resolveFlags{}, printer)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(dir, "lock.yaml"))
+	assert.True(t, os.IsNotExist(err), "lock file should not be created for local-only harness")
+}
+
 func TestRunLock_AlreadyUpToDate(t *testing.T) {
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)

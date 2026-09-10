@@ -300,6 +300,108 @@ func TestResolveRelativeTo_HostFileTraversalRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
 }
 
+func TestJoinBaseForHarness(t *testing.T) {
+	fullsendDir := "/work/.fullsend"
+	tests := []struct {
+		name        string
+		harnessPath string
+		want        string
+	}{
+		{
+			name:        "conventional harness subdirectory",
+			harnessPath: "/work/.fullsend/harness/code.yaml",
+			want:        "/work/.fullsend",
+		},
+		{
+			name:        "nested agent directory",
+			harnessPath: "/work/.fullsend/agents/custom/custom.yaml",
+			want:        "/work/.fullsend/agents/custom",
+		},
+		{
+			name:        "nested harness.yaml filename",
+			harnessPath: "/work/.fullsend/agents/custom/harness.yaml",
+			want:        "/work/.fullsend/agents/custom",
+		},
+		{
+			name:        "nested harness subdirectory stays next to the file",
+			harnessPath: "/work/.fullsend/agents/custom/harness/agent.yaml",
+			want:        "/work/.fullsend/agents/custom/harness",
+		},
+		{
+			name:        "top-level harness file",
+			harnessPath: "/work/.fullsend/code.yaml",
+			want:        "/work/.fullsend",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, JoinBaseForHarness(tt.harnessPath, fullsendDir))
+		})
+	}
+}
+
+func TestResolveRelativeToBounded_SubdirCompanion(t *testing.T) {
+	override := "overrides/foo.md"
+	h := &Harness{
+		Agent:  "agent.md",
+		Policy: "policy.yaml",
+		Skills: []SkillEntry{{Source: "skills/foo", Overrides: map[string]*string{"md": &override}}},
+		HostFiles: []HostFile{
+			{Src: "env/local.env", Dest: "/sandbox/workspace/.env"},
+		},
+	}
+	require.NoError(t, h.ResolveRelativeToBounded("/fullsend/agents/custom", "/fullsend"))
+	assert.Equal(t, "/fullsend/agents/custom/agent.md", h.Agent)
+	assert.Equal(t, "/fullsend/agents/custom/policy.yaml", h.Policy)
+	assert.Equal(t, []string{"/fullsend/agents/custom/skills/foo"}, SkillSources(h.Skills))
+	require.NotNil(t, h.Skills[0].Overrides["md"])
+	assert.Equal(t, "/fullsend/agents/custom/overrides/foo.md", *h.Skills[0].Overrides["md"])
+	assert.Equal(t, "/fullsend/agents/custom/env/local.env", h.HostFiles[0].Src)
+}
+
+func TestResolveRelativeToBounded_SubdirTraversalRejected(t *testing.T) {
+	h := &Harness{Agent: "../../../etc/shadow.md"}
+	err := h.ResolveRelativeToBounded("/fullsend/agents/custom", "/fullsend")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
+}
+
+func TestResolveRelativeToBounded_SubdirCanReachFullsendRoot(t *testing.T) {
+	h := &Harness{Agent: "../../shared/agent.md"}
+	require.NoError(t, h.ResolveRelativeToBounded("/fullsend/agents/custom", "/fullsend"))
+	assert.Equal(t, "/fullsend/shared/agent.md", h.Agent)
+}
+
+func TestResolveRelativeToBounded_FieldTraversalRejected(t *testing.T) {
+	nilOverride := map[string]*string{"gone": nil}
+	escape := "../../../etc/shadow"
+	tests := []struct {
+		name    string
+		harness Harness
+	}{
+		{"policy", Harness{Agent: "agent.md", Policy: escape}},
+		{"pre_script", Harness{Agent: "agent.md", PreScript: escape}},
+		{"post_script", Harness{Agent: "agent.md", PostScript: escape}},
+		{"agent_input", Harness{Agent: "agent.md", AgentInput: escape}},
+		{"skills", Harness{Agent: "agent.md", Skills: []SkillEntry{{Source: escape}}}},
+		{"skill override", Harness{Agent: "agent.md", Skills: []SkillEntry{{Source: "skills/foo", Overrides: map[string]*string{"md": &escape}}}}},
+		{"api_servers", Harness{Agent: "agent.md", APIServers: []APIServer{{Script: escape}}}},
+		{"validation_loop.script", Harness{Agent: "agent.md", ValidationLoop: &ValidationLoop{Script: escape}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.harness.ResolveRelativeToBounded("/fullsend/agents/custom", "/fullsend")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "resolves outside fullsend directory")
+		})
+	}
+
+	// Null skill override is a removal marker and must not be resolved.
+	h := &Harness{Agent: "agent.md", Skills: []SkillEntry{{Source: "skills/foo", Overrides: nilOverride}}}
+	require.NoError(t, h.ResolveRelativeToBounded("/fullsend/agents/custom", "/fullsend"))
+	assert.Nil(t, h.Skills[0].Overrides["gone"])
+}
+
 func TestLoad_FileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	require.Error(t, err)

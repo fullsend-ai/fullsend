@@ -235,6 +235,41 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestRunAgent_SubdirHarnessCompanionPaths(t *testing.T) {
+	// A custom harness under agents/<name>/ must resolve sibling companions
+	// relative to that directory, not --fullsend-dir. ValidateFilesExist
+	// would fail with "no such file" if the join base were still the
+	// fullsend directory (agent.md lives next to the harness, not at root).
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "agents", "custom")
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(agentDir, "agent.md"),
+		[]byte("You are a custom agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(agentDir, "custom.yaml"),
+		[]byte("agent: agent.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - agents/custom/custom.yaml\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.NotContains(t, err.Error(), "validating files")
+}
+
 func TestRunAgent_YMLFallback(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()

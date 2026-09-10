@@ -245,7 +245,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			}
 		}
 
-		if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
+		joinBase := harness.JoinBaseForHarness(harnessPath, absFullsendDir)
+		if err := h.ResolveRelativeToBounded(joinBase, absFullsendDir); err != nil {
 			printer.StepFail("Path validation failed")
 			return nil, fmt.Errorf("resolving paths: %w", err)
 		}

@@ -219,10 +219,12 @@ More-specific entries go last so they override broader defaults.
 
 ## Referencing resources: local vs. remote
 
-**Local paths** resolve relative to the harness file's base directory:
+**Local paths** resolve relative to the directory that contains the harness file:
 ```yaml
-agent: agents/triage.md              # → {base}/agents/triage.md
+agent: agent.md                      # → {harnessDir}/agent.md
 ```
+
+Harness files in the conventional `harness/` subdirectory of `--fullsend-dir` are the exception: their paths resolve against `--fullsend-dir` itself (so `agent: agents/triage.md` from `.fullsend/harness/triage.yaml` finds `.fullsend/agents/triage.md`). In every case, resolved paths must stay inside `--fullsend-dir`.
 
 **Remote URLs** require a `#sha256=...` integrity hash:
 ```yaml

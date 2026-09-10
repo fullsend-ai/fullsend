@@ -675,7 +675,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
+	joinBase := harness.JoinBaseForHarness(harnessPath, absFullsendDir)
+	if err := h.ResolveRelativeToBounded(joinBase, absFullsendDir); err != nil {
 		printer.StepFail("Path validation failed")
 		return fmt.Errorf("resolving paths: %w", err)
 	}

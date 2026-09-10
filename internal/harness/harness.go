@@ -590,18 +590,47 @@ func (h *Harness) validateSecurity() error {
 	return nil
 }
 
+// JoinBaseForHarness returns the directory that relative paths named by the
+// harness at harnessPath should be joined against. boundaryDir is the
+// --fullsend-dir containment root.
+//
+// Companion files sitting next to (or under) a custom harness are resolved
+// from that harness file's directory. The conventional ADR-0024 layout stores
+// harness YAML in a harness/ subdirectory of --fullsend-dir and names
+// resources such as agents/foo.md relative to --fullsend-dir (the parent of
+// harness/). When the harness file lives in <boundaryDir>/harness/, the join
+// base is boundaryDir so existing top-level harnesses keep working.
+func JoinBaseForHarness(harnessPath, boundaryDir string) string {
+	dir := filepath.Dir(filepath.Clean(harnessPath))
+	cleanBoundary := filepath.Clean(boundaryDir)
+	if dir == filepath.Join(cleanBoundary, "harness") {
+		return cleanBoundary
+	}
+	return dir
+}
+
 // ResolveRelativeTo resolves all relative paths in the harness against baseDir.
 // Relative paths that resolve outside baseDir are rejected to prevent directory
 // traversal (e.g. ../../etc/shadow). Absolute paths and ${VAR} paths are allowed.
+// Equivalent to ResolveRelativeToBounded(baseDir, baseDir).
 func (h *Harness) ResolveRelativeTo(baseDir string) error {
-	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
+	return h.ResolveRelativeToBounded(baseDir, baseDir)
+}
+
+// ResolveRelativeToBounded joins relative paths against joinBase and rejects
+// any resolved path that falls outside boundaryDir. Callers typically pass
+// JoinBaseForHarness(harnessPath, fullsendDir) as joinBase and --fullsend-dir
+// as boundaryDir, so a subdirectory-hosted harness finds sibling companions
+// without being able to escape the fullsend directory.
+func (h *Harness) ResolveRelativeToBounded(joinBase, boundaryDir string) error {
+	cleanBoundary := filepath.Clean(boundaryDir) + string(filepath.Separator)
 
 	resolve := func(field, p string) (string, error) {
 		if p == "" || filepath.IsAbs(p) || IsURL(p) {
 			return p, nil
 		}
-		resolved := filepath.Join(baseDir, p)
-		if !strings.HasPrefix(filepath.Clean(resolved), cleanBase) {
+		resolved := filepath.Join(joinBase, p)
+		if !strings.HasPrefix(filepath.Clean(resolved), cleanBoundary) {
 			return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
 		}
 		return resolved, nil
