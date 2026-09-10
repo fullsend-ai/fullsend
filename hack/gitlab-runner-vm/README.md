@@ -44,6 +44,13 @@ GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
   RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
   ./create-openshift-vm.sh
 
+# Or join an existing runner pool (runner-hub — multiple VMs, one registration):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  NAMESPACE=my-namespace \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-openshift-vm.sh 05
+
 # 2. Delete a VM:
 GL_TOKEN=glpat-xxx \
   GITLAB_URL=https://gitlab.example.com \
@@ -79,6 +86,13 @@ GL_TOKEN=glpat-xxx PROJECT_ID=12345 \
   RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
   ./create-gcp-vm.sh
 
+# Or join an existing runner pool (runner-hub — multiple VMs, one registration):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  GCP_PROJECT=my-gcp-project \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-gcp-vm.sh 05
+
 # 2. Delete a VM:
 GL_TOKEN=glpat-xxx \
   GITLAB_URL=https://gitlab.example.com \
@@ -95,7 +109,8 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GL_TOKEN` | yes | — | GitLab PAT (Owner role on the target group or project, scopes: `create_runner` + `manage_runner` + `api`) |
+| `RUNNER_TOKEN` | yes (create)² | — | GitLab runner authentication token (`glrt-*`). When set, the VM joins an existing runner pool and `GL_TOKEN` / `PROJECT_ID` / `GROUP_ID` are not required |
+| `GL_TOKEN` | yes (create)² | — | GitLab PAT (Owner role on the target group or project, scopes: `create_runner` + `manage_runner` + `api`). Required unless `RUNNER_TOKEN` is set |
 | `PROJECT_ID` | yes (create)¹ | — | GitLab project ID — registers a project-scoped runner (`locked=true`) |
 | `GROUP_ID` | yes (create)¹ | — | GitLab group ID — registers a group-scoped runner (`locked=false`). Recommended for platform-service deployments |
 | `GITLAB_URL` | yes | — | GitLab instance URL |
@@ -106,7 +121,8 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `GITLAB_RUNNER_VERSION` | no | `19.2.1` | gitlab-runner version |
 | `REGISTRATION_TOKEN` | setup only | — | GitLab runner registration token |
 
-¹ Exactly one of `PROJECT_ID` or `GROUP_ID` must be set (mutually exclusive).
+¹ Exactly one of `PROJECT_ID` or `GROUP_ID` must be set when registering a new runner with `GL_TOKEN` (mutually exclusive). Not required when `RUNNER_TOKEN` is set.
+² Create mode: `RUNNER_TOKEN` joins an existing pool (and takes precedence if both are set). `GL_TOKEN` registers a new runner. One of the two is required.
 
 ### OpenShift-specific
 
@@ -126,7 +142,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `GCP_NETWORK` | no | `gitlab-runners` | VPC network (must have IAP ingress and egress firewall rules) |
 | `GCP_SUBNET` | no | — | VPC subnet (required for custom-mode VPCs; omit for auto-mode) |
 | `GCP_USE_IAP` | no | `true` | Use IAP tunneling for SSH. Set to `false` to create the VM with an external IP and SSH directly. |
-| `GCP_IMAGE_FAMILY` | no | `fedora-cloud-43` | GCE image family |
+| `GCP_IMAGE_FAMILY` | no | `fedora-cloud-43-x86-64` | GCE image family |
 | `GCP_IMAGE_PROJECT` | no | `fedora-cloud` | GCE image project |
 
 ## Files
