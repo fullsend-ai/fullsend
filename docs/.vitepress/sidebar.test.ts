@@ -148,4 +148,30 @@ describe("getMarkdownFiles", () => {
       ]),
     );
   });
+
+  it("resolves nested applied problem docs using the default docsRoot", () => {
+    // Production call sites (docs/.vitepress/config.ts) use the 2-argument
+    // form and rely on the default `docsRoot` derived from import.meta.url.
+    // Exercise that default against the real docs tree so a regression there
+    // (which would silently empty production sidebars) is caught.
+    const items = getMarkdownFiles("problems", "problems");
+    const applied = items.find((item) => item.link === "/problems/applied/");
+    expect(applied?.items?.map((item) => item.link)).toEqual(
+      expect.arrayContaining([
+        "/problems/applied/agent-eval-tools/",
+        "/problems/applied/konflux-ci/",
+      ]),
+    );
+  });
+
+  it("does not recurse infinitely through a directory symlink cycle", () => {
+    write("section/real/README.md", "# Real\n");
+    fs.symlinkSync(
+      path.join(docsRoot, "section", "real"),
+      path.join(docsRoot, "section", "real", "cycle"),
+      "dir",
+    );
+
+    expect(() => getMarkdownFiles("section", "section", docsRoot)).not.toThrow();
+  });
 });

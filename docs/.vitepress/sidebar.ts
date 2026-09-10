@@ -19,30 +19,70 @@ function pageTitle(content: string, fallback: string): string {
  * that contain a `README.md` become a linked group; nested pages and folders
  * are emitted as `items` so content below the first level appears in the
  * sidebar rather than being omitted.
+ *
+ * `visitedRealDirs` tracks the real (symlink-resolved) paths of directories
+ * on the current walk stack, so a directory symlink that points back to an
+ * ancestor can't recurse without bound (e.g. a submodule symlink like
+ * `docs/experiments -> ../experiments`). Broken or unreadable entries are
+ * skipped rather than failing the whole config build.
  */
 export function getMarkdownFiles(
   dir: string,
   base: string,
   docsRoot: string = defaultDocsDir,
+  visitedRealDirs: ReadonlySet<string> = new Set(),
 ): DefaultTheme.SidebarItem[] {
   const fullDir = path.resolve(docsRoot, dir);
   if (!fs.existsSync(fullDir)) return [];
 
+  let realDir: string;
+  try {
+    realDir = fs.realpathSync(fullDir);
+  } catch {
+    return [];
+  }
+  if (visitedRealDirs.has(realDir)) return [];
+  const nextVisited = new Set(visitedRealDirs);
+  nextVisited.add(realDir);
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(fullDir).sort();
+  } catch {
+    return [];
+  }
+
   const items: DefaultTheme.SidebarItem[] = [];
-  for (const entry of fs.readdirSync(fullDir).sort()) {
+  for (const entry of entries) {
     if (isNonContentPath(entry)) continue;
 
     const entryPath = path.resolve(fullDir, entry);
     if (entry.endsWith(".md") && entry !== "README.md") {
       const slug = entry.replace(/\.md$/, "");
-      const content = fs.readFileSync(entryPath, "utf-8");
+      let content: string;
+      try {
+        content = fs.readFileSync(entryPath, "utf-8");
+      } catch {
+        continue;
+      }
       items.push({ text: pageTitle(content, slug), link: `/${base}/${slug}` });
       continue;
     }
 
-    if (entry.startsWith(".") || !fs.statSync(entryPath).isDirectory()) continue;
+    let isDirectory: boolean;
+    try {
+      isDirectory = fs.statSync(entryPath).isDirectory();
+    } catch {
+      continue;
+    }
+    if (entry.startsWith(".") || !isDirectory) continue;
 
-    const childItems = getMarkdownFiles(path.join(dir, entry), `${base}/${entry}`, docsRoot);
+    const childItems = getMarkdownFiles(
+      path.join(dir, entry),
+      `${base}/${entry}`,
+      docsRoot,
+      nextVisited,
+    );
     const readmePath = path.resolve(entryPath, "README.md");
     if (!fs.existsSync(readmePath)) {
       if (childItems.length === 0) continue;
