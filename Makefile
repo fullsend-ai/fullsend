@@ -46,6 +46,10 @@ BOOTSTRAP_BIN_DIR  := $(HOME)/.local/bin
 
 bootstrap:
 	@mkdir -p "$(BOOTSTRAP_BIN_DIR)"
+	@if [ -d "agents" ] && [ ! -e "agents/.git" ] && [ -f ".gitmodules" ]; then \
+		echo "==> Initializing agents submodule..."; \
+		git submodule update --init agents; \
+	fi
 	@echo "==> Installing Python 3.12 (via uv)..."
 	uv python install 3.12
 	@echo "==> Installing ruff (linter/formatter)..."
@@ -76,6 +80,9 @@ bootstrap:
 	@echo "    Make sure $(BOOTSTRAP_BIN_DIR) is on your PATH."
 
 ensure-hooks:
+	@if [ -d "agents" ] && [ ! -e "agents/.git" ] && [ -f ".gitmodules" ]; then \
+		git submodule update --init agents >/dev/null 2>&1 || true; \
+	fi
 	@if [ -z "$$CI" ] && [ -z "$$(git config --get core.hooksPath 2>/dev/null)" ]; then \
 		hooks_dir=$$(git rev-parse --git-path hooks 2>/dev/null); \
 		if [ -n "$$hooks_dir" ] && [ ! -f "$$hooks_dir/pre-commit" ]; then \
@@ -174,7 +181,7 @@ mint-cf-worker-test: wasm-stage
 	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path ^agents/ --exclude-path docs/agents/ --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
 
 define run-timed
 	@start=$$(date +%s); \
