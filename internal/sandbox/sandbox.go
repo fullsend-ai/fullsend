@@ -1424,7 +1424,9 @@ func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout 
 				fmt.Fprintf(stderrW, "  sandbox cancel: kill-exec failed: %v\n", err)
 			}
 		}()
-		cmd.Process.Signal(syscall.SIGINT) //nolint:errcheck // best-effort; may already be dead
+		// Do NOT signal the openshell relay process here. Openshell must
+		// stay alive to pipe claude's result event (with cost data) back
+		// through stdout. WaitDelay is the fallback if claude doesn't exit.
 		return nil
 	}
 	cmd.WaitDelay = 8 * time.Second
