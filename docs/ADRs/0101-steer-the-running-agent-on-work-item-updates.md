@@ -303,6 +303,19 @@ Both are written from `bootstrapEnv`, not from `env.sandbox` or an `env/*.env` f
 files are sourced later and would expand the references host-side to empty, and a `${VAR}` in
 harness `env.sandbox` hard-fails `ValidateRunnerEnvWith` for consumers that do not define it.
 
+`FULLSEND_RUN_STARTED_AT` is the runner's own clock at the top of `runAgent`, not the workflow
+run's server-side `created_at`, so the two halves of preserve-and-reconcile do reference different
+absolute instants: the watcher accepts a follow-up run by comparing server-side timestamps, while
+the agent's end-of-run re-check compares against this host-side one. The gap is the setup that
+precedes `runAgent` — checkout, sandbox create, bootstrap — and it is one-directional: the exported
+instant is *later* than the run's true start, so the re-check can only ever look at a slightly
+narrower window than the run actually spans, never a wider one. It can therefore miss an update
+that landed during setup; it cannot invent one. That is the conservative direction, and the steer
+itself does not depend on this value — only the backstop does. Making it exact would mean reading
+the run's `created_at` back from the Actions API at startup, which buys a bounded improvement to a
+backstop at the cost of an API call on every run; if the backstop ever becomes load-bearing, that
+is the change to make.
+
 ### Configuration
 
 Per-agent, default off, because enabling it changes how long a run holds its VM:
