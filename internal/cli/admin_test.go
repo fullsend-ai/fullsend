@@ -21,6 +21,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func TestRoleAppPrivateKeySecret(t *testing.T) {
+	assert.Equal(t, "FULLSEND_TRIAGE_APP_PRIVATE_KEY", roleAppPrivateKeySecret("triage"))
+	assert.Equal(t, "FULLSEND_CI_CHECK_APP_PRIVATE_KEY", roleAppPrivateKeySecret("ci-check"))
+}
+
 func TestAdminCommand_HasSubcommands(t *testing.T) {
 	cmd := newAdminCmd()
 	names := make(map[string]bool)

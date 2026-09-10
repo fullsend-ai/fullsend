@@ -743,6 +743,29 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunGitHubStatus_ForeignVariableOmitsParsedRole(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL":               true,
+		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": true,
+	}
+	client.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": "fullsend-ai/fullsend",
+	}
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubStatus(context.Background(), client, printer, "acme")
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "FULLSEND_FOREIGN_CI_CHECK_REPOS: fullsend-ai/fullsend")
+	assert.NotContains(t, out, "(ci_check)")
+	assert.NotContains(t, out, "(ci-check)")
+}
+
 func TestRunGitHubStatus_NoConfigRepo(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})

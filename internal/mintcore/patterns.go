@@ -46,6 +46,17 @@ func ValidateRoleName(role string) error {
 	return nil
 }
 
+// RoleIdentifier maps a role name onto the identifier used in environment
+// variables, GitHub Actions secrets/variables, and similar. Hyphens become
+// underscores and the result is uppercased so the identifier is a valid
+// bash/Actions name. For example, "ci-check" becomes "CI_CHECK".
+//
+// Roles that differ only by hyphen vs underscore (ci-check vs ci_check)
+// share an identifier.
+func RoleIdentifier(role string) string {
+	return strings.ToUpper(strings.ReplaceAll(role, "-", "_"))
+}
+
 // ValidateLevelName checks that a privilege level name matches LevelPattern.
 // Empty names are allowed (callers treat them as "omitted").
 func ValidateLevelName(level string) error {
