@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 6
 ---
 
 # Repo Management
@@ -11,8 +11,10 @@ version upgrades across multiple repos and GitHub orgs.
 
 **Target audience:** Platform administrators (SRE/DevOps) managing
 fullsend across an organization. Individual repo owners should use
-`fullsend github setup` for single-repo installation (see
-[Configuring GitHub](configuring-github.md)).
+`fullsend github setup` for single-repo GitHub installation (see
+[Configuring GitHub](configuring-github.md)) or
+`fullsend repos install --forge gitlab` for GitLab (see
+[Configuring GitLab](configuring-gitlab.md)).
 
 ## Prerequisites
 

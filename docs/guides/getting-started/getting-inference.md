@@ -5,7 +5,8 @@ sidebar_position: 2
 # Getting Inference For Fullsend
 
 The goal of this document is that you acquire a WIF provider URL to pass to the next step
-of the process ([Configuring GitHub](configuring-github.md)).
+of the process ([Configuring GitHub](configuring-github.md)). GitLab repositories skip
+this provision command — see [Configuring GitLab](configuring-gitlab.md#inference-setup).
 
 Fullsend supports GCP Vertex AI inference using Workload Identity Federation (WIF) on both
 GitHub and GitLab. WIF grants short-lived tokens to requesters that meet certain requirements.
@@ -16,7 +17,7 @@ If the WIF finds the request valid, it provides a short-lived token.
 GPT models on the pi runtime use OpenAI Workload Identity Federation instead — no GCP involved and no stored key; see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
-rather than the steps below. See [Operations](operations.md#gitlab) for details.
+rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:
@@ -86,3 +87,7 @@ The important piece of information is the `WIF Provider` which you need to pass 
 ## Next steps
 
 Head over to [Configuring GitHub](configuring-github.md) to use your WIF provider URL.
+
+For GitLab repositories, skip this provision output and follow
+[Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
+are written by `repos install --inference-project`, not by this command.

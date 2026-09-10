@@ -28,7 +28,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 
 ### GitLab
 
-For GitLab repos, re-run `repos install` with updated values to converge configuration:
+For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). For day-2 updates, re-run `repos install` with updated values to converge configuration:
 
 ```bash
 fullsend repos install -f repos.yaml "$OWNER/$REPO" \
@@ -211,6 +211,7 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation
+- [Configuring GitLab](configuring-gitlab.md) — Initial GitLab per-repo setup
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details

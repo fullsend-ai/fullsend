@@ -316,5 +316,6 @@ fullsend repos set-default gitlab.url https://gitlab.example.com
 ## See also
 
 - [Getting Started](../guides/getting-started/) — Standard per-repo installation
+- [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) — Single-repo GitLab setup
 - [Operations](../guides/getting-started/operations.md) — Day-2 administration
 - [CLI Internals](../guides/dev/cli-internals.md) — Command structure and implementation details
