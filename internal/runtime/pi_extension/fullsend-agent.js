@@ -79,6 +79,16 @@ const DEFAULT_TIMEOUT_SECONDS = 900;
 // MIN_FALLBACK_MS is the least a child fallback attempt is started with
 // (the runner's minFallbackAttemptTimeout).
 export const MIN_FALLBACK_MS = 1000;
+// DEFAULT_LIVENESS_MS paces the progress updates run() emits through pi's
+// onUpdate while a child is running. A child's stdout is consumed here, not
+// forwarded, so without them the parent's JSON stream is silent for the whole
+// child — up to timeoutSeconds, which equals the runner's default stall
+// timeout (FULLSEND_STALL_TIMEOUT, 15m) — and the stall watchdog would kill a
+// parent whose only fault was waiting on a long sub-agent. Each update is a
+// tool_execution_update line on the parent's stream, which the runner counts
+// as liveness; 30s matches the watchdog's poll cap. A child that is itself
+// wedged is bounded by its own timeoutSeconds, not by the watchdog.
+const DEFAULT_LIVENESS_MS = 30_000;
 const DEFAULT_THINKING = "medium";
 const DEFAULT_EXPLORE_TOOLS = ["read", "grep", "find", "ls"];
 // Claude Code's built-in agent types, as the fleet's pinned CLI (2.1.258)
@@ -794,7 +804,7 @@ export function sanitizeLogLine(text) {
 // sanitizeLogLine first. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", activeTools = () => undefined, registeredTools = () => [], configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, livenessMs = DEFAULT_LIVENESS_MS, manifestPath = "", manifestSum = "", activeTools = () => undefined, registeredTools = () => [], configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
   const log = (m) => rawLog(sanitizeLogLine(m));
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
@@ -1145,7 +1155,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
       child.once("close", (code, signal) => finish(code, signal, undefined));
     });
 
-  const run = async (params, { parentModel, signal } = {}) => {
+  const run = async (params, { parentModel, signal, onUpdate } = {}) => {
     const id = ++seq;
     // Older manifests may omit toolMode, but must still carry the resource
     // permissions needed to construct a safe child loadout. Reject before
@@ -1240,6 +1250,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         if (ticket.acquired) release();
         return early;
       }
+      let liveness;
       try {
         const drift = await manifestDrift();
         early = cancelled();
@@ -1253,6 +1264,17 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         // every attempt of the fallback chain shares it, so a chain never
         // runs longer than a single child could.
         const deadline = now() + timeoutMs;
+        // Liveness for the runner's stall watchdog (see DEFAULT_LIVENESS_MS),
+        // across every attempt of the fallback chain; unref'd so a pending
+        // tick never holds the parent open.
+        const startedAt = now();
+        liveness = typeof onUpdate === "function"
+          ? setInterval(() => onUpdate({
+            content: [{ type: "text", text: `sub-agent #${id} running ${Math.round((now() - startedAt) / 1000)}s` }],
+            details: { seq: id, model: modelSpec },
+          }), livenessMs)
+          : undefined;
+        if (liveness && typeof liveness.unref === "function") liveness.unref();
         outcome = await runChild(id, params, modelSpec, childLoadout(params?.subagent_type), ticket, personaName, timeoutMs);
         // Walk the alias's fallback chain while the project does not serve
         // the model (#8426). The abandoned attempt's session is removed so
@@ -1280,6 +1302,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
           outcome = await runChild(id, params, modelSpec, childLoadout(params?.subagent_type), ticket, personaName, remainingMs);
         }
       } finally {
+        if (liveness) clearInterval(liveness);
         release();
       }
     } finally {
@@ -1405,12 +1428,12 @@ export default function (pi) {
   }
   const tool = createAgentTool(manifest, { manifestPath, manifestSum, activeTools: () => pi.getActiveTools(), registeredTools: () => pi.getAllTools() });
 
-  const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
+  const execute = async (_toolCallId, params, signal, onUpdate, ctx) => {
     const m = ctx?.model;
     const parentModel = m && typeof m.provider === "string" && typeof m.id === "string" ? `${m.provider}/${m.id}` : "";
     // pi aborts a tool call when the turn is cancelled; without this the
     // child would keep running (and spending) until its own timeout.
-    const res = await tool.run(params ?? {}, { parentModel, signal });
+    const res = await tool.run(params ?? {}, { parentModel, signal, onUpdate });
     if (res.isError) {
       throw new Error(res.text ? `${res.error}\n\n${res.text}` : res.error);
     }
