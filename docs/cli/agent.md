@@ -6,7 +6,7 @@ sidebar_label: fullsend agent
 
 Manage agent registrations in fullsend config. Add, list, set (runtime, model, effort), update, and remove agents.
 
-`agent add` and `agent update` fetch remote content and resolve GitHub URLs. Authentication is via `gh` CLI or `GH_TOKEN` environment variable.
+`agent add` and `agent update` fetch remote content and resolve GitHub URLs. Authentication is via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
 
 ## Commands
 

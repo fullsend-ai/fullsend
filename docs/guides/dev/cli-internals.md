@@ -146,12 +146,13 @@ fullsend
 │   ├── --repo <owner/repo>                  #   Repository in owner/repo format
 │   ├── --pr <int>                           #   Pull request / merge request number
 │   ├── --result <path>                      #   Path to review result file, or '-' for stdin
-│   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN or $GITLAB_TOKEN)
+│   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token, or $GITLAB_TOKEN)
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
+│   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
 │   ├── --telemetry <path>                   #   Path to run-telemetry.jsonl (or --output-dir)
 │   ├── --output-dir <path>                  #   CI output base or runDir (managed-job form)
@@ -718,6 +719,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status (GCP) |
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
+| `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
 | `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |

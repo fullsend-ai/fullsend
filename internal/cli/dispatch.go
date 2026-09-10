@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/input"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/output"
@@ -52,7 +51,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&repository, "repo", "", "Repository owner/repo (default: GITHUB_REPOSITORY)")
 	cmd.Flags().StringVar(&eventName, "event-name", "", "GitHub event name (default: GITHUB_EVENT_NAME)")
 	cmd.Flags().StringVar(&eventAction, "event-action", "", "GitHub event action")
-	cmd.Flags().StringVar(&forgeToken, "forge-token", "", "Forge API token (default: GH_TOKEN or GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&forgeToken, "forge-token", "", "Forge API token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 
 	return cmd
 }
@@ -78,16 +77,11 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		}
 	}
 
+	// GitHub credentials enrich gha-event actor/PR lookups. The json
+	// driver never needs a client, so missing credentials are not fatal.
 	var client forge.Client
-	token := opts.forgeToken
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
-	}
-	if token == "" {
-		token = os.Getenv("GITHUB_TOKEN")
-	}
-	if token != "" {
-		client = gh.New(token)
+	if c, err := newAuthenticatedGitHubClient(opts.forgeToken, ""); err == nil {
+		client = c
 	}
 
 	var event *normevent.Event

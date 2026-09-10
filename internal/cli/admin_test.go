@@ -406,24 +406,6 @@ func TestValidateEnabledRepos_EmptyDiscovered(t *testing.T) {
 	assert.Contains(t, err.Error(), "some-repo")
 }
 
-func TestResolveToken_EnvVar(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token-123")
-	t.Setenv("GITHUB_TOKEN", "")
-
-	token, err := resolveToken()
-	require.NoError(t, err)
-	assert.Equal(t, "test-token-123", token)
-}
-
-func TestResolveToken_GitHubTokenFallback(t *testing.T) {
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "github-token-456")
-
-	token, err := resolveToken()
-	require.NoError(t, err)
-	assert.Equal(t, "github-token-456", token)
-}
-
 type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }

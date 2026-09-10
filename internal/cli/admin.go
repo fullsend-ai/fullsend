@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
@@ -73,36 +72,6 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(newDisableCmd())
 	cmd.AddCommand(newForeignCmd())
 	return cmd
-}
-
-// resolveToken finds a GitHub token by checking, in order:
-//  1. GH_TOKEN env var
-//  2. GITHUB_TOKEN env var
-//  3. gh auth token (subprocess call to the GitHub CLI)
-//
-// This chain allows users who are already authenticated with gh to use
-// fullsend without manually exporting tokens. The CLI runs a preflight
-// check before each operation and reports exactly which scopes are
-// missing, so callers do not need to request all scopes upfront.
-//
-// Note that gh auth scopes apply to every organization the account
-// belongs to. Users who want to limit the blast radius can create a
-// fine-grained PAT scoped to a single org and export it as GH_TOKEN.
-func resolveToken() (string, error) {
-	if token := os.Getenv("GH_TOKEN"); token != "" {
-		return token, nil
-	}
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return token, nil
-	}
-	out, err := exec.Command("gh", "auth", "token").Output()
-	if err == nil {
-		token := strings.TrimSpace(string(out))
-		if token != "" {
-			return token, nil
-		}
-	}
-	return "", fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login'")
 }
 
 // validateOrgName checks that org is a valid GitHub organization name.
