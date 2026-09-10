@@ -85,38 +85,50 @@ work rather than bundled into this routing-hygiene pass.
 
 When a review would otherwise be dispatched, a new `docs-lockfile-check` step
 fetches the PR's changed-file list (`gh api .../pulls/{number}/files
---paginate`, both `filename` and `previous_filename`) and skips the review —
-with a `::notice::` in the job log and an entry in `GITHUB_STEP_SUMMARY` —
-when every path in that list matches `docs/*.md` and none matches a protected
-prefix.
+--paginate`, with `status`, `filename`, `previous_filename` and
+`contents_url`) and skips the review — with a `::notice::` in the job log and
+an entry in `GITHUB_STEP_SUMMARY` — when every path in that list is on the
+prose allowlist and every listed page is free of executable markup.
 
-The protected prefixes are matched *before* `docs/*.md`, because `case` globs
-match `/`: a lone `docs/*.md` arm reaches every nested markdown file under
-`docs/`, contracts included. They are the directories whose prose is itself a
-contract — `docs/ADRs/` (a new ADR is among the things most worth reviewing),
-`docs/normative/` (the event and pre-script contracts other repos build
-payloads against, where the prose spec beside a JSON schema carries as much of
-the contract as the schema does), `docs/contributing/` (the rules agents and
-humans are held to, including `workflow-contracts.md`, which governs this very
-workflow), `docs/reference/` (the field-level interface reference), and
-`docs/.vitepress/` (site source — executable, and occasionally markdown).
-
-Everything else falls to a catch-all that stops the skip, which is what keeps
-markdown outside `docs/` reviewed: `skills/*/SKILL.md`, `AGENTS.md`, and
+**Prose is an allowlist, not "`docs/` minus contracts".** `case` globs match
+`/`, so a lone `docs/*.md` arm reaches every nested markdown file under
+`docs/`, and the tree keeps growing pages whose prose is itself a contract or
+is load-bearing for contributors — `docs/ADRs/`, `docs/normative/`,
+`docs/contributing/`, `docs/reference/`, `docs/cli/`, `docs/architecture.md`,
+`docs/.vitepress/` — which a denylist has to chase one review round at a time.
+A directory is skippable only once it is listed:
+`docs/guides/`, `docs/problems/`, `docs/agents/` and `docs/glossary.md`.
+Everything else falls to a catch-all that stops the skip, which is also what
+keeps markdown outside `docs/` reviewed: `skills/*/SKILL.md`, `AGENTS.md`, and
 `CLAUDE.md` are executable agent instruction, not prose. **Lockfiles are not
 skippable** either — npm resolves from `package-lock.json`, so a lockfile-only
 diff can repoint a transitive dependency's `resolved` URL and `integrity` hash
 without touching `package.json`, and skipping review there would remove the
 only automated reader from a supply-chain-relevant change.
 
-Two listing hazards are handled explicitly. A truncated listing never skips —
-GitHub caps `/pulls/{n}/files` at 3000 entries and stops paginating without
-erroring, so a 3500-file PR whose first 3000 files are prose would otherwise
-look docs-only — and renames are classified on both paths, since moving a Go
-file to `docs/notes.md` would otherwise present as prose.
+**A prose path is not inert.** VitePress compiles every markdown page under
+`docs/` into a Vue component — `docs/.vitepress/config.ts`'s `srcExclude` only
+drops icons and `testing/` — so a page can carry a root-level `<script setup>`
+that runs at build time (`docs/v/index.md` already ships one, importing a
+third-party package), a `<style>` block, a `head:` frontmatter key that
+injects tags, `{{ }}` expressions evaluated during SSG, or bound attributes
+and directives (`:prop`, `@event`, `v-*`, `on*`) on raw HTML. Each
+allowlisted page is therefore read at the PR head (`contents_url`, one call
+per page, only for PRs that are already prose-only by path) and keeps its
+review if any of those appear outside fenced or inline code, where VitePress
+renders text verbatim (`v-pre`). The scan is a fail-open heuristic: a
+legitimate page that uses interpolation in prose merely stays reviewed.
 
-The listing costs one paginated `gh api` call, incurred only when a review
-would otherwise have run.
+Three listing hazards are handled explicitly. A truncated listing never skips
+— GitHub caps `/pulls/{n}/files` at 3000 entries and stops paginating without
+erroring, so a 3500-file PR whose first 3000 files are prose would otherwise
+look docs-only. Renames are classified on both paths, since moving a Go file
+to `docs/guides/notes.md` would otherwise present as prose. And a page that
+cannot be read at the head never skips, for the same reason an unreadable
+listing does not.
+
+The listing costs one paginated `gh api` call plus one content read per
+changed page, incurred only when a review would otherwise have run.
 
 This skip is per-repo only — see Consequences for why it is not mirrored
 into the per-org scaffold.
@@ -125,20 +137,21 @@ into the per-org scaffold.
 
 - Automatic review stops running on drafts, on `fullsend-no-review`-labeled
   PRs, and on PRs whose every listed path — new and previous filenames alike —
-  is markdown under `docs/` outside the protected prefixes, so a diff that goes
-  unreviewed can now contain guide, agent-page, glossary or problem-doc prose,
-  and cannot contain code, lockfiles, ADRs, `docs/normative/`,
-  `docs/contributing/`, `docs/reference/`, `docs/.vitepress/`, or any markdown
-  outside `docs/`.
+  is on the prose allowlist and whose every page is free of executable markup,
+  so a diff that goes unreviewed can now contain guide, agent-page, glossary or
+  problem-doc prose, and cannot contain code, lockfiles, a VitePress page that
+  runs anything at build time, markdown under any other `docs/` directory, or
+  any markdown outside `docs/`.
 - The prose skip is a judgement call rather than a free win: docs currency is
   one of the review agent's own dimensions, `docs/contributing/design-decisions.md`
   ranks external prompt injection as the top threat, and prose is where
   instruction-like text that later agents read would land — a prose-only PR now
   reaches human review with no automated reader having looked at it first.
 - That residual risk is bounded by what the check can see rather than by
-  trust: one non-prose path anywhere in the diff re-arms the review, an
-  unreadable or truncated file listing never skips, and `/fs-review` forces a
-  review on a draft, a labeled PR, or a prose-only PR at any time.
+  trust: one non-prose path or one executable construct anywhere in the diff
+  re-arms the review, an unreadable page or an unreadable or truncated file
+  listing never skips, and `/fs-review` forces a review on a draft, a labeled
+  PR, or a prose-only PR at any time.
 - `fullsend-no-review` must be created and applied by hand until an
   `/fs-review-stop` command exists, unlike `/fs-fix-stop`.
 - The prose skip is per-repo only because the per-org mode is deprecated

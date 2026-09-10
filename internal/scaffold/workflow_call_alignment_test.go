@@ -822,18 +822,34 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 	}
 	script := docsSkipStepRun(t)
 
-	// run executes the step with a stub gh that prints filesJSON (or fails
-	// when it is empty), returning the step output plus whether the step set
-	// skipped=true.
-	run := func(t *testing.T, filesJSON string) (string, bool) {
+	// run executes the step with a stub gh that serves filesJSON for the
+	// listing call (or fails when it is empty) and, for the per-page content
+	// call, the page body from contents (a missing entry is inert prose; a
+	// value of "FAIL" is an unreadable page). Returns the step output plus
+	// whether the step set skipped=true.
+	run := func(t *testing.T, filesJSON string, contents map[string]string) (string, bool) {
 		t.Helper()
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "files.json"), []byte(filesJSON), 0o600))
+		pages := filepath.Join(dir, "pages")
+		for path, body := range contents {
+			require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(pages, path)), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(pages, path), []byte(body), 0o600))
+		}
 		stub := "#!/usr/bin/env bash\n" +
 			"if [[ \"$1\" != api ]]; then echo \"unexpected gh call: $*\" >&2; exit 1; fi\n" +
 			"for arg in \"$@\"; do\n" +
 			"  case \"$arg\" in\n" +
 			"    -F|--field|-X|--method) echo 'gh stub: request would not be a GET (404)' >&2; exit 1 ;;\n" +
+			"    https://api.github.com/repos/*/contents/*)\n" +
+			"      page=\"${arg#*/contents/}\"; page=\"${page%%\\?*}\"\n" +
+			"      if [[ -f \"$GH_STUB_PAGES/$page\" ]]; then\n" +
+			"        [[ \"$(cat \"$GH_STUB_PAGES/$page\")\" == FAIL ]] && { echo 'simulated content failure' >&2; exit 1; }\n" +
+			"        cat \"$GH_STUB_PAGES/$page\"\n" +
+			"      else\n" +
+			"        printf '# %s\\n\\nPlain prose.\\n' \"$page\"\n" +
+			"      fi\n" +
+			"      exit 0 ;;\n" +
 			"  esac\n" +
 			"done\n" +
 			"[[ -s \"$GH_STUB_FILES\" ]] || { echo 'simulated api failure' >&2; exit 1; }\n" +
@@ -848,6 +864,7 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"GH_STUB_FILES="+filepath.Join(dir, "files.json"),
+			"GH_STUB_PAGES="+pages,
 			"GH_TOKEN=stub",
 			"SOURCE_REPO=octo/repo",
 			"PR_NUMBER=1",
@@ -861,43 +878,59 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		return string(out), strings.Contains(string(got), "skipped=true")
 	}
 
-	// files builds a /pulls/{n}/files payload from filename/previous_filename
-	// pairs (an empty second element means the file was not renamed).
+	// entry builds one /pulls/{n}/files element the way GitHub shapes it:
+	// contents_url points at the page on the PR head.
+	entry := func(status, filename, previous string) string {
+		prev := ""
+		if previous != "" {
+			prev = fmt.Sprintf(`,"previous_filename":%q`, previous)
+		}
+		return fmt.Sprintf(`{"status":%q,"filename":%q%s,"contents_url":"https://api.github.com/repos/octo/repo/contents/%s?ref=abc123"}`,
+			status, filename, prev, filename)
+	}
+	// files builds a listing from filename/previous_filename pairs (an empty
+	// second element means the file was not renamed).
 	files := func(pairs ...[2]string) string {
 		entries := make([]string, 0, len(pairs))
 		for _, p := range pairs {
-			prev := ""
-			if p[1] != "" {
-				prev = fmt.Sprintf(`,"previous_filename":%q`, p[1])
-			}
-			entries = append(entries, fmt.Sprintf(`{"filename":%q%s}`, p[0], prev))
+			entries = append(entries, entry("modified", p[0], p[1]))
 		}
 		return "[" + strings.Join(entries, ",") + "]"
 	}
+	const prose = "docs/guides/user/bugfix-workflow.md"
 
 	t.Run("prose only skips", func(t *testing.T) {
 		_, skipped := run(t, files(
-			[2]string{"docs/guides/user/bugfix-workflow.md", ""},
+			[2]string{prose, ""},
 			[2]string{"docs/agents/review.md", ""},
-		))
-		assert.True(t, skipped, "markdown prose under docs/ is what the skip exists for")
+			[2]string{"docs/problems/governance.md", ""},
+			[2]string{"docs/glossary.md", ""},
+		), nil)
+		assert.True(t, skipped, "markdown prose under the allowlisted directories is what the skip exists for")
 	})
 
-	// Every protected directory ADR 0096 names: `case` globs match `/`, so
-	// docs/*.md alone reaches all of these.
-	for _, protected := range []string{
+	// Prose is an allowlist: anything under docs/ that is not listed stays
+	// reviewed — the contracts other repos build against, the pages
+	// contributors are told to keep current, and the VitePress page that
+	// already ships a <script setup>. `case` globs match `/`, so a bare
+	// docs/*.md arm would reach all of these.
+	for _, notListed := range []string{
 		"docs/ADRs/0096-skip-provably-unnecessary-review-dispatch.md",
 		"docs/normative/normalized-event/v1/README.md",
 		"docs/contributing/workflow-contracts.md",
 		"docs/reference/harness-reference.md",
 		"docs/.vitepress/theme/README.md",
+		"docs/architecture.md",
+		"docs/cli/agent.md",
+		"docs/v/index.md",
+		"docs/index.md",
 	} {
-		t.Run("protected: "+protected, func(t *testing.T) {
+		t.Run("not allowlisted: "+notListed, func(t *testing.T) {
 			_, skipped := run(t, files(
-				[2]string{"docs/guides/user/bugfix-workflow.md", ""},
-				[2]string{protected, ""},
-			))
-			assert.False(t, skipped, "%s is a contract, not prose — it must still be reviewed", protected)
+				[2]string{prose, ""},
+				[2]string{notListed, ""},
+			), nil)
+			assert.False(t, skipped, "%s is not on the prose allowlist — it must still be reviewed", notListed)
 		})
 	}
 
@@ -905,14 +938,52 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 	// lockfile-only diff can repoint a transitive dependency.
 	for _, notProse := range []string{"AGENTS.md", "CLAUDE.md", "skills/pr-review/SKILL.md", "package-lock.json", "internal/cli/run.go"} {
 		t.Run("not prose: "+notProse, func(t *testing.T) {
-			_, skipped := run(t, files([2]string{notProse, ""}))
+			_, skipped := run(t, files([2]string{notProse, ""}), nil)
 			assert.False(t, skipped, "%s must not be treated as skippable prose", notProse)
 		})
 	}
 
 	t.Run("rename into docs is classified on its old path", func(t *testing.T) {
-		_, skipped := run(t, files([2]string{"docs/notes.md", "internal/cli/run.go"}))
+		_, skipped := run(t, files([2]string{"docs/guides/notes.md", "internal/cli/run.go"}), nil)
 		assert.False(t, skipped, "moving code under docs/ must not suppress review")
+	})
+
+	// VitePress compiles every page under docs/ into a Vue component, so a
+	// prose path can still carry code that runs at build time (see #6587
+	// review). The page body is read at the PR head; markup inside fenced or
+	// inline code is rendered verbatim (v-pre) and does not count.
+	for name, body := range map[string]string{
+		"script setup":     "# Page\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"style block":      "# Page\n\n<style>\nbody { display: none }\n</style>\n",
+		"head frontmatter": "---\nhead:\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"interpolation":    "# Page\n\nTotal: {{ (() => globalThis.process.exit())() }}\n",
+		"bound attribute":  "# Page\n\n<VPLVersionLink :version=\"aliases.dev\" />\n",
+		"event handler":    "# Page\n\n<img src=x onerror=\"alert(1)\">\n",
+	} {
+		t.Run("executable markup: "+name, func(t *testing.T) {
+			out, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
+			assert.False(t, skipped, "a page carrying executable markup is not inert prose")
+			assert.Contains(t, out, "carries executable markup")
+		})
+	}
+
+	t.Run("markup inside code is inert", func(t *testing.T) {
+		body := "# Page\n\nUse `{{ github.event }}` or `<script>` in prose.\n\n```html\n<script setup>\nimport x from 'y'\n</script>\n{{ expr }}\n```\n"
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
+		assert.True(t, skipped, "VitePress renders fenced and inline code verbatim — it cannot execute")
+	})
+
+	t.Run("unreadable page does not skip", func(t *testing.T) {
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: "FAIL"})
+		assert.False(t, skipped, "a page that cannot be read at the PR head must fail open into a review")
+	})
+
+	t.Run("removed page is not read", func(t *testing.T) {
+		listing := "[" + entry("removed", prose, "") + "," + entry("modified", "docs/agents/review.md", "") + "]"
+		// A removed file has no content at the head: reading it would fail
+		// and wrongly keep the review.
+		_, skipped := run(t, listing, map[string]string{prose: "FAIL"})
+		assert.True(t, skipped, "a deleted prose page has nothing to execute")
 	})
 
 	t.Run("truncated listing never skips", func(t *testing.T) {
@@ -920,13 +991,13 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		for i := range pairs {
 			pairs[i] = [2]string{fmt.Sprintf("docs/guides/page-%d.md", i), ""}
 		}
-		out, skipped := run(t, files(pairs...))
+		out, skipped := run(t, files(pairs...), nil)
 		assert.False(t, skipped, "the files endpoint caps at 3000 entries and stops paginating silently")
 		assert.Contains(t, out, "may be truncated")
 	})
 
 	t.Run("api failure does not skip", func(t *testing.T) {
-		out, skipped := run(t, "")
+		out, skipped := run(t, "", nil)
 		assert.False(t, skipped, "an unreadable file list must fail open into a review")
 		assert.Contains(t, out, "Failed to fetch changed files")
 	})

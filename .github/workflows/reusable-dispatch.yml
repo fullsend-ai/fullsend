@@ -533,32 +533,33 @@ jobs:
           # entirely (the issue_comment guard above), matching the draft and
           # label bypasses.
           #
-          # `case` globs match `/`, so `docs/*.md` on its own reaches every
-          # nested markdown file under docs/, including the contracts other
-          # repos and workflows build against. The arms below are the set
-          # ADR 0096 protects, matched before it:
-          #   docs/ADRs/         a new ADR is among the things most worth
-          #                      reviewing
-          #   docs/normative/    published event and pre-script contracts
-          #                      other repos build payloads against
-          #   docs/contributing/ the rules agents and humans are held to,
-          #                      including the workflow sync contract
-          #   docs/reference/    field-level interface reference
-          #   docs/.vitepress/   site source — executable, occasionally .md
-          # Markdown outside docs/ (skills/*/SKILL.md, AGENTS.md, CLAUDE.md)
-          # is executable agent instruction and falls to the `*)` arm, as do
-          # lockfiles: npm resolves from package-lock.json, so a lockfile-only
+          # Prose is an allowlist, not "docs/ minus contracts": `case` globs
+          # match `/`, so a bare docs/*.md arm reaches every nested markdown
+          # file under docs/, and the tree keeps growing load-bearing pages
+          # (architecture.md, cli/, normative/, contributing/, reference/,
+          # ADRs/, .vitepress/) that a denylist has to chase. A directory is
+          # skippable only once it is listed here. Everything else stays
+          # reviewed — including markdown outside docs/ (skills/*/SKILL.md,
+          # AGENTS.md, CLAUDE.md are executable agent instruction) and
+          # lockfiles (npm resolves from package-lock.json, so a lockfile-only
           # diff can repoint a transitive dependency without touching
-          # package.json.
+          # package.json).
+          is_prose() {
+            case "$1" in
+              docs/guides/*.md|docs/problems/*.md|docs/agents/*.md|docs/glossary.md) return 0 ;;
+            esac
+            return 1
+          }
           if [[ -z "${PR_NUMBER}" || "${PR_NUMBER}" == "null" ]]; then
             exit 0
           fi
           # per_page belongs in the query string: `-F per_page=100` makes
           # `gh api` issue a POST, which this endpoint answers with a 404.
           # previous_filename is listed too, so a file renamed into docs/ is
-          # classified on the path it came from as well.
+          # classified on the path it came from as well; it goes last because
+          # `read` with IFS=tab collapses an empty middle field.
           FILES=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files?per_page=100" --paginate \
-            --jq '.[] | .filename, (.previous_filename // empty)') || {
+            --jq '.[] | [.status, .filename, .contents_url, (.previous_filename // "")] | @tsv') || {
             echo "::warning::Failed to fetch changed files for PR #${PR_NUMBER} — not skipping review"
             exit 0
           }
@@ -571,19 +572,39 @@ jobs:
             exit 0
           fi
           skippable=true
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            case "$f" in
-              docs/ADRs/*|docs/normative/*|docs/contributing/*|docs/reference/*|docs/.vitepress/*)
-                skippable=false; break ;;
-              docs/*.md) ;;
-              *) skippable=false; break ;;
-            esac
+          while IFS=$'\t' read -r status path url prev; do
+            [[ -z "${path}" ]] && continue
+            if ! is_prose "${path}" || { [[ -n "${prev}" ]] && ! is_prose "${prev}"; }; then
+              skippable=false; break
+            fi
+            [[ "${status}" == "removed" ]] && continue
+            # A prose path is not enough. VitePress compiles every markdown
+            # page under docs/ into a Vue component (config.ts srcExclude
+            # only drops icons and testing/), so a page can carry a
+            # root-level <script setup> that runs at build time, a <style>
+            # block, a head: frontmatter key that injects tags, {{ }}
+            # expressions evaluated during SSG, or bound attributes and
+            # directives (:prop, @event, v-*, on*) on raw HTML — docs/v/index.md
+            # already ships a <script setup>. Read the page at the PR head
+            # and keep the review unless it is free of all of these outside
+            # code, where VitePress renders text verbatim (v-pre). An
+            # unreadable page never skips. grep reads the whole page rather
+            # than exiting on the first match (-q): under pipefail an early
+            # exit can SIGPIPE awk on a long page and turn a hit into a miss.
+            BODY=$(gh api -H 'Accept: application/vnd.github.raw' "${url}") || {
+              skippable=false; break
+            }
+            if awk '/^```/ { in_code = !in_code; next } !in_code' <<< "${BODY}" \
+                | sed 's/`[^`]*`//g' \
+                | grep -E '<script|<style|^head:|\{\{|<[A-Za-z][^>]*[[:space:]](:|@|v-|on)[A-Za-z-]+=' >/dev/null; then
+              echo "::notice::${path} carries executable markup — not skipping review"
+              skippable=false; break
+            fi
           done <<< "${FILES}"
           if [[ "${skippable}" == "true" ]]; then
             echo "::notice::Skipping review — PR #${PR_NUMBER} only touches documentation prose under docs/"
             echo "### fullsend review skipped" >> "${GITHUB_STEP_SUMMARY}"
-            echo "PR #${PR_NUMBER} only touches documentation prose (\`docs/**/*.md\`, excluding ADRs, normative/, contributing/, reference/ and .vitepress/) — no review dispatched." >> "${GITHUB_STEP_SUMMARY}"
+            echo "PR #${PR_NUMBER} only touches documentation prose (markdown under \`docs/guides/\`, \`docs/problems/\`, \`docs/agents/\` or \`docs/glossary.md\`, with no executable markup) — no review dispatched." >> "${GITHUB_STEP_SUMMARY}"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
