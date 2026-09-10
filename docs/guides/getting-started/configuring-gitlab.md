@@ -96,6 +96,7 @@ agents, pass `--roles`:
 ```bash
 fullsend repos install <group/project> \
   --forge gitlab \
+  --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>" \
   --roles triage,review
 ```
@@ -109,6 +110,7 @@ Pass `--runtime` to set it (`claude` is the stable default; `pi` and
 ```bash
 fullsend repos install <group/project> \
   --forge gitlab \
+  --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>" \
   --runtime claude
 ```
@@ -124,6 +126,7 @@ access token for the bot identity:
 ```bash
 fullsend repos install <group/project> \
   --forge gitlab \
+  --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>" \
   --gitlab-bot-token "<bot-pat>"
 ```
@@ -223,6 +226,7 @@ resource name instead of relying on the default `gitlab-oidc` path:
 ```bash
 fullsend repos install <group/project> \
   --forge gitlab \
+  --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>" \
   --inference-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
 ```
