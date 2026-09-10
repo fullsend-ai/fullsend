@@ -82,9 +82,9 @@ func TestResolveToken_Missing(t *testing.T) {
 func TestResolveToken_GhAuthToken(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
-	old := ghAuthTokenCmd
-	t.Cleanup(func() { ghAuthTokenCmd = old })
-	ghAuthTokenCmd = func() ([]byte, error) {
+	old := ghAuthTokenFn
+	t.Cleanup(func() { ghAuthTokenFn = old })
+	ghAuthTokenFn = func() ([]byte, error) {
 		return []byte("  gho_from_gh_cli\n"), nil
 	}
 
@@ -96,9 +96,9 @@ func TestResolveToken_GhAuthToken(t *testing.T) {
 func TestResolveToken_GhAuthTokenEmpty(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
-	old := ghAuthTokenCmd
-	t.Cleanup(func() { ghAuthTokenCmd = old })
-	ghAuthTokenCmd = func() ([]byte, error) {
+	old := ghAuthTokenFn
+	t.Cleanup(func() { ghAuthTokenFn = old })
+	ghAuthTokenFn = func() ([]byte, error) {
 		return []byte("   \n"), nil
 	}
 
@@ -184,8 +184,9 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 		`os.LookupEnv("GH_TOKEN")`,
 		`os.LookupEnv("GITHUB_TOKEN")`,
 		`exec.Command("gh", "auth", "token")`,
-		`ghAuthTokenCmd(`,
+		`ghAuthTokenFn(`,
 		`envGitHubToken(`,
+		`envGHToken(`,
 	}
 	allowed := map[string]bool{
 		"github_client.go": true,
@@ -196,8 +197,13 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 	allowedPattern := map[string]map[string]bool{
 		// run.go saves and restores the caller's pre-existing GH_TOKEN
 		// around minting an agent token; it does not read the credential
-		// to authenticate a GitHub client.
-		"run.go": {`os.LookupEnv("GH_TOKEN")`: true},
+		// to authenticate a GitHub client. It also calls envGHToken()
+		// for a documented token-scope diagnostic (see run.go:1155),
+		// not to authenticate a GitHub client.
+		"run.go": {
+			`os.LookupEnv("GH_TOKEN")`: true,
+			`envGHToken(`:              true,
+		},
 	}
 
 	var violations []string

@@ -41,9 +41,9 @@ func envGitHubToken() string {
 	return ""
 }
 
-// ghAuthTokenCmd runs `gh auth token`. Tests replace it to avoid a
+// ghAuthTokenFn runs 'gh auth token'. Override in tests to avoid a
 // real GitHub CLI subprocess.
-var ghAuthTokenCmd = func() ([]byte, error) {
+var ghAuthTokenFn = func() ([]byte, error) {
 	return exec.Command("gh", "auth", "token").Output()
 }
 
@@ -68,7 +68,7 @@ func resolveToken() (string, error) {
 	if token := envGitHubToken(); token != "" {
 		return token, nil
 	}
-	out, err := ghAuthTokenCmd()
+	out, err := ghAuthTokenFn()
 	if err == nil {
 		token := strings.TrimSpace(string(out))
 		if token != "" {
