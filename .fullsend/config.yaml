@@ -24,6 +24,7 @@ agents:
     - name: code
       runtime: pi
       model: xai/grok-4.6
+      timeout_minutes: 60
     - name: fix
       model: sonnet
     - name: prioritize
