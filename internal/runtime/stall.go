@@ -108,9 +108,12 @@ type stallWatchdog struct {
 //
 // Unlike ClearIterationArtifacts' sweep this one is not serialized against
 // the credential refreshers' writes (internal/cli/run.go's sandboxMu is not
-// reachable from here): a refresher upload killed mid-write leaves a
-// truncated credential file in a sandbox the stalled run is already tearing
-// down, so it has nothing left to break.
+// reachable from here, and a kill path must not wait on a lock a wedged
+// upload may hold). The one writer a kill can truncate is refreshOIDCToken's
+// tar (reseedOpenAIAuth writes atomically), and that token lives five
+// minutes with no refresher left running once the run fails — so the file
+// is dead either way, under --keep-sandbox too. docs/cli/run.md tells
+// operators to re-seed credentials before reusing a kept sandbox.
 func stallKill(execFn sandboxExecFunc, sandboxName string, w io.Writer, cancel func()) func() {
 	return func() {
 		defer cancel()
