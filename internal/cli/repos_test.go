@@ -1004,7 +1004,10 @@ func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
 
 	require.NotEmpty(t, fc.CreatedProposals, "default uninstall should open a PR for file deletions")
 	assert.Equal(t, "chore: remove fullsend workflow", fc.CreatedProposals[0].Title)
-	assert.Equal(t, repos.DefaultUninstallBranch, fc.CreatedProposals[0].Head)
+	// Uninstall reuses DefaultScaffoldBranch (not a distinct uninstall
+	// branch) so the already-deployed per-repo shim exclusion also covers
+	// uninstall PRs.
+	assert.Equal(t, repos.DefaultScaffoldBranch, fc.CreatedProposals[0].Head)
 	assert.Empty(t, fc.CommittedFiles, "default path should not push deletions to the default branch")
 	assert.NotEmpty(t, fc.DeletedVariables, "variables should still be deleted immediately")
 	assert.NotEmpty(t, fc.DeletedSecrets, "secrets should still be deleted immediately")
@@ -1990,6 +1993,10 @@ gitlab:
 	require.NotEmpty(t, fc.CreatedProposals, "expected an uninstall PR to be created")
 	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
 		"GitLab uninstall MR title must include [skip ci]")
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected the uninstall branch commit to be recorded")
+	assert.Contains(t, fc.CommittedFilesToBranch[0].Message, "[skip ci]",
+		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
 }
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {

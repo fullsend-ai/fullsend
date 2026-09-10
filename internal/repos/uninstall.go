@@ -241,7 +241,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 
 	progress(fullName, "workflow", "Removing scaffold files")
 	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
-		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
+		result.Error = fmt.Errorf("removing scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}

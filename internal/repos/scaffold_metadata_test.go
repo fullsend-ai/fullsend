@@ -32,7 +32,10 @@ func TestUninstallPRMetadata(t *testing.T) {
 	assert.Equal(t, "chore: remove fullsend workflow", meta.PRTitle)
 	assert.Contains(t, meta.PRBody, "removes the fullsend scaffold files")
 	assert.Contains(t, meta.PRBody, "variables")
-	assert.Equal(t, DefaultUninstallBranch, meta.Branch)
+	// Reuses DefaultScaffoldBranch (not a distinct uninstall branch) so the
+	// already-deployed per-repo shim exclusion (head.ref ==
+	// "fullsend/scaffold-install") also covers uninstall PRs.
+	assert.Equal(t, DefaultScaffoldBranch, meta.Branch)
 }
 
 func TestBuildScaffoldPRMetadata_FreshInstallNoOpts(t *testing.T) {

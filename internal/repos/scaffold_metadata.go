@@ -39,11 +39,11 @@ const (
 	defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
 		"Merge this PR to activate fullsend workflows." + gettingStartedCatalog
 
-	// DefaultScaffoldBranch is the branch name for fresh installations.
+	// DefaultScaffoldBranch is the branch name for fresh installations. It
+	// is also reused for uninstall PR delivery (see UninstallPRMetadata)
+	// since already-deployed per-repo shims only exclude this branch name
+	// from triggering the fullsend dispatch job.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
-
-	// DefaultUninstallBranch is the branch name for scaffold file removal.
-	DefaultUninstallBranch = "fullsend/scaffold-uninstall"
 
 	// defaultUninstallPRBody is the PR body for uninstall file removals.
 	defaultUninstallPRBody = "This PR removes the fullsend scaffold files from this repository.\n\n" +
@@ -98,12 +98,20 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 }
 
 // UninstallPRMetadata returns commit/PR metadata for scaffold file removal.
+//
+// Branch intentionally reuses DefaultScaffoldBranch rather than a distinct
+// uninstall branch name: already-deployed per-repo shims (see
+// internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml and
+// shim-workflow-call.yaml) only skip dispatch for
+// head.ref == "fullsend/scaffold-install". A separate uninstall branch name
+// would fail open and let the teardown PR trigger the fullsend dispatch job
+// (with live WIF/mint credentials) against itself.
 func UninstallPRMetadata() ScaffoldPRMetadata {
 	return ScaffoldPRMetadata{
 		CommitMsg: "chore: remove fullsend workflow",
 		PRTitle:   "chore: remove fullsend workflow",
 		PRBody:    defaultUninstallPRBody,
-		Branch:    DefaultUninstallBranch,
+		Branch:    DefaultScaffoldBranch,
 	}
 }
 

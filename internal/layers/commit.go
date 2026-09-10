@@ -60,11 +60,11 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 // knownScaffoldBranches lists all branch names that have been used to deliver
 // scaffold files across different install modes. Per-org mode uses
 // "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
-// "fullsend/scaffold-install" and "fullsend/scaffold-uninstall" (via the Go CLI).
+// "fullsend/scaffold-install" (via the Go CLI) for both install and uninstall
+// delivery.
 var knownScaffoldBranches = []string{
-	"fullsend/scaffold-install",
+	repos.DefaultScaffoldBranch,
 	"fullsend/onboard",
-	repos.DefaultUninstallBranch,
 }
 
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
@@ -544,8 +544,8 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	}
 	if err != nil && forge.IsBranchProtected(err) {
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")
-		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n"+
-			"Merge this PR to deliver the scaffold files.", defaultBranch)
+		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n%s",
+			defaultBranch, prBody)
 		return commitScaffoldViaPR(ctx, client, printer,
 			owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, fallbackBody, files, in)
 	} else if err != nil {
