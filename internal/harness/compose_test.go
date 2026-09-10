@@ -516,6 +516,7 @@ base: ../../../etc/passwd
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes workspace root")
+	assert.NotContains(t, err.Error(), "via symlink")
 }
 
 func TestLoadWithBase_LocalBase_PathTraversal_NoWorkspaceRoot(t *testing.T) {
@@ -591,7 +592,64 @@ role: test
 
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "escapes workspace root")
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeWithWorkspaceAliasRejected(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	outside := t.TempDir()
+	linkedDir := filepath.Join(realDir, "linked")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkKeepsReferencingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	harnessDir := filepath.Join(workspace, "harness")
+	sharedDir := filepath.Join(workspace, "shared")
+
+	writeTestHarness(t, harnessDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: harness
+`)
+	writeTestHarness(t, sharedDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: shared
+`)
+	template := writeTestHarness(t, sharedDir, "template.yaml", `
+agent: agents/base.md
+role: test
+base: defaults.yaml
+`)
+	require.NoError(t, os.Symlink(template, filepath.Join(harnessDir, "base.yaml")))
+	path := writeTestHarness(t, harnessDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.NoError(t, err)
+	assert.Equal(t, "harness", h.RunnerEnv["BASE_DIRECTORY"])
 }
 
 func TestLoadWithBase_DepthExceeded(t *testing.T) {

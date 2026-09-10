@@ -411,6 +411,11 @@ func loadBaseChain(
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolving containment root symlinks: %w", err)
 		}
+		// Preserve the lexical base reference relative to the referencing harness
+		// directory. This distinguishes explicit traversal from an intermediate
+		// symlink escape without being confused by workspace-root aliases.
+		lexicalRel, lexicalRelErr := filepath.Rel(childDir, absBasePath)
+		lexicallyEscapes := lexicalRelErr != nil || strings.HasPrefix(lexicalRel, "..")
 		// Resolve existing paths before comparing so workspace aliases such as
 		// macOS's /var and /private/var forms compare consistently.
 		resolvedBasePath, resolveErr := filepath.EvalSymlinks(absBasePath)
@@ -421,25 +426,25 @@ func loadBaseChain(
 			if dirErr != nil {
 				// Keep rejecting lexical escapes before returning a missing-path
 				// error, preserving the containment error for traversal attempts.
-				rel, relErr := filepath.Rel(absWorkspace, absBasePath)
-				if relErr != nil || strings.HasPrefix(rel, "..") {
+				if lexicallyEscapes {
 					return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
 				}
 				return nil, nil, fmt.Errorf("resolving base path symlinks: %w", dirErr)
 			}
-			absBasePath = filepath.Join(resolvedBaseDir, filepath.Base(absBasePath))
-		} else {
-			absBasePath = resolvedBasePath
+			resolvedBasePath = filepath.Join(resolvedBaseDir, filepath.Base(absBasePath))
 		}
-		rel, err := filepath.Rel(absWorkspace, absBasePath)
+		rel, err := filepath.Rel(absWorkspace, resolvedBasePath)
 		if err != nil || strings.HasPrefix(rel, "..") {
+			if lexicallyEscapes {
+				return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			}
 			return nil, nil, fmt.Errorf("base path %q escapes workspace root via symlink", baseRef)
 		}
 
-		if visited[absBasePath] {
-			return nil, nil, fmt.Errorf("circular base reference: %s", absBasePath)
+		if visited[resolvedBasePath] {
+			return nil, nil, fmt.Errorf("circular base reference: %s", resolvedBasePath)
 		}
-		visited[absBasePath] = true
+		visited[resolvedBasePath] = true
 
 		base, err = LoadRaw(basePath)
 		if err != nil {
