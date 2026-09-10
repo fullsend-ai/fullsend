@@ -47,6 +47,8 @@ The review agent does not run automatically — though `/fs-review` always works
 - **The PR carries the `fullsend-no-review` label.** See [Control labels](#control-labels) below.
 - **The diff is documentation prose only.** A PR whose changed files are all markdown under `docs/guides/`, `docs/problems/`, `docs/agents/` or `docs/glossary.md` — and whose pages carry no executable markup — is skipped with a notice in the job summary. Prose is an allowlist: markdown anywhere else under `docs/` (ADRs, `normative/`, `contributing/`, `reference/`, `cli/`, `architecture.md`, `.vitepress/`, …), markdown elsewhere in the tree (`skills/*/SKILL.md`, `AGENTS.md`, `CLAUDE.md` are executable agent instruction) and lockfiles (a lockfile-only diff can repoint a dependency) are all still reviewed. Because VitePress compiles every page under `docs/` into a Vue component, each allowlisted page is also read at the PR head and keeps its review if it contains a `<script>` or `<style>` block, a `head:` frontmatter key, `{{ }}` interpolation, or a bound attribute or directive on raw HTML outside code. A file renamed into `docs/` is judged on the path it came from, and a page or file listing that could not be read, or a listing that was truncated, never skips.
 
+A push that is skipped for any of these reasons still clears `ready-for-merge` and `ready-for-review`, exactly as a review round would at start — the labels never describe commits nobody reviewed.
+
 See [ADR 0096](../ADRs/0096-skip-provably-unnecessary-review-dispatch.md) for the rationale.
 
 ## Control labels

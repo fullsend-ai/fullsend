@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=620
+# lint-workflow-size: max-lines=640
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -26,7 +26,8 @@ jobs:
       actions: write
       contents: read
       id-token: write
-      pull-requests: read
+      issues: write
+      pull-requests: write
     outputs:
       dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
@@ -595,3 +596,30 @@ jobs:
 
           echo "dispatched_count=$dispatched" >> "${GITHUB_OUTPUT}"
           echo "Successfully dispatched $dispatched workflow(s) for stage $STAGE: ${dispatched_workflows[*]}"
+
+      - name: Remove ready-for-merge and ready-for-review
+        # New commits that no review round will look at: the labels the round
+        # would have cleared at start are cleared here instead.
+        if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && (steps.route.outputs.stage != 'review' || steps.role-check.outputs.skipped == 'true' || steps.agent-check.outputs.skipped == 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # A push that starts no review round still supersedes the head that
+          # ready-for-merge and ready-for-review described. A review run start
+          # clears both (docs/architecture.md, coordinator merge algorithm); when
+          # the round is skipped — draft, fullsend-no-review, documentation prose,
+          # or a pusher below triage — nothing else would, and ready-for-merge
+          # would keep describing a head nobody reviewed (ADR 0096). A 404 means
+          # the label was not there; anything else fails the job so the stale
+          # label is visible rather than silently kept.
+          for label in ready-for-merge ready-for-review; do
+            if out=$(gh api --method DELETE "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/labels/${label}" 2>&1); then
+              echo "::notice::Removed stale ${label} from PR #${PR_NUMBER} — this push was not reviewed"
+            elif [[ "${out}" != *"HTTP 404"* ]]; then
+              echo "::error::Could not remove ${label} from PR #${PR_NUMBER}: ${out}"
+              exit 1
+            fi
+          done

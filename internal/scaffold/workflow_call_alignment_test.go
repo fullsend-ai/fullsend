@@ -1003,6 +1003,116 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 	})
 }
 
+// staleLabelStep is the YAML shape shared by the per-repo job's step and the
+// scaffold step that clear ready-for-merge / ready-for-review when a push is
+// not reviewed.
+type staleLabelStep struct {
+	Name string `yaml:"name"`
+	If   string `yaml:"if"`
+	Run  string `yaml:"run"`
+}
+
+// TestReviewSkipClearsStaleMergeLabels pins the backstop for the skips (ADR
+// 0096, #6587 review): a synchronize that dispatches no review round must
+// still clear ready-for-merge and ready-for-review, which the round would
+// have cleared at start (docs/architecture.md, coordinator merge algorithm).
+// The per-repo workflow does it in a job of its own so the route job stays
+// read-only; the scaffold's single job does it as its last step. Both run
+// the same script, and the script is executed against a stub gh below.
+func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
+	var repo struct {
+		Jobs map[string]struct {
+			Needs       interface{}       `yaml:"needs"`
+			If          string            `yaml:"if"`
+			Permissions map[string]string `yaml:"permissions"`
+			Steps       []staleLabelStep  `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &repo))
+	job, ok := repo.Jobs["clear-stale-merge-labels"]
+	require.True(t, ok, "reusable-dispatch.yml must have a clear-stale-merge-labels job")
+	assert.Equal(t, "route", job.Needs)
+	assert.Contains(t, job.If, "github.event.action == 'synchronize'")
+	assert.Contains(t, job.If, "needs.route.outputs.stage != 'review'",
+		"the job must key off the composite stage output, which is empty for every skip")
+	assert.Equal(t, map[string]string{"issues": "write", "pull-requests": "write"}, job.Permissions)
+	assert.Equal(t, map[string]string{"contents": "read", "issues": "read", "pull-requests": "read"}, repo.Jobs["route"].Permissions,
+		"the route job must stay read-only")
+	require.Len(t, job.Steps, 1)
+	script := job.Steps[0].Run
+
+	var scaffold struct {
+		Jobs struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+				Steps       []staleLabelStep  `yaml:"steps"`
+			} `yaml:"dispatch"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadScaffoldFile(".github/workflows/dispatch.yml")(t), &scaffold))
+	last := scaffold.Jobs.Dispatch.Steps[len(scaffold.Jobs.Dispatch.Steps)-1]
+	assert.Equal(t, job.Steps[0].Name, last.Name, "the scaffold mirrors the step")
+	assert.Contains(t, last.If, "github.event.action == 'synchronize'")
+	assert.Contains(t, last.If, "steps.route.outputs.stage != 'review'")
+	assert.Equal(t, script, last.Run, "both dispatch workflows must run the same label-clearing script")
+	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["issues"])
+	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["pull-requests"])
+
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	// run executes the script against a stub gh whose DELETE answers with
+	// status (an HTTP code; 200 succeeds), recording every call.
+	run := func(t *testing.T, status string) (calls string, out string, err error) {
+		t.Helper()
+		dir := t.TempDir()
+		stub := "#!/usr/bin/env bash\n" +
+			"echo \"$*\" >> \"$GH_STUB_CALLS\"\n" +
+			"if [[ \"$GH_STUB_STATUS\" == 200 ]]; then echo '[]'; exit 0; fi\n" +
+			"echo \"gh: Label does not exist (HTTP $GH_STUB_STATUS)\" >&2; exit 1\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+		scriptPath := filepath.Join(dir, "clear.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+		callsFile := filepath.Join(dir, "calls")
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_STUB_CALLS="+callsFile,
+			"GH_STUB_STATUS="+status,
+			"GH_TOKEN=stub",
+			"SOURCE_REPO=octo/repo",
+			"PR_NUMBER=7",
+		)
+		outB, err := cmd.CombinedOutput()
+		callsB, _ := os.ReadFile(callsFile)
+		return string(callsB), string(outB), err
+	}
+
+	t.Run("removes both labels", func(t *testing.T) {
+		calls, out, err := run(t, "200")
+		require.NoError(t, err, out)
+		assert.Equal(t,
+			"api --method DELETE repos/octo/repo/issues/7/labels/ready-for-merge\n"+
+				"api --method DELETE repos/octo/repo/issues/7/labels/ready-for-review\n",
+			calls)
+		assert.Contains(t, out, "Removed stale ready-for-merge")
+		assert.Contains(t, out, "Removed stale ready-for-review")
+	})
+
+	t.Run("absent label is not an error", func(t *testing.T) {
+		calls, out, err := run(t, "404")
+		require.NoError(t, err, out)
+		assert.Equal(t, 2, strings.Count(calls, "DELETE"), "both labels are still attempted")
+		assert.NotContains(t, out, "::error::")
+	})
+
+	t.Run("any other failure fails the job", func(t *testing.T) {
+		_, out, err := run(t, "403")
+		require.Error(t, err, "a label that could not be removed must not be silently kept")
+		assert.Contains(t, out, "::error::Could not remove ready-for-merge")
+	})
+}
+
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
 // observation stages (triage/review) but not mutation stages (code/fix).
 // See #5223 and ADR 0054.
