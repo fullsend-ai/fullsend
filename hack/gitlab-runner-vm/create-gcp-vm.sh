@@ -6,11 +6,20 @@
 #   1. Auto-numbers the VM (fullsend-gitlab-runner-01, -02, ...)
 #   2. Creates a GCE VM via gcloud compute instances create
 #   3. Waits for SSH readiness, then installs packages via dnf
-#   4. Registers a new runner (project-scoped or group-scoped) via the GitLab API
+#   4. Registers a new runner via the GitLab API, or joins an existing
+#      runner pool when RUNNER_TOKEN is set (runner-hub)
 #   5. Copies setup files and runs setup.sh to configure the custom
 #      executor, OpenShell gateway, and pre-pull images
 #
 # When done, the runner is online and accepting jobs tagged with RUNNER_TAG.
+#
+# Two modes:
+#   RUNNER_TOKEN — join an existing runner pool. Multiple VMs share one
+#                  GitLab runner registration (glrt-* token). GL_TOKEN and
+#                  PROJECT_ID/GROUP_ID are not required.
+#   GL_TOKEN     — register a new runner via the GitLab API (existing
+#                  behavior). Requires GL_TOKEN and exactly one of
+#                  PROJECT_ID or GROUP_ID.
 #
 # Prerequisites (one-time GCP setup):
 #   - Compute Engine API and Cloud IAP API enabled in the target project
@@ -21,22 +30,29 @@
 #   - IAM: operator needs roles/iap.tunnelResourceAccessor on the project
 #
 # Required environment variables:
-#   GL_TOKEN     — GitLab personal access token (Owner role on the target
-#                  group or project, scopes: create_runner + manage_runner + api)
-#   PROJECT_ID   — GitLab project ID (mutually exclusive with GROUP_ID)
-#   GROUP_ID     — GitLab group ID  (mutually exclusive with PROJECT_ID)
-#                  Exactly one of PROJECT_ID or GROUP_ID must be set.
-#                  GROUP_ID is recommended for platform-service deployments.
 #   GITLAB_URL   — GitLab instance URL (e.g. https://gitlab.example.com)
 #   GCP_PROJECT  — GCP project ID
 #   RUNNER_IMAGE — image pre-pulled as warm cache (e.g. ghcr.io/org/runner:v1.2.3)
+#
+# Mode-specific environment variables:
+#   RUNNER_TOKEN — GitLab runner authentication token (glrt-*). When set,
+#                  the VM joins an existing runner pool; GL_TOKEN and
+#                  PROJECT_ID/GROUP_ID are not required.
+#   GL_TOKEN     — GitLab personal access token (Owner role on the target
+#                  group or project, scopes: create_runner + manage_runner + api).
+#                  Required unless RUNNER_TOKEN is set.
+#   PROJECT_ID   — GitLab project ID (mutually exclusive with GROUP_ID).
+#                  Required with GL_TOKEN unless RUNNER_TOKEN is set.
+#   GROUP_ID     — GitLab group ID  (mutually exclusive with PROJECT_ID).
+#                  Required with GL_TOKEN unless RUNNER_TOKEN is set.
+#                  GROUP_ID is recommended for platform-service deployments.
 #
 # Optional environment variables:
 #   GCP_ZONE              — GCE zone (default: us-east1-b)
 #   GCP_MACHINE_TYPE      — machine type (default: e2-standard-4)
 #   GCP_NETWORK           — VPC network (default: gitlab-runners)
 #   GCP_SUBNET            — VPC subnet (required for custom-mode VPCs; omit for auto-mode)
-#   GCP_IMAGE_FAMILY      — GCE image family (default: fedora-cloud-43)
+#   GCP_IMAGE_FAMILY      — GCE image family (default: fedora-cloud-43-x86-64)
 #   GCP_IMAGE_PROJECT     — GCE image project (default: fedora-cloud)
 #   RUNNER_TAG            — runner tag for job matching (default: fullsend-gitlab-runner)
 #   GITLAB_RUNNER_VERSION — gitlab-runner version to install (default: 19.2.1)
@@ -71,6 +87,12 @@
 #     GCP_PROJECT=my-gcp-project \
 #     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-gcp-vm.sh 01
 #
+#   # Join an existing runner pool (runner-hub):
+#   RUNNER_TOKEN=glrt-xxx \
+#     GITLAB_URL=https://gitlab.example.com \
+#     GCP_PROJECT=my-gcp-project \
+#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-gcp-vm.sh 05
+#
 set -euo pipefail
 
 GITLAB_URL="${GITLAB_URL:-}"
@@ -79,7 +101,7 @@ GCP_ZONE="${GCP_ZONE:-us-east1-b}"
 GCP_MACHINE_TYPE="${GCP_MACHINE_TYPE:-e2-standard-4}"
 GCP_NETWORK="${GCP_NETWORK:-gitlab-runners}"
 GCP_SUBNET="${GCP_SUBNET:-}"
-GCP_IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-fedora-cloud-43}"
+GCP_IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-fedora-cloud-43-x86-64}"
 GCP_IMAGE_PROJECT="${GCP_IMAGE_PROJECT:-fedora-cloud}"
 GCP_USE_IAP="${GCP_USE_IAP:-true}"
 RUNNER_TAG="${RUNNER_TAG:-fullsend-gitlab-runner}"
@@ -186,7 +208,7 @@ with_backoff() {
 # Validate inputs
 # ----------------------------------------------------------------------
 usage() {
-  echo "Usage: GL_TOKEN=glpat-xxx {GROUP_ID=<id>|PROJECT_ID=<id>} GCP_PROJECT=<project> $0 [NUMBER]"
+  echo "Usage: {RUNNER_TOKEN=glrt-xxx | GL_TOKEN=glpat-xxx {GROUP_ID=<id>|PROJECT_ID=<id>}} GCP_PROJECT=<project> $0 [NUMBER]"
   echo ""
   echo "Run '$0' with --help for details."
 }
@@ -199,19 +221,26 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-if [ -z "${GL_TOKEN:-}" ]; then
-  echo "ERROR: GL_TOKEN is required (GitLab personal access token)" >&2
-  usage >&2
-  exit 1
-fi
-if ! [[ "${GL_TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-  echo "ERROR: GL_TOKEN contains invalid characters" >&2
-  exit 1
-fi
+if uses_runner_token; then
+  if ! [[ "${RUNNER_TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: RUNNER_TOKEN contains invalid characters" >&2
+    exit 1
+  fi
+else
+  if [ -z "${GL_TOKEN:-}" ]; then
+    echo "ERROR: GL_TOKEN or RUNNER_TOKEN is required" >&2
+    usage >&2
+    exit 1
+  fi
+  if ! [[ "${GL_TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: GL_TOKEN contains invalid characters" >&2
+    exit 1
+  fi
 
-if ! validate_runner_scope; then
-  usage >&2
-  exit 1
+  if ! validate_runner_scope; then
+    usage >&2
+    exit 1
+  fi
 fi
 
 if [ -z "${GITLAB_URL}" ]; then
@@ -368,7 +397,17 @@ done
 # not cloud-init, so #cloud-config user-data is silently ignored. Direct SSH
 # dnf install is the reliable path on all Fedora GCE images.
 echo "==> Installing packages via SSH (dnf)..."
-if ! timeout 600 gce_ssh "sudo dnf install -y podman curl git python3 openssl" 2>&1; then
+# timeout cannot invoke a shell function (it execs an external binary), so
+# inline gcloud compute ssh. Wrap in with_backoff for IAP tunnel resilience;
+# `dnf install -y` is idempotent, so retrying after a dropped session is safe.
+install_packages() {
+  timeout 600 gcloud compute ssh "${vm_name}" \
+    --project="${GCP_PROJECT}" \
+    --zone="${GCP_ZONE}" \
+    "${GCE_SSH_FLAGS[@]}" \
+    --command="sudo dnf install -y podman curl git python3 openssl"
+}
+if ! with_backoff install_packages; then
   echo "ERROR: dnf install failed or timed out — check the VM for dnf errors" >&2
   cleanup_vm
   exit 1
@@ -376,67 +415,77 @@ fi
 echo "  OK: packages installed"
 
 # ----------------------------------------------------------------------
-# 4. Register a runner via the GitLab API
+# 4. Register a runner via the GitLab API, or join an existing pool
 # ----------------------------------------------------------------------
-echo "==> Registering runner with ${GITLAB_URL} (${RUNNER_SCOPE} ${SCOPE_ID})"
+if uses_runner_token; then
+  echo "==> Joining existing runner pool (RUNNER_TOKEN)"
+  REGISTRATION_TOKEN="${RUNNER_TOKEN}"
+  runner_id=""
+  # No runner to deregister on failure — keep the cleanup_vm traps from step 2.
+  # Later trap sites call cleanup_runner; alias it to cleanup_vm in this mode.
+  cleanup_runner() { cleanup_vm; }
+  echo "  OK: using provided runner token"
+else
+  echo "==> Registering runner with ${GITLAB_URL} (${RUNNER_SCOPE} ${SCOPE_ID})"
 
-build_scope_args
+  build_scope_args
 
-# shellcheck disable=SC2154  # scope_args set by build_scope_args
-runner_json=$(gl_curl -X POST \
-  "${GITLAB_URL}/api/v4/user/runners" \
-  "${scope_args[@]}" \
-  --data-urlencode "tag_list=${RUNNER_TAG}" \
-  --data-urlencode "description=${GCP_PROJECT}/${vm_name}" \
-  --data-urlencode "run_untagged=false" \
-  --data-urlencode "access_level=${RUNNER_ACCESS_LEVEL}" 2>&1) || {
-  echo "ERROR: GitLab runner registration failed. Response: ${runner_json}" >&2
-  cleanup_vm
-  exit 1
-}
+  # shellcheck disable=SC2154  # scope_args set by build_scope_args
+  runner_json=$(gl_curl -X POST \
+    "${GITLAB_URL}/api/v4/user/runners" \
+    "${scope_args[@]}" \
+    --data-urlencode "tag_list=${RUNNER_TAG}" \
+    --data-urlencode "description=${GCP_PROJECT}/${vm_name}" \
+    --data-urlencode "run_untagged=false" \
+    --data-urlencode "access_level=${RUNNER_ACCESS_LEVEL}" 2>&1) || {
+    echo "ERROR: GitLab runner registration failed. Response: ${runner_json}" >&2
+    cleanup_vm
+    exit 1
+  }
 
-if [ -z "${runner_json}" ]; then
-  echo "ERROR: GitLab runner registration returned empty response" >&2
-  cleanup_vm
-  exit 1
-fi
-
-# Set up rollback before extracting fields — a malformed API response would
-# orphan the runner if the trap weren't active yet.
-runner_id=""
-cleanup_runner() {
-  if [ -z "${runner_id}" ]; then
-    echo "ERROR: provisioning failed — runner may have been created but ID is unknown" >&2
-    echo "  Check ${GITLAB_URL} for orphaned runners in ${RUNNER_SCOPE} ${SCOPE_ID}" >&2
-  else
-    echo "ERROR: provisioning failed — deregistering runner ${runner_id}" >&2
-    if gl_curl -X DELETE "${GITLAB_URL}/api/v4/runners/${runner_id}" >/dev/null 2>&1; then
-      echo "  OK: runner ${runner_id} deregistered" >&2
-    else
-      echo "  WARN: failed to deregister runner ${runner_id} — remove it manually at ${GITLAB_URL}" >&2
-    fi
+  if [ -z "${runner_json}" ]; then
+    echo "ERROR: GitLab runner registration returned empty response" >&2
+    cleanup_vm
+    exit 1
   fi
-  echo "  NOTE: VM ${vm_name} was not cleaned up — run: GCP_PROJECT=${GCP_PROJECT} GCP_ZONE=${GCP_ZONE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-gcp-vm.sh ${vm_name}" >&2
-}
-trap cleanup_runner ERR
-# ERR does not fire on Ctrl-C, and the window below spans a ~20-minute setup
-# run — without this, an interrupt leaves the runner registered with nobody
-# tracking it.
-trap 'cleanup_runner; exit 130' INT
-trap 'cleanup_runner; exit 143' TERM
 
-REGISTRATION_TOKEN=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>&1) || {
-  echo "ERROR: failed to parse registration token from API response (length: ${#runner_json})" >&2
-  cleanup_runner
-  exit 1
-}
-runner_id=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>&1) || {
-  echo "ERROR: failed to parse runner ID from API response (length: ${#runner_json})" >&2
-  cleanup_runner
-  exit 1
-}
+  # Set up rollback before extracting fields — a malformed API response would
+  # orphan the runner if the trap weren't active yet.
+  runner_id=""
+  cleanup_runner() {
+    if [ -z "${runner_id}" ]; then
+      echo "ERROR: provisioning failed — runner may have been created but ID is unknown" >&2
+      echo "  Check ${GITLAB_URL} for orphaned runners in ${RUNNER_SCOPE} ${SCOPE_ID}" >&2
+    else
+      echo "ERROR: provisioning failed — deregistering runner ${runner_id}" >&2
+      if gl_curl -X DELETE "${GITLAB_URL}/api/v4/runners/${runner_id}" >/dev/null 2>&1; then
+        echo "  OK: runner ${runner_id} deregistered" >&2
+      else
+        echo "  WARN: failed to deregister runner ${runner_id} — remove it manually at ${GITLAB_URL}" >&2
+      fi
+    fi
+    echo "  NOTE: VM ${vm_name} was not cleaned up — run: GCP_PROJECT=${GCP_PROJECT} GCP_ZONE=${GCP_ZONE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-gcp-vm.sh ${vm_name}" >&2
+  }
+  trap cleanup_runner ERR
+  # ERR does not fire on Ctrl-C, and the window below spans a ~20-minute setup
+  # run — without this, an interrupt leaves the runner registered with nobody
+  # tracking it.
+  trap 'cleanup_runner; exit 130' INT
+  trap 'cleanup_runner; exit 143' TERM
 
-echo "  OK: runner ID ${runner_id} created"
+  REGISTRATION_TOKEN=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>&1) || {
+    echo "ERROR: failed to parse registration token from API response (length: ${#runner_json})" >&2
+    cleanup_runner
+    exit 1
+  }
+  runner_id=$(echo "${runner_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>&1) || {
+    echo "ERROR: failed to parse runner ID from API response (length: ${#runner_json})" >&2
+    cleanup_runner
+    exit 1
+  }
+
+  echo "  OK: runner ID ${runner_id} created"
+fi
 
 # ----------------------------------------------------------------------
 # 5. Copy setup files to the VM
@@ -552,7 +601,11 @@ trap - ERR INT TERM
 rm -f "${_known_hosts:-}"
 
 echo ""
-echo "Done. Runner ${vm_name} (ID ${runner_id}) is ready."
+if uses_runner_token; then
+  echo "Done. Runner ${vm_name} joined existing pool."
+else
+  echo "Done. Runner ${vm_name} (ID ${runner_id}) is ready."
+fi
 echo "  Tag:       ${RUNNER_TAG}"
 echo "  Project:   ${GCP_PROJECT}"
 echo "  Zone:      ${GCP_ZONE}"
