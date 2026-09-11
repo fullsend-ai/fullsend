@@ -35,8 +35,13 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
-The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+The `/fs-review` command does not accept arguments when it starts a run. Where the agent
+has steering enabled (`steer.enabled` in its harness), a `/fs-review` comment posted while a
+review is already in flight is different: the run absorbs it and the text after the command
+reaches the running agent as an amendment to its task.
+
+The review agent also runs automatically when a PR is opened, synchronized (new commits
+pushed), or moved out of draft by a user with triage-level repository permission or higher.
 
 ## Control labels
 

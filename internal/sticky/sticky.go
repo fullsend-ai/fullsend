@@ -130,13 +130,6 @@ var detailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]*</sum
 // legacyDetailsRe matches old-format history blocks without sentinel comments.
 var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]*</summary>\s*(.*?)\s*</details>`)
 
-// BuildUpdatedBody collapses the old comment body into a flat list of
-// <details> blocks and prepends the new body. Footer content (delimited
-// by FooterMarker) is stripped before collapsing and re-appended after.
-//
-// When cfg.KeepHistory is false, the old body is discarded entirely and
-// the new body is returned with footer re-appended (no "Previous run"
-// blocks).
 // NeutralizeHistory defangs marker syntax in an old body that is about to
 // be folded into this comment's history, leaving the runner's own marker
 // and footer intact so BuildUpdatedBody can still strip them by exact
@@ -164,6 +157,13 @@ func NeutralizeHistory(oldBody string, cfg Config) string {
 	return prefix + statuscomment.NeutralizeMarkers(rest) + footer
 }
 
+// BuildUpdatedBody collapses the old comment body into a flat list of
+// <details> blocks and prepends the new body. Footer content (delimited
+// by FooterMarker) is stripped before collapsing and re-appended after.
+//
+// When cfg.KeepHistory is false, the old body is discarded entirely and
+// the new body is returned with footer re-appended (no "Previous run"
+// blocks).
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	// When history is disabled, replace the body entirely. We still
 	// need to preserve the footer from the old body if configured.

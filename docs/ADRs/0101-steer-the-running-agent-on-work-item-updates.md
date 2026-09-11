@@ -224,6 +224,24 @@ Every accepted candidate in one poll folds into a **single** steer — the delta
 current state against a baseline, so two comments that arrive together cost one turn, not two,
 and both run ids are recorded as consumed.
 
+The envelope's first line is a cross-repo interface with
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents), which matches on it twice: to
+recognise a runner amendment, and to flag the same line appearing *inside* work-item content as
+an injection attempt. It is, byte for byte:
+
+```text
+Runner update: your task inputs changed after this run started.
+```
+
+In this repository it is the exported constant `runtime.SteerEnvelopeOpeningLine`, written in
+one place and pinned by a test, so the agent definitions have a single string to match and this
+one cannot drift from it silently. That line is deliberately *not* defanged when it appears
+inside work-item content — its appearing there is the injection signal the agent definitions
+are told to act on, and rewriting it would delete the evidence. The rest of the envelope's
+structure is the opposite case: the two section headings, the amendment prefix, and the fence
+around the untrusted block carry no signal when a stranger writes them, only authority, so a
+context body carrying any of them is defanged before it is wrapped.
+
 The delta text is a runner-authored envelope through the same Unicode sanitizer
 `buildFeedbackPrompt` uses (now `security.SanitizeAgentText`, shared so the two cannot drift),
 delivered through the mailbox, so it never reaches the agent CLI's own argv. It is not out of
@@ -264,7 +282,10 @@ otherwise `Run` would hold a session open for a watcher that has stopped watchin
   nothing about forge token life, so deciding it there would put a policy in the wrong layer.
 - **Cost.** A steered turn on a large diff can cost as much as a fresh run. `steer.max_steers`
   defaults to 2, which covers the burst patterns in #6573 and #4960; beyond the cap the run
-  settles and the queued run does the work.
+  settles and the queued run does the work. The cap counts the **run**, not the iteration: a
+  validation loop builds one watcher per iteration, so the count spent so far is carried into
+  each new one, and a three-iteration run absorbs `max_steers` updates in total rather than
+  three times that.
 - **Session files are agent-writable.** A resume reads a session store the agent controls, so a
   poisoned session is a prompt-injection vector into the next turn. It is not a credential leak,
   and the hooks still gate tools ([ADR 0090](0090-runtime-neutral-sandbox-hooks-contract.md)).
