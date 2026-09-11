@@ -178,6 +178,11 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) an
 When a step's error or a `fail` score must not fail the surrounding job or block delivery. Eval measurements are fail-open: a missing manifest, a scorer `fail`/`skip` label, or a measure-step IO error never fails the agent run. Contrast with fail-closed gates (auth, kill switch) where an error must stop the run. In scripts, fail-open is acceptable for non-critical steps (logging, metrics) and dangerous for gates.
 See [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md), [Eval Measurements](guides/infrastructure/eval-measurements.md), and [Shell scripting](contributing/shell-scripting.md).
 
+### First-Class Agent
+
+An agent that ships in `fullsend-ai/agents` as part of the default catalog. This is catalog membership, distinct from the [configured default agent](#configured-default-agent) / [derived agent](#derived-agent) / [custom agent](#custom-agent) axis, which describes customization depth — a custom agent can still be a candidate for first-class promotion. Promotion requires meeting catalog-fit and maturity criteria and keeping the catalog at or below a hard cap of 15 first-class agents (1-in-1-out once at the cap).
+See [ADR 0111](ADRs/0111-first-class-agent-promotion.md) and [First-class agent promotion](contributing/first-class-agents.md).
+
 ### Flapping
 
 When agents enter a cycle of conflicting feedback that prevents convergence. Example: the security review agent rejects what the code agent produces to satisfy the correctness review agent, and vice versa, creating an oscillating loop. Flapping is a primary trigger for [escalation](#escalation) — after a configurable number of cycles, the system stops and routes to humans.

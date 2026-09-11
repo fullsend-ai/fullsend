@@ -50,6 +50,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Normative Event Specification](docs/normative/normalized-event/v1/README.md) | Adding or modifying fields in `event_payload` (`buildEventPayload`), normalized-event structures under `internal/normevent/`, or adapters — covers the projection table, transition vocabulary, adapter contracts, and CEL trigger examples |
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
+| [First-class Agents](docs/contributing/first-class-agents.md) | Proposing or promoting an agent into the default catalog — promotion criteria, maturity bar, and catalog cap ([ADR 0111](docs/ADRs/0111-first-class-agent-promotion.md)) |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |
 | [Bot Identities](docs/contributing/bot-identities.md) | Referencing bot identities in code — covers GitHub App logins and shared identities |
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |

@@ -15,7 +15,9 @@ This ladder applies to **core agent roles that fullsend already ships**
 for a job fullsend does not cover — a release-notes generator, a
 compliance checker, a deployment orchestrator — skip ahead to
 [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md). There is
-no existing default to exhaust first.
+no existing default to exhaust first. Graduating that custom agent into the
+default catalog is a later decision; see
+[First-class agent promotion](../../contributing/first-class-agents.md).
 
 ## The four levels
 

@@ -94,3 +94,4 @@ in the sections below.
 - [ADR 0045](0045-forge-portable-harness-schema.md) -- harness composition via `base:` URLs
 - [ADR 0057](0057-repos-management.md) -- repos management for per-repo installations
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) -- user-facing guide for agent registration
+- [ADR 0111](0111-first-class-agent-promotion.md) -- which custom agents may graduate into the first-party catalog
