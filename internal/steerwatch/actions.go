@@ -19,14 +19,24 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// listPerPage bounds one follow-up run listing. A run that produces more
-// than this many follow-ups in its lifetime is far past the steer cap.
-const listPerPage = 50
+// listPerPage is the page size of one follow-up run listing. The client
+// paginates, so this is not a ceiling on what a poll can see; it is GitHub's
+// maximum, chosen to reach a given depth in as few requests as possible
+// because the poll re-lists on every tick against a job token's hourly
+// budget. The depth ceiling is the client's own page cap.
+const listPerPage = 100
 
 // ActionsReader is the execution-platform read surface the provenance checks
 // need. The GitHub client in internal/forge/github satisfies it; the watcher
 // takes the interface so the forge API calls stay behind the adapter and the
 // tests can point a real client at an httptest server.
+//
+// These methods live on *github.LiveClient rather than on forge.Client, and
+// deliberately so: they are Actions-shaped, and a forge with no workflow
+// runs to read has no answer to give. Depending on this narrow interface
+// keeps that cost off every other forge, where widening forge.Client would
+// make each one implement methods it cannot honour. Steering is GitHub-only
+// for the same reason the runner gates it there (ADR 0101).
 type ActionsReader interface {
 	// GetWorkflowRun returns one run record, including its provenance
 	// fields (path, referenced workflows, actors, item association).
