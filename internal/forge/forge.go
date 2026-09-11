@@ -310,6 +310,13 @@ type Issue struct {
 	Body   string
 	URL    string
 	Labels []string
+	// IsPullRequest reports whether this number is a pull request rather
+	// than an issue. GitHub numbers the two in one sequence and serves a
+	// pull request from the issues endpoint as well, carrying a
+	// `pull_request` object only when it is one — so this is the only
+	// reliable way to tell them apart, and a URL's `/issues/` or `/pull/`
+	// segment is not: both forms resolve to the same pull request.
+	IsPullRequest bool
 }
 
 // IssueComment represents a comment on an issue.

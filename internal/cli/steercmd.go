@@ -32,10 +32,6 @@ type workItemRef struct {
 	Owner  string
 	Repo   string
 	Number int
-	// IsPR distinguishes a pull request from an issue, read off the URL's
-	// own `pull` or `issues` segment. It picks the default stage command,
-	// the same way the stage commands themselves divide.
-	IsPR bool
 }
 
 // parseWorkItemURL extracts the work item from a forge issue or PR URL.
@@ -65,38 +61,41 @@ func parseWorkItemURL(raw string) (workItemRef, error) {
 	host := strings.ToLower(u.Hostname())
 	switch {
 	case host == "github.com" || strings.HasSuffix(host, ".github.com"):
-		owner, repo, number, kind, err := workItemFromSegments(segs, map[string]bool{"issues": true, "pull": true})
+		// Both segments are accepted and neither is trusted to say which
+		// kind this is: GitHub serves a pull request from /issues/N as
+		// well as /pull/N, so the path shape is not evidence. The kind is
+		// resolved from the forge before the comment is built.
+		owner, repo, number, _, err := workItemFromSegments(segs, map[string]bool{"issues": true, "pull": true})
 		if err != nil {
 			return workItemRef{}, fmt.Errorf("%w: %s", err, raw)
 		}
-		return workItemRef{Forge: "github", Owner: owner, Repo: repo, Number: number, IsPR: kind == "pull"}, nil
+		return workItemRef{Forge: repos.ForgeGitHub, Owner: owner, Repo: repo, Number: number}, nil
 
 	case host == "gitlab.com" || strings.Contains(host, "gitlab"):
 		// Recognized only so the error can name the real gap rather than
 		// reporting an unknown host.
-		return workItemRef{Forge: "gitlab"}, nil
+		return workItemRef{Forge: repos.ForgeGitLab}, nil
 
 	default:
 		return workItemRef{}, fmt.Errorf("unsupported forge host %q", host)
 	}
 }
 
-// workItemFromSegments finds the {owner}/{repo}/{kind}/{n} shape in a URL
-// path, where kind is one of kinds. Anything after the number (a Files tab,
-// a review sub-path) is ignored.
+// workItemFromSegments reads the {owner}/{repo}/{kind}/{n} shape at the start
+// of a URL path, where kind is one of kinds. Anything after the number (a
+// Files tab, a review sub-path) is ignored. The shape is matched only at the
+// start: searching the path for a kind segment would take the two segments
+// before it as the repository, so /a/b/x/owner/repo/issues/7 would name
+// owner/repo rather than being rejected.
 func workItemFromSegments(segs []string, kinds map[string]bool) (string, string, int, string, error) {
-	notFound := fmt.Errorf("not a GitHub issue or pull request URL")
-	for i, seg := range segs {
-		if !kinds[seg] || i < 2 || i+1 >= len(segs) {
-			continue
-		}
-		n, err := strconv.Atoi(segs[i+1])
-		if err != nil || n <= 0 {
-			return "", "", 0, "", fmt.Errorf("the segment after issues/pull is not a valid item number")
-		}
-		return segs[i-2], segs[i-1], n, seg, nil
+	if len(segs) < 4 || !kinds[segs[2]] {
+		return "", "", 0, "", fmt.Errorf("not a GitHub issue or pull request URL")
 	}
-	return "", "", 0, "", notFound
+	n, err := strconv.Atoi(segs[3])
+	if err != nil || n <= 0 {
+		return "", "", 0, "", fmt.Errorf("the segment after issues/pull is not a valid item number")
+	}
+	return segs[0], segs[1], n, segs[2], nil
 }
 
 // buildSteerComment renders the comment body the Route job routes on. The
@@ -125,7 +124,7 @@ func buildSteerComment(stage, text string, isPR bool) (string, error) {
 		return "", fmt.Errorf("--stage must be review, fix or triage, got %q", stage)
 	}
 	if !isPR && stage != "triage" {
-		return "", fmt.Errorf("--stage %s applies to a pull request; this is an issue", stage)
+		return "", fmt.Errorf("--stage %s applies to a pull request, and the forge reports this number is an issue", stage)
 	}
 	return command + " " + text, nil
 }
@@ -171,17 +170,27 @@ Authentication uses GH_TOKEN, then GITHUB_TOKEN, then 'gh auth token'.`,
 			if err != nil {
 				return err
 			}
-			if item.Forge != "github" {
+			if item.Forge != repos.ForgeGitHub {
 				return fmt.Errorf("steering is not supported on %s yet; "+
 					"post a stage command such as /fs-review on the merge request by hand", item.Forge)
 			}
 
-			body, err := buildSteerComment(stage, args[1], item.IsPR)
+			client, err := newSteerForgeClient()
 			if err != nil {
 				return err
 			}
 
-			client, err := newSteerForgeClient()
+			// Ask the forge which kind this is rather than reading it off
+			// the URL. A failure here fails the command: falling back to
+			// the path shape is what dispatched the wrong stage, and an
+			// error the user sees beats a comment that quietly starts a
+			// triage run on a pull request.
+			resolved, err := client.GetIssue(cmd.Context(), item.Owner, item.Repo, item.Number)
+			if err != nil {
+				return fmt.Errorf("resolving %s/%s#%d: %w", item.Owner, item.Repo, item.Number, err)
+			}
+
+			body, err := buildSteerComment(stage, args[1], resolved.IsPullRequest)
 			if err != nil {
 				return err
 			}
