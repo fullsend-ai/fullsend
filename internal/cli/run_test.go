@@ -5637,6 +5637,304 @@ func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE")
 }
 
+// envLast returns the last-wins value of key in an exec env slice, matching
+// os/exec's duplicate-key rule used by postScriptEnv.
+func envLast(env []string, key string) string {
+	prefix := key + "="
+	val := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			val = e[len(prefix):]
+		}
+	}
+	return val
+}
+
+func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	// Simulate runner_env expansion at the start of the run, which snapshots
+	// the first minted token into h.RunnerEnv (last-wins in postScriptEnv).
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"))
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+
+	// In runAgent, remintCleanup is deferred after the first mint's own
+	// cleanup, so under LIFO it runs first. At that point the first
+	// mint's cleanup has not fired yet, so remintCleanup must restore the
+	// process env to the first-mint token, not the pre-mint value.
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "remintCleanup must restore the first-mint token")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_TOKEN"), "remintCleanup must restore the first-mint token")
+
+	// cleanup (the first mint's own cleanup) runs next under LIFO and must
+	// restore the pre-mint value the test set with t.Setenv above.
+	cleanup()
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+}
+
+// TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx exercises the
+// context.WithoutCancel wrapping inside remintAgentTokenForPostScript: a
+// parent ctx cancelled before remint even starts (a CI job-level timeout
+// landing at exactly this moment is the failure mode #7231 fixes) must not
+// prevent the mint call. The wrapping now lives inside the helper itself
+// (rather than at the runAgent call site) specifically so a test can pass
+// an already-cancelled ctx directly, as done here.
+func TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_after_cancel", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": "",
+			"GH_TOKEN":   "",
+		},
+	}
+
+	printer := ui.New(io.Discard)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	remintCleanup := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls, "remint must still call mint despite an already-cancelled parent ctx")
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "GH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+}
+
+// TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning
+// proves a remint truncated by remintForPostScriptTimeout is reported
+// differently from a genuine mint rejection, so operators can tell a
+// timeout apart from a real failure.
+func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *testing.T) {
+	origTimeout := remintForPostScriptTimeout
+	remintForPostScriptTimeout = 10 * time.Millisecond
+	defer func() { remintForPostScriptTimeout = origTimeout }()
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(ctx context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{Role: "coder", RunnerEnv: map[string]string{"PUSH_TOKEN": "existing_token"}}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	cleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "timed out", "a context.DeadlineExceeded must produce a distinct message from a generic mint failure")
+	assert.NotContains(t, buf.String(), "Failed to refresh agent token for post-script:", "must not also emit the generic failure message")
+	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint times out")
+}
+
+func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	require.True(t, minted)
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "failed remint must leave the existing token")
+	assert.Contains(t, buf.String(), "Failed to refresh agent token for post-script")
+
+	// The post-script still runs with the existing token.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "post.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$PUSH_TOKEN\" > \""+marker+"\"\n"), 0o755))
+
+	cmd := exec.Command(script)
+	cmd.Env = postScriptEnv(h, "")
+	require.NoError(t, cmd.Run(), "post-script must still run after a remint error")
+	got, readErr := os.ReadFile(marker)
+	require.NoError(t, readErr)
+	assert.Equal(t, "ghs_original_token\n", string(got))
+}
+
+// TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL covers
+// the early-return branch in remintAgentTokenForPostScript: GitLab has no
+// App mint, and an empty mintURL means minting was never configured. Both
+// must skip mint entirely (and therefore skip syncRunnerEnvTokens too),
+// leaving RunnerEnv exactly as it was.
+func TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_should_not_be_minted", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	printer := ui.New(io.Discard)
+
+	for _, tc := range []struct {
+		name          string
+		mintURL       string
+		forgePlatform string
+	}{
+		{name: "gitlab", mintURL: "https://mint.example.com", forgePlatform: "gitlab"},
+		{name: "empty mint URL", mintURL: "", forgePlatform: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &harness.Harness{
+				Role: "coder",
+				RunnerEnv: map[string]string{
+					"PUSH_TOKEN": "unchanged_token",
+				},
+			}
+
+			cleanup := remintAgentTokenForPostScript(context.Background(), h, tc.mintURL, tc.forgePlatform, printer)
+			cleanup()
+
+			assert.Equal(t, 0, calls, "gitlab/empty mint URL must not call mint")
+			assert.Equal(t, "unchanged_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when mint is skipped")
+		})
+	}
+}
+
+// TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys covers the
+// !ok continue branch in syncRunnerEnvTokens: a harness whose RunnerEnv
+// never included the token keys at all (as opposed to including them with
+// a stale value). syncRunnerEnvTokens must not add keys RunnerEnv never
+// had, and postScriptEnv must still resolve the reminted token because
+// childScriptEnv appends os.Environ() before RunnerEnv and exec's
+// duplicate-key rule is last-wins — an absent RunnerEnv entry never
+// shadows the freshly reminted process-env value.
+func TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+
+	h := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"UNRELATED_VAR": "keep-me"},
+	}
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls)
+	_, hasPushToken := h.RunnerEnv["PUSH_TOKEN"]
+	assert.False(t, hasPushToken, "syncRunnerEnvTokens must not add keys RunnerEnv never had")
+	assert.Equal(t, "keep-me", h.RunnerEnv["UNRELATED_VAR"], "unrelated RunnerEnv entries must be left alone")
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the reminted token from process env")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+}
+
+// TestSyncRunnerEnvTokens_NilGuards exercises the h == nil and
+// h.RunnerEnv == nil guards directly: remintAgentTokenForPostScript always
+// calls syncRunnerEnvTokens with the harness it was given, but that
+// harness (or its RunnerEnv map, for a harness whose runner_env never set
+// any vars) can be nil, so the guards must not panic.
+func TestSyncRunnerEnvTokens_NilGuards(t *testing.T) {
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(nil) })
+
+	h := &harness.Harness{Role: "coder"}
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(h) })
+	assert.Nil(t, h.RunnerEnv, "a nil RunnerEnv must be left nil, not initialized")
+}
+
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
