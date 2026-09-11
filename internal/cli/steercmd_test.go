@@ -21,24 +21,24 @@ func TestParseWorkItemURL(t *testing.T) {
 		{
 			name: "pull request",
 			url:  "https://github.com/org/repo/pull/123",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
 		},
 		{
 			name: "issue",
 			url:  "https://github.com/org/repo/issues/7",
-			// IsPR false: the URL's own segment is the discriminator, and
-			// it picks which stage command `fullsend steer` posts.
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 7, IsPR: false},
+			// Both URL forms parse to the same shape: the kind is not read
+			// off the path, it is resolved from the forge.
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 7},
 		},
 		{
 			name: "a URL copied from the browser keeps its comment anchor",
 			url:  "https://github.com/org/repo/pull/123#issuecomment-999",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
 		},
 		{
 			name: "a files tab URL still names the PR",
 			url:  "https://github.com/org/repo/pull/123/files",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
 		},
 		{
 			name: "gitlab is recognised so the error can name the real gap",
@@ -135,6 +135,17 @@ type fakePoster struct {
 	number            int
 	err               error
 	clientErr         error
+	// isPR is what the forge reports for the resolved number, and
+	// getIssueErr makes that lookup fail.
+	isPR        bool
+	getIssueErr error
+}
+
+func (f *fakePoster) GetIssue(_ context.Context, _, _ string, number int) (*forge.Issue, error) {
+	if f.getIssueErr != nil {
+		return nil, f.getIssueErr
+	}
+	return &forge.Issue{Number: number, IsPullRequest: f.isPR}, nil
 }
 
 func newFakePoster() *fakePoster {
@@ -164,6 +175,7 @@ func withFakePoster(t *testing.T, p *fakePoster) {
 
 func TestSteerCmd_PostsTheComment(t *testing.T) {
 	p := newFakePoster()
+	p.isPR = true
 	withFakePoster(t, p)
 
 	cmd := newSteerCmd()
@@ -178,6 +190,7 @@ func TestSteerCmd_PostsTheComment(t *testing.T) {
 
 func TestSteerCmd_StageFlag(t *testing.T) {
 	p := newFakePoster()
+	p.isPR = true
 	withFakePoster(t, p)
 
 	cmd := newSteerCmd()
@@ -231,4 +244,70 @@ func TestParseWorkItemURL_SelfHostedGitLab(t *testing.T) {
 	got, err := parseWorkItemURL("https://gitlab.example.com/group/repo/-/merge_requests/4")
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", got.Forge)
+}
+
+// TestSteerCmd_PullRequestViaIssuesURL is the regression. GitHub serves a
+// pull request from /issues/N as well as /pull/N, so reading the kind off
+// the path segment called a real PR an issue: --stage review and fix were
+// rejected with a false message, and the default posted /fs-triage, whose
+// route arm has no ISSUE_IS_PR guard — so a triage run dispatched against
+// a pull request.
+func TestSteerCmd_PullRequestViaIssuesURL(t *testing.T) {
+	p := newFakePoster()
+	p.isPR = true // the forge says this number is a pull request
+	withFakePoster(t, p)
+
+	cmd := newSteerCmd()
+	cmd.SetArgs([]string{"https://github.com/org/repo/issues/123", "re-check the migration"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "/fs-review re-check the migration", p.body,
+		"the forge's answer decides the stage, not the URL's path segment")
+}
+
+// TestSteerCmd_IssueViaIssuesURL is the other side: a real issue still
+// posts /fs-triage, so the fix does not simply treat everything as a PR.
+func TestSteerCmd_IssueViaIssuesURL(t *testing.T) {
+	p := newFakePoster()
+	p.isPR = false
+	withFakePoster(t, p)
+
+	cmd := newSteerCmd()
+	cmd.SetArgs([]string{"https://github.com/org/repo/issues/7", "re-label this"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "/fs-triage re-label this", p.body)
+}
+
+// TestSteerCmd_StageFixOnPullRequestViaIssuesURL: the --stage rejection is
+// kept, but it now rests on what the forge reports rather than on the URL
+// shape, so the PR form that used to be refused is accepted.
+func TestSteerCmd_StageFixOnPullRequestViaIssuesURL(t *testing.T) {
+	p := newFakePoster()
+	p.isPR = true
+	withFakePoster(t, p)
+
+	cmd := newSteerCmd()
+	cmd.SetArgs([]string{"--stage", "fix", "https://github.com/org/repo/issues/123", "rebase onto main"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, "/fs-fix rebase onto main", p.body)
+}
+
+// TestSteerCmd_ResolveFailureIsFatal: the lookup failing must fail the
+// command and post nothing. Falling back to the URL guess is exactly the
+// silent wrong-stage dispatch this replaces, and an error the user sees is
+// strictly better.
+func TestSteerCmd_ResolveFailureIsFatal(t *testing.T) {
+	p := newFakePoster()
+	p.getIssueErr = errors.New("403 Forbidden")
+	withFakePoster(t, p)
+
+	cmd := newSteerCmd()
+	cmd.SetArgs([]string{"https://github.com/org/repo/issues/123", "re-check the migration"})
+	err := cmd.Execute()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving org/repo#123")
+	assert.Empty(t, p.body, "no comment may be posted when the kind is unknown")
 }
