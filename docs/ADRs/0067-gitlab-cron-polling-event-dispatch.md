@@ -565,8 +565,11 @@ methods rather than adding forge-conditional logic.
 > run of the trusted job YAML on the protected branch. Those variables
 > (`STAGE`, `EVENT_PAYLOAD_B64`, `ACTOR_ID`, …) are what the agent job's
 > authorization gate and fork protection read. HMAC-SHA256 over the
-> dispatch variables, verified before the job trusts them, closes that
-> forgery path. `FULLSEND_DISPATCH_SECRET` must be a protected, masked
+> dispatch variables, verified before the job trusts them, narrows that
+> forgery path — as with the 2026-07 update above, verification is
+> gated on `PIPELINE_SOURCE` (itself derived from the overridable
+> `CI_API_V4_URL`/`CI_PIPELINE_ID`), so the risk is reduced rather than
+> fully closed. `FULLSEND_DISPATCH_SECRET` must be a protected, masked
 > CI/CD variable so a Developer cannot override it with their own key.
 >
 > GitHub has no generic "create a run of the trusted workflow with extra
@@ -584,9 +587,13 @@ methods rather than adding forge-conditional logic.
 >   [custom poller example](../guides/user/custom-poller-example.md)).
 >   The `matrix` input is reachable only from another workflow file that
 >   `uses:` the reusable workflow. Adding or changing that caller
->   requires write access to workflow YAML — and, where CODEOWNERS and
->   branch protection apply, a reviewed merge — not merely the ability
->   to start a pipeline. `reusable-dispatch.yml` is `on: workflow_call`
+>   requires write access to create or modify a workflow file in the
+>   repo — the ability to run Actions there — not merely the ability
+>   to start a pipeline. CODEOWNERS and branch protection, where
+>   configured, gate merges to the default-branch canonical caller;
+>   they do not stop a write-access collaborator from pushing a new
+>   caller workflow on another ref and passing an arbitrary `matrix`
+>   without a reviewed merge. `reusable-dispatch.yml` is `on: workflow_call`
 >   only; it is not a `workflow_dispatch` or `repository_dispatch`
 >   entry point. `workflow_dispatch` on the poll workflow lets a
 >   write-access user start a poll; it does not accept the matrix as an
