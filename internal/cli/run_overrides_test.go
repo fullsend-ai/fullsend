@@ -263,6 +263,9 @@ func TestRunStallTimeout(t *testing.T) {
 		{name: "a run timeout the watchdog cannot beat disarms it and says so",
 			env: "20m", run: 10 * time.Minute, want: 0,
 			contains: []string{"Stall watchdog inactive", "20m0s", "10m0s", "30s detection interval"}},
+		{name: "a value below the sub-agent liveness floor is raised and says so",
+			env: "30s", run: 30 * time.Minute, want: minStallTimeout,
+			contains: []string{"Stall watchdog:", envStallTimeout, "floor", "1m0s"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
