@@ -104,3 +104,14 @@ the model for stopping here", never as a success or failure signal.
 An older CLI ignores `max_cost_usd` (unknown fields are not rejected) and
 runs uncapped — prior behavior. An older consumer of `metrics.json` never
 sees `over_budget` (it is omitted when false) and is unaffected.
+
+## Versioning
+
+This is a living normative document under
+[ADR 0015](../../../ADRs/0015-normative-specifications-directory.md).
+Breaking changes require `docs/normative/harness-budget/v2/`.
+
+| Change | v1 impact |
+|--------|-----------|
+| **Breaking** (requires v2): move the enforcement boundary from `>=` to `>` at the cap, weaken the `over_budget` if-and-only-if semantics, or redefine an explicit `0` away from "unlimited" | Harness authors and `metrics.json` consumers must migrate |
+| **Non-breaking** (allowed in v1): clarify wording, add a reserved `metrics.json` key, tighten cost-reporting guidance without changing the enforcement boundary | Existing behavior is preserved |

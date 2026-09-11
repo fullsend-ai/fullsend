@@ -98,7 +98,7 @@ Each run produces artifacts in the output directory:
 | `duration_seconds` | Wall-clock agent execution time in seconds, summed across retry iterations. Each iteration is measured from agent start to runtime return, so the aggregate reflects agent time, not sandbox setup or extraction overhead. Omitted when zero |
 | `over_budget` | Present (as `true`) only when the harness's `max_cost_usd` cap suppressed a retry that was otherwise due — after a failed validation or a failed repo extraction. It records why retries stopped and implies nothing about the final validation state (the post-loop sweep may still pass a completed iteration); a run whose final iteration merely crossed the cap while ending anyway is not marked. Enforcement depends on runtime-reported cost — an iteration that reports zero/no cost cannot be counted against the cap (the run log warns). See the [harness budget contract](../normative/harness-budget/v1/README.md) |
 | `num_turns` | Number of conversation turns |
-| `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
+| `iterations` | Number of agent iterations run; an iteration killed at `timeout_minutes` is not retried (see [Budget and deadline](#budget-and-deadline)). This is the wall-clock deadline, distinct from the `max_cost_usd` spend cap in the `over_budget` row above |
 | `per_model_usage` | Per-model-spec breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled). See below |
 
 #### Per-model usage
@@ -125,6 +125,12 @@ parent's stream, so without it `total_cost_usd` would grow with no way to attrib
   no record, so it never reaches the breakdown.
 
 ## Budget and deadline
+
+This section is about the wall-clock deadline (`timeout_minutes`) only — a
+hard kill of the running iteration. The separate `max_cost_usd` spend cap
+never interrupts an iteration; it only refuses to start the next one. See
+the [`over_budget`](#metricsjson-fields) metric and the
+[harness budget contract](../normative/harness-budget/v1/README.md).
 
 Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none). When the budget
 is spent the runner ends the iteration and terminates the agent's processes in the sandbox. Before

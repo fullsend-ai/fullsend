@@ -46,6 +46,10 @@ skills:
 timeout_minutes: 45                 # Override timeout (scalar: child wins)
 ```
 
+Most scalars follow this "child wins" rule, but `max_cost_usd` is
+presence-based, not value-based — do not copy this pattern for it. See
+[What you can override](#what-you-can-override) below.
+
 **`skills/my-custom-linting/SKILL.md`:**
 ```markdown
 ---
@@ -99,10 +103,12 @@ env:
 
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
-- **Change model, timeout, image, scripts** — scalars replace the base value.
+- **Change model, timeout, image, scripts** — scalars replace the base value. Exception: `max_cost_usd` (see the note below).
 - **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
+
+> **Note:** `max_cost_usd` does NOT follow the scalars rule — it merges by presence, not value. An absent field inherits the base's cap; an explicit `0` overrides it with *unlimited*. Writing `max_cost_usd: 0` to mean "no opinion, use the base's cap" silently disables an inherited cap. See its [merge rule](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays).
 
 Base chains support up to 5 levels. Circular references are detected and rejected. Resolution order: base chain, child overrides, overlay resolution.
 
