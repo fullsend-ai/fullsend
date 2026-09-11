@@ -141,6 +141,19 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 // know their event cadence tune FULLSEND_STALL_TIMEOUT to match.
 const defaultStallTimeout = 15 * time.Minute
 
+// subagentLivenessTick mirrors DEFAULT_LIVENESS_MS in
+// internal/runtime/pi_extension/fullsend-agent.js: while a pi sub-agent runs,
+// the Agent tool feeds the parent stream a progress line only this often, so
+// a parent waiting on a healthy child is silent for up to one tick (plus the
+// setInterval delay before the first tick). Keep the two in sync on a bump.
+const subagentLivenessTick = 30 * time.Second
+
+// minStallTimeout floors a non-zero FULLSEND_STALL_TIMEOUT. At or below one
+// liveness tick a parent waiting on a healthy child would be killed as
+// stalled between ticks; two ticks give the margin (first-tick delay + the
+// gap to the next). 0 (explicitly disabled) is left untouched.
+const minStallTimeout = 2 * subagentLivenessTick
+
 // resolveStallTimeout returns the event-inactivity timeout for the run:
 // FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
 // disables the watchdog), the default when it is unset. A malformed value
@@ -185,6 +198,15 @@ func runStallTimeout(getenv func(string) string, run time.Duration, printer *ui.
 	stall, err := resolveStallTimeout(getenv)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", err, stall))
+	}
+	if stall > 0 && stall < minStallTimeout {
+		// Below the floor a pi sub-agent's liveness tick can't keep the
+		// parent alive between ticks, so a parent waiting on a healthy child
+		// would be killed as stalled. Raise it to the floor and say so.
+		printer.StepWarn(fmt.Sprintf(
+			"Stall watchdog: FULLSEND_STALL_TIMEOUT (%s) is below the %s floor (a pi sub-agent feeds the watchdog only every %s); using %s",
+			stall, minStallTimeout, subagentLivenessTick, minStallTimeout))
+		stall = minStallTimeout
 	}
 	if effective := effectiveStallTimeout(stall, run); effective != stall {
 		// The watchdog could never fire — the global deadline always wins the
