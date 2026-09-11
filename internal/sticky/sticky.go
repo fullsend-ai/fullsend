@@ -21,6 +21,10 @@ type Config struct {
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
 	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
+	// OnlyIfExists updates an existing marked comment but never creates one:
+	// a post-script uses it on an all-clear result so an earlier findings
+	// comment is replaced while a clean first run stays silent.
+	OnlyIfExists bool
 }
 
 func (c Config) maxSize() int {
@@ -70,6 +74,11 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		}
 		printer.StepDone("Comment updated")
 		return existing.HTMLURL, nil
+	}
+
+	if cfg.OnlyIfExists {
+		printer.StepInfo("No existing comment with this marker; nothing to post (only-if-exists)")
+		return "", nil
 	}
 
 	printer.StepStart("No existing comment found, creating new one")
