@@ -6126,7 +6126,7 @@ func TestIsTransientFetchError(t *testing.T) {
 	}{
 		{"context deadline with expired context", expiredCtx, fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
 		{"context canceled with cancelled context", cancelledCtx, fmt.Errorf("git fetch: %w", context.Canceled), true},
-		{"context deadline with live context is not caller expiry", live, fmt.Errorf("git fetch: %w", context.DeadlineExceeded), false},
+		{"context deadline with live context is still transient (nested timeout)", live, fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
 		{"transient error type", live, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}, true},
 		{"wrapped transient", live, fmt.Errorf("gitfetch: %w", &gitfetch.TransientError{Err: fmt.Errorf("no such host")}), true},
 		{"auth error", live, fmt.Errorf("authentication failed"), false},
