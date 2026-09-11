@@ -38,6 +38,10 @@ type Role struct {
 	Profiles []string
 	// Image is the sandbox image this role's agents run under.
 	Image string
+	// ReadonlyRepo mirrors the fleet: the review harness mounts the target
+	// repository read-only so the prompt's "do not edit files" is enforced,
+	// not requested. Set for roles whose fleet harness sets `readonly_repo`.
+	ReadonlyRepo bool
 }
 
 // roleTable is the set of roles `agent new` will generate for. Excluded on
@@ -60,9 +64,10 @@ var roleTable = map[string]Role{
 			"contents": "read", "pull_requests": "write", "issues": "write",
 			"checks": "read", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
-		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
-		Image:     config.DefaultCodeImage,
+		Providers:    []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
+		Profiles:     []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
+		Image:        config.DefaultCodeImage,
+		ReadonlyRepo: true,
 	},
 	"coder": {
 		Name: "coder",
