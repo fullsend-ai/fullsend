@@ -142,10 +142,25 @@ test("createRepairedEditTool is pi's tool with only prepareArguments wrapped", (
   assert.deepEqual(inner.received.at(-1), { path: "f.go", edits: [{ oldText: "a", newText: "1\n2" }] },
     "pi's own preparation sees the repaired shape");
   assert.deepEqual(out, { prepared: inner.received.at(-1) }, "and its result is what pi validates");
-  assert.deepEqual(logs, ["[fullsend-edit-repair] repaired stringified edits for f.go"]);
+  assert.deepEqual(logs, ['[fullsend-edit-repair] repaired stringified edits for "f.go"']);
 
   tool.prepareArguments({ path: "f.go", edits: [{ oldText: "a", newText: "b" }] });
   assert.equal(logs.length, 1, "a call pi accepts as is is not logged");
+});
+
+test("a crafted path cannot forge a log record or reach the terminal", () => {
+  const logs = [];
+  const tool = createRepairedEditTool("/repo", { parse: parseJsonWithRepair, log: (m) => logs.push(m) });
+  // The path is model-controlled: a raw newline would start a second record
+  // in the captured stderr, and an escape would steer a terminal reading it.
+  const crafted = "f.go\n[fullsend-edit-repair] forged\r\u001b[31m";
+  tool.prepareArguments({ path: crafted, edits: '[{"oldText":"a","newText":"1\n2"}]' });
+  assert.equal(logs.length, 1, "one record, whatever the path says");
+  assert.match(logs[0], /^\[fullsend-edit-repair\] repaired stringified edits for /);
+  for (const raw of ["\n", "\r", "\u001b"]) {
+    assert.ok(!logs[0].includes(raw), `the record carries no raw ${JSON.stringify(raw)}`);
+  }
+  assert.ok(logs[0].includes("\\n") && logs[0].includes("\\u001b"), "they are escaped, not dropped");
 });
 
 test("an inner tool without prepareArguments still gets the repaired arguments", () => {
@@ -245,7 +260,7 @@ for (const [label, edits] of Object.entries(MALFORMED)) {
     assert.equal(withExt.code, 0, withExt.stderr);
     assert.match(editResult(withExt.stdout), /Successfully replaced 1 block/);
     assert.equal(withExt.target, "line one\nline\ttwo\n");
-    assert.match(withExt.stderr, /\[fullsend-edit-repair\] repaired .* for target\.txt/);
+    assert.match(withExt.stderr, /\[fullsend-edit-repair\] repaired .* for "target\.txt"/);
     assert.match(withExt.stderr, /tool_call edits=\[\{"oldText":"alpha","newText":"line one\\nline\\ttwo"\}\]/,
       "tool_call handlers — the hook adapter — see the repaired edits, the same ones that are applied");
   });

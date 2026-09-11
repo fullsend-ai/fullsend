@@ -87,7 +87,10 @@ export function createRepairedEditTool(cwd, { createTool = createEditToolDefinit
     prepareArguments(input) {
       const { args, repairs } = repairEditsArgument(input, parse);
       if (repairs.length > 0) {
-        const path = typeof args?.path === "string" ? args.path : "?";
+        // The path comes from the model. JSON.stringify escapes newlines and
+        // escape characters, so a crafted path cannot forge a second log
+        // record or steer a terminal reading the captured stderr.
+        const path = typeof args?.path === "string" ? JSON.stringify(args.path) : "?";
         log(`${LOG_PREFIX} repaired ${repairs.join(" and ")} for ${path}`);
       }
       return prepare(args);
