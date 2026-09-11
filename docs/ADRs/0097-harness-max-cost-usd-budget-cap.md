@@ -62,7 +62,10 @@ suppressed a retry. The field-level contract — validation, `base:`
 inheritance, the enforcement boundary, and `over_budget` semantics — is
 normative in
 [`docs/normative/harness-budget/v1`](../normative/harness-budget/v1/README.md),
-not here.
+not here. A change to that contract is breaking — requiring a v2 directory —
+when it moves the comparison operator at the cap boundary (`>=` to `>`),
+weakens the `over_budget` if-and-only-if semantics, or redefines the meaning
+of an explicit `0`; clarifications and additive reserved keys stay in v1.
 
 ## Consequences
 
