@@ -1172,8 +1172,40 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		metricsHandler(*result.lastResult)
 	}
 
+	// foldSubagentUsage adds any completed children's tokens and cost to the
+	// run metrics. Children are separate pi processes, so none of their
+	// tokens reached the stream just parsed; the extension's usage file is
+	// the only record of what they spent. A read failure is not fatal —
+	// losing the breakdown must not fail an iteration. It runs on both the
+	// success path below and the stall path just after: a parent that
+	// stalls after several children finished has real, recorded spend, and
+	// dropping it would leave per_model_usage no longer summing to the totals.
+	foldSubagentUsage := func() {
+		if m.Agent == nil || !m.Agent.Enabled {
+			return
+		}
+		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
+			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+		} else {
+			// Unconditional: the parent's own entry belongs in the
+			// breakdown even when this iteration dispatched nothing, or
+			// per_model_usage stops summing to the totals across a retry.
+			n, skipped := foldPiSubagentUsage([]byte(usage), result.modelSpec, metrics)
+			if n > 0 {
+				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
+			}
+			if skipped > 0 {
+				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
+			}
+		}
+	}
+
 	// A stall is the cause of whatever Wait reported, so it is checked first.
 	if result.stallErr != nil {
+		// A parent stalls waiting on its children (the 30s liveness tick
+		// exists for exactly that), so completed children's spend must
+		// survive the kill — fold it before returning, same as a clean run.
+		foldSubagentUsage()
 		return result.exitCode, result.stallErr
 	}
 	// Return infrastructure/security errors.
@@ -1188,26 +1220,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	modelSpec := result.modelSpec
 	metrics.Model = piBareModelID(modelSpec)
 
-	if m.Agent != nil && m.Agent.Enabled {
-		// Children are separate pi processes, so none of their tokens
-		// reached the stream just parsed; the extension's usage file is the
-		// only record of what they spent. A read failure is not fatal —
-		// losing the breakdown must not fail an iteration that succeeded.
-		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
-			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
-		} else {
-			// Unconditional: the parent's own entry belongs in the
-			// breakdown even when this iteration dispatched nothing, or
-			// per_model_usage stops summing to the totals across a retry.
-			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
-			if n > 0 {
-				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
-			}
-			if skipped > 0 {
-				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
-			}
-		}
-	}
+	foldSubagentUsage()
 
 	if result.exitCode == 0 && result.lastResult != nil && result.lastResult.IsError {
 		msg := result.lastResult.ErrorMessage
