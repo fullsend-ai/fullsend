@@ -62,7 +62,8 @@ type Config struct {
 	// token the stage minted lives one hour and is not refreshed, so a run
 	// that keeps absorbing must settle before it expires.
 	Deadline time.Time
-	// MaxSteers caps how many updates this run absorbs.
+	// MaxSteers caps how many updates this run absorbs. The cap is
+	// per-run, not per-watcher: see PriorSteers.
 	MaxSteers int
 	// MinRemaining is the floor of run budget a steer needs. Below it the
 	// watcher settles instead of steering: the exec that hosts a live
@@ -89,6 +90,13 @@ type Config struct {
 	// per iteration; without this, a retry would re-examine and re-steer on
 	// follow-up runs the previous iteration already absorbed.
 	AlreadySeen []int64
+	// PriorSteers is how many steers earlier watchers of this run already
+	// spent. MaxSteers is a per-run cap (ADR 0101) and the validation loop
+	// builds a fresh watcher per iteration, so without this the counter
+	// resets each iteration and a three-iteration run absorbs three times
+	// the cap. Seeding it leaves each watcher MaxSteers − PriorSteers of
+	// budget, which is what "per run" means.
+	PriorSteers int
 }
 
 // Watcher turns follow-up workflow runs into steers. One watcher serves one
@@ -117,9 +125,12 @@ type Watcher struct {
 	// acknowledges a delivery later, and only an acknowledged one may reach
 	// the marker. See DeliveredSteer.
 	delivered []DeliveredSteer
-	steers    int
-	lastHead  string
-	baseline  time.Time
+	// steers is the run's cumulative count, seeded from Config.PriorSteers,
+	// so it is not the length of delivered: earlier iterations' steers
+	// count against the cap but were delivered by other watchers.
+	steers   int
+	lastHead string
+	baseline time.Time
 
 	settleOnce sync.Once
 }
@@ -143,6 +154,7 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 	if baseline.IsZero() {
 		baseline = cfg.StartedAt
 	}
+	steers := max(0, cfg.PriorSteers)
 	return &Watcher{
 		cfg:      cfg,
 		actions:  actions,
@@ -152,6 +164,7 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 		logf:     func(string, ...any) {},
 		warnf:    func(string, ...any) {},
 		seen:     seen,
+		steers:   steers,
 		lastHead: cfg.Item.HeadSHA,
 		baseline: baseline,
 	}
@@ -205,6 +218,15 @@ func (w *Watcher) SeenRunIDs() []int64 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// Steers returns how many steers this run has spent, including the ones
+// earlier validation-loop iterations spent. The runner carries it into the
+// next iteration's watcher so MaxSteers stays a per-run cap.
+func (w *Watcher) Steers() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.steers
 }
 
 // Baseline returns the instant the next delta would be computed against. The

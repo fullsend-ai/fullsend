@@ -3,6 +3,7 @@ package steerwatch
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,118 @@ func TestPollAndSteer_StopsAtCap(t *testing.T) {
 	assert.False(t, w.pollAndSteer(context.Background()), "the cap stops the third steer")
 	assert.Len(t, rec.delivered(), 2)
 	assert.Equal(t, []int64{101, 102}, deliveredIDs(w))
+}
+
+// TestPollAndSteer_PriorSteersMakeTheCapPerRun is the validation loop: each
+// iteration builds its own watcher, so without the seed the counter resets
+// and a three-iteration run absorbs three times max_steers. ADR 0101
+// documents the cap as per run.
+func TestPollAndSteer_PriorSteersMakeTheCapPerRun(t *testing.T) {
+	steerOnce := func(t *testing.T, prior int, runID int64, head string) *Watcher {
+		t.Helper()
+		api := newFakeAPI()
+		api.listed = [][]map[string]any{{acceptableRun(api, runID)}}
+		items := prItems()
+		items.headSHA = head
+		w := newWatcher(t, api, items, &recorder{}, func(c *Config) {
+			c.MaxSteers = 2
+			c.PriorSteers = prior
+		})
+		return w
+	}
+
+	// Iteration 1 spends one of two.
+	first := steerOnce(t, 0, 101, "bbb222")
+	require.True(t, first.pollAndSteer(context.Background()))
+	assert.Equal(t, 1, first.Steers())
+	assert.False(t, first.capReached())
+
+	// Iteration 2 is seeded with it and spends the second.
+	second := steerOnce(t, first.Steers(), 102, "ccc333")
+	require.True(t, second.pollAndSteer(context.Background()))
+	assert.Equal(t, 2, second.Steers())
+	assert.True(t, second.capReached())
+
+	// Iteration 3 has no budget left, and the third update is refused
+	// rather than delivered.
+	third := steerOnce(t, second.Steers(), 103, "ddd444")
+	rec := &recorder{}
+	third.deliver = rec.deliver
+	assert.False(t, third.pollAndSteer(context.Background()), "the run-wide cap stops the third steer")
+	assert.Empty(t, rec.delivered())
+}
+
+// TestNew_NegativePriorSteersIsFloored keeps a bad seed from handing a
+// watcher extra budget.
+func TestNew_NegativePriorSteersIsFloored(t *testing.T) {
+	w := New(Config{Repo: "org/repo", MaxSteers: 1, PriorSteers: -5}, nil, &stubItems{}, nil, nil)
+	assert.Equal(t, 0, w.Steers())
+}
+
+// TestPollAndSteer_ClippedAmendmentsDoNotSpendMaxSteers covers the batch
+// whose every amendment was dropped for size: nothing authorized reached
+// the agent, none of its runs is receipted, and the queued run still has to
+// do the work — so it must not spend one of the run's steers.
+func TestPollAndSteer_ClippedAmendmentsDoNotSpendMaxSteers(t *testing.T) {
+	api := newFakeAPI()
+	api.jobsByID[101] = jobsJSON(routeJob("success"), stageJob(stageName, "queued", ""))
+	api.jobsByID[102] = jobsJSON(routeJob("success"), stageJob(stageName, "queued", ""))
+	api.listed = [][]map[string]any{
+		{runJSON(runOpts{id: 101, event: "issue_comment", created: "2026-09-03T10:05:00Z", title: "org/repo#7"})},
+		{runJSON(runOpts{id: 101, event: "issue_comment", created: "2026-09-03T10:05:00Z", title: "org/repo#7"}),
+			runJSON(runOpts{id: 102, event: "issue_comment", created: "2026-09-03T10:06:00Z", title: "org/repo#7"})},
+	}
+	// An amendment from the run's own triggering actor, written before the
+	// run that carries its authorization and far past maxAmendmentBytes, so
+	// it reaches the agent clipped and its run cannot be receipted.
+	items := &stubItems{
+		headSHA: "bbb222",
+		comments: []forge.IssueComment{{
+			Author:    "reviewer",
+			Body:      strings.Repeat("x", maxDeltaBytes+1),
+			CreatedAt: "2026-09-03T10:04:50Z",
+		}},
+	}
+	rec := &recorder{}
+	w := newWatcher(t, api, items, rec, func(c *Config) { c.MaxSteers = 1 })
+
+	require.True(t, w.pollAndSteer(context.Background()))
+	require.Len(t, rec.delivered(), 1)
+	assert.Empty(t, deliveredIDs(w), "a dropped amendment's run must not be receipted")
+	assert.Equal(t, 0, w.Steers(), "a batch that carried no amendment spends no steer")
+	assert.False(t, w.capReached())
+
+	// The budget is intact, so the next real update still gets through.
+	items.headSHA = "ccc333"
+	items.comments = append(items.comments, forge.IssueComment{
+		Author: "reviewer", Body: "re-check the migration", CreatedAt: "2026-09-03T10:05:50Z",
+	})
+	require.True(t, w.pollAndSteer(context.Background()))
+	assert.Equal(t, 1, w.Steers())
+}
+
+// TestPollAndSteer_PermanentJobListErrorIsFinal covers the other half of
+// the same round's fix: a 403 or 404 on a candidate's jobs reads the same
+// way on every later poll, so the run is judged once instead of re-fetched
+// for the rest of the watch.
+func TestPollAndSteer_PermanentJobListErrorIsFinal(t *testing.T) {
+	api := newFakeAPI()
+	api.listed = [][]map[string]any{{acceptableRun(api, 101)}}
+	api.status["/runs/101/jobs"] = 404
+	rec := &recorder{}
+	w := newWatcher(t, api, prItems(), rec, nil)
+
+	var warns int
+	w.SetWarnFunc(func(string, ...any) { warns++ })
+
+	assert.False(t, w.pollAndSteer(context.Background()))
+	assert.Equal(t, 1, warns)
+
+	// Second poll over the same listing: the run is already judged, so the
+	// jobs endpoint is not asked again and nothing new is warned about.
+	assert.False(t, w.pollAndSteer(context.Background()))
+	assert.Equal(t, 1, warns, "a permanent job-list failure is a verdict, not a retry")
+	assert.Empty(t, rec.delivered())
 }
 
 func TestWatch_TurnEndWithNothingNewSettles(t *testing.T) {
