@@ -164,3 +164,39 @@ func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
 		t.Fatalf("rejection must be a single log line, got:\n%s", stderr)
 	}
 }
+
+// TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho runs the script
+// with bash's xpg_echo option on, where `echo` interprets backslash escapes.
+// A status carrying a literal backslash-n must still be logged on one line.
+func TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{
+			"status":  `bogus\n::error::injected`,
+			"summary": "s",
+			"comment": "c",
+		},
+	})
+	cmd := exec.Command("bash", "-O", "xpg_echo", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+		DryRunEnvVar("lint-docs")+"=1",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected the script to reject an invalid status")
+	}
+	out := strings.TrimSpace(stderr.String())
+	if strings.Count(out, "\n") != 0 {
+		t.Fatalf("backslash escapes were expanded into a new log line:\n%s", out)
+	}
+	if !strings.Contains(out, `bogus\n::error::injected`) {
+		t.Fatalf("expected the literal value on the single line, got: %q", out)
+	}
+}
