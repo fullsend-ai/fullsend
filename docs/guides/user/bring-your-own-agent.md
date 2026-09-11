@@ -166,7 +166,8 @@ Write the result before the deadline — see [`fullsend run` § Budget and deadl
 It also carries what the work item looked like when the run began: `FULLSEND_RUN_HEAD_SHA` (the head
 at run start, empty for an issue) and `FULLSEND_RUN_STARTED_AT` (RFC 3339 UTC). The start is the
 runner's own clock at the top of `fullsend run` rather than the workflow run's `created_at`, so a
-little of the platform's queueing and the run's own setup falls outside it.
+little of the platform's queueing and the run's own setup falls outside it — see
+[`fullsend run` § Run baseline](../../cli/run.md#run-baseline).
 
 Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 

@@ -270,6 +270,27 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always source it; a custom command must do the same. |
 
+## Run baseline
+
+Alongside the budget, the runner tells the agent what the work item looked like when the run
+began. Two more environment variables, set on every runtime (claude, pi, codex):
+
+| Variable | Value |
+|---|---|
+| `FULLSEND_RUN_HEAD_SHA` | The work item's head at run start. Empty on an issue run, which has no head |
+| `FULLSEND_RUN_STARTED_AT` | When the run started, RFC 3339 UTC |
+
+The start is the runner's own clock at the top of `fullsend run`, not the workflow run's
+`created_at`: the two differ by the platform's queueing plus the run's own setup, so a little of
+the wall clock between the forge's timestamp and this one falls outside the value.
+
+The head is empty rather than absent on an issue run — an agent that re-checks it skips the check
+on an empty value, which it cannot do for a variable that is not there at all.
+
+Both are written after the harness's `.env.d` files are sourced, and both names are reserved: an
+`env.sandbox` entry with either name is dropped. A harness cannot shadow the baseline its own
+agent's re-check depends on.
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)

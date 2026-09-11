@@ -78,6 +78,7 @@ Environment variables set by the runner, present in every agent's shell:
 - `FULLSEND_RUN_STARTED_AT` — when the run started, RFC 3339 UTC. This is the runner's own clock
   at the top of `fullsend run`, not the workflow run's `created_at`, so a little of the platform's
   queueing and the run's own setup falls outside it
+  (see [`fullsend run` § Run baseline](../../cli/run.md#run-baseline))
 
 ## Process
 
