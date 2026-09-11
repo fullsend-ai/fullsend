@@ -207,6 +207,7 @@ func TestSteerSession_NilIsInert(t *testing.T) {
 	})
 	assert.Empty(t, s.marker(nil).ConsumedRunIDs)
 	assert.Empty(t, s.marker(nil).HeadSHA)
+	assert.Equal(t, 0, s.steers())
 }
 
 // terminalStatusBody wraps a marker in the runner's own terminal status
@@ -413,6 +414,23 @@ func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
 	// set only on the deprecated per-org dispatch path.
 	assert.Equal(t, "aaa111", m.HeadSHA)
 	assert.False(t, sess.baseline().IsZero(), "the next iteration inherits the delta window")
+}
+
+// TestStartSteerWatcher_SeedsThePriorSteerCount is the validation loop:
+// each iteration builds its own watcher, so the count earlier iterations
+// spent has to be carried in or max_steers caps the iteration rather than
+// the run (ADR 0101).
+func TestStartSteerWatcher_SeedsThePriorSteerCount(t *testing.T) {
+	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
+		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
+	o := steerableOpts(t, srv)
+	o.priorSteers = 2
+
+	sess := startSteerWatcher(context.Background(), o)
+	require.NotNil(t, sess)
+	defer sess.stop()
+
+	assert.Equal(t, 2, sess.steers(), "the run's spent budget follows it into this iteration")
 }
 
 func TestStartSteerWatcher_AmbiguousStageFailsClosed(t *testing.T) {
@@ -717,6 +735,36 @@ func TestIterationEnvBudget_SteeredUsesTheRealDeadline(t *testing.T) {
 	assert.Equal(t, int(steerBudget(timeout).Minutes()), minutes,
 		"the minutes must come from the same source as the deadline")
 	assert.NotEqual(t, 999, minutes, "the harness value must not survive a steered run")
+}
+
+// TestHeartbeatBudget_SteeredCountsDownToTheRealDeadline covers the console
+// countdown. The iteration env and the timeout detection both moved onto
+// steerDeadline; the heartbeat was still on the harness timeout, so it
+// promised an agent time the run would not get.
+func TestHeartbeatBudget_SteeredCountsDownToTheRealDeadline(t *testing.T) {
+	runStart := time.Now().UTC()
+	agentStart := runStart.Add(10 * time.Minute)
+	timeout := steerTokenLife
+
+	_, deadline := iterationEnvBudget(true, 999, runStart, agentStart, timeout)
+	budget := heartbeatBudget(agentStart, deadline)
+
+	assert.Equal(t, deadline, agentStart.Add(budget),
+		"the countdown must reach zero exactly when the run is killed")
+	assert.Less(t, budget, timeout, "and before the harness timeout would have")
+}
+
+// TestHeartbeatBudget_UnsteeredIsTheHarnessTimeout is every run in
+// production today: byte-identical output, because the unsteered deadline
+// is agentStart plus the harness timeout and nothing else.
+func TestHeartbeatBudget_UnsteeredIsTheHarnessTimeout(t *testing.T) {
+	runStart := time.Now().UTC()
+	agentStart := runStart.Add(10 * time.Minute)
+	timeout := 20 * time.Minute
+
+	_, deadline := iterationEnvBudget(false, 20, runStart, agentStart, timeout)
+
+	assert.Equal(t, timeout, heartbeatBudget(agentStart, deadline))
 }
 
 // TestIterationEnvBudget_UnsteeredIsUnchanged pins every run in production

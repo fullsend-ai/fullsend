@@ -1237,6 +1237,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// re-examines them nor re-sends content already delivered.
 	var steerSeen []int64
 	var steerBaseline time.Time
+	// steerSpent carries the steer count the same way, because max_steers is
+	// a cap on the run and not on each of its iterations (ADR 0101).
+	var steerSpent int
 
 	// The runtime, sandbox name and timeout are not resolved yet; the
 	// iteration loop fills them in before starting the watcher. The skip
@@ -2299,6 +2302,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts.timeout = timeout
 		iterSteerOpts.seen = steerSeen
 		iterSteerOpts.baseline = steerBaseline
+		iterSteerOpts.priorSteers = steerSpent
 		steerSess := startSteerWatcher(ctx, iterSteerOpts)
 		steerActive = steerActive || steerSess != nil
 
@@ -2328,7 +2332,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 		heartbeatDone := make(chan struct{})
-		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
+		// Off the same deadline the sandbox was just told, so what the
+		// console counts down to and what the run is killed at cannot
+		// drift apart.
+		go runHeartbeat(printer, agentStart, heartbeatBudget(agentStart, envDeadline), heartbeatDone)
 
 		// A steered run outlives a single-turn budget, and params.Timeout
 		// bounds one exec — on Codex that is each exec in the resume loop,
@@ -2386,6 +2393,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			steerMarker = mergeSteerMarkers(steerMarker, steerSess.marker(metrics.Steers))
 			steerSeen = steerSess.seenRunIDs()
 			steerBaseline = steerSess.baseline()
+			steerSpent = steerSess.steers()
 		}
 		lastIterElapsed = time.Since(agentStart)
 

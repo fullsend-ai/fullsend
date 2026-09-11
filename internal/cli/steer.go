@@ -99,7 +99,12 @@ type steerOpts struct {
 	// rebuilds its first delta from the run's start.
 	seen     []int64
 	baseline time.Time
-	printer  *ui.Printer
+	// priorSteers is how many steers earlier iterations of this run already
+	// spent. max_steers is a per-run cap (ADR 0101) and each iteration
+	// builds its own watcher, so without carrying this the cap would reset
+	// every iteration.
+	priorSteers int
+	printer     *ui.Printer
 }
 
 // steerEligible reports why steering cannot run even though the harness
@@ -206,6 +211,24 @@ func iterationEnvBudget(steered bool, harnessMinutes int, runStartedAt, agentSta
 	return int(steerBudget(timeout).Minutes()), steerDeadline(runStartedAt, timeout)
 }
 
+// heartbeatBudget is the countdown the console heartbeat reports: the
+// distance from the agent's start to the deadline the sandbox was just told
+// and the run context is bounded by.
+//
+// It takes the deadline rather than the harness timeout for the same reason
+// iterationEnvBudget returns one — a steered iteration is killed at
+// steerDeadline, anchored at the RUN's start and clipped to the forge
+// token's life, so counting down to agentStart+timeout reports time the run
+// will not get. Unsteered, iterationEnvBudget's deadline is exactly
+// agentStart.Add(timeout), so this is the harness timeout unchanged.
+//
+// iterationEnvBudget's minutes are the wrong value to pass: they are whole
+// minutes measured from the run's start, while the heartbeat measures
+// elapsed from agentStart, so the setup time would be counted twice.
+func heartbeatBudget(agentStart, deadline time.Time) time.Duration {
+	return deadline.Sub(agentStart)
+}
+
 // steerAwareBudget returns the pair the timeout detection must compare: how
 // long the run had been going, and the budget that would have killed it.
 //
@@ -295,6 +318,7 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		PollInterval:  o.harness.SteerPollInterval(),
 		DeltaBaseline: o.baseline,
 		AlreadySeen:   o.seen,
+		PriorSteers:   o.priorSteers,
 		Item: steerwatch.WorkItem{
 			Number:  o.statusNum,
 			HeadSHA: o.headSHA,
@@ -322,8 +346,9 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		defer close(sess.done)
 		w.Watch(ctx, sess.turnEnd)
 	}()
-	o.printer.StepDone(fmt.Sprintf("Watching for work-item updates (max %d steers, polling every %s)",
-		o.harness.SteerMaxSteers(), o.harness.SteerPollInterval()))
+	remaining := max(0, o.harness.SteerMaxSteers()-o.priorSteers)
+	o.printer.StepDone(fmt.Sprintf("Watching for work-item updates (%d of %d steers left, polling every %s)",
+		remaining, o.harness.SteerMaxSteers(), o.harness.SteerPollInterval()))
 	return sess
 }
 
@@ -405,6 +430,16 @@ func (s *steerSession) baseline() time.Time {
 		return time.Time{}
 	}
 	return s.watcher.Baseline()
+}
+
+// steers returns the run's cumulative steer count, which the next
+// iteration's watcher is seeded with so max_steers caps the run rather
+// than each iteration of it.
+func (s *steerSession) steers() int {
+	if s == nil {
+		return 0
+	}
+	return s.watcher.Steers()
 }
 
 // steerTurnEndHandler wraps an event handler so agent turn ends reach the
