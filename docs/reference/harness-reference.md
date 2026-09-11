@@ -184,7 +184,7 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a `/fs-steer` — instead of being cancelled and restarted from nothing ([ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md)). Off by default: enabling it means a run holds its sandbox until it settles rather than ending at its first result.
+**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a stage command such as `/fs-review` — instead of being cancelled and restarted from nothing ([ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md)). Off by default: enabling it means a run holds its sandbox until it settles rather than ending at its first result.
 
 It takes effect only when three things line up: `enabled: true` here, a runtime that can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)), and a repository that has set `FULLSEND_PRESERVE_RUNS` to `true`, since a run that is about to be cancelled cannot usefully be steered. Miss any one and the run behaves exactly as it does today; the runner prints why it declined.
 
