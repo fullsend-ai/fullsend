@@ -122,22 +122,24 @@ NUMBER="${BASH_REMATCH[3]}"
 
 # On ok, post nothing — unless an earlier run left a findings comment on
 # this work item. The harness trigger fires again on later pushes, so a
-# problem the author has since fixed would otherwise stay reported; replace
-# that comment (same marker, edited in place) with the all-clear.
+# problem the author has since fixed would otherwise stay reported.
+# --only-if-exists makes fullsend replace that comment (same marker, found
+# through the forge client and the bot's own author) with the all-clear,
+# and post nothing when there is no earlier comment.
 if [[ "${status}" == "ok" ]]; then
   if [[ "${__DRY_RUN_VAR__:-}" == "1" ]]; then
     echo "post-__AGENT_NAME__: status=ok, nothing to post (dry run: an earlier findings comment would be replaced with the all-clear)" >&2
     exit 0
   fi
-  earlier=0
-  while read -r n; do earlier=$(( earlier + n )); done < <(
-    gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
-      --jq --arg m "${MARKER}" '[.[] | select(.body | contains($m))] | length')
-  if (( earlier == 0 )); then
-    echo "post-__AGENT_NAME__: status=ok, nothing to post" >&2
-    exit 0
-  fi
-  echo "post-__AGENT_NAME__: status=ok, replacing the earlier findings comment with the all-clear" >&2
+  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+    | fullsend issues post-comment \
+        --tracker github \
+        --project "${REPO}" \
+        --number "${NUMBER}" \
+        --marker "${MARKER}" \
+        --only-if-exists \
+        --result -
+  exit 0
 fi
 
 if [[ "${__DRY_RUN_VAR__:-}" == "1" ]]; then

@@ -225,3 +225,46 @@ func TestGeneratedPostScriptOkPostsNothingWithoutAnEarlierComment(t *testing.T) 
 		t.Fatalf("ok under dry run must print no comment body, got:\n%s", stdout)
 	}
 }
+
+// TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists runs the
+// live ok path (no dry run) against a stub `fullsend` on PATH that records
+// its arguments. The script must delegate the "is there an earlier findings
+// comment" decision to `fullsend issues post-comment --only-if-exists`
+// rather than reimplementing it with raw API calls in shell.
+func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	argsFile := filepath.Join(binDir, "args")
+	stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ok live path must exit 0, got %v; stderr:\n%s", err, stderr.String())
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("the script never invoked fullsend on the ok path: %v; stderr:\n%s", err, stderr.String())
+	}
+	args := string(got)
+	for _, want := range []string{"issues\npost-comment\n", "--only-if-exists\n", "--marker\n", "fullsend-ai/demo\n", "99\n"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("fullsend was called without %q; args:\n%s", strings.TrimSpace(want), args)
+		}
+	}
+}
