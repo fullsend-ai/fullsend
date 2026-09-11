@@ -137,13 +137,13 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-If the `profiles/` directory next to the harness also contains a file with the same `id` as a profile the harness already resolves, `fullsend run` warns:
+If the `profiles/` directory next to the harness also contains a file with the same `id` as a profile the harness already resolves, the directory copy always wins: `fullsend run` skips the harness-resolved import entirely and warns:
 
 ```text
-  ! Profile "fullsend-vertex-ai" is defined both in /work/.fullsend/profiles and by the harness (/work/.fullsend/.fullsend-cache/resources/sha256/fe4f748d…/content); whichever copy was imported most recently is live — delete the directory copy or keep it in sync
+  ! Skipping harness-resolved profile "fullsend-vertex-ai": overridden by profiles/ directory copy
 ```
 
-Delete the directory copy unless you mean to override the harness's. A stale copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
+The directory copy is the deterministic winner regardless of cache state. Keep the directory copy in sync with the harness's version, or delete it to let the harness-resolved profile apply. A stale directory copy is how a fix that already landed in the harness (for example the `**/claude.exe` entry on the Vertex profile) silently stops applying.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 

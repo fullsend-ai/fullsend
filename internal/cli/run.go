@@ -1281,10 +1281,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// GitLab instance (#6615). Prepended so that a user-defined profile
 	// with the same ID wins via last-wins dedup. Inserted before the
 	// integrity check so providers referencing this ID are valid.
-	// generatedProfileIDs records profiles the runner synthesized itself;
-	// a profiles/ directory copy overriding one of these is the documented
-	// path, not a shadowing worth warning about.
-	generatedProfileIDs := map[string]bool{}
 	if forgePlatform == "gitlab" {
 		if profilePath, cleanupProfile, err := generateGitLabForgeProfile(); err != nil {
 			printer.StepWarn("Failed to auto-generate GitLab forge profile: " + err.Error())
@@ -1294,7 +1290,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				ID:        "fullsend-gitlab-forge",
 				LocalPath: profilePath,
 			}}, result.Profiles...)
-			generatedProfileIDs["fullsend-gitlab-forge"] = true
 		}
 	}
 
@@ -1347,8 +1342,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
 
-		// Import URL-resolved profiles to the gateway.
-		for _, rp := range result.Profiles {
+		// Import URL-resolved profiles to the gateway, skipping any
+		// whose id also appears in the profiles/ directory. The
+		// directory copy is the intended winner (#6977): importing the
+		// URL copy first would waste work and, on a warm gateway where
+		// the URL copy changed but the directory did not, leave the
+		// wrong copy live due to independent caches.
+		profilesToImport, skippedProfiles := filterProfilesByDirIDs(result.Profiles, dirProfileIDs)
+		for _, rp := range skippedProfiles {
+			printer.StepWarn(fmt.Sprintf(
+				"Skipping harness-resolved profile %q: overridden by profiles/ directory copy",
+				rp.ID))
+		}
+		for _, rp := range profilesToImport {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
 			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
@@ -1358,16 +1364,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Warn when a profiles/ directory copy and a harness-resolved profile
-		// share an id. The directory import below runs after the harness
-		// import, but each has its own hash cache, so either copy can end up
-		// live on the gateway; a stale directory copy can silently undo a fix
-		// the harness already carries (#6971). Per-repo customization relies
-		// on the override, so this only makes it visible.
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
-		for _, sp := range shadowedProfiles(dirProfileIDs, result.Profiles, profilesDir, generatedProfileIDs) {
-			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); whichever copy was imported most recently is live — delete the directory copy or keep it in sync", sp.ID, profilesDir, sp.LocalPath))
-		}
 
 		// Import provider profiles (if profiles/ directory exists).
 		dirProfileStart := time.Now()
@@ -5577,32 +5574,28 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 	return deduped
 }
 
-// shadowedProfiles returns, sorted by ID, the harness-resolved profiles
-// whose ID also appears in profilesDir. ImportProfiles(profilesDir) runs
-// after the harness-resolved imports, but the two imports keep independent
-// hash caches, so the copy imported most recently is the live one. A
-// resolved profile that already lives in profilesDir (a local-path entry,
-// ADR 0075) is the same file, not a shadow, and runner-generated profiles
-// (generatedIDs) are meant to be overridden, so both are skipped. Duplicate
-// IDs in the directory are reported once.
-func shadowedProfiles(dirIDs []string, resolved []resolve.ResolvedProfile, profilesDir string, generatedIDs map[string]bool) []resolve.ResolvedProfile {
-	byID := make(map[string]resolve.ResolvedProfile, len(resolved))
-	for _, rp := range resolved {
-		if generatedIDs[rp.ID] || (!rp.FromURL && filepath.Dir(rp.LocalPath) == profilesDir) {
-			continue
-		}
-		byID[rp.ID] = rp
+// filterProfilesByDirIDs partitions URL-resolved profiles into those that
+// should be imported (not present in the profiles/ directory) and those that
+// should be skipped (overridden by a directory copy). The directory copy is
+// the intended winner (#6977): skipping the URL import avoids wasted work
+// and eliminates the non-deterministic precedence caused by two independent
+// caches.
+func filterProfilesByDirIDs(profiles []resolve.ResolvedProfile, dirProfileIDs []string) (toImport, skipped []resolve.ResolvedProfile) {
+	if len(dirProfileIDs) == 0 {
+		return profiles, nil
 	}
-	seen := make(map[string]bool, len(dirIDs))
-	var shadowed []resolve.ResolvedProfile
-	for _, id := range dirIDs {
-		if rp, ok := byID[id]; ok && !seen[id] {
-			seen[id] = true
-			shadowed = append(shadowed, rp)
+	dirSet := make(map[string]struct{}, len(dirProfileIDs))
+	for _, id := range dirProfileIDs {
+		dirSet[id] = struct{}{}
+	}
+	for _, rp := range profiles {
+		if _, shadowed := dirSet[rp.ID]; shadowed {
+			skipped = append(skipped, rp)
+		} else {
+			toImport = append(toImport, rp)
 		}
 	}
-	sort.Slice(shadowed, func(i, j int) bool { return shadowed[i].ID < shadowed[j].ID })
-	return shadowed
+	return toImport, skipped
 }
 
 // mergeProviderDefs merges local and URL-resolved provider definitions.
