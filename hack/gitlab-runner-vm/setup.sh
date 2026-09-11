@@ -671,6 +671,19 @@ install_executor() {
     chmod +x "${EXECUTOR_DIR}/${script}"
   done
 
+  # install_executor flattens the executor scripts into EXECUTOR_DIR with no
+  # .github/scripts sibling, so gateway.sh's VM-layout and repo-checkout
+  # relative guesses for openshell-version.sh both miss once prepare.sh/
+  # cleanup.sh source the flattened copy. Ship the same pin file alongside it
+  # so gateway.sh's flattened-layout guess (.github/scripts as a child of the
+  # gateway.sh dir) resolves.
+  if [ -f "${_openshell_version_sh}" ]; then
+    mkdir -p "${EXECUTOR_DIR}/.github/scripts"
+    cp "${_openshell_version_sh}" "${EXECUTOR_DIR}/.github/scripts/openshell-version.sh"
+  else
+    fail "openshell-version.sh not found (looked at ${_openshell_version_sh}); cannot provision the per-job gateway's version pin"
+  fi
+
   ok "executor scripts installed"
 }
 

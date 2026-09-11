@@ -67,6 +67,43 @@ if grep -Fq 'configure_per_job_gateway' "${SETUP}"; then
 else
   fail "setup.sh missing configure_per_job_gateway"
 fi
+if grep -Fq 'EXECUTOR_DIR}/.github/scripts' "${SETUP}"; then
+  pass "install_executor ships the version pin alongside the flattened executor scripts"
+else
+  fail "install_executor does not copy openshell-version.sh into EXECUTOR_DIR"
+fi
+
+echo "== flattened EXECUTOR_DIR layout resolves the version pin (regression: #7244) =="
+# install_executor copies job_id.sh/prepare.sh/run.sh/cleanup.sh/gateway.sh into
+# a flat EXECUTOR_DIR with no .github/scripts sibling — that's what prepare.sh/
+# cleanup.sh actually source at per-job runtime. Reproduce that layout in an
+# isolated temp dir (not under this repo checkout, so neither the VM-layout
+# nor the repo-checkout relative guess can accidentally resolve) and confirm
+# gateway.sh's flattened-layout guess picks up the pin.
+FLAT_DIR=$(mktemp -d)
+mkdir -p "${FLAT_DIR}/.github/scripts"
+cp "${SCRIPT_DIR}/gateway.sh" "${FLAT_DIR}/gateway.sh"
+# Use sentinel values distinct from the real pin, so a pass can only mean
+# "read from this flattened file" — not a false pass from OPENSHELL_VERSION/
+# OPENSHELL_SHA leaking in via the environment (gateway.sh's real pin file
+# exports both, and this test's own parent process already sourced gateway.sh
+# once at the top of this file).
+printf 'OPENSHELL_VERSION=9.9.9\nOPENSHELL_SHA=%s\nexport OPENSHELL_VERSION OPENSHELL_SHA\n' \
+  "$(printf 'f%.0s' $(seq 1 40))" > "${FLAT_DIR}/.github/scripts/openshell-version.sh"
+if [ -e "${FLAT_DIR}/../.github/scripts" ] || [ -e "${FLAT_DIR}/../../../.github/scripts" ]; then
+  fail "flattened-layout test fixture is not isolated: a relative guess other than the flattened one would resolve"
+else
+  FLAT_OUT=$(env -u OPENSHELL_VERSION -u OPENSHELL_SHA bash -c \
+    'source "$1/gateway.sh"; printf "%s %s" "${OPENSHELL_VERSION:-}" "${OPENSHELL_SHA:-}"' _ "${FLAT_DIR}")
+  FLAT_VER="${FLAT_OUT%% *}"
+  FLAT_SHA="${FLAT_OUT##* }"
+  if [ "${FLAT_VER}" = "9.9.9" ] && [ "${FLAT_SHA}" = "$(printf 'f%.0s' $(seq 1 40))" ]; then
+    pass "gateway.sh resolves OPENSHELL_VERSION/OPENSHELL_SHA from a flattened EXECUTOR_DIR"
+  else
+    fail "gateway.sh did not resolve the version pin from a flattened EXECUTOR_DIR layout (version='${FLAT_VER}' sha='${FLAT_SHA}')"
+  fi
+fi
+rm -rf "${FLAT_DIR}"
 
 echo "== parse / version compare =="
 if [ "$(parse_openshell_version 'openshell 0.0.116 (commit abc)')" = "0.0.116" ]; then

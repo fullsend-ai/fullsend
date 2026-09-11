@@ -18,10 +18,16 @@
 # Renovate-tracked pin for the OpenShell version/commit this host trusts,
 # read from .github/scripts/openshell-version.sh (the same file
 # install-openshell.sh and setup.sh source). Provides OPENSHELL_VERSION and
-# OPENSHELL_SHA. Try the VM layout first (.github/scripts/ as a sibling of
-# executor/), then the repo checkout layout.
+# OPENSHELL_SHA. Try the flattened EXECUTOR_DIR layout first (.github/scripts/
+# as a child of this script — install_executor in setup.sh ships it there
+# since that's where prepare.sh/cleanup.sh actually source this file from at
+# per-job runtime), then the VM source-tree layout (.github/scripts/ as a
+# sibling of executor/), then the repo checkout layout.
 _gateway_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_openshell_version_sh="${_gateway_dir}/../.github/scripts/openshell-version.sh"
+_openshell_version_sh="${_gateway_dir}/.github/scripts/openshell-version.sh"
+if [ ! -f "${_openshell_version_sh}" ]; then
+  _openshell_version_sh="${_gateway_dir}/../.github/scripts/openshell-version.sh"
+fi
 if [ ! -f "${_openshell_version_sh}" ]; then
   _openshell_version_sh="${_gateway_dir}/../../../.github/scripts/openshell-version.sh"
 fi
