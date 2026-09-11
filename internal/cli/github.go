@@ -1029,6 +1029,7 @@ type configKeyInfo struct {
 var configKeyMapping = map[string]configKeyInfo{
 	"FULLSEND_GCP_REGION":       {storage: storageVariable},
 	"FULLSEND_REVIEW_CLIENT_ID": {storage: storageVariable},
+	"FULLSEND_PRESERVE_RUNS":    {storage: storageVariable},
 	forge.PerRepoGuardVar:       {storage: storageVariable},
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
@@ -1048,6 +1049,7 @@ Org-scope variables (like FULLSEND_MINT_URL) are managed by
 Valid keys:
   FULLSEND_GCP_REGION         repo variable   GCP region for inference
   FULLSEND_REVIEW_CLIENT_ID   repo variable   review app OAuth client ID
+  FULLSEND_PRESERVE_RUNS      repo variable   let a run in flight finish
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
   FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name`,
