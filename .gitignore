@@ -26,9 +26,14 @@ docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
 coverage.out
-# QualityFlow intermediates (STP/STD/reviews). outputs/<id>/{go,python}-tests/
-# is the agent's documented fallback for the generated tests themselves and
-# stays committable so a fallback-mode run fails visibly in CI, not silently.
+# QualityFlow intermediates (STP/STD/reviews/state). outputs/<id>/{go,python}-tests/
+# stay committable so the generated tests land in the PR diff for a human reviewer.
+# They are NOT reliably run by CI: the QualityFlow commits carry [skip ci], so a
+# committed go-tests/ package is only compiled by `go test -race ./...` at
+# merge_group time (after review), and no CI job runs the python-tests at all.
+# Cross-checked against every outputs/ path in qualityflow-fullsend@f6311b4;
+# re-check this list when that pin moves.
 **/outputs/*/stp/
 **/outputs/*/std/
 **/outputs/*/reviews/
+**/outputs/*/state/
