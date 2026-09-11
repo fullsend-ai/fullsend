@@ -2283,25 +2283,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.Blank()
 
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
-			// The deadline is advisory; a stale one from the previous
-			// iteration is the only harmful state, so clear it and go on.
-			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
-			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
-				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
-					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
-				}
-				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
-			}
-		}
-		heartbeatDone := make(chan struct{})
-		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
 		// The follow-up run watcher runs beside the heartbeat: it absorbs
 		// work-item updates into this run instead of letting the run queued
 		// behind it redo the work (ADR 0101). Nil when steering is off or
 		// the runtime cannot take a message into a running session, in
 		// which case Steerable stays false and Run is single-turn as today.
+		//
+		// It starts before the iteration env is written because that env
+		// advertises the deadline, and whether this iteration is steered
+		// decides which deadline is true.
 		iterSteerOpts := baseSteerOpts
 		iterSteerOpts.runtime = rt
 		iterSteerOpts.sandboxName = sandboxName
@@ -2310,6 +2301,34 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts.baseline = steerBaseline
 		steerSess := startSteerWatcher(ctx, iterSteerOpts)
 		steerActive = steerActive || steerSess != nil
+
+		// The deadline the sandbox is told must be the one the run is
+		// actually killed at. A steered run is bounded by steerBudget from
+		// runStartedAt — earlier than the harness timeout whenever the
+		// forge token's life clips it — so advertising agentStart+timeout
+		// would promise the agent time it will not get. Both values come
+		// off the same helpers the run context and the timeout detection
+		// use, so the three cannot drift apart.
+		envTimeout, envDeadline := iterationEnvBudget(
+			steerSess != nil, effectiveTimeoutMinutes(h), runStartedAt, agentStart, timeout)
+		if err := writeIterationEnv(execCtx, sandboxName, envTimeout, envDeadline); err != nil {
+			// The deadline is advisory; a stale one from the previous
+			// iteration is the only harmful state, so clear it and go on.
+			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
+			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
+				// Returning here would leave the watcher polling for a run
+				// that never starts.
+				if steerSess != nil {
+					steerSess.stop()
+				}
+				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
+					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
+				}
+				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
+			}
+		}
+		heartbeatDone := make(chan struct{})
+		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
 		// A steered run outlives a single-turn budget, and params.Timeout
 		// bounds one exec — on Codex that is each exec in the resume loop,

@@ -695,3 +695,40 @@ func TestSteerBudget(t *testing.T) {
 		assert.Equal(t, start.Add(steerBudget(timeout)), steerDeadline(start, timeout))
 	}
 }
+
+// TestIterationEnvBudget_SteeredUsesTheRealDeadline covers what the sandbox
+// is told. A steered run is killed at steerDeadline anchored at run start,
+// and steerBudget clips the harness timeout to what is left of the forge
+// token's life — so the unsteered pair advertised a deadline the run would
+// not survive to.
+func TestIterationEnvBudget_SteeredUsesTheRealDeadline(t *testing.T) {
+	runStart := time.Now().UTC()
+	agentStart := runStart.Add(10 * time.Minute) // setup before the agent
+	timeout := steerTokenLife                    // longer than the token allows
+
+	require.Less(t, steerBudget(timeout), timeout, "the fixture must actually be clipped")
+
+	minutes, deadline := iterationEnvBudget(true, 999, runStart, agentStart, timeout)
+
+	assert.Equal(t, runStart.Add(steerBudget(timeout)), deadline,
+		"the deadline must be the one the run context stops at")
+	assert.True(t, deadline.Before(agentStart.Add(timeout)),
+		"and earlier than the harness timeout would have advertised")
+	assert.Equal(t, int(steerBudget(timeout).Minutes()), minutes,
+		"the minutes must come from the same source as the deadline")
+	assert.NotEqual(t, 999, minutes, "the harness value must not survive a steered run")
+}
+
+// TestIterationEnvBudget_UnsteeredIsUnchanged pins every run in production
+// today: the harness minutes and agentStart+timeout, untouched.
+func TestIterationEnvBudget_UnsteeredIsUnchanged(t *testing.T) {
+	runStart := time.Now().UTC()
+	agentStart := runStart.Add(10 * time.Minute)
+	timeout := 20 * time.Minute
+
+	minutes, deadline := iterationEnvBudget(false, 20, runStart, agentStart, timeout)
+
+	assert.Equal(t, 20, minutes)
+	assert.Equal(t, agentStart.Add(timeout), deadline,
+		"unsteered stays anchored at the agent's own start")
+}

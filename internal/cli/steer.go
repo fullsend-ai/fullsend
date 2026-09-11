@@ -177,7 +177,7 @@ func steerDeadline(runStart time.Time, timeout time.Duration) time.Time {
 // budget, clipped to what is left of the forge token's life.
 //
 // This is the single source for the bound. steerDeadline turns it into the
-// instant the watcher and the run context stop at, and steerAwareTimeout
+// instant the watcher and the run context stop at, and steerAwareBudget
 // hands it to the timeout detection, so a change to the cap reaches both
 // without a matching edit somewhere else.
 func steerBudget(timeout time.Duration) time.Duration {
@@ -185,6 +185,25 @@ func steerBudget(timeout time.Duration) time.Duration {
 		return tokenBudget
 	}
 	return timeout
+}
+
+// iterationEnvBudget returns the timeout and deadline the iteration env
+// advertises to the sandbox: what the agent is told it has.
+//
+// It must be the bound the run is actually killed at. A steered run is
+// killed at steerDeadline anchored at the START of the run, and steerBudget
+// clips the harness timeout to what is left of the forge token's life — so
+// the unsteered pair would promise time the run will not get. Both values
+// come off the same helpers steerDeadline gives the run context and
+// steerAwareBudget gives the timeout detection, so the three cannot drift.
+//
+// The unsteered pair is the harness minutes and agentStart+timeout,
+// unchanged: that is every run in production today.
+func iterationEnvBudget(steered bool, harnessMinutes int, runStartedAt, agentStart time.Time, timeout time.Duration) (int, time.Time) {
+	if !steered {
+		return harnessMinutes, agentStart.Add(timeout)
+	}
+	return int(steerBudget(timeout).Minutes()), steerDeadline(runStartedAt, timeout)
 }
 
 // steerAwareBudget returns the pair the timeout detection must compare: how

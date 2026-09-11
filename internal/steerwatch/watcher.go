@@ -590,7 +590,14 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 		w.seen[int64(r.ID)] = true
 	}
 	w.delivered = append(w.delivered, batch)
-	w.steers++
+	// A batch whose every amendment was dropped for size carried no
+	// authorized update to the agent — the runs are left to the queued run
+	// and none is receipted — so it must not spend one of MaxSteers. runs
+	// is empty only in that case: a context-only batch, a push with no
+	// amendment at all, excludes nothing and still counts.
+	if len(runs) > 0 {
+		w.steers++
+	}
 	// The boundary the delta actually covered, not "now": delivery takes
 	// time, and anything that arrived during it belongs to the next delta.
 	w.baseline = snapshot
@@ -628,6 +635,17 @@ func (w *Watcher) poll(ctx context.Context) []forge.WorkflowRun {
 		rej, err := w.jobChecks(ctx, run)
 		if err != nil {
 			w.warnf("Reading follow-up run %d's jobs failed: %v", run.ID, err)
+			// A permanent failure is a verdict: a 403 or a 404 on this
+			// run's jobs will read the same way on every later poll, so
+			// re-fetching it for the rest of the watch spends an API call
+			// per poll to learn nothing. A transient one — a 5xx, a rate
+			// limit — is "not yet", the same as a Route job still running,
+			// and must stay judgeable. An error that cannot say which it
+			// is counts as transient: re-examining costs a call, and
+			// discarding costs an update.
+			if permanentAPIError(err) {
+				w.markSeen(run)
+			}
 			continue
 		}
 		if rej != nil {
@@ -646,6 +664,23 @@ func (w *Watcher) poll(ctx context.Context) []forge.WorkflowRun {
 		accepted = append(accepted, run)
 	}
 	return accepted
+}
+
+// transientError is satisfied by an API error that can say whether it is
+// worth retrying; github.APIError is. It is asserted structurally so this
+// package keeps depending on the ActionsReader interface rather than on a
+// concrete client.
+type transientError interface{ IsTransient() bool }
+
+// permanentAPIError reports whether err is an API failure that will answer
+// the same way on every later poll. An error that cannot say is treated as
+// transient, which is the direction that loses nothing.
+func permanentAPIError(err error) bool {
+	var t transientError
+	if !errors.As(err, &t) {
+		return false
+	}
+	return !t.IsTransient()
 }
 
 func runIDs(runs []forge.WorkflowRun) string {
