@@ -1055,3 +1055,37 @@ func TestRunIssuesPostComment_OnlyIfExists_ReplacesEarlierFindings(t *testing.T)
 	require.Len(t, comments, 1)
 	assert.Contains(t, string(comments[0].Body), "all clear")
 }
+
+func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		trackerName:  trackerJira,
+		project:      "PROJ",
+		number:       42,
+		marker:       "<!-- test:agent -->",
+		onlyIfExists: true,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "all clear",
+	}
+	// No earlier comment: nothing is created.
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	assert.Empty(t, comments)
+
+	// An earlier findings comment exists: it is replaced.
+	cfg.onlyIfExists = false
+	cfg.testBody = "2 broken links"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	cfg.onlyIfExists = true
+	cfg.testBody = "all clear"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	comments, err = tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "all clear")
+}
