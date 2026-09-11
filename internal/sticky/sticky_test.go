@@ -376,3 +376,30 @@ func TestPost_DryRunExisting(t *testing.T) {
 
 	assert.Empty(t, client.UpdatedComments)
 }
+
+func TestPost_OnlyIfExists_SkipsCreate(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", OnlyIfExists: true}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "All clear.", cfg, printer)
+	require.NoError(t, err)
+	assert.Empty(t, commentURL)
+	assert.Empty(t, client.IssueComments["o/r/1"], "only-if-exists must not create a first comment")
+}
+
+func TestPost_OnlyIfExists_UpdatesExisting(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-100", Body: "<!-- test -->\n2 broken links", Author: "bot"}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", OnlyIfExists: true}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "All clear.", cfg, printer)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-100", commentURL)
+	require.Len(t, client.UpdatedComments, 1)
+}
