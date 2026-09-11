@@ -377,8 +377,11 @@ func ImportProfileVerified(ctx context.Context, id, profilePath string) error {
 	if err := ImportProfile(ctx, id, profilePath); err != nil {
 		return err
 	}
-	if present, err = ProfileExists(ctx, id); err != nil || !present {
-		return fmt.Errorf("provider profile %q is not on the gateway after import (err=%v)", id, err)
+	if present, err = ProfileExists(ctx, id); err != nil {
+		return fmt.Errorf("checking provider profile %q: %w", id, err)
+	}
+	if !present {
+		return fmt.Errorf("provider profile %q is not on the gateway after import", id)
 	}
 	return nil
 }

@@ -152,6 +152,38 @@ func TestImportProfileVerified_ListError(t *testing.T) {
 	assert.Contains(t, err.Error(), "checking provider profile")
 }
 
+// TestImportProfileVerified_RetryListError covers the retry path's
+// ProfileExists call specifically: the first list must succeed (empty, so a
+// retry is attempted) and the second list must fail, so a genuine listing
+// error on the retry is reported as such (wrapped, via "checking provider
+// profile") instead of being mislabeled as "not on the gateway after import".
+func TestImportProfileVerified_RetryListError(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "vertex.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: fullsend-vertex-ai\n"), 0o644))
+
+	argsLog := filepath.Join(dir, "args.log")
+	countFile := filepath.Join(dir, "list.count")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + shellQuote(argsLog) + "\n" +
+		"case \"$1 $2\" in\n" +
+		"  'provider list-profiles')\n" +
+		"    n=0; [ -f " + shellQuote(countFile) + " ] && n=$(cat " + shellQuote(countFile) + ")\n" +
+		"    n=$((n + 1)); echo \"$n\" > " + shellQuote(countFile) + "\n" +
+		"    if [ \"$n\" -eq 1 ]; then echo '[]'; else echo 'gateway unreachable' >&2; exit 1; fi\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := ImportProfileVerified(context.Background(), "fullsend-vertex-ai", profilePath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking provider profile")
+	assert.NotContains(t, err.Error(), "not on the gateway after import")
+}
+
 func splitNonEmpty(s string) []string {
 	var out []string
 	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {

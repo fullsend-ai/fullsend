@@ -94,10 +94,10 @@ if openshell_versions_differ "" "0.0.83"; then
 else
   pass "versions_differ false when job version is empty"
 fi
-if [ "$(openshell_install_script_url 0.0.116)" = "https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.0.116/install.sh" ]; then
-  pass "install URL uses the release tag, not the VM SHA"
+if [ "$(openshell_install_script_url abc123def)" = "https://raw.githubusercontent.com/NVIDIA/OpenShell/abc123def/install.sh" ]; then
+  pass "install URL is built from a commit SHA, not a job-chosen release tag"
 else
-  fail "install URL was $(openshell_install_script_url 0.0.116)"
+  fail "install URL was $(openshell_install_script_url abc123def)"
 fi
 
 echo "== wipe store =="
@@ -184,25 +184,39 @@ else
   pass "install_openshell_at_version rejects non-semver"
 fi
 
-echo "== ensure_job_openshell_gateway installs on mismatch =="
+echo "== ensure_job_openshell_gateway installs on mismatch (only the Renovate pin) =="
 reset_logs
-# Job image reports 0.0.116; host stub reports 0.0.83.
+if [ -z "${OPENSHELL_VERSION:-}" ] || [ -z "${OPENSHELL_SHA:-}" ]; then
+  fail "OPENSHELL_VERSION/OPENSHELL_SHA were not sourced from .github/scripts/openshell-version.sh"
+else
+  pass "gateway.sh sourced the Renovate-tracked OpenShell pin (${OPENSHELL_VERSION})"
+fi
+# Job image reports the Renovate-pinned version; host stub reports 0.0.1 (stale).
 cat > "${SHIM_DIR}/podman" <<PODMAN
 #!/bin/sh
 echo "\$@" >> "${PODMAN_LOG}"
 for a in "\$@"; do
   case "\$a" in
-    --version) echo "openshell 0.0.116"; exit 0 ;;
+    --version) echo "openshell ${OPENSHELL_VERSION}"; exit 0 ;;
   esac
 done
 # podman run --entrypoint openshell -- IMAGE --version
 if [ "\$1" = "run" ]; then
-  echo "openshell 0.0.116"
+  echo "openshell ${OPENSHELL_VERSION}"
   exit 0
 fi
 exit 0
 PODMAN
 chmod +x "${SHIM_DIR}/podman"
+cat > "${SHIM_DIR}/openshell" <<'OS'
+#!/bin/sh
+case "$1" in
+  --version) echo "openshell 0.0.1";;
+  gateway) echo "  * openshell";;
+esac
+exit 0
+OS
+chmod +x "${SHIM_DIR}/openshell"
 
 # curl | sh: emit a no-op script so the pipe succeeds without a real install.
 cat > "${SHIM_DIR}/curl" <<CURL
@@ -214,22 +228,68 @@ CURL
 chmod +x "${SHIM_DIR}/curl"
 
 mkdir -p "${HOME}/.config/openshell"
-printf '[openshell.gateway]\nsupervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.83"\n' \
+printf '[openshell.gateway]\nsupervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.1"\n' \
   > "${HOME}/.config/openshell/gateway.toml"
 
 if ensure_job_openshell_gateway "registry.example.com/runner:dev"; then
-  if grep -q 'NVIDIA/OpenShell/v0.0.116/install.sh' "${CURL_LOG}"; then
-    pass "mismatch installs from the job version's release tag"
+  if grep -q "NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh" "${CURL_LOG}"; then
+    pass "mismatch installs from the Renovate-pinned commit SHA, not a job-chosen tag"
   else
-    fail "curl log missing tag URL: $(tr '\n' '|' < "${CURL_LOG}")"
+    fail "curl log missing SHA-pinned URL: $(tr '\n' '|' < "${CURL_LOG}")"
   fi
-  if grep -q 'supervisor:0.0.116' "${HOME}/.config/openshell/gateway.toml"; then
-    pass "supervisor_image pinned to the job version"
+  if grep -q -- '--cap-drop=ALL' "${PODMAN_LOG}" && grep -q -- '--security-opt=no-new-privileges' "${PODMAN_LOG}"; then
+    pass "job image version probe is hardened like the real job container"
+  else
+    fail "podman log missing hardening flags: $(tr '\n' '|' < "${PODMAN_LOG}")"
+  fi
+  if grep -q "supervisor:${OPENSHELL_VERSION}" "${HOME}/.config/openshell/gateway.toml"; then
+    pass "supervisor_image pinned to the matched version"
   else
     fail "supervisor_image not updated: $(cat "${HOME}/.config/openshell/gateway.toml")"
   fi
 else
   fail "ensure_job_openshell_gateway returned non-zero on mismatch"
+fi
+
+echo "== ensure_job_openshell_gateway refuses a job version outside the Renovate pin =="
+reset_logs
+cat > "${SHIM_DIR}/podman" <<'PODMAN'
+#!/bin/sh
+echo "$@" >> "${PODMAN_LOG}"
+if [ "$1" = "run" ]; then
+  echo "openshell 9.9.9"
+  exit 0
+fi
+exit 0
+PODMAN
+sed -i "s|\${PODMAN_LOG}|${PODMAN_LOG}|" "${SHIM_DIR}/podman"
+chmod +x "${SHIM_DIR}/podman"
+: > "${CURL_LOG}"
+if ensure_job_openshell_gateway "registry.example.com/runner:dev" 2>/dev/null; then
+  fail "ensure_job_openshell_gateway must refuse a job-chosen version outside the Renovate pin"
+elif [ -s "${CURL_LOG}" ]; then
+  fail "must not curl-install an unpinned version: $(tr '\n' '|' < "${CURL_LOG}")"
+else
+  pass "job image requesting a non-pinned OpenShell version is refused without installing"
+fi
+
+echo "== job_image_openshell_version fails hard on a podman error instead of silently keeping the host version =="
+reset_logs
+cat > "${SHIM_DIR}/podman" <<'PODMAN'
+#!/bin/sh
+echo "$@" >> "${PODMAN_LOG}"
+if [ "$1" = "run" ]; then
+  echo "OCI runtime exec failed: exec: openshell: executable file not found" >&2
+  exit 126
+fi
+exit 0
+PODMAN
+sed -i "s|\${PODMAN_LOG}|${PODMAN_LOG}|" "${SHIM_DIR}/podman"
+chmod +x "${SHIM_DIR}/podman"
+if job_image_openshell_version "registry.example.com/runner:dev" >/dev/null 2>/dev/null; then
+  fail "job_image_openshell_version should fail on a podman error, not report a version"
+else
+  pass "job_image_openshell_version propagates a hard podman error instead of masking it as 'no CLI'"
 fi
 
 echo "== ensure_job_openshell_gateway skips install on match =="

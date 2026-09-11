@@ -15,6 +15,21 @@
 # Podman cache. Only the CLI (~39 MB) and a version-skewed supervisor
 # (~30 MB) are fetched when the job's pin differs from the host.
 
+# Renovate-tracked pin for the OpenShell version/commit this host trusts,
+# read from .github/scripts/openshell-version.sh (the same file
+# install-openshell.sh and setup.sh source). Provides OPENSHELL_VERSION and
+# OPENSHELL_SHA. Try the VM layout first (.github/scripts/ as a sibling of
+# executor/), then the repo checkout layout.
+_gateway_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_openshell_version_sh="${_gateway_dir}/../.github/scripts/openshell-version.sh"
+if [ ! -f "${_openshell_version_sh}" ]; then
+  _openshell_version_sh="${_gateway_dir}/../../../.github/scripts/openshell-version.sh"
+fi
+if [ -f "${_openshell_version_sh}" ]; then
+  # shellcheck source=../../../.github/scripts/openshell-version.sh
+  source "${_openshell_version_sh}"
+fi
+
 # OpenShell's systemd user unit sets StateDirectory=openshell/gateway, which
 # for a user service is ~/.local/state/openshell/gateway (SQLite). TLS
 # material lives in ~/.local/state/openshell/tls. Wiping both and restarting
@@ -40,8 +55,16 @@ parse_openshell_version() {
 }
 
 job_image_openshell_version() {
-  local image="$1" out
-  out=$(podman run --rm --entrypoint openshell -- "${image}" --version 2>/dev/null || true)
+  local image="$1" out status=0
+  # Hardened the same as the real job container (prepare.sh): a crafted
+  # `openshell` entrypoint should not get a weaker-isolation execution just
+  # to have its self-reported version read.
+  out=$(podman run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+    --pids-limit 4096 --entrypoint openshell -- "${image}" --version 2>&1) || status=$?
+  if [ "${status}" -ne 0 ]; then
+    echo "ERROR: could not probe OpenShell version from job image ${image} (podman exit ${status}): ${out}" >&2
+    return 1
+  fi
   parse_openshell_version "${out}"
 }
 
@@ -51,8 +74,10 @@ host_openshell_version() {
   parse_openshell_version "${out}"
 }
 
+# $1 is a commit SHA (never a mutable release tag — see
+# install_openshell_at_version for why).
 openshell_install_script_url() {
-  printf 'https://raw.githubusercontent.com/NVIDIA/OpenShell/v%s/install.sh' "$1"
+  printf 'https://raw.githubusercontent.com/NVIDIA/OpenShell/%s/install.sh' "$1"
 }
 
 openshell_supervisor_image() {
@@ -173,19 +198,28 @@ pin_supervisor_image() {
   fi
 }
 
-# Install the OpenShell version the *job* pins, not the VM's baked-in copy.
-# The install.sh is fetched from the matching NVIDIA/OpenShell release tag
-# (vX.Y.Z), so a stale SHA in the VM's openshell-version.sh cannot pin us
-# to the wrong installer.
+# Install the OpenShell version the job pins, but only when that version is
+# the Renovate-tracked pin (OPENSHELL_VERSION/OPENSHELL_SHA, sourced above
+# from .github/scripts/openshell-version.sh) — callers must verify that match
+# before calling this (see ensure_job_openshell_gateway). install.sh is
+# fetched from that commit SHA, never from a job-supplied release tag: the
+# job image's self-reported `openshell --version` is job-controlled input,
+# and a mutable vX.Y.Z tag could be retagged or rolled back, bypassing the
+# commit-SHA allowlist .github/scripts/install-openshell.sh deliberately
+# enforces for VM provisioning.
 install_openshell_at_version() {
-  local ver="$1"
+  local ver="${1:-}" sha="${2:-}"
   if ! printf '%s' "${ver}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     echo "ERROR: invalid OpenShell version: ${ver}" >&2
     return 1
   fi
-  echo "Installing OpenShell ${ver} (job-matched)"
+  if ! printf '%s' "${sha}" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "ERROR: invalid OpenShell commit SHA: ${sha}" >&2
+    return 1
+  fi
+  echo "Installing OpenShell ${ver} (${sha}, job-matched)"
   local url
-  url="$(openshell_install_script_url "${ver}")"
+  url="$(openshell_install_script_url "${sha}")"
   local max_attempts=3 attempt=1 delay=5
   while true; do
     if curl -LsSf --retry 3 --retry-delay 5 "${url}" \
@@ -201,8 +235,15 @@ install_openshell_at_version() {
     attempt=$((attempt + 1))
     delay=$((delay * 3))
   done
-  # The RPM %post may enable the user unit; pin it back to per-job.
-  systemctl --user disable openshell-gateway.service 2>/dev/null || true
+  # The RPM %post may enable the user unit; pin it back to per-job. Stop
+  # first so a running unit doesn't block disable, and fail if disable does
+  # not succeed — otherwise a reboot before the next prepare/cleanup could
+  # resurrect the long-lived daemon this per-job model replaces.
+  systemctl --user stop openshell-gateway.service 2>/dev/null || true
+  if ! systemctl --user disable openshell-gateway.service 2>/dev/null; then
+    echo "ERROR: could not disable openshell-gateway.service after installing OpenShell ${ver}" >&2
+    return 1
+  fi
 }
 
 # Pull the job image's OpenShell version onto the host if needed, then start
@@ -211,12 +252,22 @@ install_openshell_at_version() {
 ensure_job_openshell_gateway() {
   local image="$1"
   local job_ver host_ver
-  job_ver="$(job_image_openshell_version "${image}")"
+  job_ver="$(job_image_openshell_version "${image}")" || return 1
   host_ver="$(host_openshell_version)"
 
   if openshell_versions_differ "${job_ver}" "${host_ver}"; then
-    echo "OpenShell host ${host_ver:-none} != job image ${job_ver}; installing job version"
-    install_openshell_at_version "${job_ver}" || return 1
+    # The job image's self-reported version is job-controlled (any job that
+    # can set `image:` on this runner). Only ever install the host's
+    # Renovate-tracked pin — never a version the job merely claims to want —
+    # so a job cannot direct the host to fetch and run an
+    # arbitrary/retagged/older NVIDIA/OpenShell installer.
+    if [ "${job_ver}" != "${OPENSHELL_VERSION:-}" ]; then
+      echo "ERROR: job image reports OpenShell ${job_ver}, but this host only trusts the Renovate-pinned ${OPENSHELL_VERSION:-<unset>} (commit ${OPENSHELL_SHA:-<unset>})" >&2
+      echo "ERROR: bump .github/scripts/openshell-version.sh (operator-approved) before running jobs that need a different OpenShell version" >&2
+      return 1
+    fi
+    echo "OpenShell host ${host_ver:-none} != job image ${job_ver}; installing the pinned version"
+    install_openshell_at_version "${job_ver}" "${OPENSHELL_SHA:-}" || return 1
     pin_supervisor_image "${job_ver}"
     podman pull -- "$(openshell_supervisor_image "${job_ver}")" || return 1
   elif [ -n "${job_ver}" ]; then

@@ -44,6 +44,15 @@ if [ -f "${_openshell_version_sh}" ]; then
 fi
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
 
+# Source the executor's gateway helpers (wait_for_openshell_gateway) so
+# configure_per_job_gateway can wait for the seed start instead of assuming
+# it worked.
+_gateway_sh="${SCRIPT_DIR}/executor/gateway.sh"
+if [ -f "${_gateway_sh}" ]; then
+  # shellcheck source=executor/gateway.sh
+  source "${_gateway_sh}"
+fi
+
 EXECUTOR_DIR="${HOME}/gitlab-runner-executor"
 BUILDS_DIR="${HOME}/builds"
 CACHE_DIR="${HOME}/cache"
@@ -633,6 +642,9 @@ configure_per_job_gateway() {
   # Seed PKI + gateway.toml.default via a one-shot start, then stop and
   # disable. The next job's prepare.sh starts it for real with a wiped store.
   systemctl --user start openshell-gateway.service || true
+  if ! wait_for_openshell_gateway; then
+    fail "openshell-gateway.service did not become active during the seed start — check: journalctl --user -u openshell-gateway"
+  fi
   systemctl --user stop openshell-gateway.service 2>/dev/null || true
   systemctl --user disable openshell-gateway.service 2>/dev/null || true
 
