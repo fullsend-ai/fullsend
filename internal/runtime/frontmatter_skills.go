@@ -108,6 +108,10 @@ func rewriteFrontmatterSkills(frontBytes []byte, added []string, eol string) ([]
 	if eol == "\r\n" {
 		marshaled = bytes.ReplaceAll(marshaled, []byte("\n"), []byte("\r\n"))
 	}
+	var validated yaml.Node
+	if err := yaml.Unmarshal(marshaled, &validated); err != nil {
+		return nil, fmt.Errorf("validating rewritten frontmatter: %w", err)
+	}
 	return marshaled, nil
 }
 
