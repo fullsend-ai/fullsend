@@ -1281,10 +1281,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// GitLab instance (#6615). Prepended so that a user-defined profile
 	// with the same ID wins via last-wins dedup. Inserted before the
 	// integrity check so providers referencing this ID are valid.
-	// generatedProfileIDs records profiles the runner synthesized itself;
-	// a profiles/ directory copy overriding one of these is the documented
-	// path, not a shadowing worth warning about.
-	generatedProfileIDs := map[string]bool{}
 	if forgePlatform == "gitlab" {
 		if profilePath, cleanupProfile, err := generateGitLabForgeProfile(); err != nil {
 			printer.StepWarn("Failed to auto-generate GitLab forge profile: " + err.Error())
@@ -1294,26 +1290,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				ID:        "fullsend-gitlab-forge",
 				LocalPath: profilePath,
 			}}, result.Profiles...)
-			generatedProfileIDs["fullsend-gitlab-forge"] = true
 		}
 	}
 
-	dirProfileIDs, err := resolve.CollectProfileIDs(filepath.Join(absFullsendDir, "profiles"))
-	if err != nil {
-		return fmt.Errorf("scanning profiles directory: %w", err)
-	}
-	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles, dirProfileIDs); intErr != nil {
+	if intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
 		printer.StepFail("Provider references unknown profile type")
 		return intErr
-	} else if w != "" {
-		printer.StepWarn(w)
 	}
 
 	// 2c. Ensure providers v2 is enabled and import profiles + providers.
 	// Profiles are a providers-v2 concept (ADR 0065), so EnableProvidersV2
-	// must run before any profile import — both URL-resolved and directory.
-	// Only harness-declared and URL-resolved providers are loaded and created;
-	// directory providers not referenced by this harness are skipped entirely.
+	// must run before any profile import.
+	// Only harness-declared profiles and providers are imported and created;
+	// directory files not listed on the harness are skipped entirely (#7095).
 	result.Profiles = dedupResolvedProfiles(result.Profiles)
 	// The sandbox name is generated before providers are created so a
 	// run-scoped provider can carry its suffix (#6689).
@@ -1351,6 +1340,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, rp := range result.Profiles {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
+			// Never trust ImportProfile's content cache here: a cache hit
+			// only means these bytes were sent once, not that the gateway
+			// still holds them now. Before #7095, a stale profiles/
+			// directory copy could become the live gateway profile for
+			// this id after this loop's cache was already written,
+			// leaving a persistent gateway silently poisoned. Forgetting
+			// the cache ensures this run re-sends the harness-listed file
+			// at least once, healing any gateway a prior run poisoned.
+			sandbox.ForgetProfileCache(rp.ID)
 			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
 				printer.StepFail("Failed to import profile " + rp.ID)
 				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
@@ -1358,25 +1356,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 		}
 
-		// Warn when a profiles/ directory copy and a harness-resolved profile
-		// share an id. The directory import below runs after the harness
-		// import, but each has its own hash cache, so either copy can end up
-		// live on the gateway; a stale directory copy can silently undo a fix
-		// the harness already carries (#6971). Per-repo customization relies
-		// on the override, so this only makes it visible.
-		profilesDir := filepath.Join(absFullsendDir, "profiles")
-		for _, sp := range shadowedProfiles(dirProfileIDs, result.Profiles, profilesDir, generatedProfileIDs) {
-			printer.StepWarn(fmt.Sprintf("Profile %q is defined both in %s and by the harness (%s); whichever copy was imported most recently is live — delete the directory copy or keep it in sync", sp.ID, profilesDir, sp.LocalPath))
-		}
-
-		// Import provider profiles (if profiles/ directory exists).
-		dirProfileStart := time.Now()
-		printer.StepStart("Importing provider profiles")
-		if err := sandbox.ImportProfiles(profilesDir); err != nil {
-			printer.StepFail("Failed to import provider profiles")
-			return fmt.Errorf("importing provider profiles: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(dirProfileStart).Seconds()))
+		// Profiles are imported one by one in the loop above
+		// (openshell.profiles entries only). Unlisted files under
+		// profiles/ are skipped to prevent stale overrides (#7095).
 
 		providersDir := filepath.Join(absFullsendDir, "providers")
 		declared := make(map[string]struct{}, len(h.Providers))
@@ -1430,7 +1412,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// before the skip decision below on purpose — skipping first
 			// would leave a repo-controlled profile with the reserved id
 			// live on the gateway for the next run to pick up.
-			if err := rejectReservedProfileID(openAIProviderType, result.Profiles, dirProfileIDs); err != nil {
+			if err := rejectReservedProfileID(openAIProviderType, result.Profiles); err != nil {
 				return err
 			}
 			// The OpenAI provider is materialized only for a run that will
@@ -5577,34 +5559,6 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 	return deduped
 }
 
-// shadowedProfiles returns, sorted by ID, the harness-resolved profiles
-// whose ID also appears in profilesDir. ImportProfiles(profilesDir) runs
-// after the harness-resolved imports, but the two imports keep independent
-// hash caches, so the copy imported most recently is the live one. A
-// resolved profile that already lives in profilesDir (a local-path entry,
-// ADR 0075) is the same file, not a shadow, and runner-generated profiles
-// (generatedIDs) are meant to be overridden, so both are skipped. Duplicate
-// IDs in the directory are reported once.
-func shadowedProfiles(dirIDs []string, resolved []resolve.ResolvedProfile, profilesDir string, generatedIDs map[string]bool) []resolve.ResolvedProfile {
-	byID := make(map[string]resolve.ResolvedProfile, len(resolved))
-	for _, rp := range resolved {
-		if generatedIDs[rp.ID] || (!rp.FromURL && filepath.Dir(rp.LocalPath) == profilesDir) {
-			continue
-		}
-		byID[rp.ID] = rp
-	}
-	seen := make(map[string]bool, len(dirIDs))
-	var shadowed []resolve.ResolvedProfile
-	for _, id := range dirIDs {
-		if rp, ok := byID[id]; ok && !seen[id] {
-			seen[id] = true
-			shadowed = append(shadowed, rp)
-		}
-	}
-	sort.Slice(shadowed, func(i, j int) bool { return shadowed[i].ID < shadowed[j].ID })
-	return shadowed
-}
-
 // mergeProviderDefs merges local and URL-resolved provider definitions.
 // Local defs have highest precedence; among URL-resolved defs, last
 // occurrence wins (child over base). The returned slice is deterministically
@@ -5638,17 +5592,13 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
-// rejectReservedProfileID fails when the run resolved or found on disk a
-// provider profile whose id the runner reserves for its embedded copy.
-func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile, dirIDs []string) error {
+// rejectReservedProfileID fails when the run resolved a provider profile
+// whose id the runner reserves for its embedded copy. Directory profiles
+// are not checked because they are no longer imported (#7095).
+func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) error {
 	for _, rp := range resolved {
 		if rp.ID == id {
 			return fmt.Errorf("provider profile %q is reserved for the copy built into fullsend; remove it from the harness/openshell profiles", id)
-		}
-	}
-	for _, d := range dirIDs {
-		if d == id {
-			return fmt.Errorf("provider profile %q is reserved for the copy built into fullsend; remove profiles/%s.yaml from the workspace", id, id)
 		}
 	}
 	return nil
@@ -5775,23 +5725,17 @@ func forceRemoveAll(path string) error {
 }
 
 // checkProviderProfileIntegrity validates that every provider references a
-// known profile type. Profile types are collected from three sources:
-// harness-resolved profiles (URL and local-path), and directory profiles
-// (from the profiles/ directory). Returns an error describing the first
-// mismatch, or nil if all references are valid.
-func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile, dirProfileIDs []string) (warning string, err error) {
+// known profile type. Profile types are collected from harness-resolved
+// profiles (URL and local-path). Directory-only profiles are not considered;
+// they must be listed on the harness to count (#7095). Returns an error
+// describing the first mismatch, or nil if all references are valid.
+func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) error {
 	if len(providers) == 0 {
-		return "", nil
+		return nil
 	}
-	profileIDs := make(map[string]bool, len(profiles)+len(dirProfileIDs))
+	profileIDs := make(map[string]bool, len(profiles))
 	for _, rp := range profiles {
 		profileIDs[rp.ID] = true
-	}
-	for _, id := range dirProfileIDs {
-		profileIDs[id] = true
-	}
-	if len(profileIDs) == 0 {
-		return "providers present but no profiles resolved — referential integrity not verified", nil
 	}
 	var mismatches []string
 	for _, rp := range providers {
@@ -5806,11 +5750,11 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 		}
 	}
 	if len(mismatches) > 0 {
-		return "", fmt.Errorf(
+		return fmt.Errorf(
 			"providers reference unknown profile types: %s",
 			strings.Join(mismatches, ", "))
 	}
-	return "", nil
+	return nil
 }
 
 // withSource appends the override source to a plan value when the value came

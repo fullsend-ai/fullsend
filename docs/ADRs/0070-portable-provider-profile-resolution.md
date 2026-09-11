@@ -32,6 +32,11 @@ Currently:
 - Provider definitions are loaded from `.fullsend/providers/` by `LoadProviderDefs`
 - Profile definitions are imported from `.fullsend/profiles/` by `ImportProfiles`
 
+> **Update (#7095):** `ImportProfiles`'s wholesale directory import described above has
+> since been removed; profiles are now imported only when listed under
+> `openshell.profiles` (see [ADR 0075](0075-local-path-profiles-providers.md)). The
+> sentence above is retained as historical context for the problem this ADR addressed.
+
 When a harness is referenced via `base:` (ADR 0045) and that base harness lives in a
 remote repository, its bundled provider and profile definitions cannot be discovered.
 The base harness may declare providers needed for the agent to run, but those providers
@@ -197,6 +202,8 @@ Result after merge and resolution:
   `openshell provider create` time.
 - When URL-resolved providers exist but no URL-resolved profiles are declared,
   a warning is emitted (referential integrity cannot be verified ahead of time).
+  > **Update (#7095):** this case is no longer a warning; `checkProviderProfileIntegrity`
+  > now returns a hard error here, the same as an actual type mismatch.
 - Runs after profile import but before provider creation.
 
 ## Security

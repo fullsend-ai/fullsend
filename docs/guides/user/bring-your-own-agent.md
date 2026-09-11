@@ -75,7 +75,7 @@ You need a harness, an agent definition, and supporting scaffold files. If your 
 +-- harness/my-agent.yaml                  # Execution config (you create)
 +-- agents/my-agent.md                     # Agent prompt (you create)
 +-- providers/vertex-ai.yaml               # Provider definition (from scaffold)
-+-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold)
++-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold; see note below)
 +-- policies/base.yaml                     # Sandbox policy (from scaffold)
 ```
 
@@ -86,6 +86,9 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest  # Pin to a digest before CI 
 policy: policies/base.yaml
 providers:
   - vertex-ai
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml  # required — see note below
 role: triage                        # a role your mint SERVES — not the agent's name (see note below)
 slug: my-org-my-agent               # install-time App discovery only; the mint never reads it
 trigger: |
@@ -137,6 +140,8 @@ binaries:
   - "**/pi"
 ```
 
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/fullsend-vertex-ai.yaml`).
+
 > **Note (CI only):** the provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
 
 **`agents/my-agent.md`:**
@@ -163,7 +168,7 @@ The agent's environment also carries its budget: `FULLSEND_TIMEOUT_MINUTES` (the
 `timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed).
 Write the result before the deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
 
-Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
+Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`), but — like a fully custom provider type — still need a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported; only the profile's `type` value is framework-known, not its import path. When defining a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 

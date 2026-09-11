@@ -147,6 +147,11 @@ providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
 
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml  # must be listed explicitly to be imported
+    - profiles/fullsend-github.yaml
+
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
@@ -230,9 +235,15 @@ providers:
   - vertex-ai       # Anthropic API + GCP (required for model access)
   - github           # GitHub API + Git transport
   - package-registries  # npm, PyPI, Go modules (optional)
+
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+    - profiles/fullsend-github.yaml
+    - profiles/fullsend-package-registries.yaml
 ```
 
-Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+Each provider has a profile that defines its endpoints and binaries. Every profile a provider needs must be listed under `openshell.profiles` (or inherited via `base:` composition) — the gateway only composes the profiles named there into the effective network policy, not every file that happens to exist under `profiles/`. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
 
 The scaffold ships with profiles for common services. To see what's available:
 
@@ -240,6 +251,8 @@ The scaffold ships with profiles for common services. To see what's available:
 ls .fullsend/providers/     # provider definitions (name + type)
 ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
 ```
+
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
 
 For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
