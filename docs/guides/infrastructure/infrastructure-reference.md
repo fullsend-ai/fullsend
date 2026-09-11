@@ -237,11 +237,11 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid credential from the auth pipeline — no role restriction.
 - **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"]}
+  {"org": "my-org", "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Non-OIDC response** (e.g. GitHub user token): Reports all configured allowed orgs.
   ```json
-  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"]}
+  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).

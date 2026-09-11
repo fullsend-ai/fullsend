@@ -22,6 +22,9 @@ fullsend
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
+│   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
+│   │   ├── --project <id>                   #   GCP project ID (direct infra queries)
+│   │   └── --region <region>                #   GCP region (default: us-central1)
 │   └── token                                # Mint a short-lived token via OIDC
 │       ├── --role <name>                    #   Agent role (triage, coder, review)
 │       ├── --repos <list>                   #   Comma-separated repo names

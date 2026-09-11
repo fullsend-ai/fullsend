@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -1743,26 +1744,72 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	return nil
 }
 
+// mintStatusResolveToken resolves a GitHub token for API-based status
+// queries. Overridden in tests.
+var mintStatusResolveToken = resolveToken
+
 func newMintStatusCmd() *cobra.Command {
 	var project string
 	var region string
+	var mintURL string
 
 	cmd := &cobra.Command{
 		Use:   "status [org]",
-		Short: "Show mint state, enrolled orgs, and PEM health",
+		Short: "Show mint state, enrolled orgs, and PEM health (honors FULLSEND_MINT_URL)",
 		Long: `Read-only health check of the token mint infrastructure.
 
-Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
-repos, and overall health status. If an org argument is provided, drills
-into that org's PEM secret status.
+Two modes of operation:
 
-Required IAM roles on the mint project:
+  --mint-url (or FULLSEND_MINT_URL):
+    Queries GET /v1/status on the mint service using auto-discovered
+    GitHub-based authentication. Tries GitHub Actions OIDC first, then
+    falls back to GH_TOKEN / GITHUB_TOKEN / gh auth token. No cloud
+    IAM required.
+
+  --project:
+    Reads mint state directly from GCP infrastructure (Cloud Function
+    metadata, Secret Manager). Requires GCP viewer IAM roles.
+
+When --mint-url is provided, --project is ignored and the API-based
+path is used. When --mint-url is not provided and FULLSEND_MINT_URL
+is set, the API-based path is used unless --project is also provided,
+in which case the command returns an error to prevent silent mode
+ambiguity.
+
+Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
+repos, and overall health status. If an org argument is provided in
+--project mode, drills into that org's PEM secret status.
+
+Required IAM roles on the mint project (--project mode only):
   - roles/cloudfunctions.viewer                   (read Cloud Function metadata)
   - roles/secretmanager.viewer                    (list and read secret metadata)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			printer := ui.New(os.Stdout)
+
+			// Resolve mint URL from flag or env.
+			// When --mint-url is explicitly provided (even as ""),
+			// skip the env-var fallback so the user can force GCP mode.
+			mintURLFromEnv := false
+			if !cmd.Flags().Changed("mint-url") {
+				mintURL = os.Getenv("FULLSEND_MINT_URL")
+				mintURLFromEnv = mintURL != ""
+			}
+
+			// Route to API-based or GCP-based path.
+			if mintURL != "" {
+				if mintURLFromEnv && cmd.Flags().Changed("project") {
+					return fmt.Errorf("ambiguous mode: FULLSEND_MINT_URL is set and --project was provided; unset the env var to use GCP-based mode, or omit --project to use the API-based mode")
+				}
+				if len(args) > 0 {
+					return fmt.Errorf("org argument is not supported with --mint-url")
+				}
+				return runMintStatusAPI(cmd.Context(), printer, mintURL)
+			}
+
+			// GCP-based path: --project required.
 			if project == "" {
-				return fmt.Errorf("--project is required")
+				return fmt.Errorf("--mint-url, FULLSEND_MINT_URL, or --project is required")
 			}
 			if !gcf.ValidateProjectID(project) {
 				return fmt.Errorf("invalid GCP project ID: %q", project)
@@ -1779,14 +1826,14 @@ Required IAM roles on the mint project:
 				}
 			}
 
-			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
 			return runMintStatus(ctx, printer, project, region, org)
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
+	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for API-based status (default: $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (for direct infrastructure queries)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
 
 	return cmd
@@ -2049,6 +2096,80 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	if len(healthReasons) > 0 {
 		summaryItems = append(summaryItems, fmt.Sprintf("Issues: %s", strings.Join(healthReasons, "; ")))
 	}
+	printer.Summary("Status", summaryItems)
+
+	return nil
+}
+
+func runMintStatusAPI(ctx context.Context, printer *ui.Printer, mintURL string) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Mint Status (API)")
+	printer.Blank()
+
+	printer.StepStart("Authenticating to /v1/status")
+	result, authMethod, err := mintclient.QueryStatus(ctx, mintclient.StatusRequest{
+		MintURL: mintURL,
+	}, mintStatusResolveToken)
+	if err != nil {
+		printer.StepFail("Authentication failed")
+		return fmt.Errorf("querying mint status: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Authenticated via %s", authMethod))
+
+	// Display status facts.
+	printer.Blank()
+	printer.KeyValue("URL", mintURL)
+
+	if result.Version != "" {
+		printer.KeyValue("Version", result.Version)
+	}
+	if result.Commit != "" {
+		printer.KeyValue("Commit", result.Commit)
+	}
+
+	// Org scope depends on auth method: OIDC returns single org,
+	// non-OIDC returns all allowed orgs.
+	printer.Blank()
+	if result.Org != "" {
+		printer.Header("Caller Organization")
+		printer.StepInfo("  " + result.Org)
+	}
+	if len(result.AllowedOrgs) > 0 {
+		printer.Header("Allowed Organizations")
+		for _, o := range result.AllowedOrgs {
+			printer.StepInfo("  " + o)
+		}
+	}
+
+	printer.Blank()
+	printer.Header("Roles")
+	if len(result.Roles) == 0 {
+		printer.StepInfo("  (none)")
+	} else {
+		for _, r := range result.Roles {
+			printer.StepInfo("  " + r)
+		}
+	}
+
+	if len(result.WorkflowHostRepos) > 0 {
+		printer.Blank()
+		printer.Header("Workflow Host Repos")
+		for _, r := range result.WorkflowHostRepos {
+			printer.StepInfo("  " + r)
+		}
+	}
+
+	printer.Blank()
+	summaryItems := []string{
+		fmt.Sprintf("Auth: %s", authMethod),
+	}
+	if result.Org != "" {
+		summaryItems = append(summaryItems, fmt.Sprintf("Org: %s", result.Org))
+	} else if len(result.AllowedOrgs) > 0 {
+		summaryItems = append(summaryItems, fmt.Sprintf("Allowed orgs: %d", len(result.AllowedOrgs)))
+	}
+	summaryItems = append(summaryItems, fmt.Sprintf("Roles: %d", len(result.Roles)))
 	printer.Summary("Status", summaryItems)
 
 	return nil

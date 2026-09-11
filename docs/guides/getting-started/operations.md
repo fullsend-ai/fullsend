@@ -135,10 +135,10 @@ When using the split-responsibility workflow, each standalone command requires a
 | `roles/iam.serviceAccountAdmin` | | | | x | x | | | | | |
 | `roles/secretmanager.admin` | | | | \* | x | \*\* | \*\*\* | | | |
 | `roles/cloudfunctions.developer` | | | | x | x | | | | | |
-| `roles/cloudfunctions.viewer` | | | | | | x | x | x | x | x |
+| `roles/cloudfunctions.viewer` | | | | | | x | x | x | x | x‡ |
 | `roles/run.admin` | | | | x | | x | x | x | x | |
 | `roles/iam.workloadIdentityPoolViewer` | | | x† | | | | | | | |
-| `roles/secretmanager.viewer` | | | | | | § | | | | x |
+| `roles/secretmanager.viewer` | | | | | | § | | | | x‡ |
 
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
@@ -149,6 +149,8 @@ When using the split-responsibility workflow, each standalone command requires a
 § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
 
 † All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
+
+‡ GCP viewer roles for `mint status` are only required when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
 
 Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 

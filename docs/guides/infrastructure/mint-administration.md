@@ -381,7 +381,40 @@ Read-only — makes no changes.
 
 ## Checking mint status
 
-`fullsend mint status` inspects the deployed mint function, Cloud Run revision state, enrolled orgs, and PEM health. This is a read-only operation requiring only viewer-level access.
+`fullsend mint status` inspects the mint's state and PEM health. Two modes are available:
+
+### API-based mode (recommended)
+
+When `--mint-url` (or `FULLSEND_MINT_URL`) is provided, the command queries
+the mint's `/v1/status` endpoint using auto-discovered GitHub credentials.
+No GCP IAM roles are required.
+
+Authentication is attempted in order: GitHub Actions OIDC first, then
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`.
+
+```bash
+# Query via the mint API
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+
+# Or set the env var and omit the flag
+export FULLSEND_MINT_URL="https://mint.example.com"
+fullsend mint status
+```
+
+API-based mode returns the following fields:
+
+- **version** — the mint's build version
+- **commit** — the mint's build commit hash
+- **org** — the calling workflow's organization (OIDC auth only)
+- **allowed_orgs** — all configured allowed organizations (non-OIDC auth)
+- **roles** — configured role names
+- **workflow_host_repos** — repositories allowed as workflow hosts
+
+### GCP-based mode
+
+When `--project` is provided (and `--mint-url` is not), the command reads
+mint state directly from GCP infrastructure. This requires GCP viewer IAM
+roles (see the IAM table below).
 
 ```bash
 # Overview of all enrolled orgs
@@ -391,7 +424,14 @@ fullsend mint status --project="$GCP_PROJECT"
 fullsend mint status acme-corp --project="$GCP_PROJECT"
 ```
 
+> **Note:** The IAM roles listed in the table below apply only to `--project`
+> (GCP-based) mode. API-based mode requires only valid GitHub credentials.
+
 ### What status reports
+
+> The fields below are reported by `--project` (GCP-based) mode.
+> API-based mode (`--mint-url`) returns a different payload — see the
+> field listing in the [API-based mode](#api-based-mode-recommended) section above.
 
 **Cloud Run revision section:**
 

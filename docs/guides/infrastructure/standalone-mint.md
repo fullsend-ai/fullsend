@@ -320,6 +320,19 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
+### Check status via the CLI
+
+If `FULLSEND_MINT_URL` is set (or you pass `--mint-url`), the CLI can
+query the mint's `/v1/status` endpoint using auto-discovered GitHub
+credentials:
+
+```bash
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+This reports the mint's version, enrolled organizations, configured
+roles, and workflow host repos — without requiring any GCP IAM roles.
+
 ### Test from a GitHub Actions workflow
 
 Create a test workflow that requests a token for your custom role:
