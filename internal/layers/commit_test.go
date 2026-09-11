@@ -1152,6 +1152,48 @@ func TestCommitScaffoldViaPR_ClosesStaleOnboardPR(t *testing.T) {
 	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
 }
 
+// TestCommitScaffoldViaPR_UninstallReusesInstallBranch_LeavesExistingPRTitle
+// documents a known, accepted limitation of reusing DefaultScaffoldBranch for
+// both install and uninstall delivery (see UninstallPRMetadata and the
+// "repos uninstall" section of docs/cli/repos.md): when an install PR is
+// already open on that branch and uninstall runs against the same repo, the
+// removal commit lands on the same branch but the pre-existing PR's title
+// and body are left untouched. closeStaleScaffoldPRs never sees this PR
+// because it skips the current branch, and commitBranchAndPR treats the
+// forge's "already exists" response as success without creating or updating
+// a proposal — so no title/body update ever happens.
+func TestCommitScaffoldViaPR_UninstallReusesInstallBranch_LeavesExistingPRTitle(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	// An install PR is already open on the shared branch.
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 7, Title: "chore: initialize fullsend per-repo installation", Head: "fullsend/scaffold-install", Base: "main", Author: "acme"},
+		},
+	}
+	// The forge reports the branch/PR already exists when uninstall tries to
+	// open its own PR on the same branch.
+	client.Errors = map[string]error{
+		"CreateChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
+	}
+	printer, buf := newTestPrinter()
+
+	meta := repos.UninstallPRMetadata()
+	require.Equal(t, repos.DefaultScaffoldBranch, meta.Branch,
+		"uninstall must reuse the install branch to stay excluded from dispatch")
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", meta, testFiles, false, nil)
+	require.NoError(t, err)
+
+	// The pre-existing install PR is not closed (it's on the current branch)...
+	assert.Empty(t, client.ClosedProposals, "the reused branch's own PR must not be closed as stale")
+	// ...and no new proposal is created or updated — the stale install title
+	// survives the uninstall commit, matching the documented limitation.
+	assert.Empty(t, client.CreatedProposals, "already-exists path must not create a duplicate PR")
+	assert.Contains(t, buf.String(), "updated with new files")
+}
+
 func TestCloseStaleScaffoldPRs_SkipsDifferentAuthor(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.PullRequests = map[string][]forge.ChangeProposal{

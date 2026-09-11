@@ -82,6 +82,7 @@ fullsend
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
+│   │   ├── --direct                         #   Push file deletions to default branch (skip PR)
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest
@@ -90,7 +91,16 @@ fullsend
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-├── agent                                    # Manage agent registrations in config
+├── agent                                    # Generate and manage agents in config
+│   ├── new          <name>                   # Generate a complete custom agent and register it
+│   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
+│   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
+│   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
+│   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
+│   │   ├── --validation-loop                #   Add a schema validation_loop
+│   │   ├── --no-register                    #   Write files without touching config.yaml
+│   │   ├── --force                          #   Overwrite generated files (never shared assets)
+│   │   └── --dry-run                        #   Validate and print, writing nothing
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── set          <name>                   # Set an agent's runtime, model or effort (per-repo)

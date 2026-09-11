@@ -1,8 +1,10 @@
 # Building custom agents from scratch
 
-> **Note:** For new custom agents, register them in `config.yaml` with a
-> local `source:` path instead of the patterns shown below. See
-> [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
+> **Note:** For new custom agents, run
+> [`fullsend agent new <name>`](../../cli/agent.md#agent-new) — it generates a
+> complete, valid, registered agent and is the recommended starting point. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the full workflow. The
+> patterns below are retained for understanding an existing hand-written agent.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.

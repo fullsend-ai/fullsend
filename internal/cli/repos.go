@@ -980,6 +980,7 @@ type reposUninstallConfig struct {
 	manifest      string
 	dryRun        bool
 	yes           bool
+	direct        bool
 	concurrency   int
 	manifestOnly  bool
 	uninstallOnly bool
@@ -996,9 +997,14 @@ func newReposUninstallCmd() *cobra.Command {
 		Short: "Tear down fullsend from repos and remove from manifest",
 		Long: `Tear down fullsend from the specified repos and remove them from the manifest.
 
-By default, tears down (deletes workflow files, variables, secrets) and then
-removes the repo entry from repos.yaml. The manifest entry is only removed
-if teardown succeeds.
+By default, tears down (removes workflow files via a pull request, deletes
+variables and secrets immediately) and then removes the repo entry from
+repos.yaml. The manifest entry is only removed if teardown succeeds.
+
+File deletions (workflow YAML, .fullsend/config.yaml, and GitLab
+.gitlab-ci.yml unmerge) are delivered as a PR unless --direct is set.
+Variable and secret deletions are API operations and always happen
+immediately. Use --direct to push file deletions to the default branch.
 
 Use --manifest-only to remove from the manifest without tearing down (e.g.
 when a repo is already deleted). Use --uninstall-only to tear down without
@@ -1019,6 +1025,7 @@ prompt for confirmation unless --yes is set.`,
 	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be uninstalled without making changes")
 	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push file deletions to default branch instead of PR")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().BoolVar(&opts.manifestOnly, "manifest-only", false, "remove from manifest without tearing down")
 	cmd.Flags().BoolVar(&opts.uninstallOnly, "uninstall-only", false, "tear down without removing from manifest")
@@ -1094,6 +1101,29 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		}
 	}
 
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, _ bool) error {
+		forgeName := ""
+		if rc, ok := manifest.ResolveConfigWithGlobs(owner, repo); ok {
+			forgeName = rc.Forge
+		}
+		fc, fcErr := clients.ConfigFor(forgeName)
+		if fcErr != nil {
+			return fcErr
+		}
+		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		meta := repos.UninstallPRMetadata()
+		if forgeName == repos.ForgeGitLab {
+			meta.CommitMsg += " [skip ci]"
+			meta.PRTitle += " [skip ci]"
+		}
+		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+			targetRepo.DefaultBranch, meta, files, direct, nil)
+		return commitErr
+	}
+
 	// Teardown phase (skipped when --manifest-only).
 	var succeededRepos []string
 	var teardownFailed int
@@ -1106,6 +1136,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			Manifest:       manifest,
 			Repos:          concreteRepos,
 			DryRun:         opts.dryRun,
+			Direct:         opts.direct,
 			MaxConcurrency: opts.concurrency,
 		}
 
@@ -1116,7 +1147,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			printer.StepStart("Uninstalling fullsend from repos")
 		}
 
-		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, progressFn)
+		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, scaffoldCommitFn, progressFn)
 		if teardownErr != nil {
 			return teardownErr
 		}
