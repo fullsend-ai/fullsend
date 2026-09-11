@@ -200,8 +200,8 @@ What a local pi run needs, beyond the guide:
   ([earendil-works/pi#8521](https://github.com/earendil-works/pi/issues/8521),
   [#8962](https://github.com/earendil-works/pi/issues/8962)), and the model has to redo the call.
   When the agent has the `edit` tool, the runner loads `fullsend-edit-repair.js`, which parses the
-  argument before pi validates it and logs `[fullsend-edit-repair] repaired stringified edits for
-  <path>` to stderr. The hook adapter sees the repaired edits, the same ones that are applied. It
+  argument before pi validates it and logs a `[fullsend-edit-repair] repaired ...` line naming the
+  file to stderr. The hook adapter sees the repaired edits, the same ones that are applied. It
   goes away once the pinned pi repairs both shapes itself.
 
 ## Plugins (pi extensions)
