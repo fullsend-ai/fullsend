@@ -412,13 +412,18 @@ const (
 // definitions in fullsend-ai/agents telling the agent that the runner may
 // amend its task mid-run; without that line the runtime plumbing here
 // delivers the message and the agent ignores it.
+// SteerEnvelopeOpeningLine is the first line of every steer envelope, and a
+// cross-repo interface: the agent definitions in fullsend-ai/agents match on
+// it to recognise a runner amendment, and also to flag the same line
+// appearing INSIDE work-item content as an injection attempt. It is
+// exported, and named in ADR 0101, so the agents repository has one place
+// to match against and this string has one place to change — which it must
+// not do without that repository changing with it.
+const SteerEnvelopeOpeningLine = "Runner update: your task inputs changed after this run started."
+
 func renderSteerEnvelope(msg SteerMessage) string {
 	var b strings.Builder
-	// The opening line is a cross-repo interface: the agent definitions in
-	// fullsend-ai/agents match on it to recognise a runner amendment, and
-	// also to flag the same line appearing INSIDE work-item content as an
-	// injection attempt. It must stay byte-identical.
-	b.WriteString("Runner update: your task inputs changed after this run started.\n\n")
+	b.WriteString(SteerEnvelopeOpeningLine + "\n\n")
 
 	b.WriteString("The fullsend runner is sending you this.")
 	if msg.Actor != "" {

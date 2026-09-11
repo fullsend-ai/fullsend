@@ -735,8 +735,9 @@ func TestClaudeSteerAggregator_PerMessageReasoningDoesNotRaiseTheTotal(t *testin
 // steerOpeningLine is the cross-repo sentinel the fullsend-ai/agents
 // definitions match on: once to recognise a runner amendment, and again to
 // flag the same line appearing INSIDE work-item content as an injection
-// attempt.
-const steerOpeningLine = "Runner update: your task inputs changed after this run started."
+// attempt. The string itself is pinned by
+// TestSteerEnvelopeOpeningLineIsStable.
+const steerOpeningLine = SteerEnvelopeOpeningLine
 
 // TestSteerEnvelope_OpeningLineAppearsExactlyOnce covers the COMPOSED
 // message as the agent receives it, which is where the duplicate lived: the
