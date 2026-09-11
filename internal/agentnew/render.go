@@ -1,0 +1,281 @@
+package agentnew
+
+import (
+	"bytes"
+	"embed"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
+)
+
+//go:embed all:templates
+var templates embed.FS
+
+// yamlIndent matches the indentation the fleet harnesses use. yaml.v3
+// defaults to 4, which would make a generated harness look unlike every
+// hand-written one next to it.
+const yamlIndent = 2
+
+// agentNamePlaceholder and dryRunPlaceholder are replaced by fixed string
+// substitution, never by a template engine. The only user-supplied value that
+// reaches a generated shell script is the agent name, and it has already
+// passed harness.ValidAgentBasename by the time Render is called.
+const (
+	agentNamePlaceholder = "__AGENT_NAME__"
+	dryRunPlaceholder    = "__DRY_RUN_VAR__"
+)
+
+// File is one generated file. Shared is true for scaffold assets that are
+// written only when absent and are never overwritten, even with --force:
+// they are shared between every agent in the directory.
+type File struct {
+	Path   string
+	Data   []byte
+	Mode   uint32
+	Shared bool
+}
+
+// Render produces the full set of files for one agent. It performs no I/O
+// beyond reading the embedded templates, so every branch is unit-testable
+// without a filesystem.
+func Render(opts Options) ([]File, error) {
+	role, err := LookupRole(opts.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	h, err := buildHarness(opts, role)
+	if err != nil {
+		return nil, err
+	}
+	harnessYAML, err := marshalHarness(h, opts.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	agentMD, err := renderAgentDefinition(opts)
+	if err != nil {
+		return nil, err
+	}
+	schemaJSON, err := renderSchema(opts.Name)
+	if err != nil {
+		return nil, err
+	}
+	postScript, err := renderPostScript(opts.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	files := []File{
+		{Path: "harness/" + opts.Name + ".yaml", Data: harnessYAML, Mode: 0o644},
+		{Path: "agents/" + opts.Name + ".md", Data: agentMD, Mode: 0o644},
+		{Path: "schemas/" + opts.Name + "-result.schema.json", Data: schemaJSON, Mode: 0o644},
+		{Path: "scripts/post-" + opts.Name + ".sh", Data: postScript, Mode: 0o755},
+	}
+
+	shared, err := sharedAssets(role, opts.ValidationLoop)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, shared...), nil
+}
+
+// buildHarness assembles the Harness value that becomes the generated YAML.
+// Building the real struct rather than formatting text means the generator
+// cannot emit a field the validator does not know about.
+func buildHarness(opts Options, role Role) (*harness.Harness, error) {
+	h := &harness.Harness{
+		Agent:       "agents/" + opts.Name + ".md",
+		Description: opts.Description,
+		Role:        role.Name,
+		Slug:        opts.Slug,
+		Image:       opts.Image,
+		Policy:      "policies/base.yaml",
+		Providers:   append([]string(nil), role.Providers...),
+		OpenShell:   &harness.OpenShellConfig{Profiles: append([]string(nil), role.Profiles...)},
+		HostFiles: []harness.HostFile{
+			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json"},
+			{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/workspace/.gcp-oidc-token", Optional: true},
+		},
+		Model:          opts.Model,
+		Effort:         opts.Effort,
+		PostScript:     "scripts/post-" + opts.Name + ".sh",
+		TimeoutMinutes: opts.TimeoutMinutes,
+		Trigger:        opts.Trigger,
+		Env: &harness.EnvConfig{
+			Runner: map[string]string{
+				"ISSUE_URL":      "${GITHUB_ISSUE_URL}",
+				"GH_TOKEN":       "${GH_TOKEN}",
+				"FULLSEND_FORGE": "github",
+			},
+			// The scaffold ships no env/ directory and nothing in fullsend
+			// sets CLAUDE_CODE_USE_VERTEX, so the Vertex variables the fleet
+			// delivers via host_files: env/gcp-vertex.env are set here.
+			Sandbox: map[string]string{
+				"CLAUDE_CODE_USE_VERTEX":         "1",
+				"ANTHROPIC_VERTEX_PROJECT_ID":    "${ANTHROPIC_VERTEX_PROJECT_ID}",
+				"CLOUD_ML_REGION":                "${CLOUD_ML_REGION}",
+				"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/.gcp-credentials.json",
+				"ISSUE_URL":                      "${GITHUB_ISSUE_URL}",
+				"GH_TOKEN":                       "${GH_TOKEN}",
+				"FULLSEND_FORGE":                 "github",
+			},
+		},
+	}
+	if opts.ValidationLoop {
+		h.ValidationLoop = &harness.ValidationLoop{
+			Script:        "scripts/validate-output-schema.sh",
+			Schema:        "schemas/" + opts.Name + "-result.schema.json",
+			MaxIterations: 2,
+			// The validation script hard-fails when python3 or the
+			// jsonschema package is missing, and it does so only after the
+			// agent has already run. preflight_check is evaluated before
+			// sandbox creation, so the same missing dependency is reported
+			// up front instead of costing a full inference run.
+			PreflightCheck: `python3 -c "import jsonschema"`,
+		}
+	}
+	return h, nil
+}
+
+func marshalHarness(h *harness.Harness, name string) ([]byte, error) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "---\n# Generated by `fullsend agent new %s`. Edit freely — nothing\n", name)
+	buf.WriteString("# regenerates this file.\n#\n")
+	buf.WriteString("# `image:` is the container image this agent runs inside, recorded as\n")
+	buf.WriteString("# an exact digest so every run uses the same one. Pass --image to\n")
+	buf.WriteString("# choose a different one.\n#\n")
+	buf.WriteString("# This agent handles GitHub only. To add GitLab or Jira, see\n")
+	buf.WriteString("# docs/guides/user/bring-your-own-agent.md.\n")
+
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(yamlIndent)
+	if err := enc.Encode(h); err != nil {
+		return nil, fmt.Errorf("marshalling harness: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("marshalling harness: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// agentFrontmatter is the YAML block at the top of an agent definition. It is
+// marshalled rather than interpolated: a --description containing a colon,
+// a leading ">" or a newline would otherwise produce a broken document.
+type agentFrontmatter struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Tools       string `yaml:"tools"`
+	Model       string `yaml:"model"`
+}
+
+func renderAgentDefinition(opts Options) ([]byte, error) {
+	body, err := templates.ReadFile("templates/agent-body.md.tmpl")
+	if err != nil {
+		return nil, fmt.Errorf("reading agent template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("---\n")
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(yamlIndent)
+	if err := enc.Encode(agentFrontmatter{
+		Name:        opts.Name,
+		Description: opts.Description,
+		// Must cover what the generated body actually instructs, and no
+		// more (fullsend-ai/agents#992). The body runs `gh` and `jq`,
+		// reads files to resolve links, and writes one JSON result — so
+		// Write is required, and under the pi runtime the Bash list is a
+		// hard first-token allowlist rather than a hint.
+		Tools: toolsFor(opts),
+		Model: opts.Model,
+	}); err != nil {
+		return nil, fmt.Errorf("marshalling agent frontmatter: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("marshalling agent frontmatter: %w", err)
+	}
+	buf.WriteString("---\n\n")
+	buf.Write(bytes.ReplaceAll(body, []byte(agentNamePlaceholder), []byte(opts.Name)))
+
+	// The in-sandbox self-check reads FULLSEND_OUTPUT_SCHEMA, which the
+	// runner only exports when validation_loop.schema is set (or via the
+	// deprecated runner_env, which this generator will not emit). Telling
+	// the agent to run it without that is telling it to run a command that
+	// always fails, so the instruction is rendered only when it will work.
+	if opts.ValidationLoop {
+		buf.WriteString("\nBefore you finish, run " +
+			"`fullsend-check-output \"$FULLSEND_OUTPUT_DIR/agent-result.json\"`\n" +
+			"to catch schema violations while you can still fix them.\n")
+	}
+	return buf.Bytes(), nil
+}
+
+func renderSchema(name string) ([]byte, error) {
+	// encoding/json sorts map keys, so the emitted document is
+	// alphabetical rather than in the order written here. That is stable
+	// and diffable, which is what matters for a generated file; the golden
+	// fixtures pin the exact bytes.
+	schema := map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		// Absolute: JSON Schema 2020-12 requires $id to resolve to an
+		// absolute URI, and a file-local schema has no base to resolve a
+		// bare relative reference against.
+		"$id":                  "https://fullsend.sh/schemas/" + name + "-result.schema.json",
+		"title":                name + " Agent Result",
+		"description":          "Structured output from the " + name + " agent, consumed by scripts/post-" + name + ".sh.",
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"status", "summary", "comment"},
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string", "enum": []string{"ok", "findings", "error"}},
+			// pattern, not just maxLength: the generated post-script refuses
+			// a multi-line summary (it is interpolated into a bold heading),
+			// and without this the validation loop would pass it and the
+			// failure would surface only after the agent had finished.
+			"summary": map[string]any{
+				"type": "string", "minLength": 1, "maxLength": 200,
+				"pattern": `^[^\r\n]*$`,
+			},
+			"comment": map[string]any{"type": "string", "minLength": 1, "maxLength": 16384},
+		},
+	}
+	data, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshalling schema: %w", err)
+	}
+	return append(data, '\n'), nil
+}
+
+func renderPostScript(name string) ([]byte, error) {
+	tmpl, err := templates.ReadFile("templates/post.sh.tmpl")
+	if err != nil {
+		return nil, fmt.Errorf("reading post-script template: %w", err)
+	}
+	out := bytes.ReplaceAll(tmpl, []byte(agentNamePlaceholder), []byte(name))
+	out = bytes.ReplaceAll(out, []byte(dryRunPlaceholder), []byte(DryRunEnvVar(name)))
+	return out, nil
+}
+
+// toolsFor returns the frontmatter tools list matching the rendered body.
+// fullsend-check-output is only instructed when the validation loop is on,
+// so it only appears in the Bash allowlist then.
+func toolsFor(opts Options) string {
+	bash := "gh,jq"
+	if opts.ValidationLoop {
+		bash = "gh,jq,fullsend-check-output"
+	}
+	return "Bash(" + bash + "), Read, Grep, Glob, Write"
+}
+
+// DryRunEnvVar is the environment variable that makes a generated
+// post-script print instead of commenting. Derived from the agent name,
+// which has already passed harness.ValidAgentBasename, so the result is always a
+// valid shell identifier.
+func DryRunEnvVar(name string) string {
+	return "POST_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_DRY_RUN"
+}

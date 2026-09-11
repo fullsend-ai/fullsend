@@ -116,6 +116,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components, ref drift, and scaffold content drift |
 | Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
+| Developer | `fullsend agent new <name>` | Generate a complete custom agent and register it |
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent set <name>` | Set an agent's runtime, model or effort |
