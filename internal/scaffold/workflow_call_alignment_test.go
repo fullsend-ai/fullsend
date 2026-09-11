@@ -1045,6 +1045,14 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	assert.Contains(t, job.If, "github.event.action == 'synchronize'")
 	assert.Contains(t, job.If, "needs.route.outputs.stage != 'review'",
 		"the job must key off the composite stage output, which is empty for every skip")
+	// #6587 review: the label mutation must obey the kill switch, including on
+	// the skip paths where no stage routes and the route job's kill-switch
+	// step never fails. The switch reaches this job as a route output.
+	assert.Contains(t, job.If, "needs.route.outputs.kill_switch != 'true'",
+		"a repo with the kill switch active must not mutate labels")
+	assert.Contains(t, string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)),
+		"kill_switch: ${{ steps.kill-switch.outputs.kill_switch }}",
+		"the route job must expose the kill switch it evaluated")
 	assert.Equal(t, map[string]string{"issues": "write", "pull-requests": "write"}, job.Permissions)
 	assert.Equal(t, map[string]string{"contents": "read", "issues": "read", "pull-requests": "read"}, repo.Jobs["route"].Permissions,
 		"the route job must stay read-only")
@@ -1064,9 +1072,31 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	assert.Equal(t, job.Steps[0].Name, last.Name, "the scaffold mirrors the step")
 	assert.Contains(t, last.If, "github.event.action == 'synchronize'")
 	assert.Contains(t, last.If, "steps.route.outputs.stage != 'review'")
+	assert.Contains(t, last.If, "steps.kill-switch.outputs.kill_switch != 'true'",
+		"the scaffold step must obey the kill switch on skip paths too")
 	assert.Equal(t, script, last.Run, "both dispatch workflows must run the same label-clearing script")
 	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["issues"])
 	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["pull-requests"])
+
+	// #6587 review: a workflow_call caller may only downgrade the callee's
+	// grant — request more and the run fails validation before any job. So
+	// each caller shim's dispatch job must be a superset of the dispatch job
+	// it fronts; otherwise the label-clearing token silently never arrives.
+	rank := map[string]int{"": 0, "read": 1, "write": 2}
+	for _, shim := range []string{"templates/shim-workflow-call.yaml", "templates/shim-per-repo.yaml"} {
+		var caller struct {
+			Jobs struct {
+				Dispatch struct {
+					Permissions map[string]string `yaml:"permissions"`
+				} `yaml:"dispatch"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(loadScaffoldFile(shim)(t), &caller))
+		for perm, need := range scaffold.Jobs.Dispatch.Permissions {
+			assert.GreaterOrEqualf(t, rank[caller.Jobs.Dispatch.Permissions[perm]], rank[need],
+				"%s dispatch job must grant %s: %s to cover the callee", shim, perm, need)
+		}
+	}
 
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")

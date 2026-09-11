@@ -148,11 +148,15 @@ every `pull_request_target` `synchronize` whose composite stage output is not
 `review` — which covers the three skips and, as a side effect, a push by an
 actor below triage that never routed — and removes both labels via the
 issues API, treating a 404 as "not present" and any other failure as a job
-failure so the stale label is visible. It is a job of its own rather than a
-step in `route` so the route job, which parses untrusted event data, keeps
-its read-only token; the per-repo shim already grants the dispatch job
-`issues: write` and `pull-requests: write`. The scaffold mirrors it as a last
-step of its single job, whose token is widened the same way.
+failure so the stale label is visible. The clearing is suppressed while the
+kill switch is active, so a halted repo mutates no labels. It is a job of its
+own rather than a step in `route` so the route job, which parses untrusted
+event data, keeps its read-only token. The scaffold mirrors it as a last step
+of its single dispatch job, so both caller shims — `shim-per-repo.yaml` and,
+in workflow_call mode, `shim-workflow-call.yaml` — grant that job `issues:
+write` and `pull-requests: write`. A `workflow_call` caller must grant at
+least what the callee requests, so a shim narrower than the dispatch job it
+calls fails the run at validation.
 
 ## Consequences
 
