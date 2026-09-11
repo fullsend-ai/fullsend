@@ -237,7 +237,7 @@ func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.
 	}
 	binDir := t.TempDir()
 	argsFile := filepath.Join(binDir, "args")
-	stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
+	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --only-if-exists   update an existing comment but never create one'; exit 0; fi\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat >/dev/null\n"
 	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -266,5 +266,46 @@ func TestGeneratedPostScriptOkReplacesEarlierFindingsViaOnlyIfExists(t *testing.
 		if !strings.Contains(args, want) {
 			t.Errorf("fullsend was called without %q; args:\n%s", strings.TrimSpace(want), args)
 		}
+	}
+}
+
+// TestGeneratedPostScriptOkOnAnOlderFullsendPostsNothing pins the
+// degradation path: the runner's fullsend is pinned by the repository, not
+// by the CLI that generated the script, so when its post-comment has no
+// --only-if-exists the ok path must post nothing and exit 0 rather than fail
+// on an unknown flag.
+func TestGeneratedPostScriptOkOnAnOlderFullsendPostsNothing(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	argsFile := filepath.Join(binDir, "args")
+	// An older CLI: --help lists no --only-if-exists, and any real call
+	// with that flag would fail — so the stub fails loudly if invoked to post.
+	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --dry-run   print what would be posted'; exit 0; fi\nprintf '%s\\n' \"$@\" > " + argsFile + "\necho 'Error: unknown flag: --only-if-exists' >&2; exit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ok on an older fullsend must exit 0, got %v; stderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing to post") {
+		t.Fatalf("expected the nothing-to-post notice, got:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(argsFile); err == nil {
+		t.Fatalf("an older fullsend must not be asked to post on the ok path")
 	}
 }
