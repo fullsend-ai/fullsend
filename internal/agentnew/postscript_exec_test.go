@@ -130,3 +130,34 @@ func TestGeneratedPostScriptRunsFromTheRunDirectory(t *testing.T) {
 		}
 	})
 }
+
+// TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging feeds a status
+// that carries a newline and a workflow-command prefix. The rejection message
+// must stay on one line and must not reproduce the injected line, because
+// the script's stderr lands in the runner log where `::` at line start is
+// interpreted as a command.
+func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{
+			"status":  "bogus\n::error::injected",
+			"summary": "s",
+			"comment": "c",
+		},
+	})
+	_, stderr, err := runPostScript(t, script, runDir)
+	if err == nil {
+		t.Fatal("expected the script to reject an invalid status")
+	}
+	if !strings.Contains(stderr, "status must be ok, findings or error") {
+		t.Fatalf("expected the status rejection, got stderr:\n%s", stderr)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		if strings.HasPrefix(line, "::") {
+			t.Fatalf("model-supplied status reached the log as its own line: %q", line)
+		}
+	}
+	if strings.Count(strings.TrimSpace(stderr), "\n") != 0 {
+		t.Fatalf("rejection must be a single log line, got:\n%s", stderr)
+	}
+}
