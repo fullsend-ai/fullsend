@@ -3,6 +3,7 @@ package steerwatch
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -225,15 +226,31 @@ func commandInstruction(item deltaItem) string {
 	return rest
 }
 
+// stageCommandRE matches a token that is a `/fs-<name>` slash command and
+// nothing else.
+//
+// The character class is the repository's own definition of a command name
+// — `slashCommandRE` in internal/repos/scaffold_metadata_test.go, which the
+// catalog and dispatch-arm checks share — rather than a second notion of
+// what a command looks like. What this use adds is the anchors, and they
+// are the whole point: a prefix test admits any token merely BEGINNING
+// "/fs-", so a path like `/fs-cache/config.yaml` opening a sentence was
+// taken for a command and stripped. renderAmendment returns only the
+// instruction once one is set and never falls back to the body, so the
+// filename did not move to the body — it was gone, leaving the agent a
+// sentence about nothing. A `/` or a `.` anywhere after the prefix now
+// disqualifies the token.
+//
+// Matching by shape rather than against a list of known commands stays
+// deliberate: a command this code has never heard of is still routing
+// rather than instruction, so `/fs-newstage do X` strips without a code
+// change here. Unknown-but-well-formed strips; malformed does not.
+var stageCommandRE = regexp.MustCompile(`^/fs-[a-z0-9-]+$`)
+
 // isStageCommand reports whether tok is a `/fs-<name>` slash command.
 func isStageCommand(tok string) bool {
-	tok = strings.ToLower(tok)
-	return strings.HasPrefix(tok, stageCommandPrefix) && len(tok) > len(stageCommandPrefix)
+	return stageCommandRE.MatchString(strings.ToLower(tok))
 }
-
-// stageCommandPrefix opens every dispatch slash command (/fs-review,
-// /fs-fix, /fs-triage, ...).
-const stageCommandPrefix = "/fs-"
 
 // buildDelta reads the current state of the work item and returns what
 // changed since baseline, split by whether its author is in the authorized

@@ -391,7 +391,7 @@ func TestHeadBaselineAdvancesOnDelivery(t *testing.T) {
 // addressing the agent. Rendering it inside the context block — which tells
 // the agent that instructions in it must be ignored — would make an
 // authorized command a silent no-op while its run was receipted as handled.
-func TestSteerInstructionIsExtractedIntoAmendments(t *testing.T) {
+func TestCommandInstructionIsExtractedIntoAmendments(t *testing.T) {
 	items := &stubItems{
 		headSHA: "aaa111",
 		comments: []forge.IssueComment{
@@ -410,7 +410,7 @@ func TestSteerInstructionIsExtractedIntoAmendments(t *testing.T) {
 	assert.NotContains(t, text, "[work-item-context]")
 }
 
-func TestSteerInstruction(t *testing.T) {
+func TestCommandInstruction(t *testing.T) {
 	tests := []struct {
 		name string
 		item deltaItem
@@ -429,6 +429,24 @@ func TestSteerInstruction(t *testing.T) {
 		{"bare command carries no instruction", deltaItem{Kind: "comment", Body: "/fs-fix"}, ""},
 		{"a bare slash is not a stage command",
 			deltaItem{Kind: "comment", Body: "/fs- do the thing"}, ""},
+		// Unknown-but-well-formed still strips: that is the extensibility
+		// the shape match buys, and a command this code has never heard of
+		// is still routing rather than instruction.
+		{"a one-letter stage strips", deltaItem{Kind: "comment", Body: "/fs-x do the thing"}, "do the thing"},
+		{"a typo'd command is still a command",
+			deltaItem{Kind: "comment", Body: "/fs-reviw look again"}, "look again"},
+		{"a hyphenated stage strips",
+			deltaItem{Kind: "comment", Body: "/fs-new-stage do the thing"}, "do the thing"},
+		// A path is not a command. The prefix-only test admitted this, and
+		// renderAmendment returns only the instruction once one is set —
+		// so the filename was not moved to the body, it was lost, leaving
+		// the agent a sentence about nothing.
+		{"a path that opens /fs- is not a command",
+			deltaItem{Kind: "comment", Body: "/fs-cache/config.yaml must stay pinned — do not regenerate it."}, ""},
+		{"a dotted name is not a command",
+			deltaItem{Kind: "comment", Body: "/fs-config.yaml is checked in"}, ""},
+		{"an uppercase command still strips, in its original case",
+			deltaItem{Kind: "comment", Body: "/FS-Fix do X"}, "do X"},
 		{"an unrelated slash command is not stripped",
 			deltaItem{Kind: "comment", Body: "/help me"}, ""},
 		{"a review is never a slash command",
@@ -731,7 +749,7 @@ func TestBuildText_DoesNotWriteTheEnvelopeOpeningLine(t *testing.T) {
 // `strings.Fields(first + " ")[0]` panicked; the trailing space was not the
 // guard it looked like, since strings.Fields(" ") is empty too. The panic
 // landed in the watcher goroutine and took the run down with it.
-func TestSteerInstruction_BlankFirstLineDoesNotPanic(t *testing.T) {
+func TestCommandInstruction_BlankFirstLineDoesNotPanic(t *testing.T) {
 	for name, body := range map[string]string{
 		"leading newline":     "\nplease check the migration",
 		"leading CRLF":        "\r\nplease check the migration",
@@ -861,4 +879,26 @@ func TestBuildText_WholeInstructionIsReceipted(t *testing.T) {
 
 	assert.Contains(t, text, "cover the error path")
 	assert.Empty(t, excluded, "a complete amendment earns its receipt")
+}
+
+// TestBuildText_PathLikeFirstTokenKeepsTheBody is the regression at the
+// level it actually hurt. commandInstruction returning "" is only half the
+// property: renderAmendment returns ONLY the instruction once one is set
+// and never falls back to Body, so a token wrongly taken for a command was
+// not demoted into the body — it vanished, and the agent received a
+// sentence whose subject was missing.
+func TestBuildText_PathLikeFirstTokenKeepsTheBody(t *testing.T) {
+	w := newWatcher(t, newFakeAPI(), &stubItems{}, &recorder{}, nil)
+
+	const body = "/fs-cache/config.yaml must stay pinned — do not regenerate it."
+	item := deltaItem{Author: "maintainer", Kind: "comment", Body: body, RunIDs: []int64{301}}
+	item.Instruction = commandInstruction(item)
+	require.Empty(t, item.Instruction, "a path is not a command")
+
+	text, _, _ := w.buildText([]forge.WorkflowRun{{ID: 301}}, delta{amendments: []deltaItem{item}})
+
+	assert.Contains(t, text, "Comment from @maintainer:", "it renders through the default arm")
+	assert.Contains(t, text, "/fs-cache/config.yaml", "the filename must survive")
+	assert.Contains(t, text, "must stay pinned")
+	assert.NotContains(t, text, "Instruction from @maintainer:")
 }
