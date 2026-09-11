@@ -478,8 +478,12 @@ func TestClaudeRuntime_Run_StallSweepsTheSandboxOnce(t *testing.T) {
 }
 
 // TestParseCodexStream_ProgressLinesResetTheSilenceClock: codex item.started
-// and item.updated lines map to no AgentEvent but stream while a command
-// runs, so they must feed the watchdog — the same rule as pi and Claude.
+// and item.updated lines map to no AgentEvent, but they are well-formed
+// stream lines, so they must feed the watchdog — the same rule as pi and
+// Claude, that any stream activity is liveness. (These lines bracket or
+// annotate work rather than stream a command's output; a long codex command
+// stays live via unified-exec yields, not per-command lines — see
+// parseCodexStreamLines.)
 func TestParseCodexStream_ProgressLinesResetTheSilenceClock(t *testing.T) {
 	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
 	require.NotNil(t, w)

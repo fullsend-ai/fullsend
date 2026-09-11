@@ -95,16 +95,22 @@ type stallWatchdog struct {
 
 // stallKill is the kill every streaming runtime hands the watchdog.
 //
-// cancel — the context cancel from sandbox.ExecStreamReader, and the whole of
-// what the global timeout does — SIGKILLs the local `openshell sandbox exec`
-// client; it does not signal the agent, which keeps writing the workspace and
-// spending tokens until the run's deferred sandbox.Delete tears the sandbox
-// down (and forever, under --keep-sandbox). OpenShell exposes no signal API,
-// so the in-sandbox half is the stray-process sweep run over a second exec
-// channel: it TERM->KILLs the sandbox user's processes, sparing only its own
-// shell's ancestry and the keep-alive, which is exactly the wedged agent.
-// The sweep runs first so the stream reaches EOF on its own; cancel then
-// releases the client whatever the sweep did.
+// cancel — the context cancel from sandbox.ExecStreamReader — SIGKILLs the
+// local `openshell sandbox exec` client; it does not signal the agent, which
+// would keep writing the workspace and spending tokens until something inside
+// the sandbox stops it. OpenShell exposes no signal API, so the in-sandbox
+// half is the stray-process sweep run over a second exec channel: it
+// TERM->KILLs the sandbox user's processes, sparing only its own shell's
+// ancestry and the keep-alive, which is exactly the wedged agent. The sweep
+// runs first so the stream reaches EOF on its own; cancel then releases the
+// client whatever the sweep did.
+//
+// The global-timeout path already sweeps too: run.go runs the same sweep as
+// TerminateStrayProcesses when an iteration ends at its budget, before
+// extraction and regardless of --keep-sandbox (see docs/contributing/
+// runtime-implementation.md). What is unique to the stall path is that it
+// sweeps from the runtime layer, because run.go's runErr != nil branch
+// returns before that loop-level sweep would ever run.
 //
 // Unlike ClearIterationArtifacts' sweep this one is not serialized against
 // the credential refreshers' writes (internal/cli/run.go's sandboxMu is not

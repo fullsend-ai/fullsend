@@ -539,9 +539,11 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	}
 
 	// stall.note as the line hook: every well-formed stream line — including
-	// the item.started/item.updated lines that map to no AgentEvent — resets
-	// the silence clock, so an actively streaming command is never mistaken
-	// for a stall.
+	// the item.started/item.completed lines that map to no AgentEvent —
+	// resets the silence clock. Codex streams nothing during a single command
+	// (see parseCodexStreamLines); a long codex turn stays live because
+	// unified-exec yields control to the model at least every 30s, each yield
+	// a fresh tool call whose lines land here.
 	if _, parseErr := parseCodexStreamLines(reader, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()

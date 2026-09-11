@@ -377,11 +377,18 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 
 // parseCodexStreamLines is parseCodexStream with a per-line liveness hook:
 // onLine (nil ok) is called for every well-formed JSON line — including the
-// item and lifecycle types that map to no AgentEvent, `item.updated` among
-// them, emitted while a command streams output — and for every fully consumed
-// line too large to parse (> streamBufSize). Any stream activity is proof of
-// life, so the stall watchdog counts lines, not just the sparser semantic
-// events.
+// item and lifecycle types that map to no AgentEvent — and for every fully
+// consumed line too large to parse (> streamBufSize). Any stream activity is
+// proof of life, so the stall watchdog counts lines, not just the sparser
+// semantic events.
+//
+// Codex writes no line between a command's item.started and item.completed
+// (item.updated is a plan/todo event, not a command stream), so a long codex
+// command produces no intermediate liveness of its own. What keeps its turn
+// alive is unified-exec returning control to the model at least every 30s
+// (MAX_YIELD_TIME_MS, default-on at the pinned CODEX_VERSION): each yield is a
+// fresh tool call whose lines land here. A pin that flips that default would
+// turn a long codex command into a false stall — re-check it on a bump.
 func parseCodexStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) (threadID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
