@@ -74,6 +74,10 @@ Environment variables set by the runner, present in every agent's shell:
 - `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
 - `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
   write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
+- `FULLSEND_RUN_HEAD_SHA` — the work item's head when the run started; empty for an issue
+- `FULLSEND_RUN_STARTED_AT` — when the run started, RFC 3339 UTC. This is the runner's own clock
+  at the top of `fullsend run`, not the workflow run's `created_at`, so a little of the platform's
+  queueing and the run's own setup falls outside it
 
 ## Process
 

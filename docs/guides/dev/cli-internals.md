@@ -444,6 +444,8 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  ├── sources .env.d/*.env files          │                   │
+│  │  ├── FULLSEND_RUN_HEAD_SHA +             │                   │
+│  │  │   FULLSEND_RUN_STARTED_AT             │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
 │  │       FULLSEND_ITERATION_DEADLINE,       │                   │
