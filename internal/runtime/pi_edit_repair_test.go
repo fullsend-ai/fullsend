@@ -121,6 +121,8 @@ func TestPiAgentExtensionDigests(t *testing.T) {
 	assert.Nil(t, piAgentExtensionDigests("/c/h.js", false, "/c/e.js", false))
 	assert.Equal(t, map[string]string{"/c/e.js": hex.EncodeToString(editSum[:])},
 		piAgentExtensionDigests("/c/h.js", false, "/c/e.js", true), "the edit repair is re-checked even with hooks off")
+	assert.Equal(t, map[string]string{"/c/h.js": hex.EncodeToString(hooksSum[:])},
+		piAgentExtensionDigests("/c/h.js", true, "/c/e.js", false), "a sub-agent whose tools: omits edit still gets its hook digest with security on")
 	assert.Equal(t, map[string]string{"/c/h.js": hex.EncodeToString(hooksSum[:]), "/c/e.js": hex.EncodeToString(editSum[:])},
 		piAgentExtensionDigests("/c/h.js", true, "/c/e.js", true))
 }

@@ -540,12 +540,13 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 // piAgentExtensionDigests records the sha256 of every child -e entry that
 // Bootstrap itself writes under the runner-owned config dir — the hook
 // adapter (the same bytes piHooksGuard checks before pi starts) and the
-// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js re-hashes them immediately before every
-// dispatch: the launch guard fires once, and nothing else re-verifies the
-// adapter afterwards, so a parent with `write` could replace it
-// mid-iteration and dispatch children whose adapter runs no hooks and
-// silently skips its own manifest-digest check. The map travels inside the
-// manifest, so the manifest digest already covers it.
+// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js
+// re-hashes them immediately before every dispatch: the launch guard
+// fires once, and nothing else re-verifies the adapter afterwards, so a
+// parent with `write` could replace it mid-iteration and dispatch
+// children whose adapter runs no hooks and silently skips its own
+// manifest-digest check. The map travels inside the manifest, so the
+// manifest digest already covers it.
 //
 // The vendored provider extensions under piVertexExtensionPath /
 // piXaiVertexExtensionPath are deliberately absent: the image installs them

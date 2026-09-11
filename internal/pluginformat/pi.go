@@ -21,12 +21,13 @@ import (
 
 // PiReservedExtensionNames are the sandbox names the pi runtime owns: the
 // basenames of the extensions Bootstrap embeds (hook adapter, Agent tool,
-// edit repair) and the vendored provider extensions Run loads by path. A declared extension uploads under its directory
-// basename, so one of these names would shadow — or be mistaken for —
-// runner-owned code. runtime.piResolveRunPlugins refuses them again at
-// bootstrap; the check here is so a harness author learns at load which
-// entry is the problem. The list lives in this package because both
-// internal/harness and internal/runtime read it.
+// edit repair) and the vendored provider extensions Run loads by path. A
+// declared extension uploads under its directory basename, so one of
+// these names would shadow — or be mistaken for — runner-owned code.
+// runtime.piResolveRunPlugins refuses them again at bootstrap; the check
+// here is so a harness author learns at load which entry is the problem.
+// The list lives in this package because both internal/harness and
+// internal/runtime read it.
 var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "fullsend-edit-repair", "anthropic-vertex", "xai-vertex"}
 
 // piReservedOptions are pi's own command-line options (cli/args.ts, read
