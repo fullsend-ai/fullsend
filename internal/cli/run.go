@@ -105,7 +105,16 @@ var preflightCheckTimeout = 30 * time.Second
 // cannot abort the remint before it gets a chance to complete — the same
 // problem this remint exists to work around. The bound keeps a mint-service
 // outage from hanging teardown indefinitely; remint failure is non-fatal.
-var remintForPostScriptTimeout = 30 * time.Second
+//
+// Set to mintclient.MaxMintDuration rather than an unrelated fixed number:
+// mintclient.MintToken has its own retry schedule (fetchOIDCJWT up to 3
+// attempts, callMint up to 5, both with exponential backoff — see that
+// const's doc for the full accounting), which can already take longer
+// than a shorter, arbitrarily-chosen bound. A bound shorter than the
+// client's own schedule would routinely cut retries short mid-backoff and
+// fall through to the expired token this remint exists to replace — the
+// exact failure this remint exists to fix (#7231).
+var remintForPostScriptTimeout = mintclient.MaxMintDuration
 
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
@@ -1761,14 +1770,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			for _, stop := range stopOpenAIRefreshers {
 				stop()
 			}
-			// Mint on a context that survives cancellation of the run's own
-			// ctx (e.g. a CI job-level timeout close to the agent's budget)
-			// but is still bounded, so a mint-service outage can't hang
-			// teardown. Mirrors the completion-notification defer's
-			// context.WithoutCancel pattern above.
-			remintCtx, remintCancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
-			defer remintCancel()
-			remintCleanup := remintAgentTokenForPostScript(remintCtx, h, mintURL, forgePlatform, printer)
+			// remintAgentTokenForPostScript wraps ctx itself (WithoutCancel
+			// + remintForPostScriptTimeout — see its doc), so the run's own
+			// ctx is passed through unwrapped here. That keeps the
+			// cancellation-survival behavior testable in isolation instead
+			// of only reachable through this closure.
+			remintCleanup := remintAgentTokenForPostScript(ctx, h, mintURL, forgePlatform, printer)
 			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
@@ -5162,17 +5169,37 @@ var roleTokenVars = map[string][]tokenVar{
 // A remint failure is non-fatal: the post-script still runs with the
 // existing token. The returned cleanup restores process env after the
 // post-script; it is a no-op when remint is skipped or fails.
+//
+// ctx is the caller's own run ctx, not yet bounded or decoupled from
+// cancellation — remintAgentTokenForPostScript does that itself (rather
+// than requiring the caller to pre-wrap it) so a cancelled or
+// soon-to-cancel parent ctx (e.g. a CI job-level timeout close to the
+// agent's budget) cannot abort the remint before it gets a chance to
+// complete, mirroring the completion-notification defer's
+// context.WithoutCancel pattern elsewhere in this file. Wrapping inside
+// the function, instead of at the call site, also means a test can pass
+// an already-cancelled ctx directly and still observe the remint run.
 func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mintURL, forgePlatform string, printer *ui.Printer) func() {
 	if forgePlatform == "gitlab" || mintURL == "" {
 		return func() {}
 	}
+	remintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
+	defer cancel()
 	role := ""
 	if h != nil {
 		role = h.Role
 	}
-	_, cleanup, err := mintAgentToken(ctx, role, mintURL, forgePlatform, printer)
+	_, cleanup, err := mintAgentToken(remintCtx, role, mintURL, forgePlatform, printer)
 	if err != nil {
-		printer.StepWarn("Failed to refresh agent token for post-script: " + err.Error() + "; continuing with existing token")
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Distinct from a genuine mint rejection: the client's own
+			// retry schedule (see mintclient.MaxMintDuration) did not get
+			// to run to completion within remintForPostScriptTimeout, so
+			// this is a truncated retry, not a confirmed failure.
+			printer.StepWarn(fmt.Sprintf("Refreshing agent token for post-script timed out after %s; continuing with existing token", remintForPostScriptTimeout))
+		} else {
+			printer.StepWarn("Failed to refresh agent token for post-script: " + err.Error() + "; continuing with existing token")
+		}
 		return func() {}
 	}
 	syncRunnerEnvTokens(h)

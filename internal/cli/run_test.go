@@ -5671,7 +5671,6 @@ func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T)
 	printer := ui.New(io.Discard)
 	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
 	require.NoError(t, err)
-	defer cleanup()
 	require.True(t, minted)
 
 	// Simulate runner_env expansion at the start of the run, which snapshots
@@ -5686,12 +5685,103 @@ func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T)
 	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
 
 	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
-	defer remintCleanup()
 
 	env := postScriptEnv(h, "")
 	assert.Equal(t, 2, calls)
 	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"))
 	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+
+	// In runAgent, remintCleanup is deferred after the first mint's own
+	// cleanup, so under LIFO it runs first. At that point the first
+	// mint's cleanup has not fired yet, so remintCleanup must restore the
+	// process env to the first-mint token, not the pre-mint value.
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "remintCleanup must restore the first-mint token")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_TOKEN"), "remintCleanup must restore the first-mint token")
+
+	// cleanup (the first mint's own cleanup) runs next under LIFO and must
+	// restore the pre-mint value the test set with t.Setenv above.
+	cleanup()
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+}
+
+// TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx exercises the
+// context.WithoutCancel wrapping inside remintAgentTokenForPostScript: a
+// parent ctx cancelled before remint even starts (a CI job-level timeout
+// landing at exactly this moment is the failure mode #7231 fixes) must not
+// prevent the mint call. The wrapping now lives inside the helper itself
+// (rather than at the runAgent call site) specifically so a test can pass
+// an already-cancelled ctx directly, as done here.
+func TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_after_cancel", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": "",
+			"GH_TOKEN":   "",
+		},
+	}
+
+	printer := ui.New(io.Discard)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	remintCleanup := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls, "remint must still call mint despite an already-cancelled parent ctx")
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "GH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+}
+
+// TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning
+// proves a remint truncated by remintForPostScriptTimeout is reported
+// differently from a genuine mint rejection, so operators can tell a
+// timeout apart from a real failure.
+func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *testing.T) {
+	origTimeout := remintForPostScriptTimeout
+	remintForPostScriptTimeout = 10 * time.Millisecond
+	defer func() { remintForPostScriptTimeout = origTimeout }()
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(ctx context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{Role: "coder", RunnerEnv: map[string]string{"PUSH_TOKEN": "existing_token"}}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	cleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "timed out", "a context.DeadlineExceeded must produce a distinct message from a generic mint failure")
+	assert.NotContains(t, buf.String(), "Failed to refresh agent token for post-script:", "must not also emit the generic failure message")
+	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint times out")
 }
 
 func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
