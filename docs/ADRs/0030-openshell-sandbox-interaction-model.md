@@ -77,6 +77,11 @@ ssh-config`, use standard `ssh`/`scp`/`rsync`. Supports stdout streaming.
 file transfer. No SSH binary or config needed — all communication goes through
 the gateway's gRPC API.
 
+> **Note (2026-09, [#7229](https://github.com/fullsend-ai/fullsend/issues/7229)):**
+> Native `sandbox exec` / `sandbox stop` cannot deliver SIGINT into the invoked
+> process tree. See
+> [Signal and lifecycle semantics](#signal-and-lifecycle-semantics).
+
 ### Credential delivery
 
 **A. OpenShell providers with bare-key form.** Register providers on the gateway
@@ -159,6 +164,36 @@ entry command (`true`) exits; fullsend explicitly deletes after extraction.
 > sandbox terminal rather than Ready, so the entry command recorded above is now
 > `--detach -- sleep infinity` instead of `-- true`. The rest of the sequence,
 > and the reason `--keep` is passed, are unchanged.
+
+### Signal and lifecycle semantics
+
+> **Note (2026-09, [#7229](https://github.com/fullsend-ai/fullsend/issues/7229)):**
+> Annotation of a constraint discovered after this ADR was accepted; the
+> Commands decision above is unchanged.
+
+`openshell sandbox exec` is fire-and-forget with respect to termination: it
+does not return an exec id, does not propagate host-side signals into the
+invoked process tree, and closing the client does not stop the in-sandbox
+command. Upstream declined to add a per-exec kill
+([NVIDIA/OpenShell#3159](https://github.com/NVIDIA/OpenShell/issues/3159),
+closed as not planned).
+
+`openshell sandbox stop` is not a graceful alternative. Stop sends SIGKILL,
+not SIGINT. On the pinned OpenShell 0.0.116 release, the stop waits ~45s for a
+SIGTERM that never arrives (`CAP_KILL` dropped,
+[NVIDIA/OpenShell#2855](https://github.com/NVIDIA/OpenShell/issues/2855))
+and then SIGKILLs the container.
+[NVIDIA/OpenShell#3036](https://github.com/NVIDIA/OpenShell/pull/3036)
+restores SIGTERM to the canonical process group, but still not SIGINT, and
+exec'd process trees still receive SIGKILL. Neither primitive supports
+graceful in-sandbox shutdown for telemetry-flush purposes.
+
+Token-count persistence is the accepted partial fix for cancelled-run
+telemetry ([#6936](https://github.com/fullsend-ai/fullsend/issues/6936) /
+[PR #6938](https://github.com/fullsend-ai/fullsend/pull/6938)).
+[PR #7208](https://github.com/fullsend-ai/fullsend/pull/7208) attempted a
+secondary `sandbox exec` as a SIGINT side-channel for `total_cost_usd` and
+was closed unmerged once this contract was confirmed.
 
 ## Consequences
 
