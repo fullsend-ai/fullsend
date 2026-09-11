@@ -99,6 +99,14 @@ const (
 // without waiting out the real duration.
 var preflightCheckTimeout = 30 * time.Second
 
+// remintForPostScriptTimeout bounds the post-script token remint (#7231).
+// It runs on a context derived from context.WithoutCancel so a parent-ctx
+// cancellation near the run's own budget (e.g. a CI job-level timeout)
+// cannot abort the remint before it gets a chance to complete — the same
+// problem this remint exists to work around. The bound keeps a mint-service
+// outage from hanging teardown indefinitely; remint failure is non-fatal.
+var remintForPostScriptTimeout = 30 * time.Second
+
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
 var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
@@ -1338,6 +1346,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// profile whose egress rules the run never uses.
 	skippedProviders := map[string]struct{}{}
 	var openAIHandles []openAIProviderHandle
+	// stopOpenAIRefreshers collects one stop func per run-scoped OpenAI
+	// credential refresher (context cancel + WaitGroup.Wait). Each is also
+	// registered as a normal defer below for teardown, but the post-script
+	// defer (registered later, so it runs first under LIFO) calls these
+	// explicitly first: os.Setenv in the post-script's token remint is not
+	// goroutine-safe against a still-running refresher's os.Getenv calls.
+	// Both stopRefresh and refreshWg.Wait are safe to call more than once.
+	var stopOpenAIRefreshers []func()
 	allProviderNames := append([]string{}, h.Providers...)
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
@@ -1477,10 +1493,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer refreshWg.Done()
 				runOpenAIRefresh(refreshCtx, h, printer)
 			}(handle)
-			defer func() {
+			stopAndWait := func() {
 				stopRefresh()
 				refreshWg.Wait()
-			}()
+			}
+			stopOpenAIRefreshers = append(stopOpenAIRefreshers, stopAndWait)
+			defer stopAndWait()
 		}
 		allDefs = sharedDefs
 
@@ -1734,8 +1752,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// full-budget run. GitHub App tokens live 60 minutes, matching the
 			// code agent's budget (#7231). A remint failure is non-fatal.
 			// os.Setenv is safe here: sandbox streaming and OIDC refresh
-			// goroutines have already been torn down (LIFO defers).
-			remintCleanup := remintAgentTokenForPostScript(ctx, h, mintURL, forgePlatform, printer)
+			// goroutines have already been torn down (LIFO defers). The
+			// OpenAI credential refreshers are the exception — their own
+			// stop-defers are registered earlier in the function, so under
+			// LIFO they would not fire until after this defer completes —
+			// so stop them explicitly first to avoid racing this os.Setenv
+			// against their os.Getenv reads.
+			for _, stop := range stopOpenAIRefreshers {
+				stop()
+			}
+			// Mint on a context that survives cancellation of the run's own
+			// ctx (e.g. a CI job-level timeout close to the agent's budget)
+			// but is still bounded, so a mint-service outage can't hang
+			// teardown. Mirrors the completion-notification defer's
+			// context.WithoutCancel pattern above.
+			remintCtx, remintCancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
+			defer remintCancel()
+			remintCleanup := remintAgentTokenForPostScript(remintCtx, h, mintURL, forgePlatform, printer)
 			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
