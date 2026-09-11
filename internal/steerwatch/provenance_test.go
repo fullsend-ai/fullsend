@@ -179,7 +179,7 @@ func TestJobChecks(t *testing.T) {
 		wantCheck string
 	}{
 		{
-			name:      "a fork author's /fs-steer skips every stage",
+			name:      "a fork author's stage command skips every stage",
 			jobs:      jobsJSON(routeJob("success"), stageJob(stageName, "completed", "skipped")),
 			wantCheck: "stage",
 		},

@@ -177,10 +177,12 @@ the `GH_TOKEN` the action passed in, which every stage job already grants `actio
 turns the runs that pass provenance into steers.
 
 A human on a workstation reaches the same transport with `fullsend steer <url> "<text>"`, which
-posts a `/fs-steer` comment; the comment fires the shim like any other event. The route logic has
-a `/fs-steer` arm beside `/fs-triage`…`/fs-fix` that selects the target stage under the existing
-`is_authorized` guard, with the floor of the stage it targets — fix is a mutation stage and keeps
-its write floor, so `/fs-steer fix:` cannot reach fix from a triage-level account.
+posts the stage's own slash command — `/fs-review` for a pull request, `/fs-triage` for an issue,
+or `--stage` to choose — and the comment fires the shim like any other event. There is no
+steer-specific command: the watcher accepts follow-up runs on provenance alone and never looks at
+which words the comment opened with, so a run in flight absorbs the run an ordinary `/fs-fix`
+produced exactly as it would any other. The existing arms already carry the right floor for each
+stage, `/fs-fix` keeping the write floor that makes it a mutation stage.
 
 Dispatch is never suppressed while a run is in flight. A route arm that skipped whenever
 something was running would lose a steer that lands after the in-flight run's last check.
@@ -197,7 +199,7 @@ cannot write:
 | 2 | `path` is the shim and `event` is a work-item update (`issue_comment`, `issues`, `pull_request_target`, `pull_request_review`, `pull_request_review_comment`) | `push`, `pull_request`, `workflow_dispatch`, and any other workflow |
 | 3 | `referenced_workflows` (path and ref) equals my own run's | a foreign or renamed reusable workflow, or one at another ref, by inequality — no version knowledge needed. The sha is not compared: a branch-pinned shim (`@main`, as on this repository) resolves to a new sha whenever the branch advances, which would drop every steer there |
 | 4 | The candidate's **`Route` job** concluded `success`, and the run was created after mine started | a run whose `Route` job authorized nobody; a replayed old run. It does **not** establish that the run's reported actor is the authorized one |
-| 5 | My stage's job has `conclusion != "skipped"` | a fork author's `/fs-steer`, whose run has every stage job skipped |
+| 5 | My stage's job has `conclusion != "skipped"` | a fork author's stage command, whose run has every stage job skipped |
 | 6 | Bound to my work item: `pull_requests[]`, else the shim's `run-name` as `display_title` | another item's run |
 | 7 | Not judged before, by run id | a replay; a re-poll |
 
@@ -351,7 +353,7 @@ that assumed one result per iteration — the Claude parser's `seenResult`
 `Run` alone so the watcher's goroutine never races it.
 
 **The prompt-injection surface grows.** The steer text is built from PR bodies, comments and
-commit messages, and under `/fs-steer` from an authorized human — the same trust dispatch already
+commit messages, and under a stage command from an authorized human — the same trust dispatch already
 places in that person. The sanitizer and the sandbox hooks remain the controls; an authorized
 human pasting attacker-supplied text is still an injection, and this design does not change that.
 

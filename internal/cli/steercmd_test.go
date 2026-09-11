@@ -21,22 +21,24 @@ func TestParseWorkItemURL(t *testing.T) {
 		{
 			name: "pull request",
 			url:  "https://github.com/org/repo/pull/123",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
 		},
 		{
 			name: "issue",
 			url:  "https://github.com/org/repo/issues/7",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 7},
+			// IsPR false: the URL's own segment is the discriminator, and
+			// it picks which stage command `fullsend steer` posts.
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 7, IsPR: false},
 		},
 		{
 			name: "a URL copied from the browser keeps its comment anchor",
 			url:  "https://github.com/org/repo/pull/123#issuecomment-999",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
 		},
 		{
 			name: "a files tab URL still names the PR",
 			url:  "https://github.com/org/repo/pull/123/files",
-			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123},
+			want: workItemRef{Forge: "github", Owner: "org", Repo: "repo", Number: 123, IsPR: true},
 		},
 		{
 			name: "gitlab is recognised so the error can name the real gap",
@@ -87,29 +89,42 @@ func TestParseWorkItemURL_DoesNotGuess(t *testing.T) {
 }
 
 func TestBuildSteerComment(t *testing.T) {
-	got, err := buildSteerComment("", "re-check the migration")
+	// The default follows the item type, which is how the stage commands
+	// themselves divide: a PR is reviewed, an issue is triaged.
+	got, err := buildSteerComment("", "re-check the migration", true)
 	require.NoError(t, err)
-	assert.Equal(t, "/fs-steer re-check the migration", got)
+	assert.Equal(t, "/fs-review re-check the migration", got)
 
-	got, err = buildSteerComment("fix", "rebase onto main")
+	got, err = buildSteerComment("", "re-label this", false)
 	require.NoError(t, err)
-	assert.Equal(t, "/fs-steer fix: rebase onto main", got)
+	assert.Equal(t, "/fs-triage re-label this", got)
 
-	for _, stage := range []string{"review", "triage"} {
-		got, err = buildSteerComment(stage, "look again")
-		require.NoError(t, err)
-		assert.Equal(t, "/fs-steer "+stage+": look again", got)
-	}
+	// --stage picks explicitly; fix is unreachable without it.
+	got, err = buildSteerComment("fix", "rebase onto main", true)
+	require.NoError(t, err)
+	assert.Equal(t, "/fs-fix rebase onto main", got)
+
+	got, err = buildSteerComment("triage", "look again", true)
+	require.NoError(t, err)
+	assert.Equal(t, "/fs-triage look again", got)
 }
 
 func TestBuildSteerComment_Rejects(t *testing.T) {
-	_, err := buildSteerComment("", "   ")
+	_, err := buildSteerComment("", "   ", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
 
-	_, err = buildSteerComment("code", "do something")
+	_, err = buildSteerComment("code", "do something", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be review, fix or triage")
+
+	// review and fix are pull-request stages; the route arms nullify them
+	// on an issue, so the CLI says so rather than posting a no-op comment.
+	for _, stage := range []string{"review", "fix"} {
+		_, err = buildSteerComment(stage, "do something", false)
+		require.Error(t, err, stage)
+		assert.Contains(t, err.Error(), "pull request")
+	}
 }
 
 // fakePoster is a forge.Client that records the one call the steer command
@@ -158,7 +173,7 @@ func TestSteerCmd_PostsTheComment(t *testing.T) {
 	assert.Equal(t, "org", p.owner)
 	assert.Equal(t, "repo", p.repo)
 	assert.Equal(t, 123, p.number)
-	assert.Equal(t, "/fs-steer re-check the migration", p.body)
+	assert.Equal(t, "/fs-review re-check the migration", p.body)
 }
 
 func TestSteerCmd_StageFlag(t *testing.T) {
@@ -168,7 +183,7 @@ func TestSteerCmd_StageFlag(t *testing.T) {
 	cmd := newSteerCmd()
 	cmd.SetArgs([]string{"--stage", "fix", "https://github.com/org/repo/pull/123", "rebase onto main"})
 	require.NoError(t, cmd.Execute())
-	assert.Equal(t, "/fs-steer fix: rebase onto main", p.body)
+	assert.Equal(t, "/fs-fix rebase onto main", p.body)
 }
 
 func TestSteerCmd_GitLabIsNotSupportedYet(t *testing.T) {

@@ -739,7 +739,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
 | `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
-| `internal/cli/steercmd.go` | ~170 | `fullsend steer` — posts the `/fs-steer` comment that reaches a run in flight (ADR 0101) |
+| `internal/cli/steercmd.go` | ~170 | `fullsend steer` — posts the stage's own slash command, which a run in flight then absorbs (ADR 0101) |
 | `internal/cli/steer.go` | ~400 | Runner-side steer wiring: eligibility, the follow-up run watcher's lifecycle, the marker, the skip check |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |

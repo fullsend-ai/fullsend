@@ -59,8 +59,8 @@ type deltaItem struct {
 	At time.Time
 	// Body is the item's text.
 	Body string
-	// Instruction is the text of an explicit /fs-steer command, extracted
-	// from Body. Only set on an amendment.
+	// Instruction is Body with its leading slash command stripped, when it
+	// opened with one. Only set on an amendment.
 	Instruction string
 	// RunIDs are the accepted follow-up runs whose actor authored this
 	// item. Only set on amendments, and only used to decide which runs may
@@ -188,15 +188,21 @@ func (a authorization) covers(at time.Time) bool {
 	return !at.After(a.Until)
 }
 
-// steerInstruction extracts the text of an explicit /fs-steer command.
+// commandInstruction strips an amendment comment's leading slash command,
+// returning the text that follows it.
 //
-// Without this the command's own words land in the context block, whose
-// whole point is to tell the agent that instructions inside it must be
-// ignored — so an authorized `/fs-steer do X` would be received and
-// receipted while instructing the agent to disregard itself. It only ever
-// runs on an item already established as an amendment, so the author is in
-// the authorized set by construction.
-func steerInstruction(item deltaItem) string {
+// The command is routing, not instruction: it is how the comment reached a
+// stage at all, and the stage has already been selected by the time the
+// text gets here. Left in place it would be read as part of the request —
+// an authorized `/fs-fix rebase onto main` would reach the agent as
+// "/fs-fix rebase onto main" rather than "rebase onto main".
+//
+// Any `/fs-<name>` token is accepted rather than one specific command,
+// because every stage command can carry an instruction and the watcher
+// does not know, or need to know, which one routed this run. A first word
+// that is not such a token yields nothing, which leaves the comment to be
+// rendered as an ordinary amendment body.
+func commandInstruction(item deltaItem) string {
 	if item.Kind != "comment" {
 		return ""
 	}
@@ -206,30 +212,28 @@ func steerInstruction(item deltaItem) string {
 	}
 	// Fields on a blank first line returns an EMPTY slice, so indexing it
 	// panics — and the panic lands in the watcher goroutine, taking the run
-	// with it. The trailing " " that used to stand in for this check is not
-	// one: strings.Fields(" ") is empty too. A body opening with a newline
-	// is ordinary human formatting, so this is reached by a plain comment.
+	// with it. A body opening with a newline is ordinary human formatting,
+	// so this is reached by a plain comment.
 	fields := strings.Fields(first)
-	if len(fields) == 0 || strings.ToLower(fields[0]) != steerCommand {
+	if len(fields) == 0 || !isStageCommand(fields[0]) {
 		return ""
 	}
-	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(item.Body), steerCommand))
-	// The route arm accepts an explicit target stage before the text; it
-	// selected the stage already, so it is not part of the instruction.
-	for _, prefix := range []string{"review:", "fix:", "triage:"} {
-		if strings.HasPrefix(strings.ToLower(rest), prefix) {
-			rest = strings.TrimSpace(rest[len(prefix):])
-			break
-		}
-	}
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(item.Body), fields[0]))
 	if rest == "" {
 		return ""
 	}
 	return rest
 }
 
-// steerCommand is the slash command the dispatch route arm routes on.
-const steerCommand = "/fs-steer"
+// isStageCommand reports whether tok is a `/fs-<name>` slash command.
+func isStageCommand(tok string) bool {
+	tok = strings.ToLower(tok)
+	return strings.HasPrefix(tok, stageCommandPrefix) && len(tok) > len(stageCommandPrefix)
+}
+
+// stageCommandPrefix opens every dispatch slash command (/fs-review,
+// /fs-fix, /fs-triage, ...).
+const stageCommandPrefix = "/fs-"
 
 // buildDelta reads the current state of the work item and returns what
 // changed since baseline, split by whether its author is in the authorized
@@ -254,7 +258,7 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 			return
 		}
 		item.RunIDs = runIDs
-		item.Instruction = steerInstruction(item)
+		item.Instruction = commandInstruction(item)
 		d.amendments = append(d.amendments, item)
 	}
 
