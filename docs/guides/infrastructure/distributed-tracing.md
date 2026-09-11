@@ -296,7 +296,7 @@ cancelled runs (and records on completed runs too), plus `reasoning`.
 `reasoning` is always present in `metrics.json` (`0` when there is none);
 whether it is non-zero on a *cancelled* run depends on the runtime — see
 below. They are disjoint: `input` is uncached input only, cache tokens are
-not included in `input` or `output`, and — for Codex specifically —
+not included in `input` or `output`, and — for Codex and pi specifically —
 `reasoning` is not included in `output` either.
 
 ### Persisted token fields
@@ -322,17 +322,18 @@ attributes are per-iteration.
 `token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
 recorded on completed runs. On cancelled Claude runs it is typically zero,
 because reasoning is taken from the terminal result event that cancellation
-never emits. Cancelled Codex runs behave differently: Codex's parser
-synthesizes a result on every stream — including killed or interrupted
-ones — from the high-water token counters accumulated across whichever
-turns completed before cancellation, so `reasoning` is non-zero there
-whenever at least one turn finished before the run was cancelled. Whether
-`reasoning` needs adding to the cost formula depends on the runtime, not on
-whether the run completed: for Codex, reasoning tokens are counted
-separately from `output` (`output` excludes them), so omitting `reasoning`
-undercounts on any Codex run — completed or cancelled — where it is
-non-zero. For Claude and pi, `output` already includes reasoning tokens,
-so adding `reasoning` on top of `output` double-counts and overbills.
+never emits. Cancelled Codex and pi runs behave differently: both parsers
+synthesize a result on every stream — including killed or interrupted
+ones — from the high-water/accumulated token counters observed before
+cancellation, so `reasoning` is non-zero there whenever at least one turn
+(Codex) or assistant message (pi) finished before the run was cancelled.
+Whether `reasoning` needs adding to the cost formula depends on the
+runtime, not on whether the run completed: for Codex and pi, reasoning
+tokens are counted separately from `output` (`output` excludes them), so
+omitting `reasoning` undercounts on any Codex or pi run — completed or
+cancelled — where it is non-zero. For Claude, `output` already includes
+reasoning tokens, so adding `reasoning` on top of `output` double-counts
+and overbills.
 
 ### Worked example
 
@@ -371,18 +372,19 @@ Pricing only uncached input and output would give $0.007 and miss the cache
 tokens that dominate this run. Substitute your contracted rates; do not
 copy these numbers into a billing pipeline.
 
-For any Codex run with non-zero `reasoning` — completed, or cancelled after
-at least one turn finished — add a fifth term, `reasoning/1e6 * <reasoning
-rate>`, to the formula above: Codex's `reasoning` counter is disjoint from
+For any Codex or pi run with non-zero `reasoning` — completed, or
+cancelled after at least one turn (Codex) or assistant message (pi)
+finished — add a fifth term, `reasoning/1e6 * <reasoning rate>`, to the
+formula above: both runtimes' `reasoning` counters are disjoint from
 `output`, so the four-field formula alone will undercount whenever
-reasoning tokens are non-trivial. Don't add this term for Claude or pi
-runs — both runtimes already fold reasoning tokens into `output`, so
-adding `reasoning` on top would double-count it. OpenCode is a separate
-case: its parser passes `reasoning` through unmodified from the wire with
-no subtraction from `output`, so whether OpenCode's `output` already
-includes reasoning (the Claude/pi shape) or excludes it (the Codex shape)
-is not established here — verify against actual `output`/`reasoning`
-values for your run before applying either rule to OpenCode.
+reasoning tokens are non-trivial. Don't add this term for Claude runs —
+Claude already folds reasoning tokens into `output`, so adding `reasoning`
+on top would double-count it. OpenCode is a separate case: its parser
+passes `reasoning` through unmodified from the wire with no subtraction
+from `output`, so whether OpenCode's `output` already includes reasoning
+(the Claude shape) or excludes it (the Codex/pi shape) is not established
+here — verify against actual `output`/`reasoning` values for your run
+before applying either rule to OpenCode.
 
 ## Output file format
 
