@@ -195,7 +195,9 @@ Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 Fullsend does not calculate inference cost from token counts or maintain a
 model-price table. Each runtime reports a USD cost value and fullsend
 records it as-is. This section defines the source, aggregation, rounding,
-and display behavior of that value across every output surface.
+and display behavior of that value across every output surface. To compute
+a dollar figure from persisted token counts using your own contracted
+rates, see [Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry).
 
 ### Runtime cost extraction
 
@@ -253,7 +255,9 @@ differently than the sum of parts.
 
 If a runtime does not report cost (returns zero or the field is absent),
 fullsend records zero. There is no fallback cost calculation from token
-counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+counts. A missing runtime cost propagates as `$0.00` on all surfaces. See
+[Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry)
+for how to apply your own contracted rates to the persisted token fields.
 
 ### Distinction from backend-derived cost estimates
 
@@ -269,6 +273,71 @@ Tracing backends may display their own cost estimates alongside
 The authoritative cost for a fullsend run is always `fullsend.cost_usd`
 (on spans) or `total_cost_usd` (in `metrics.json`). Backend-derived
 estimates are informational and may diverge.
+
+## Computing dollar cost from token telemetry
+
+Fullsend never converts token counts into dollars. When a runtime reports
+`total_cost_usd`, that value is recorded as-is — typically a list-price
+estimate, not your contracted rate. When the runtime reports nothing
+(cancelled runs, or Codex, which sends no cost), the field stays `0`. In
+both cases you can compute a dollar figure from the persisted token counts
+using rates from your own contract.
+
+The four token fields below are the counters
+[PR #6938](https://github.com/fullsend-ai/fullsend/pull/6938) persists on
+cancelled runs (and records on completed runs too). They are disjoint:
+`input` is uncached input only, and cache tokens are not included in
+`input` or `output`.
+
+### Persisted token fields
+
+| Kind | `metrics.json` `token_usage` | `agent` span attribute |
+|------|------------------------------|------------------------|
+| Uncached input | `input` | `gen_ai.usage.input_tokens` |
+| Output | `output` | `gen_ai.usage.output_tokens` |
+| Cache creation | `cache_creation` | `gen_ai.usage.cache_creation.input_tokens` |
+| Cache read | `cache_read` | `gen_ai.usage.cache_read.input_tokens` |
+
+For a cancelled GitHub Actions run, use `metrics.json` — it is the
+run-level aggregate and is uploaded even when the job is cancelled. Span
+attributes are per-iteration.
+
+`token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
+recorded on completed runs. On cancelled Claude runs it is typically zero,
+because reasoning is taken from the terminal result event that cancellation
+never emits.
+
+### Worked example
+
+A cancelled run's `metrics.json` might look like:
+
+```json
+{
+  "total_cost_usd": 0,
+  "token_usage": {
+    "input": 1000,
+    "output": 500,
+    "cache_creation": 150000,
+    "cache_read": 600000
+  }
+}
+```
+
+Using hypothetical contracted rates of $2.00 / $10.00 / $2.50 / $0.20 per
+million tokens (uncached input / output / cache-creation / cache-read):
+
+```
+cost = 1000/1e6 * 2.00
+     + 500/1e6 * 10.00
+     + 150000/1e6 * 2.50
+     + 600000/1e6 * 0.20
+     = 0.002 + 0.005 + 0.375 + 0.120
+     = $0.502
+```
+
+Pricing only uncached input and output would give $0.007 and miss the cache
+tokens that dominate this run. Substitute your contracted rates; do not
+copy these numbers into a billing pipeline.
 
 ## Output file format
 
