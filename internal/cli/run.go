@@ -2302,6 +2302,50 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return cancelledErr
 		}
 
+		// extractIterationArtifacts pulls this iteration's output files,
+		// transcripts and (when --debug) debug log out of the sandbox. Both
+		// the success path below (step 9b/9c) and the stall branch just below
+		// run it: a stalled agent that did useful work before wedging wrote
+		// the same artifacts, and they are the only evidence of what it was
+		// doing. Best-effort — a failed pull warns and moves on.
+		extractIterationArtifacts := func() {
+			// 9b. Extract output files.
+			extractStart := time.Now()
+			printer.StepStart("Extracting output files")
+			remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
+			extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
+			if extractErr != nil {
+				printer.StepWarn("Failed to extract output files: " + extractErr.Error())
+			} else if len(extracted) == 0 {
+				printer.StepInfo("No output files found")
+			} else {
+				for _, f := range extracted {
+					printer.StepInfo(f)
+				}
+				printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), time.Since(extractStart).Seconds()))
+			}
+
+			// 9c. Extract transcripts for this iteration.
+			transcriptStart := time.Now()
+			printer.StepStart("Extracting transcripts")
+			if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
+				printer.StepWarn("Failed to extract transcripts: " + err.Error())
+			} else {
+				printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
+			}
+
+			// Extract debug log if --debug was enabled.
+			if debug != "" {
+				debugLogName := agentruntime.DebugLogNameFor(rt, tx)
+				debugDst := filepath.Join(iterDir, debugLogName)
+				if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
+					printer.StepWarn("Failed to extract debug log: " + err.Error())
+				} else {
+					printer.StepInfo("Extracted " + debugLogName)
+				}
+			}
+		}
+
 		if runErr != nil {
 			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
@@ -2311,6 +2355,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// started) so the telemetry summary reports the failure faithfully
 			// instead of collapsing every infra failure to a generic 1.
 			lastExitCode = exitCode
+			// A stall kill returns here before the timeout path's extraction,
+			// and stallKill already swept the sandbox from the runtime layer,
+			// so the artifacts are final — pull them before the deferred
+			// sandbox.Delete tears them down. Other runtime failures keep the
+			// prior behaviour (no extraction) since the sandbox was not swept.
+			if errors.Is(runErr, agentruntime.ErrStalled) {
+				extractIterationArtifacts()
+			}
 			// Write partial metrics before returning so downstream judges
 			// (e.g., max_turns, max_cost) can inspect what happened.
 			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
@@ -2379,41 +2431,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		// 9b. Extract output files.
-		extractStart := time.Now()
-		printer.StepStart("Extracting output files")
-		remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
-		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
-		if extractErr != nil {
-			printer.StepWarn("Failed to extract output files: " + extractErr.Error())
-		} else if len(extracted) == 0 {
-			printer.StepInfo("No output files found")
-		} else {
-			for _, f := range extracted {
-				printer.StepInfo(f)
-			}
-			printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), time.Since(extractStart).Seconds()))
-		}
-
-		// 9c. Extract transcripts for this iteration.
-		transcriptStart := time.Now()
-		printer.StepStart("Extracting transcripts")
-		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
-			printer.StepWarn("Failed to extract transcripts: " + err.Error())
-		} else {
-			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
-		}
-
-		// Extract debug log if --debug was enabled.
-		if debug != "" {
-			debugLogName := agentruntime.DebugLogNameFor(rt, tx)
-			debugDst := filepath.Join(iterDir, debugLogName)
-			if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
-				printer.StepWarn("Failed to extract debug log: " + err.Error())
-			} else {
-				printer.StepInfo("Extracted " + debugLogName)
-			}
-		}
+		extractIterationArtifacts()
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
