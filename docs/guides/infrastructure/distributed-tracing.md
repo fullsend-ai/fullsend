@@ -283,11 +283,13 @@ estimate, not your contracted rate. When the runtime reports nothing
 both cases you can compute a dollar figure from the persisted token counts
 using rates from your own contract.
 
-The four token fields below are the counters
+The token fields below are the counters
 [PR #6938](https://github.com/fullsend-ai/fullsend/pull/6938) persists on
-cancelled runs (and records on completed runs too). They are disjoint:
-`input` is uncached input only, and cache tokens are not included in
-`input` or `output`.
+cancelled runs (and records on completed runs too), plus `reasoning`,
+which is recorded only on completed runs. They are disjoint: `input` is
+uncached input only, cache tokens are not included in `input` or `output`,
+and — for Codex specifically — `reasoning` is not included in `output`
+either.
 
 ### Persisted token fields
 
@@ -297,6 +299,7 @@ cancelled runs (and records on completed runs too). They are disjoint:
 | Output | `output` | `gen_ai.usage.output_tokens` |
 | Cache creation | `cache_creation` | `gen_ai.usage.cache_creation.input_tokens` |
 | Cache read | `cache_read` | `gen_ai.usage.cache_read.input_tokens` |
+| Reasoning | `reasoning` | `gen_ai.usage.reasoning_tokens` |
 
 For a cancelled GitHub Actions run, use `metrics.json` — it is the
 run-level aggregate and is uploaded even when the job is cancelled. Span
@@ -305,11 +308,15 @@ attributes are per-iteration.
 `token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
 recorded on completed runs. On cancelled Claude runs it is typically zero,
 because reasoning is taken from the terminal result event that cancellation
-never emits.
+never emits. For completed runs — Codex in particular, where reasoning
+tokens are counted separately from `output` — include `reasoning` in the
+cost formula below; omitting it will undercount.
 
 ### Worked example
 
-A cancelled run's `metrics.json` might look like:
+A cancelled run's `metrics.json` might look like (`reasoning` is omitted
+here because it is typically zero on cancelled runs; see the caveat above
+for completed and Codex runs):
 
 ```json
 {
@@ -338,6 +345,11 @@ cost = 1000/1e6 * 2.00
 Pricing only uncached input and output would give $0.007 and miss the cache
 tokens that dominate this run. Substitute your contracted rates; do not
 copy these numbers into a billing pipeline.
+
+For a completed run — especially Codex, where reasoning tokens are not
+included in `output` — add a fifth term, `reasoning/1e6 * <reasoning
+rate>`, to the formula above. The four-field formula alone will undercount
+whenever reasoning tokens are non-trivial.
 
 ## Output file format
 
