@@ -44,29 +44,60 @@ func TestBuildRunFactsEnvLines(t *testing.T) {
 }
 
 func TestRunHeadSHA(t *testing.T) {
-	// The source-branch SHA is set only in merged results pipelines, so all
-	// three shapes matter: it wins when present, CI_COMMIT_SHA covers the
-	// ordinary merge request pipeline where it is empty, and a pipeline that
-	// is not a merge request has no head to report.
+	// The source-branch SHA is set only in merged results pipelines, so the
+	// CI_COMMIT_SHA fallback carries the ordinary merge request pipeline where
+	// it is empty. What gates that fallback is CI_MERGE_REQUEST_IID rather
+	// than the pipeline source: fullsend's GitLab agent job is a child
+	// pipeline, so its source is "parent_pipeline" even on a merge request,
+	// and on the cron-poller path an API pipeline knows the merge request
+	// through STATUS_IID while its CI_COMMIT_SHA is the protected branch.
 	t.Run("gitlab prefers the merge request source sha", func(t *testing.T) {
 		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "gl123")
 		// Present too, and must lose: in a merged results pipeline this is
 		// the merge-result commit, not the source head.
 		t.Setenv("CI_COMMIT_SHA", "merge-result-sha")
+		t.Setenv("CI_MERGE_REQUEST_IID", "42")
 		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
 		assert.Equal(t, "gl123", runHeadSHA("gitlab"))
 	})
 
 	t.Run("gitlab falls back on an ordinary merge request pipeline", func(t *testing.T) {
 		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "42")
 		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
 		t.Setenv("CI_COMMIT_SHA", "gl456")
 		assert.Equal(t, "gl456", runHeadSHA("gitlab"),
 			"an empty source-branch SHA must not be reported as no head at all")
 	})
 
+	t.Run("gitlab falls back in the child pipeline that actually runs the agent", func(t *testing.T) {
+		// The shape fullsend really produces: dispatch-mr-agents triggers a
+		// child pipeline, so the source is "parent_pipeline" while the merge
+		// request's own variables carry into it.
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "42")
+		t.Setenv("CI_PIPELINE_SOURCE", "parent_pipeline")
+		t.Setenv("CI_COMMIT_SHA", "gl789")
+		assert.Equal(t, "gl789", runHeadSHA("gitlab"),
+			"the agent job's pipeline source is parent_pipeline, not merge_request_event")
+	})
+
+	t.Run("gitlab reports no head when only the poller knows the merge request", func(t *testing.T) {
+		// The cron-poller path: an API pipeline on the protected branch with
+		// the MR IID passed as STATUS_IID. CI_COMMIT_SHA is that branch, not
+		// the merge request's head, so there is no head to report.
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "")
+		t.Setenv("STATUS_IID", "42")
+		t.Setenv("CI_PIPELINE_SOURCE", "api")
+		t.Setenv("CI_COMMIT_SHA", "main-sha")
+		assert.Empty(t, runHeadSHA("gitlab"),
+			"the protected branch's commit is not the merge request's head")
+	})
+
 	t.Run("gitlab reports no head off a merge request", func(t *testing.T) {
 		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "")
 		t.Setenv("CI_PIPELINE_SOURCE", "push")
 		t.Setenv("CI_COMMIT_SHA", "branch-sha")
 		assert.Empty(t, runHeadSHA("gitlab"),

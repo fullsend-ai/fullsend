@@ -5049,16 +5049,33 @@ func runHeadSHA(forgePlatform string) string {
 //
 // CI_COMMIT_SHA fills that gap, but only conditionally: in a merged results
 // pipeline it is the merge-result commit rather than the source head, so an
-// unconditional fallback would export the wrong SHA there. Guarding on the
-// pipeline source is self-correcting — in a merged results pipeline the
-// first variable is populated, so the fallback is never reached — and a
-// pipeline that is not a merge request keeps returning "", which is correct
-// because there is no merge request head to report.
+// unconditional fallback would export the wrong SHA there. The guard is
+// self-correcting for that case — in a merged results pipeline the first
+// variable is populated, so the fallback is never reached.
+//
+// The guard is the presence of CI_MERGE_REQUEST_IID, not the pipeline source
+// string, for two reasons:
+//
+// CI_PIPELINE_SOURCE is never "merge_request_event" in the job that runs the
+// agent. fullsend's GitLab agent job is a child pipeline: the dispatch job in
+// .gitlab/ci/fullsend-dispatch.yml writes mr-dispatch-pipeline.yml and
+// dispatch-mr-agents triggers it, so the agent's own pipeline source is
+// "parent_pipeline" even though it was raised by a merge request. The MR
+// predefined variables carry into that child, which is why the agent template
+// reads CI_MERGE_REQUEST_IID directly.
+//
+// STATUS_IID is deliberately not accepted as "a merge request is known". On
+// the cron-poller path the agent job is an API-triggered pipeline on the
+// protected branch and the parent job passes the MR IID in STATUS_IID, but
+// CI_COMMIT_SHA there is that branch's commit, not the merge request's head —
+// exporting it would tell the agent the head moved on every run. Only a
+// pipeline that carries the merge request's own variables has CI_COMMIT_SHA
+// pointing at the source branch.
 func gitlabMergeRequestHeadSHA() string {
 	if sha := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); sha != "" {
 		return sha
 	}
-	if os.Getenv("CI_PIPELINE_SOURCE") == "merge_request_event" {
+	if os.Getenv("CI_MERGE_REQUEST_IID") != "" {
 		return os.Getenv("CI_COMMIT_SHA")
 	}
 	return ""
