@@ -411,7 +411,14 @@ func TestCodexSteerAggregator_SumsAcrossProcesses(t *testing.T) {
 // recognise a runner amendment, so it is a cross-repo interface: changing
 // it silently turns every steer back into ignored text.
 func TestSteerEnvelopeOpeningLineIsStable(t *testing.T) {
+	// Spelled out once, here. This is what stops the exported constant
+	// changing without the agents repository changing with it, and it is
+	// the string ADR 0101 quotes.
 	const opening = "Runner update: your task inputs changed after this run started."
+	if SteerEnvelopeOpeningLine != opening {
+		t.Fatalf("SteerEnvelopeOpeningLine = %q, want %q — the agent definitions in "+
+			"fullsend-ai/agents match on this line", SteerEnvelopeOpeningLine, opening)
+	}
 	for _, msg := range []SteerMessage{
 		{Text: "x"},
 		{FollowUpRunID: 1, Actor: "octocat", Event: "issue_comment", HeadSHA: "abc", Text: "x"},
