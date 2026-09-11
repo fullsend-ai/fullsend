@@ -111,6 +111,7 @@ jobs:
       stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.docs-lockfile-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      kill_switch: ${{ steps.kill-switch.outputs.kill_switch }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -413,16 +414,24 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        id: kill-switch
+        # Always runs so it can publish kill_switch downstream, even when no
+        # stage routed (draft, fullsend-no-review, below triage): the
+        # clear-stale-merge-labels job must honour the switch on those paths
+        # too. Dispatch is still halted (exit 1) only when a stage routed.
+        env:
+          STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
+          KILL_SWITCH=false
           if [[ -f .fullsend/config.yaml ]]; then
             KILL_SWITCH=$(yq '.kill_switch // false' .fullsend/config.yaml)
-            if [[ "$KILL_SWITCH" == "true" ]]; then
-              echo "::error::Kill switch is active — all agent dispatch halted"
-              echo "::error::Set kill_switch: false in .fullsend/config.yaml to resume"
-              exit 1
-            fi
+          fi
+          echo "kill_switch=${KILL_SWITCH}" >> "${GITHUB_OUTPUT}"
+          if [[ "$KILL_SWITCH" == "true" && -n "$STAGE" ]]; then
+            echo "::error::Kill switch is active — all agent dispatch halted"
+            echo "::error::Set kill_switch: false in .fullsend/config.yaml to resume"
+            exit 1
           fi
 
       - name: Validate agents config
@@ -700,8 +709,9 @@ jobs:
     needs: route
     # New commits that no review round will look at: the labels the round
     # would have cleared at start are cleared here instead. Kept out of the
-    # route job so that job stays read-only.
-    if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && needs.route.outputs.stage != 'review'
+    # route job so that job stays read-only. Skipped while the kill switch is
+    # active — a halted repo mutates no labels.
+    if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && needs.route.outputs.stage != 'review' && needs.route.outputs.kill_switch != 'true'
     runs-on: ${{ inputs.runner_image }}
     permissions:
       issues: write
