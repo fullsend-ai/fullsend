@@ -200,3 +200,28 @@ func TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho(t *testing.T) {
 		t.Fatalf("expected the literal value on the single line, got: %q", out)
 	}
 }
+
+// TestGeneratedPostScriptOkPostsNothingWithoutAnEarlierComment pins the ok
+// path under dry run: the script exits 0 and says nothing was posted. The
+// live path additionally looks for an earlier marker comment and replaces it
+// with the all-clear; that needs the forge, so it is exercised by the
+// example's script test in fullsend-ai/agents, not here.
+func TestGeneratedPostScriptOkPostsNothingWithoutAnEarlierComment(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	stdout, stderr, err := runPostScript(t, script, runDir)
+	if err != nil {
+		t.Fatalf("ok status must exit 0, got %v; stderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "nothing to post") {
+		t.Fatalf("expected the nothing-to-post notice, got stderr:\n%s", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("ok under dry run must print no comment body, got:\n%s", stdout)
+	}
+}
