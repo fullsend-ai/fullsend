@@ -42,7 +42,7 @@ func isValidSkillName(name string) bool {
 // document and marshals the complete frontmatter back to bytes. Using the
 // YAML node tree keeps flow-style continuations, quoted keys, and spacing
 // variants out of the reconstruction logic.
-func rewriteFrontmatterSkills(frontBytes []byte, added []string, eol string) ([]byte, error) {
+func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(frontBytes, &doc); err != nil {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
@@ -79,6 +79,13 @@ func rewriteFrontmatterSkills(frontBytes []byte, added []string, eol string) ([]
 		sequence.Style = 0 // Always emit the injected result in block form.
 	} else {
 		sequence = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		for _, name := range existing {
+			sequence.Content = append(sequence.Content, &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Tag:   "!!str",
+				Value: name,
+			})
+		}
 		mapping.Content = append(mapping.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "skills"},
 			sequence,
@@ -235,7 +242,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		return content, nil
 	}
 
-	updatedFrontmatter, err := rewriteFrontmatterSkills(frontBytes, added, eol)
+	updatedFrontmatter, err := rewriteFrontmatterSkills(frontBytes, fm.Skills, added, eol)
 	if err != nil {
 		return nil, err
 	}

@@ -363,6 +363,19 @@ func TestInjectFrontmatterSkills_AlternateSkillsKeySyntax(t *testing.T) {
 	}
 }
 
+func TestInjectFrontmatterSkills_MergeKeyPreservesExistingSkills(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\ndefaults: &defaults\n  skills: [skill-a]\n<<: *defaults\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-b"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "  - skill-a")
+	assert.Contains(t, got, "  - skill-b")
+	assert.Contains(t, got, "model: opus")
+	assertValidFrontmatter(t, result)
+}
+
 func TestInjectFrontmatterSkills_MultilineFlowStyleBlankLine(t *testing.T) {
 	t.Parallel()
 	src := "---\nname: test\nskills: [\n  skill-a,\n\n]\nmodel: opus\n---\nBody\n"
