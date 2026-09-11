@@ -99,9 +99,9 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
 # Also run internal/runtime/pi_extension/fullsend-edit-repair.test.mjs with
-# FULLSEND_TEST_PI_BIN at the new pin: the extension works around pi's edit
-# tool rejecting malformed `edits` (earendil-works/pi#8521, #8962). When the
-# test's without-extension control stops failing, the pinned pi repairs both
+# FULLSEND_TEST_PI_BIN at the new pin. That extension works around pi
+# rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
+# the test's without-extension control stops failing, this pi repairs both
 # shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
 ARG PI_VERSION=0.85.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \

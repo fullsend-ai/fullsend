@@ -1,15 +1,15 @@
 // fullsend-edit-repair.js — pi extension that repairs malformed `edits`
 // arguments before pi's built-in edit tool validates them.
 //
-// Some models (grok-4.6 on Vertex; the upstream reports saw claude-opus-5
-// too) send the edit tool's `edits` as a JSON string holding raw control
-// characters — real newlines and tabs inside string values, routine for a
-// multi-line code edit — or as an array whose items are JSON strings. pi's
-// own preparation repairs only a well-formed stringified array (a bare
-// JSON.parse with an empty catch), so both shapes fail validation with
-// `edits.0: must be object` and the model has to redo the call. One fullsend
-// code-agent run redid it 46 times (fullsend#7231). The upstream fixes,
-// earendil-works/pi#8521 and #8962, were auto-closed without review.
+// Some models (grok-4.6 here, claude-opus-5 in the upstream report) send the
+// edit tool's `edits` as a JSON string holding raw control characters — real
+// newlines and tabs inside string values, routine for a multi-line code edit
+// — or as an array whose items are JSON strings. pi's own preparation
+// repairs only a well-formed stringified array (a bare JSON.parse with an
+// empty catch), so both shapes fail validation with `edits.0: must be object`
+// and the model has to redo the call: 46 times in one fullsend code-agent run
+// (fullsend#7231). The upstream fixes, earendil-works/pi#8521 and #8962, were
+// auto-closed without review.
 //
 // This re-registers pi's own edit tool (createEditToolDefinition) with only
 // prepareArguments wrapped: the repair runs first, then pi's preparation.

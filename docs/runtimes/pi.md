@@ -194,15 +194,14 @@ What a local pi run needs, beyond the guide:
   Code does not, so redaction and unicode normalization apply on both paths.
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
-- **Malformed `edit` calls are repaired before pi sees them.** Some models send the `edit` tool's
-  `edits` as a JSON string holding raw newlines, or as an array of JSON strings. The pinned pi
-  rejects both with `Validation failed for tool "edit": edits.0: must be object`
+- **Malformed `edit` calls are repaired.** Some models send the `edit` tool's `edits` as a JSON
+  string holding raw newlines, or as an array of JSON strings; the pinned pi rejects both with
+  `edits.0: must be object` and the model has to redo the call
   ([earendil-works/pi#8521](https://github.com/earendil-works/pi/issues/8521),
-  [#8962](https://github.com/earendil-works/pi/issues/8962)), and the model has to redo the call.
-  When the agent has the `edit` tool, the runner loads `fullsend-edit-repair.js`, which parses the
-  argument before pi validates it and logs a `[fullsend-edit-repair] repaired ...` line naming the
-  file to stderr. The hook adapter sees the repaired edits, the same ones that are applied. It
-  goes away once the pinned pi repairs both shapes itself.
+  [#8962](https://github.com/earendil-works/pi/issues/8962)). When the agent has `edit`, the runner
+  loads `fullsend-edit-repair.js`, which parses the argument before pi validates it and logs each
+  repair to stderr. Hooks still see the edits that get applied. It goes once the pinned pi handles
+  both shapes.
 
 ## Plugins (pi extensions)
 
@@ -249,8 +248,8 @@ ever picked up from the target repository.
   pinned `PI_VERSION` just works.
 - **Pick a free name.** Not `fullsend-hooks`, `fullsend-agent`, `fullsend-edit-repair`,
   `anthropic-vertex` or `xai-vertex` — those are the runner's own sandbox names — and not the
-  directory name another entry already uses. Allowed
-  characters are `a-z`, `A-Z`, `0-9`, `_` and `-`.
+  directory name another entry already uses. Allowed characters are `a-z`, `A-Z`, `0-9`, `_`
+  and `-`.
 - **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
   repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
   sources and `..` segments are refused: pi would fetch them from the network at startup.
