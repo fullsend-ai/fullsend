@@ -583,20 +583,36 @@ jobs:
             # only drops icons and testing/), so a page can carry a
             # root-level <script setup> that runs at build time, a <style>
             # block, a head: frontmatter key that injects tags, {{ }}
-            # expressions evaluated during SSG, or bound attributes and
-            # directives (:prop, @event, v-*, on*) on raw HTML — docs/v/index.md
-            # already ships a <script setup>. Read the page at the PR head
-            # and keep the review unless it is free of all of these outside
-            # code, where VitePress renders text verbatim (v-pre). An
-            # unreadable page never skips. grep reads the whole page rather
-            # than exiting on the first match (-q): under pipefail an early
-            # exit can SIGPIPE awk on a long page and turn a hit into a miss.
+            # expressions evaluated during SSG, a build-time <!-- @include -->,
+            # or bound attributes and directives (:prop, @event, v-*, on*) on
+            # raw HTML — docs/v/index.md already ships a <script setup>. Read
+            # the page at the PR head and keep the review unless it is free of
+            # all of these outside code, where VitePress renders text verbatim
+            # (v-pre).
+            #
+            # The scan is deliberately over-eager — a false positive only
+            # keeps the review (ADR 0096). Fenced code is stripped because it
+            # renders verbatim, EXCEPT a fence whose info string ends in -vue,
+            # which VitePress evaluates; then inline code spans are stripped.
+            # Matching is case-insensitive because config.ts KNOWN_TAGS is /i,
+            # so <SCRIPT> renders too; head: tolerates spaces before the colon;
+            # and the attribute/directive pattern runs over the page with
+            # newlines flattened, so a binding wrapped onto its own line still
+            # matches. An unreadable page never skips.
             BODY=$(gh api -H 'Accept: application/vnd.github.raw' "${url}") || {
               skippable=false; break
             }
-            if awk '/^```/ { in_code = !in_code; next } !in_code' <<< "${BODY}" \
-                | sed 's/`[^`]*`//g' \
-                | grep -E '<script|<style|^head:|\{\{|<[A-Za-z][^>]*[[:space:]](:|@|v-|on)[A-Za-z-]+=' >/dev/null; then
+            SCANNED=$(awk '
+              /^```/ {
+                if (fence) { fence = 0 }
+                else { fence = 1; vue = ($0 ~ /-vue[[:space:]]*$/) }
+                next
+              }
+              !fence || vue
+            ' <<< "${BODY}" | sed 's/`[^`]*`//g')
+            if grep -Eiq '<script|<style|^head[[:space:]]*:|\{\{|@include[[:space:]]*:' <<< "${SCANNED}" \
+                || printf '%s' "${SCANNED}" | tr '\n' ' ' \
+                   | grep -Eiq '<[A-Za-z][^>]*[[:space:]](:|@|v-|on)[A-Za-z-]+='; then
               echo "::notice::${path} carries executable markup — not skipping review"
               skippable=false; break
             fi

@@ -960,6 +960,15 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		"interpolation":    "# Page\n\nTotal: {{ (() => globalThis.process.exit())() }}\n",
 		"bound attribute":  "# Page\n\n<VPLVersionLink :version=\"aliases.dev\" />\n",
 		"event handler":    "# Page\n\n<img src=x onerror=\"alert(1)\">\n",
+		// #6587 review: uppercase tags render (config.ts KNOWN_TAGS is /i),
+		// a binding wrapped onto its own line is still a live binding, a
+		// -vue fence is evaluated not verbatim, `head :` with a space is
+		// valid YAML, and <!-- @include --> splices a file at build time.
+		"uppercase script":  "# Page\n\n<SCRIPT setup>\nimport { evil } from 'evil'\n</SCRIPT>\n",
+		"multiline v-html":  "# Page\n\n<span\n  v-html=\"payload\"\n/>\n",
+		"js-vue fence":      "# Page\n\n```js-vue\n{{ 40 + 2 }}\n```\n",
+		"spaced head key":   "---\nhead :\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"include directive": "# Page\n\n<!-- @include: ../../secrets.md -->\n",
 	} {
 		t.Run("executable markup: "+name, func(t *testing.T) {
 			out, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
