@@ -5637,6 +5637,116 @@ func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE")
 }
 
+// envLast returns the last-wins value of key in an exec env slice, matching
+// os/exec's duplicate-key rule used by postScriptEnv.
+func envLast(env []string, key string) string {
+	prefix := key + "="
+	val := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			val = e[len(prefix):]
+		}
+	}
+	return val
+}
+
+func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	require.True(t, minted)
+
+	// Simulate runner_env expansion at the start of the run, which snapshots
+	// the first minted token into h.RunnerEnv (last-wins in postScriptEnv).
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"))
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+}
+
+func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	require.True(t, minted)
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "failed remint must leave the existing token")
+	assert.Contains(t, buf.String(), "Failed to refresh agent token for post-script")
+
+	// The post-script still runs with the existing token.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "post.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$PUSH_TOKEN\" > \""+marker+"\"\n"), 0o755))
+
+	cmd := exec.Command(script)
+	cmd.Env = postScriptEnv(h, "")
+	require.NoError(t, cmd.Run(), "post-script must still run after a remint error")
+	got, readErr := os.ReadFile(marker)
+	require.NoError(t, readErr)
+	assert.Equal(t, "ghs_original_token\n", string(got))
+}
+
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()

@@ -876,6 +876,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Mint agent token when a mint URL and harness role are both available.
 	// Runs before env expansion so minted tokens flow into RunnerEnv and
 	// host_files via os.Getenv automatically.
+	// A second mint happens in the post-script defer (#7231) so a
+	// full-budget run does not hand the post-script an expired token.
 	// Minting is GitHub-only — on GitLab the bot PAT (FULLSEND_FORGE_TOKEN)
 	// serves as the push/API token, provisioned via CI/CD variables. Skip
 	// minting entirely to avoid a spurious "skipping token minting" warning
@@ -1727,6 +1729,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			postStart := time.Now()
 			printer.StepStart("Running post-script: " + h.PostScript)
+			// Re-mint after sandbox teardown so the post-script does not
+			// authenticate with an installation token that expired during a
+			// full-budget run. GitHub App tokens live 60 minutes, matching the
+			// code agent's budget (#7231). A remint failure is non-fatal.
+			// os.Setenv is safe here: sandbox streaming and OIDC refresh
+			// goroutines have already been torn down (LIFO defers).
+			remintCleanup := remintAgentTokenForPostScript(ctx, h, mintURL, forgePlatform, printer)
+			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postCmd.Env = postScriptEnv(h, traceparent)
@@ -5108,6 +5118,58 @@ type tokenVar struct {
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
 	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// remintAgentTokenForPostScript re-mints a GitHub App installation token
+// after the sandbox is torn down so the post-script authenticates with a
+// live token. Installation tokens expire after 60 minutes, matching the
+// code agent's budget, so a full-budget run's original token is already
+// expired by post-script time (#7231). GitLab is skipped (no App mint).
+//
+// A remint failure is non-fatal: the post-script still runs with the
+// existing token. The returned cleanup restores process env after the
+// post-script; it is a no-op when remint is skipped or fails.
+func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mintURL, forgePlatform string, printer *ui.Printer) func() {
+	if forgePlatform == "gitlab" || mintURL == "" {
+		return func() {}
+	}
+	role := ""
+	if h != nil {
+		role = h.Role
+	}
+	_, cleanup, err := mintAgentToken(ctx, role, mintURL, forgePlatform, printer)
+	if err != nil {
+		printer.StepWarn("Failed to refresh agent token for post-script: " + err.Error() + "; continuing with existing token")
+		return func() {}
+	}
+	syncRunnerEnvTokens(h)
+	if cleanup == nil {
+		return func() {}
+	}
+	return cleanup
+}
+
+// syncRunnerEnvTokens copies the current process-env token vars into
+// h.RunnerEnv so childScriptEnv's last-wins merge does not restore the
+// values expanded at the start of the run. Without this, a remint would
+// update os.Environ() while postScriptEnv still appended the stale
+// PUSH_TOKEN snapshotted from the first mint (#7231).
+func syncRunnerEnvTokens(h *harness.Harness) {
+	if h == nil || h.RunnerEnv == nil {
+		return
+	}
+	names := []string{"GH_TOKEN"}
+	for _, tv := range roleTokenVars[resolveRole(h.Role)] {
+		names = append(names, tv.Name)
+	}
+	for _, name := range names {
+		if _, ok := h.RunnerEnv[name]; !ok {
+			continue
+		}
+		if v, found := os.LookupEnv(name); found {
+			h.RunnerEnv[name] = v
+		}
+	}
 }
 
 // mintAgentToken mints a GitHub App installation token for the agent's role
