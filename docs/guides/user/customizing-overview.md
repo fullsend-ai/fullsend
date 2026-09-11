@@ -83,6 +83,10 @@ env:
     JIRA_PROJECT: "MYPROJ"
 ```
 
+Most scalars follow "child wins", but `max_cost_usd` merges by presence, not
+value: an absent field inherits the base's cap, while an explicit `0`
+overrides it with *unlimited*. See [Configuring Agent Behavior](customizing-agents.md#what-you-can-override).
+
 Register the agent in `.fullsend/config.yaml`:
 
 ```yaml
