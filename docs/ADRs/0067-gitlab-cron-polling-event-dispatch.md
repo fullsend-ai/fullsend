@@ -554,6 +554,60 @@ methods rather than adding forge-conditional logic.
 | External infrastructure | Mint Cloud Function | None for event dispatch |
 | Credential types | App key + installation token | Single bot PAT |
 
+> **Update (2026-09, #7247):** Dispatch HMAC signing is GitLab-specific.
+> GitHub's current handoff has no equivalent of the API-triggered
+> pipeline variable-injection vector that motivated
+> `FULLSEND_DISPATCH_HMAC` (#5572). The security boundary is documented
+> in the [security threat model](../problems/security-threat-model.md#forged-ci-dispatch-payloads).
+>
+> GitLab's `POST /projects/:id/pipeline` lets any user with
+> pipeline-create access (Developer+) attach arbitrary CI variables to a
+> run of the trusted job YAML on the protected branch. Those variables
+> (`STAGE`, `EVENT_PAYLOAD_B64`, `ACTOR_ID`, …) are what the agent job's
+> authorization gate and fork protection read. HMAC-SHA256 over the
+> dispatch variables, verified before the job trusts them, closes that
+> forgery path. `FULLSEND_DISPATCH_SECRET` must be a protected, masked
+> CI/CD variable so a Developer cannot override it with their own key.
+>
+> GitHub has no generic "create a run of the trusted workflow with extra
+> variables" API:
+>
+> - **Native events.** The per-repo shim triggers on GitHub Events and
+>   calls `reusable-dispatch.yml` via `workflow_call`. Routing reads
+>   `github.event.*`, which GitHub's servers populate from real activity.
+>   Callers cannot POST a substitute event payload into that path.
+> - **GitHub+Jira and other custom pollers.** A scheduled workflow runs
+>   `fullsend poll`, writes a matrix as a job output, and passes it to
+>   `reusable-dispatch.yml` through `workflow_call` in the **same**
+>   authenticated run (see the
+>   [Jira integration guide](../guides/user/jira-integration.md) and
+>   [custom poller example](../guides/user/custom-poller-example.md)).
+>   The `matrix` input is reachable only from another workflow file that
+>   `uses:` the reusable workflow. Adding or changing that caller
+>   requires write access to workflow YAML — and, where CODEOWNERS and
+>   branch protection apply, a reviewed merge — not merely the ability
+>   to start a pipeline. `reusable-dispatch.yml` is `on: workflow_call`
+>   only; it is not a `workflow_dispatch` or `repository_dispatch`
+>   entry point. `workflow_dispatch` on the poll workflow lets a
+>   write-access user start a poll; it does not accept the matrix as an
+>   input.
+>
+> That conclusion would change if dispatch data from an untrusted caller
+> could reach the agent job without a workflow-YAML change. Examples:
+> declaring `on: workflow_dispatch` or `repository_dispatch` on
+> `reusable-dispatch.yml` (or a wrapper) with `matrix` /
+> `event_payload` as an input; a custom poller that forwards
+> unauthenticated external input into `matrix` without validation;
+> splitting poll and harness into separate workflow runs and triggering
+> the harness via `gh workflow run` with the matrix as a
+> `workflow_dispatch` input. GitHub's `workflow_dispatch` API accepts
+> only inputs the workflow YAML declares; GitLab's pipeline API accepts
+> any variable names regardless of `.gitlab-ci.yml`.
+>
+> | Concern | GitHub | GitLab (this ADR) |
+> |---|---|---|
+> | Dispatch authenticity | Native `github.event.*` and same-run `workflow_call` matrix (no HMAC) | HMAC-SHA256 over API-triggered pipeline variables (`FULLSEND_DISPATCH_HMAC`) |
+
 Implementation covers poller pseudocode, forge interface changes, CI/CD
 template scaffolding, and install flow.
 
@@ -565,3 +619,4 @@ template scaffolding, and install flow.
 - [ADR 0061](0061-harness-cel-dispatch.md) — harness CEL triggers, dispatch drivers, and NormalizedEvent schema
 - [ADR 0063](0063-polling-based-work-discovery.md) — polling-based work discovery via dispatch drivers (`fullsend poll`, input/output driver architecture)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
+- [Security threat model — forged CI dispatch payloads](../problems/security-threat-model.md#forged-ci-dispatch-payloads) — why GitHub dispatch does not use HMAC signing

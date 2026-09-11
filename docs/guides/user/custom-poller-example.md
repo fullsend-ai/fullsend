@@ -149,3 +149,9 @@ Required permissions:
 ## Authorization
 
 When using a pre-computed matrix, the `.fullsend/config.yaml` agent-enablement checks are bypassed. The token mint service acts as the authorization boundary (see [mint-administration.md](../infrastructure/mint-administration.md)) - ensure your mint service is properly configured to control which agents external callers can invoke.
+
+## Dispatch authenticity
+
+This pattern does not HMAC-sign the matrix. The poll job produces it in the same authenticated workflow run that calls `reusable-dispatch.yml`; reaching that `matrix` input requires a workflow file that `uses:` the reusable workflow, which means write access to workflow YAML rather than a generic "create pipeline with extra variables" API.
+
+Do **not** re-expose the matrix as a `workflow_dispatch` or `repository_dispatch` input, and do not copy unauthenticated external content into `matrix` without validation. Those shapes are the GitHub equivalent of the GitLab API-triggered pipeline vector that HMAC signing closes. Details: [Forged CI dispatch payloads](../../problems/security-threat-model.md#forged-ci-dispatch-payloads).
