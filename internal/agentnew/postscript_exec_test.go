@@ -137,6 +137,9 @@ func TestGeneratedPostScriptRunsFromTheRunDirectory(t *testing.T) {
 // the script's stderr lands in the runner log where `::` at line start is
 // interpreted as a command.
 func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
 	script := renderPostScriptTo(t, t.TempDir())
 	runDir := writeRunDir(t, map[string]any{
 		"iteration-1": map[string]any{
