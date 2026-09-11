@@ -39,7 +39,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
 export const DEPTH_ENV = "FULLSEND_SUBAGENT_DEPTH";
@@ -309,6 +309,12 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
     "--session-dir", `${agent.sessionsDir}/${prefix}-${seq}`,
   ];
   for (const ext of agent.extensions ?? []) args.push("-e", ext);
+  // The edit-repair extension registers the edit tool, and pi does not
+  // filter extension tools under --no-builtin-tools, so it loads only for a
+  // child whose allowlist already names edit (see fullsend-edit-repair.js).
+  if (typeof agent.editRepairExtension === "string" && agent.editRepairExtension !== "" && tools.includes("edit")) {
+    args.push("-e", agent.editRepairExtension);
+  }
   if (tools.length === 0) {
     // Mirror the runner: an empty allowlist means "no built-in tools", not
     // "the default set". `--tools ''` would be read as one empty name.
@@ -530,9 +536,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     waiter.evict();
   };
 
-  // extensionDigests are the digests Bootstrap recorded for the files it
-  // wrote into agent.extensions that live in the config dir — today only
-  // the hook adapter, and the same bytes the launch guard checks. They
+  // extensionDigests are the digests Bootstrap recorded for the child -e
+  // files it wrote into the config dir — the hook adapter and the edit
+  // repair, the same bytes their launch guards check. They
   // travel inside the manifest, so the manifest digest covers them: a
   // rewrite that drops or edits them is itself a manifest drift, caught
   // first below. The vendored provider extensions under
@@ -575,7 +581,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       } catch (err) {
         return `cannot re-read ${file} before dispatching: ${err.message}`;
       }
-      if (sum !== want) return "hook adapter changed since load; refusing to dispatch";
+      if (sum !== want) return `${basename(file)} changed since load; refusing to dispatch`;
     }
     return "";
   };

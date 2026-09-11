@@ -748,11 +748,18 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"xai/grok-4.6"}, m.Agent.ProviderModels[piXaiVertexProvider],
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
-		require.Len(t, m.Agent.ExtensionDigests, 1,
-			"the one child -e entry Bootstrap wrote into the config dir is digest-covered, so the extension can re-check it before every dispatch")
+		editExt := cfg + "/fullsend-edit-repair.js"
+		require.Len(t, m.Agent.ExtensionDigests, 2,
+			"both child -e entries Bootstrap wrote into the config dir are digest-covered, so the extension can re-check them before every dispatch")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
 		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
 			"and against the same digest the launch guard checks, so the two cannot drift")
+		require.NotEmpty(t, m.Agent.ExtensionDigests[editExt])
+		assert.Contains(t, piEditRepairGuard(editExt), m.Agent.ExtensionDigests[editExt], "the edit repair too")
+		assert.Equal(t, editExt, m.Agent.EditRepairExtension, "the default child tool set has edit")
+		assert.NotContains(t, m.Agent.Extensions, editExt,
+			"kept out of the shared list: a child with no tools must not load the extension that registers edit")
+		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, editExt), "Bootstrap wrote the embedded copy")
 		assert.NotContains(t, m.Agent.ExtensionDigests, piVertexExtensionPath,
 			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
 		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
@@ -775,12 +782,15 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 	})
 
 	t.Run("enabled by a tools list naming Task, hooks off", func(t *testing.T) {
-		m, _, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Grep, Task\n---\nbody", false)
+		m, store, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Grep, Task\n---\nbody", false)
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
-		assert.Empty(t, m.Agent.ExtensionDigests, "and so nothing in the child -e list that Bootstrap wrote, hence no digests")
+		assert.Empty(t, m.Agent.ExtensionDigests, "no hook adapter and no edit repair (no edit tool), hence no digests")
+		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")
+		_, err := os.Stat(filepath.Join(store, strings.ReplaceAll(cfg+"/fullsend-edit-repair.js", "/", "_")))
+		assert.True(t, os.IsNotExist(err), "not uploaded for an agent without edit")
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["default"], "the agent's own model, @suffix stripped, is the default for children")
 		assert.Nil(t, m.Hooks)
 	})
