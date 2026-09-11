@@ -278,10 +278,17 @@ estimates are informational and may diverge.
 
 Fullsend never converts token counts into dollars. When a runtime reports
 `total_cost_usd`, that value is recorded as-is — typically a list-price
-estimate, not your contracted rate. When the runtime reports nothing
-(cancelled runs, or Codex, which sends no cost), the field stays `0`. In
-both cases you can compute a dollar figure from the persisted token counts
-using rates from your own contract.
+estimate, not your contracted rate. Codex never reports a cost, so the
+field stays `0` regardless of whether the run completed or was cancelled.
+Claude reports `0` on any cancelled run too, because cost is copied only
+from the terminal `ResultEvent`, which cancellation never emits. pi is
+different: its parser always synthesizes a `ResultEvent` at end of stream —
+including on cancellation — carrying `total_cost_usd` accumulated from
+every assistant message's cost seen before cancellation, so a cancelled pi
+run can still persist a non-zero `total_cost_usd` if at least one assistant
+message completed first. Whenever the field is `0`, you can compute a
+dollar figure from the persisted token counts using rates from your own
+contract.
 
 The token fields below are the counters
 [PR #6938](https://github.com/fullsend-ai/fullsend/pull/6938) persists on
@@ -329,9 +336,11 @@ so adding `reasoning` on top of `output` double-counts and overbills.
 
 ### Worked example
 
-A cancelled run's `metrics.json` might look like (`reasoning` is omitted
-here because it is typically zero on cancelled Claude and pi runs; see the
-caveat above for the Codex exception):
+A cancelled run's `metrics.json` might look like (`reasoning` is `0` here
+because this example is a cancelled Claude run, where reasoning — like
+cost — is typically zero. A cancelled pi run can carry non-zero
+`reasoning` the same way it can carry non-zero cost, depending on whether
+an assistant message finished before cancellation; see the caveat above):
 
 ```json
 {
@@ -340,7 +349,8 @@ caveat above for the Codex exception):
     "input": 1000,
     "output": 500,
     "cache_creation": 150000,
-    "cache_read": 600000
+    "cache_read": 600000,
+    "reasoning": 0
   }
 }
 ```
