@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
+
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -220,16 +222,17 @@ func defaultRetryDelay(attempt int) time.Duration {
 // TLS handshake timeouts, unexpected connection closures, and network
 // timeouts.
 //
-// We check ctx.Err() rather than errors.Is(err, context.DeadlineExceeded)
-// because http.Client.Timeout wraps context.DeadlineExceeded from an
-// internal context even when the caller's context is still active. Such
-// per-request timeouts on slow servers are transient and worth retrying.
+// We use ctxerr.IsDeadlineExceededOrCanceled (ctx.Err()) rather than
+// inspecting err for the DeadlineExceeded sentinel because
+// http.Client.Timeout wraps DeadlineExceeded from an internal context
+// even when the caller's context is still active. Such per-request
+// timeouts on slow servers are transient and worth retrying.
 // See internal/fetch/fetch.go isTransientRequestError for the same
 // rationale.
 func isRetryableTransportError(ctx context.Context, err error) bool {
 	// If the caller's context is done, this is intentional
 	// cancellation — not a transient failure.
-	if ctx.Err() != nil {
+	if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 		return false
 	}
 	// HTTP client timeout (e.g. net/http.Client.Timeout exceeded)

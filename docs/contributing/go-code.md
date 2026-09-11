@@ -374,11 +374,13 @@ if errors.As(err, &te) && te.Timeout() {
 
 Context deadline and cancellation errors represent intentional cancellation by the caller (e.g., a request timeout set by the application, a user-initiated cancel). They should never be classified as transient or retried — the caller chose to stop waiting, and retrying re-creates the same deadline.
 
-**Always guard against context errors before checking `Timeout()`:**
+**Do not use `errors.Is(err, context.DeadlineExceeded)` to exclude context errors.** Go's `net/http` Client.Timeout error unwraps to `context.DeadlineExceeded` from an internal context even when the caller's context is still live, so `errors.Is` also matches genuine transport timeouts. The same false positive appears once an intermediate type implements `Unwrap` (for example `mintclient.retryableError`). That misclassification shipped in #7234 and was the third occurrence of this pitfall (#6424, #6425, #7240).
+
+**Always use `ctxerr.IsDeadlineExceededOrCanceled` (which checks `ctx.Err()`) before checking `Timeout()`:**
 
 ```go
-// CORRECT — context errors are excluded before the Timeout() check.
-if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+// CORRECT — only the caller's own context expiry is excluded.
+if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
     return false
 }
 var te interface{ Timeout() bool }
@@ -387,9 +389,9 @@ if errors.As(err, &te) && te.Timeout() {
 }
 ```
 
-See [`forge.IsTransient`](../../internal/forge/forge.go) for the canonical example of the correct pattern.
+See [`ctxerr.IsDeadlineExceededOrCanceled`](../../internal/ctxerr/ctxerr.go) for the canonical helper, and [`forge.IsTransient`](../../internal/forge/forge.go) for it used in retry classification.
 
-**When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `errors.Is(err, context.DeadlineExceeded)` guard as a medium-severity finding. The fix is to add the context-error check before the `Timeout()` check.
+**When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `ctxerr.IsDeadlineExceededOrCanceled` (or `ctx.Err() != nil`) guard as a medium-severity finding. Flag any new `errors.Is(err, context.DeadlineExceeded)` call site that does not go through `ctxerr` as a medium-severity finding. The fix is to call the helper.
 
 ### Template map iteration
 

@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
 )
@@ -258,7 +259,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		if err != nil {
 			// If the caller's context is done, propagate immediately
 			// — retrying is pointless when the parent has cancelled.
-			if ctx.Err() != nil {
+			if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 				return nil, fmt.Errorf("http %s %s: %w", method, path, err)
 			}
 			// HTTP client timeout (Client.Timeout exceeded): retry
@@ -374,17 +375,17 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 
 // isTimeoutError reports whether err is an HTTP client timeout (e.g.
 // Client.Timeout exceeded) as opposed to a caller-context cancellation
-// or deadline. It checks ctx.Err() internally so callers do not need
-// to guard against context errors before calling this function.
+// or deadline. It uses ctxerr so callers do not need to guard against
+// context errors before calling this function.
 //
 // The context check is necessary because Go's net/http client timeout
 // wraps context.DeadlineExceeded internally, making error-only
 // introspection unable to distinguish caller deadlines from transport
-// timeouts. Checking the caller's context disambiguates: if ctx.Err()
-// is non-nil, the caller's context expired; otherwise, any Timeout()
+// timeouts. Checking the caller's context disambiguates: if ctx itself
+// is done, the caller's context expired; otherwise, any Timeout()
 // error is a transport-level timeout worth retrying.
 func isTimeoutError(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
+	if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 		return false
 	}
 	var te interface{ Timeout() bool }
