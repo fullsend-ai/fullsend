@@ -301,6 +301,12 @@ either.
 | Cache read | `cache_read` | `gen_ai.usage.cache_read.input_tokens` |
 | Reasoning | `reasoning` | `gen_ai.usage.reasoning_tokens` |
 
+`metrics.json` always includes `reasoning` (`0` when there is none). The
+`gen_ai.usage.reasoning_tokens` span attribute, unlike the other four
+`gen_ai.usage.*` attributes above, is omitted entirely when reasoning is
+zero rather than being attached as `0` — do not rely on its presence or
+absence when filtering OTel spans.
+
 For a cancelled GitHub Actions run, use `metrics.json` — it is the
 run-level aggregate and is uploaded even when the job is cancelled. Span
 attributes are per-iteration.
@@ -308,9 +314,12 @@ attributes are per-iteration.
 `token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
 recorded on completed runs. On cancelled Claude runs it is typically zero,
 because reasoning is taken from the terminal result event that cancellation
-never emits. For completed runs — Codex in particular, where reasoning
-tokens are counted separately from `output` — include `reasoning` in the
-cost formula below; omitting it will undercount.
+never emits. Whether a completed run needs `reasoning` added to the cost
+formula depends on the runtime: for Codex, reasoning tokens are counted
+separately from `output` (`output` excludes them), so omitting `reasoning`
+undercounts. For Claude and pi, `output` already includes reasoning
+tokens, so adding `reasoning` on top of `output` double-counts and
+overbills.
 
 ### Worked example
 
@@ -346,10 +355,12 @@ Pricing only uncached input and output would give $0.007 and miss the cache
 tokens that dominate this run. Substitute your contracted rates; do not
 copy these numbers into a billing pipeline.
 
-For a completed run — especially Codex, where reasoning tokens are not
-included in `output` — add a fifth term, `reasoning/1e6 * <reasoning
-rate>`, to the formula above. The four-field formula alone will undercount
-whenever reasoning tokens are non-trivial.
+For a completed Codex run, add a fifth term, `reasoning/1e6 * <reasoning
+rate>`, to the formula above: Codex's `reasoning` counter is disjoint from
+`output`, so the four-field formula alone will undercount whenever
+reasoning tokens are non-trivial. Don't add this term for Claude or pi
+runs — both runtimes already fold reasoning tokens into `output`, so
+adding `reasoning` on top would double-count it.
 
 ## Output file format
 
