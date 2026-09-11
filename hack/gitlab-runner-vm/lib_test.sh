@@ -214,6 +214,13 @@ else
   fail "create scripts missing 'cleanup_runner() { cleanup_vm; }' alias in RUNNER_TOKEN mode"
 fi
 
+if grep -Fq 'executor/gateway.sh' "${CREATE_GCP}" \
+  && grep -Fq 'executor/gateway.sh' "${CREATE_OCP}"; then
+  pass "both create scripts copy and checksum executor/gateway.sh"
+else
+  fail "create scripts missing executor/gateway.sh in copy/checksum lists"
+fi
+
 if [ "${FAILURES}" -ne 0 ]; then
   echo "${FAILURES} case(s) failed" >&2
   exit 1

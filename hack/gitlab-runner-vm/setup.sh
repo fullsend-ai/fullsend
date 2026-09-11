@@ -21,8 +21,10 @@
 #                          gitlab-runner register. Use the API/UI to set tags.
 #   GITLAB_RUNNER_VERSION — gitlab-runner version to install (default: 19.2.1)
 #
-# Note: The OpenShell version is pinned in .github/scripts/openshell-version.sh
-# (Renovate-tracked). The SHA-pinned installer installs the repo-pinned version.
+# Note: The OpenShell version sourced here is the *provisioning* pin
+# (.github/scripts/openshell-version.sh, Renovate-tracked). Per-job prepare.sh
+# re-reads the job image's openshell --version and upgrades the host when they
+# differ, so a VM that was created on an older pin still matches the job.
 set -euo pipefail
 
 GITLAB_URL="${GITLAB_URL:-}"
@@ -617,46 +619,27 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-# 5. Start gateway via RPM-provided systemd service
+# 5. Per-job OpenShell gateway (no long-lived daemon)
 # --------------------------------------------------------------------------
-start_gateway() {
-  info "Starting OpenShell gateway"
+# The RPM's user unit would otherwise stay up across every job and accumulate
+# a stale profile registry plus a baked-in OpenShell version (#7218). prepare.sh
+# starts a fresh, job-version-matched gateway; cleanup.sh tears it down. Setup
+# only seeds config, PKI defaults, and image cache — then disables the unit so
+# a reboot or lingering user session cannot resurrect it.
+configure_per_job_gateway() {
+  info "Configuring per-job OpenShell gateway (no long-lived daemon)"
 
-  # Use the RPM-provided service which handles config seeding, PKI
-  # generation, and environment loading automatically.
   systemctl --user daemon-reload
-  systemctl --user enable openshell-gateway.service
-  systemctl --user restart openshell-gateway.service
+  # Seed PKI + gateway.toml.default via a one-shot start, then stop and
+  # disable. The next job's prepare.sh starts it for real with a wiped store.
+  systemctl --user start openshell-gateway.service || true
+  systemctl --user stop openshell-gateway.service 2>/dev/null || true
+  systemctl --user disable openshell-gateway.service 2>/dev/null || true
 
-  local i
-  for i in $(seq 1 10); do
-    if systemctl --user is-active --quiet openshell-gateway.service; then
-      break
-    fi
-    if [ "${i}" -eq 10 ]; then
-      fail "gateway did not start after 10s — check: journalctl --user -u openshell-gateway"
-    fi
-    sleep 1
-  done
-
-  # Register the gateway with the CLI so openshell commands can find it.
-  # The restart above triggers ExecStartPre which regenerates TLS
-  # certificates. Any existing CLI registration still references the old
-  # certs, so mTLS checks would fail. Remove the stale registration first,
-  # then re-add so the CLI picks up the new certificates.
+  # Drop any CLI registration from the seed start; prepare.sh re-adds it.
   openshell gateway remove openshell >/dev/null 2>&1 || true
 
-  local add_err
-  if ! add_err=$(openshell gateway add --local https://127.0.0.1:17670 2>&1) \
-    && ! openshell gateway select openshell >/dev/null 2>&1; then
-    fail "could not register or select the OpenShell gateway: ${add_err}"
-  fi
-  if ! openshell gateway list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -Eq '^[[:space:]]*\*'; then
-    fail "no active OpenShell gateway after add/select"
-  fi
-  ok "gateway registered and selected"
-
-  ok "gateway is running"
+  ok "openshell-gateway.service disabled; jobs start it in prepare.sh"
 }
 
 # --------------------------------------------------------------------------
@@ -667,7 +650,7 @@ install_executor() {
 
   mkdir -p "${EXECUTOR_DIR}"
 
-  for script in job_id.sh prepare.sh run.sh cleanup.sh; do
+  for script in job_id.sh prepare.sh run.sh cleanup.sh gateway.sh; do
     local src="${SCRIPT_DIR}/executor/${script}"
     if [ ! -f "${src}" ]; then
       fail "executor script not found: ${src}"
@@ -775,18 +758,15 @@ verify() {
     echo "  WARN: openshell version mismatch"; errors=$((errors + 1))
   fi
 
-  if systemctl --user is-active --quiet openshell-gateway.service; then
-    ok "gateway running"
+  if systemctl --user is-enabled --quiet openshell-gateway.service 2>/dev/null; then
+    echo "  WARN: openshell-gateway.service is enabled — jobs expect a per-job gateway"; errors=$((errors + 1))
   else
-    echo "  WARN: gateway not running"; errors=$((errors + 1))
+    ok "openshell-gateway.service not enabled (per-job)"
   fi
-
-  # The unit being active says nothing about CLI registration, which is what
-  # the agent inside job containers actually resolves the gateway through.
-  if openshell gateway list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -Eq '^[[:space:]]*\*'; then
-    ok "gateway registered with the CLI"
+  if systemctl --user is-active --quiet openshell-gateway.service; then
+    echo "  WARN: gateway is running at setup end — prepare.sh should start it per job"; errors=$((errors + 1))
   else
-    echo "  WARN: no active gateway in 'openshell gateway list'"; errors=$((errors + 1))
+    ok "gateway not running (started per job in prepare.sh)"
   fi
 
   if systemctl --user is-active --quiet podman.socket; then
@@ -821,7 +801,7 @@ verify() {
     echo "  INFO: container CA trust smoke test skipped (image lacks curl)"
   fi
 
-  for script in job_id.sh prepare.sh run.sh cleanup.sh; do
+  for script in job_id.sh prepare.sh run.sh cleanup.sh gateway.sh; do
     if test -x "${EXECUTOR_DIR}/${script}"; then
       ok "${script} executable"
     else
@@ -868,7 +848,7 @@ setup_podman
 install_openshell
 configure_gateway
 install_ca_hook
-start_gateway
+configure_per_job_gateway
 install_executor
 patch_config
 prepull_images

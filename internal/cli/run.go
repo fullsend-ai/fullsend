@@ -1374,11 +1374,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
 
-		// Import URL-resolved profiles to the gateway.
+		// Import URL-resolved profiles to the gateway. ImportProfileVerified
+		// drops the os.TempDir() content cache and confirms the gateway lists
+		// the profile: a hash match against a freshly-recreated (empty)
+		// gateway would otherwise skip the send (#7218).
 		for _, rp := range result.Profiles {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
-			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
+			if err := sandbox.ImportProfileVerified(ctx, rp.ID, rp.LocalPath); err != nil {
 				printer.StepFail("Failed to import profile " + rp.ID)
 				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
 			}

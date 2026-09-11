@@ -354,6 +354,35 @@ func ForgetProfileCache(id string) {
 	os.Remove(profileFileCachePath(id)) //nolint:errcheck
 }
 
+// ImportProfileVerified imports a provider profile after dropping any local
+// content cache, then confirms the gateway lists it. ImportProfile trusts a
+// hash in os.TempDir() and skips the send on a match; that cache can outlive
+// the gateway it was written against (a per-job GitLab gateway, a restarted
+// local daemon). Callers that must have the profile present — the generic
+// URL-resolved import path and the OpenAI scaffold import — use this instead
+// of ImportProfile alone. See #7218.
+func ImportProfileVerified(ctx context.Context, id, profilePath string) error {
+	ForgetProfileCache(id)
+	if err := ImportProfile(ctx, id, profilePath); err != nil {
+		return err
+	}
+	present, err := ProfileExists(ctx, id)
+	if err != nil {
+		return fmt.Errorf("checking provider profile %q: %w", id, err)
+	}
+	if present {
+		return nil
+	}
+	ForgetProfileCache(id)
+	if err := ImportProfile(ctx, id, profilePath); err != nil {
+		return err
+	}
+	if present, err = ProfileExists(ctx, id); err != nil || !present {
+		return fmt.Errorf("provider profile %q is not on the gateway after import (err=%v)", id, err)
+	}
+	return nil
+}
+
 // reservedCredentialKeys are env var names that must not be used as provider
 // credential keys. Credential keys become env vars in the openshell child
 // process; allowing security-sensitive names would let a URL-fetched provider
