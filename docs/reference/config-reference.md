@@ -3,6 +3,8 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+For which generated files you can edit, see
+[Working with the `.fullsend` directory](../guides/user/fullsend-directory.md).
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md).
 
@@ -225,6 +227,13 @@ credentials to agents based on their role. Default:
 set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
+
+For GitHub per-repo installs, this field does not control dispatch: the
+managed shim reads the `FULLSEND_MINT_URL` repository variable instead,
+which is set with `fullsend github setup --mint-url` (not a
+`fullsend github set` key). Editing `mint_url` here alone does not change
+what the shim dispatches with. See
+[Working with the `.fullsend` directory](../guides/user/fullsend-directory.md#what-setup-writes-github).
 
 ### `inference`
 

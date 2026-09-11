@@ -5,6 +5,10 @@ coding conventions, domain knowledge, extra skills, or entirely new agent
 roles. This page lists every customization approach from lightest to heaviest
 so you can pick the right one.
 
+After setup, most generated files are installer-managed. Edit
+`.fullsend/config.yaml` and the files you add yourself — see
+[Working with the `.fullsend` directory](fullsend-directory.md).
+
 ## Quick decision guide
 
 | Goal | Approach | Effort |
@@ -126,6 +130,7 @@ output schemas.
 
 ## See also
 
+- [Working with the `.fullsend` directory](fullsend-directory.md) — which generated files you can edit
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into custom agent territory?
 - [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together end to end

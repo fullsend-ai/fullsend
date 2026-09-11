@@ -31,7 +31,7 @@ const stubConfigYAML = `# fullsend per-repo configuration (overlay)
 # Values set here override the base layer. Omitted fields inherit
 # from config.base.yaml, then from compiled-in code defaults.
 #
-# See ADR 0069 for the layered configuration model.
+# See https://fullsend.sh/docs/guides/user/fullsend-directory
 
 # Uncomment and customize fields as needed:
 # roles: []
