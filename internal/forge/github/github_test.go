@@ -4628,6 +4628,86 @@ func TestListWorkflowRunsSince(t *testing.T) {
 	assert.Equal(t, "2a103497", r.ReferencedWorkflows[0].SHA)
 }
 
+func TestListWorkflowRunsSince_PaginatesPastTheFirstPage(t *testing.T) {
+	var pages []string
+	run := func(id int) map[string]any {
+		return map[string]any{
+			"id": id, "name": "fullsend", "path": ".github/workflows/fullsend.yml",
+			"event": "issue_comment", "status": "completed", "created_at": "2026-09-03T10:05:00Z",
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		// per_page is 2 here, so page 1 is full and page 2 is short.
+		var runs []map[string]any
+		switch page {
+		case "1":
+			runs = []map[string]any{run(1), run(2)}
+		default:
+			runs = []map[string]any{run(3)}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 3, "workflow_runs": runs})
+	}))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListWorkflowRunsSince(
+		context.Background(), "org", "repo", "fullsend.yml", time.Now(), 2)
+	require.NoError(t, err)
+
+	// Without the page loop the third run is invisible, and on a busy
+	// repository that is the follow-up the steer watcher was listing for.
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, runs, 3)
+	assert.Equal(t, 3, runs[2].ID)
+}
+
+// TestListWorkflowRunsSince_StopsAtTheExactTotal covers the server that
+// fills its last page exactly: the short-page test never fires, so
+// total_count is what ends the loop.
+func TestListWorkflowRunsSince_StopsAtTheExactTotal(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 2,
+			"workflow_runs": []map[string]any{
+				{"id": calls*10 + 1, "path": ".github/workflows/fullsend.yml"},
+				{"id": calls*10 + 2, "path": ".github/workflows/fullsend.yml"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListWorkflowRunsSince(
+		context.Background(), "org", "repo", "fullsend.yml", time.Now(), 2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Len(t, runs, 2)
+}
+
+// TestListWorkflowRunsSince_BoundedByThePageCap keeps the poll's request
+// cost bounded on a repository that never runs out of runs.
+func TestListWorkflowRunsSince_BoundedByThePageCap(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": calls*10 + 1, "path": ".github/workflows/fullsend.yml"},
+				{"id": calls*10 + 2, "path": ".github/workflows/fullsend.yml"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListWorkflowRunsSince(
+		context.Background(), "org", "repo", "fullsend.yml", time.Now(), 2)
+	require.NoError(t, err)
+	assert.Equal(t, maxWorkflowRunPages, calls)
+	assert.Len(t, runs, 2*maxWorkflowRunPages)
+}
+
 func TestListWorkflowRunsSince_DefaultsPerPage(t *testing.T) {
 	var gotPerPage string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
