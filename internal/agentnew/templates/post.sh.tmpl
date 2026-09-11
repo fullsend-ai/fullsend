@@ -131,6 +131,14 @@ if [[ "${status}" == "ok" ]]; then
     echo "post-__AGENT_NAME__: status=ok, nothing to post (dry run: an earlier findings comment would be replaced with the all-clear)" >&2
     exit 0
   fi
+  # The runner's fullsend may predate --only-if-exists (it is pinned by the
+  # repository's fullsend-ref, not by the CLI that generated this script).
+  # Detect the flag instead of assuming it: on an older CLI, keep the old
+  # behaviour — post nothing — rather than fail the common ok path.
+  if ! fullsend issues post-comment --help 2>&1 | grep -q -- '--only-if-exists'; then
+    echo "post-__AGENT_NAME__: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
+    exit 0
+  fi
   printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
     | fullsend issues post-comment \
         --tracker github \
