@@ -655,6 +655,7 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 	expectedKeys := []string{
 		"FULLSEND_GCP_REGION",
 		"FULLSEND_REVIEW_CLIENT_ID",
+		"FULLSEND_PRESERVE_RUNS",
 		forge.PerRepoGuardVar,
 		"FULLSEND_GCP_PROJECT_ID",
 		"FULLSEND_GCP_WIF_PROVIDER",
@@ -668,6 +669,26 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 
 	reviewInfo := configKeyMapping["FULLSEND_REVIEW_CLIENT_ID"]
 	assert.Equal(t, storageVariable, reviewInfo.storage)
+
+	// The operations guide documents setting this with `fullsend github set`,
+	// and reusable-dispatch.yml reads it as vars.FULLSEND_PRESERVE_RUNS — a
+	// repo variable, not a secret.
+	preserveInfo := configKeyMapping["FULLSEND_PRESERVE_RUNS"]
+	assert.Equal(t, storageVariable, preserveInfo.storage)
+}
+
+func TestGitHubSetCmd_SetsPreserveRunsAsRepoVariable(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSet(context.Background(), client, printer, "acme/widget", "FULLSEND_PRESERVE_RUNS", "true")
+	require.NoError(t, err)
+
+	require.Len(t, client.Variables, 1)
+	assert.Equal(t, "FULLSEND_PRESERVE_RUNS", client.Variables[0].Name)
+	assert.Equal(t, "true", client.Variables[0].Value)
+	assert.Empty(t, client.CreatedSecrets)
 }
 
 func TestGitHubSetCmd_ValidatesWIFProvider(t *testing.T) {
