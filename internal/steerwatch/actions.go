@@ -35,8 +35,8 @@ const listPerPage = 100
 // deliberately so: they are Actions-shaped, and a forge with no workflow
 // runs to read has no answer to give. Depending on this narrow interface
 // keeps that cost off every other forge, where widening forge.Client would
-// make each one implement methods it cannot honour. Steering is GitHub-only
-// for the same reason the runner gates it there (ADR 0101).
+// make each one implement methods it cannot honour. The runner gates
+// steering to GitHub as well, for its own reason (ADR 0101).
 type ActionsReader interface {
 	// GetWorkflowRun returns one run record, including its provenance
 	// fields (path, referenced workflows, actors, item association).

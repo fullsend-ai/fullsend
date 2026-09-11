@@ -483,21 +483,35 @@ func (w *Watcher) buildText(runs []forge.WorkflowRun, d delta) (string, int, map
 		b.WriteString(amend.String())
 	}
 
+	ctxFindings := 0
 	if len(d.context) > 0 {
 		var ctxBody strings.Builder
 		for _, item := range d.context {
 			ctxBody.WriteString(renderContext(item))
 		}
+		// Sanitized before it is defanged, and that order is the whole
+		// point: the sanitizer strips invisible characters, so
+		// "[/work-item<zero-width space>-context]" passes every pattern
+		// neutralizeEnvelopeMarkers matches on and is then reassembled
+		// intact by a sanitizer running after it. Defanging the sanitized
+		// text leaves nothing for the later pass to put back together.
+		// Its findings are returned with the rest: the block is sanitized
+		// here rather than not at all, so the caller's warning must still
+		// count them.
+		var sanitized string
+		sanitized, ctxFindings = security.SanitizeAgentText(ctxBody.String())
 		remaining := maxDeltaBytes - b.Len() - len(contextOpen) - len(contextClose)
 		// Context is not receipted, so its clipping is not tracked.
-		body, _ := truncate(ctxBody.String(), remaining)
+		body, _ := truncate(neutralizeEnvelopeMarkers(sanitized), remaining)
 		b.WriteString(contextOpen)
 		b.WriteString(body)
 		b.WriteString(contextClose)
 	}
 
+	// The context block is already sanitized; this pass covers the header
+	// and the amendments, and is inert over text that is already clean.
 	text, findings := security.SanitizeAgentText(b.String())
-	return text, findings, excluded
+	return text, findings + ctxFindings, excluded
 }
 
 const (
@@ -536,8 +550,12 @@ func renderAmendment(item deltaItem) (string, bool) {
 	}
 }
 
+// renderContext renders one context item. The body is NOT defanged here:
+// neutralizeEnvelopeMarkers runs once in buildText, after the block has been
+// through the Unicode sanitizer, because defanging first leaves a token an
+// invisible character had split for the sanitizer to reassemble.
 func renderContext(item deltaItem) string {
-	body := neutralizeEnvelopeMarkers(item.Body)
+	body := item.Body
 	switch {
 	case item.Kind == "state":
 		return body + "\n\n"
@@ -564,7 +582,9 @@ var (
 	// headings buildText writes. Only a whole line counts: the headings are
 	// structure by virtue of standing alone, and prose that happens to use
 	// either word is not an imitation of anything.
-	envelopeHeadingRe = regexp.MustCompile(`(?m)^[ \t]*(Amendments[ \t]*|Work-item context\b.*)$`)
+	// \r is in the class because a comment composed in GitHub's web UI
+	// arrives CRLF, and (?m) anchors $ before \n alone.
+	envelopeHeadingRe = regexp.MustCompile(`(?m)^[ \t]*(Amendments[ \t\r]*|Work-item context\b.*)$`)
 )
 
 // neutralizeEnvelopeMarkers defangs the envelope's own structural tokens
