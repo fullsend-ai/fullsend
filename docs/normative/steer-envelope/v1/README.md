@@ -71,15 +71,27 @@ any token in the table above. Before the block is wrapped, each is altered in
 place — altered rather than deleted, so a reader can still see what the text
 tried to do:
 
-| In a context body | Becomes |
-|---|---|
-| `[work-item-context]` | `(work-item-context)` |
-| `[/work-item-context]` | `(/work-item-context)` |
-| `Instruction from @` | `Instruction from (at)` |
-| A line that is only `Amendments` | the same line, prefixed `> ` |
-| A line beginning `Work-item context` | the same line, prefixed `> ` |
+| In a context body | Becomes | Matched |
+|---|---|---|
+| `[work-item-context]` | `(work-item-context)` | anywhere in the body |
+| `[/work-item-context]` | `(/work-item-context)` | anywhere in the body |
+| `Instruction from @` | `Instruction from (at)` | anywhere in the body |
+| `Amendments`, alone on a line | `> Amendments` | line-anchored |
+| `Work-item context` beginning a line, as a whole word | the line, prefixed `> ` | line-anchored |
 
-Two rules govern how this is applied:
+The two line-anchored rules need their edges spelled out, because a second
+repository reads this table:
+
+- Leading spaces and tabs are allowed before either heading word, and the quoted
+  line does **not** keep them: an indented `Amendments` is re-emitted as
+  `> Amendments` with the indent gone. Trailing spaces, tabs and a carriage
+  return are allowed after `Amendments` and are preserved.
+- `Work-item context` must end on a word boundary, so `Work-item context.` and
+  `Work-item context is…` are quoted, and `Work-item contexts` is not. The
+  heading the runner writes continues with a period. Everything from there to
+  the end of the line is part of the match.
+
+Two further rules govern how this is applied:
 
 1. **Sanitize, then defang.** The Unicode sanitizer strips invisible
    characters. A token split by one — a zero-width space inside
@@ -89,8 +101,8 @@ Two rules govern how this is applied:
    reassemble.
 2. **Only whole lines count for the headings.** The two heading words are
    structure by virtue of standing alone. Prose that happens to use either word
-   is not an imitation of anything and is left as written. Line endings may be
-   `\n` or `\r\n`.
+   mid-sentence is not an imitation of anything and is left as written. Line
+   endings may be `\n` or `\r\n`.
 
 Amendments are **not** defanged. They are attributed to an author whose
 authorization was verified and are the one part of the body allowed to be
@@ -102,4 +114,4 @@ against an author who needs no forgery to give one.
 This is v1. A change to the opening line, to any token in the structural table,
 or to what is defanged is a new major version, because the agent definitions
 match on these strings and cannot be updated atomically with the runner. Adding
-a header sentence that carries no matched token is not.
+a header sentence that carries no token in the structural table is not.

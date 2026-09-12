@@ -65,8 +65,8 @@ After the run, its terminal status comment carries a processing receipt naming t
 it consumed, and a queued run that finds its own id listed exits without starting the agent. That
 receipt is what makes the queued run short rather than a full re-run, and it is load-bearing
 rather than an optimization: without one, steering costs *more* than cancelling does today, since
-the run in flight absorbs the push and reviews head B and the queued run then reviews head B
-again. **Steering may not be enabled anywhere until receipts are authenticated by a channel that
+the run in flight absorbs the push and reviews the new head, and the queued run then reviews that
+same head again. **Steering may not be enabled anywhere until receipts are authenticated by a channel that
 agents and post-scripts cannot mint** — a forged receipt makes the queued run exit without doing
 its work, so the failure is a silently dropped update rather than a wasted one.
 
