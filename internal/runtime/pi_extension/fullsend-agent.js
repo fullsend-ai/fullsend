@@ -329,8 +329,8 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
 // *parent*, so it only ever matched the parent's provider; a child on a
 // different provider would otherwise inherit, say, a stray
 // ANTHROPIC_API_KEY (which pi's built-in anthropic provider would use for a
-// direct-to-Anthropic call) or an ambient GOOGLE_CLOUD_PROJECT. The rules below are the same ones
-// pi_run.go applies, per resolved child provider.
+// direct-to-Anthropic call) or an ambient GOOGLE_CLOUD_PROJECT. The rules
+// below are the same ones pi_run.go applies, per resolved child provider.
 //
 // google-vertex and openai have no rules here on purpose, matching
 // buildPiRunCommand: google-vertex reads the ADC the sandbox already
