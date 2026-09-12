@@ -13,6 +13,10 @@
 #
 # When done, the runner is online and accepting jobs tagged with RUNNER_TAG.
 #
+# setup.sh (step 5) is idempotent — safe to re-run in place as a
+# developer/debug convenience. Recreation (drain → delete → create) is
+# the compliance path; see issue #7257.
+#
 # Two modes:
 #   RUNNER_TOKEN — join an existing runner pool. Multiple VMs share one
 #                  GitLab runner registration (glrt-* token). GL_TOKEN and

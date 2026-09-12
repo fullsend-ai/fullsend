@@ -7,6 +7,10 @@
 #   2. Deregisters the runner from GitLab
 #   3. Deletes the VirtualMachine from OpenShift (and its DataVolume)
 #
+# Recreation (drain → delete → create) is the compliance path for runner
+# VMs; in-place setup.sh re-run is a developer/debug convenience only.
+# See issue #7257.
+#
 # Required environment variables:
 #   GL_TOKEN    — GitLab personal access token
 #   GITLAB_URL  — GitLab instance URL (e.g. https://gitlab.example.com)

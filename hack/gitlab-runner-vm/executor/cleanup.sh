@@ -2,6 +2,7 @@
 # GitLab Runner custom executor — cleanup stage.
 # Stops and removes the job container and the per-job OpenShell gateway.
 # Always succeeds.
+# Idempotent: safe to re-run and must stay that way.
 # -e intentionally omitted — cleanup must not abort on individual failures.
 set -uo pipefail
 
