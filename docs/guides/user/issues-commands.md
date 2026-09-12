@@ -87,6 +87,7 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--dry-run` | No | Print what would be posted without making API calls |
 | `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
+| `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is replaced while a clean first run posts nothing. |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ### Jira marker storage
