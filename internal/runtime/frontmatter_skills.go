@@ -27,7 +27,7 @@ func isFrontmatterFence(line []byte) bool {
 // isValidSkillName reports whether name contains only characters safe for
 // use as a bare YAML scalar: alphanumeric, hyphens, underscores, dots.
 func isValidSkillName(name string) bool {
-	if name == "" {
+	if name == "" || name == "." || name == ".." {
 		return false
 	}
 	for _, c := range name {
@@ -39,13 +39,18 @@ func isValidSkillName(name string) bool {
 }
 
 // rewriteFrontmatterSkills updates the skills sequence in a parsed YAML
-// document and marshals the complete frontmatter back to bytes. Using the
-// YAML node tree keeps flow-style continuations, quoted keys, and spacing
-// variants out of the reconstruction logic.
+// document and marshals the complete frontmatter back to bytes. frontBytes
+// may be nil for the no-frontmatter case, in which case an empty mapping
+// is synthesized. The existing parameter is only consumed when the skills
+// key is absent from the node tree (e.g. merge-key inheritance).
 func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(frontBytes, &doc); err != nil {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("frontmatter must be a YAML mapping")
@@ -146,7 +151,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		}
 		name := filepath.Base(d)
 		if !isValidSkillName(name) {
-			return nil, fmt.Errorf("invalid skill name %q from %q: must match [a-zA-Z0-9._-]+", name, d)
+			return nil, fmt.Errorf("invalid skill name %q from %q: must match [a-zA-Z0-9._-]+ and not be %q or %q", name, d, ".", "..")
 		}
 		if seen[name] {
 			continue
@@ -176,13 +181,15 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	hasFrontmatter := len(lines) > 0 && isFrontmatterFence(lines[0])
 
 	if !hasFrontmatter {
-		// No frontmatter — create one with just the skills list.
+		// No frontmatter — create one with just the skills list. Use the
+		// YAML node encoder so names such as "true" and "1.0" remain strings.
+		frontmatter, err := rewriteFrontmatterSkills(nil, nil, newNames, eol)
+		if err != nil {
+			return nil, err
+		}
 		var buf bytes.Buffer
 		fmt.Fprintf(&buf, "---%s", eol)
-		fmt.Fprintf(&buf, "skills:%s", eol)
-		for _, name := range newNames {
-			fmt.Fprintf(&buf, "  - %s%s", name, eol)
-		}
+		buf.Write(frontmatter)
 		fmt.Fprintf(&buf, "---%s", eol)
 		buf.Write(content)
 		return buf.Bytes(), nil
@@ -222,7 +229,7 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	existing := make(map[string]bool, len(fm.Skills))
 	for _, s := range fm.Skills {
 		if !isValidSkillName(s) {
-			return nil, fmt.Errorf("invalid existing skill name %q: must match [a-zA-Z0-9._-]+", s)
+			return nil, fmt.Errorf("invalid existing skill name %q: must match [a-zA-Z0-9._-]+ and not be %q or %q", s, ".", "..")
 		}
 		existing[s] = true
 	}

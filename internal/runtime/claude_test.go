@@ -627,7 +627,7 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 }
 
 // TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
-// agentDestName to derive the destination filename and calls UploadFile
+// agentDestName to derive the destination filename and calls uploadBytes
 // with the correct path. A stub openshell binary is placed on PATH so
 // sandbox operations succeed without a real sandbox.
 func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
@@ -647,7 +647,7 @@ func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
 	})
 	// The stub openshell succeeds for all sandbox calls, so Bootstrap
 	// should complete without error, exercising agentDestName and the
-	// UploadFile call path.
+	// uploadBytes call path.
 	assert.NoError(t, err)
 }
 

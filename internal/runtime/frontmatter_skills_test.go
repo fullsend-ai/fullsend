@@ -78,6 +78,32 @@ Do things.
 	assert.Contains(t, got, "Do things.")
 }
 
+func TestInjectFrontmatterSkills_NoFrontmatterQuotesYAMLSpecialNames(t *testing.T) {
+	t.Parallel()
+	result, err := injectFrontmatterSkills([]byte("Body\n"), []string{
+		"/path/true",
+		"/path/1.0",
+	})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "- \"true\"")
+	assert.Contains(t, got, "- \"1.0\"")
+	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_EmptyFrontmatter(t *testing.T) {
+	t.Parallel()
+	src := "---\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/skill-a"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "skills:\n  - skill-a\n")
+	assert.Contains(t, got, "Body")
+	assertValidFrontmatter(t, result)
+}
+
 func TestInjectFrontmatterSkills_EmptySkillDirs(t *testing.T) {
 	t.Parallel()
 	src := `---
@@ -247,6 +273,19 @@ func TestInjectFrontmatterSkills_FlowStyleRejectsUnsafeExistingName(t *testing.T
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid existing skill name")
 	assert.Contains(t, err.Error(), "unsafe: skill")
+}
+
+func TestInjectFrontmatterSkills_ExistingQuotedYAMLSpecialWithInjection(t *testing.T) {
+	t.Parallel()
+	src := "---\nname: test\nskills:\n  - \"true\"\n  - normal\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "- \"true\"")
+	assert.Contains(t, got, "- normal")
+	assert.Contains(t, got, "- new-skill")
+	assertValidFrontmatter(t, result)
 }
 
 func TestInjectFrontmatterSkills_CommentsInSkillsBlock(t *testing.T) {
@@ -434,6 +473,8 @@ func TestInjectFrontmatterSkills_InvalidSkillName(t *testing.T) {
 		{"hash", "/path/to/skill #beta"},
 		{"bracket", "/path/to/skill[0]"},
 		{"space", "/path/to/my skill"},
+		{"dot", "/path/to/."},
+		{"dotdot", "/path/to/.."},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
