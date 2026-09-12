@@ -248,7 +248,7 @@ cancellation patterns.
 
 ## httptest handler-invocation assertions
 
-When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — `httptest`'s default mux returns 404 for unregistered routes, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
+When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — an unmatched route on the `http.ServeMux` returns 404, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
 
 ### Pattern: `handlerCalled` boolean
 
