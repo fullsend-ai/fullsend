@@ -791,6 +791,14 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	defer cancel()
 
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -821,6 +829,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	var lastResult *ResultEvent
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case InitEvent:
 			return
@@ -839,16 +848,59 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parsePiStream(reader, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// tool_execution_update lines emitted while a tool streams output, which
+	// map to no AgentEvent — resets the silence clock, so an actively
+	// streaming tool is never mistaken for a stall.
+	if _, parseErr := parsePiStreamLines(reader, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	// foldSubagentUsage adds any completed children's tokens and cost to the
+	// run metrics. Children are separate pi processes, so none of their
+	// tokens reached the stream just parsed; the extension's usage file is
+	// the only record of what they spent. A read failure is not fatal —
+	// losing the breakdown must not fail an iteration. It runs on both the
+	// success path below and the stall path just after: a parent that
+	// stalls after several children finished has real, recorded spend, and
+	// dropping it would leave per_model_usage no longer summing to the totals.
+	foldSubagentUsage := func() {
+		if m.Agent == nil || !m.Agent.Enabled {
+			return
+		}
+		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
+			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+		} else {
+			// Unconditional: the parent's own entry belongs in the
+			// breakdown even when this iteration dispatched nothing, or
+			// per_model_usage stops summing to the totals across a retry.
+			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
+			if n > 0 {
+				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
+			}
+			if skipped > 0 {
+				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
+			}
+		}
+	}
+
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		// A parent stalls waiting on its children (the 30s liveness tick
+		// exists for exactly that), so completed children's spend must
+		// survive the kill — fold it before returning, same as a clean run.
+		foldSubagentUsage()
+		return exitCode, stallErr
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -869,26 +921,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return exitCode, fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())
 	}
 
-	if m.Agent != nil && m.Agent.Enabled {
-		// Children are separate pi processes, so none of their tokens
-		// reached the stream just parsed; the extension's usage file is the
-		// only record of what they spent. A read failure is not fatal —
-		// losing the breakdown must not fail an iteration that succeeded.
-		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
-			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
-		} else {
-			// Unconditional: the parent's own entry belongs in the
-			// breakdown even when this iteration dispatched nothing, or
-			// per_model_usage stops summing to the totals across a retry.
-			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
-			if n > 0 {
-				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
-			}
-			if skipped > 0 {
-				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
-			}
-		}
-	}
+	foldSubagentUsage()
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
 		msg := lastResult.ErrorMessage
