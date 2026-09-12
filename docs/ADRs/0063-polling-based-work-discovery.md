@@ -483,6 +483,14 @@ required by the authorization gate. Implementations SHOULD track
 - **Work item abstraction** — harnesses and pre-scripts may need
   `FULLSEND_WORK_ITEM_*` plumbing for non-GitHub sources.
 
+> **Update (2026-09, #7247):** GitHub-hosted pollers (including Jira poll)
+> hand the pre-computed matrix to `reusable-dispatch.yml` via
+> `workflow_call` in the same workflow run. That path does not use
+> `FULLSEND_DISPATCH_HMAC`. The GitLab-only rationale, and the GitHub
+> architectures that would change it, are in
+> [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) and the
+> [security threat model](../problems/security-threat-model.md#forged-ci-dispatch-payloads).
+
 ## Open questions
 
 Questions below are **intentionally deferred** — see *Handling deferred
@@ -521,3 +529,4 @@ questions* for recommended resolution path.
 - [ADR 0061 — Harness CEL triggers and fullsend dispatch drivers](0061-harness-cel-dispatch.md)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
 - [Jira poll adapter (NormalizedEvent extension)](../normative/normalized-event/v1/jira-poll-adapter.md)
+- [Security threat model — forged CI dispatch payloads](../problems/security-threat-model.md#forged-ci-dispatch-payloads) — why GitHub-hosted pollers do not HMAC-sign the matrix

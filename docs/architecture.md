@@ -289,7 +289,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
-- GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)). Dispatch HMAC signing (`FULLSEND_DISPATCH_HMAC`) is GitLab-specific: GitHub native events and the same-run `workflow_call` matrix handoff have no equivalent of GitLab's API-triggered pipeline variable injection ([security threat model](problems/security-threat-model.md#forged-ci-dispatch-payloads)).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
   express threading on `transition.comment.id` / `parent_id` (`parent_id` always
