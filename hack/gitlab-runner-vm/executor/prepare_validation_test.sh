@@ -26,9 +26,13 @@ if ! realpath -m / >/dev/null 2>&1; then
   fi
 fi
 
-# Stub podman so the test exercises validation only — no container runtime.
+# Stub podman / systemctl / openshell so the test exercises path validation
+# only. prepare.sh now starts a per-job OpenShell gateway after the pull;
+# those helpers must succeed against these no-op binaries.
 printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/podman"
-chmod +x "${SHIM_DIR}/podman"
+printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/systemctl"
+printf '#!/bin/sh\ncase "$1" in --version) echo "openshell 0.0.116";; gateway) echo "  * openshell";; esac\nexit 0\n' > "${SHIM_DIR}/openshell"
+chmod +x "${SHIM_DIR}/podman" "${SHIM_DIR}/systemctl" "${SHIM_DIR}/openshell"
 
 FAKE_HOME=$(mktemp -d)
 trap 'rm -rf "${SHIM_DIR}" "${FAKE_HOME}"' EXIT

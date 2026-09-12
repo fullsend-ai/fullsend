@@ -9,13 +9,21 @@ fullsend agent jobs.
 Each runner VM runs:
 - **gitlab-runner** (custom executor) — receives CI jobs from GitLab
 - **Podman** (rootless) — creates per-job containers
-- **OpenShell gateway** — provides sandbox compute for fullsend agents
+- **OpenShell gateway** — started per job in `prepare.sh`, torn down in
+  `cleanup.sh`. The VM does **not** keep a long-lived `systemd --user`
+  gateway: that accumulated a stale profile registry, a baked-in OpenShell
+  version, and leaked sandboxes (#7218). Each job recreates the gateway
+  with an empty registry, matching GitHub Actions (fresh, version-matched
+  install, throw the runner away). The ~6 GB image cache stays warm; only
+  the CLI (~39 MB) and a version-skewed supervisor (~30 MB) are fetched
+  when the job's pin differs from the host.
 
 Job containers use `--network=host` to reach the gateway. An OCI
 `createRuntime` hook injects the host CA trust bundle into every container
 (Debian and RHEL-family layouts) so jobs can verify internal TLS endpoints.
 Gateway mTLS credentials are mounted read-only from the runner user's
-OpenShell config.
+OpenShell config. `prepare.sh` reaps leftover `openshell-*` / `openshell.managed`
+containers from an abruptly-killed prior job before starting the new gateway.
 
 This is a deployment variant of the container isolation model described in
 ADR-0036. It uses a Podman custom executor instead of Docker/Kubernetes
@@ -117,7 +125,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `RUNNER_IMAGE` | yes (create) | — | Image pre-pulled as a warm cache; jobs must still set `image:` in `.gitlab-ci.yml` |
 | `RUNNER_TAG` | no | `fullsend-gitlab-runner` | Runner tag for job matching |
 | `RUNNER_ACCESS_LEVEL` | no | `not_protected` | `ref_protected` restricts the runner to protected branches and tags, so merge-request pipelines on unprotected source refs never match and sit `pending`. In project mode, `not_protected` means any job on any branch of the project can run; in group mode, any tag-matched job on any branch of any project invited into the group tree runs on this VM (see Security below) |
-| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version (Renovate-tracked) |
+| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version used at **VM provision** (Renovate-tracked). Per-job `prepare.sh` re-reads the job image's `openshell --version` and upgrades the host CLI + supervisor when they differ, so a stale VM pin cannot stick. |
 | `GITLAB_RUNNER_VERSION` | no | `19.2.1` | gitlab-runner version |
 | `REGISTRATION_TOKEN` | setup only | — | GitLab runner registration token |
 
@@ -154,9 +162,10 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
-- `executor/prepare.sh` — custom executor prepare stage
+- `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
-- `executor/cleanup.sh` — custom executor cleanup stage
+- `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
+- `executor/gateway.sh` — shared per-job gateway helpers sourced by prepare/cleanup
 
 ## Security notes
 
@@ -176,7 +185,9 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - Job containers share the host network namespace (`--network=host`) to reach
   the OpenShell gateway. The gateway binds to `0.0.0.0` (required for the
   Podman compute driver — sandbox containers register via
-  `host.containers.internal`). mTLS protects the endpoint.
+  `host.containers.internal`). mTLS protects the endpoint. The gateway process
+  itself is per-job: `prepare.sh` starts it against a wiped store, `cleanup.sh`
+  stops it. A leftover from a killed job is reaped at the next prepare.
 - Job containers receive read-only access to the runner's gateway mTLS
   credentials (`~/.config/openshell`). This is required for the fullsend
   agent inside job containers to authenticate to the gateway. Credential
