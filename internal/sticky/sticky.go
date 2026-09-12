@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -52,12 +53,24 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	}
 
 	existing := FindMarkedComment(comments, cfg.Marker, botUser)
-	markedBody := cfg.Marker + "\n" + body
+	// The body is agent output, and an agent can be induced to write
+	// fullsend marker syntax into it — a steer receipt naming a run id is
+	// enough to make a queued run skip its work. Defanged before the
+	// runner's own marker is prepended, so this comment's marker is
+	// unaffected.
+	markedBody := cfg.Marker + "\n" + statuscomment.NeutralizeMarkers(body)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
 
-		newBody := BuildUpdatedBody(existing.Body, markedBody, cfg)
+		// The old body is collapsed into this comment's history, so it is
+		// re-posted. Anything smuggled into it before this defence existed
+		// would otherwise survive every later edit — but the runner's own
+		// marker must come off FIRST: BuildUpdatedBody strips it by exact
+		// prefix, and neutralizing beforehand rewrites its "<" so the strip
+		// no longer matches and the marker lands in the visible history,
+		// one more each time the comment is updated.
+		newBody := BuildUpdatedBody(NeutralizeHistory(existing.Body, cfg), markedBody, cfg)
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
@@ -116,6 +129,33 @@ var detailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]*</sum
 
 // legacyDetailsRe matches old-format history blocks without sentinel comments.
 var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]*</summary>\s*(.*?)\s*</details>`)
+
+// NeutralizeHistory defangs marker syntax in an old body that is about to
+// be folded into this comment's history, leaving the runner's own marker
+// and footer intact so BuildUpdatedBody can still strip them by exact
+// match. Only the agent-authored remainder is rewritten.
+func NeutralizeHistory(oldBody string, cfg Config) string {
+	prefix := ""
+	rest := oldBody
+	for _, marker := range []string{cfg.Marker + "\n", cfg.Marker} {
+		if marker == "\n" || marker == "" {
+			continue
+		}
+		if trimmed, ok := strings.CutPrefix(rest, marker); ok {
+			prefix, rest = marker, trimmed
+			break
+		}
+	}
+
+	footer := ""
+	if cfg.FooterMarker != "" {
+		if idx := strings.Index(rest, cfg.FooterMarker); idx >= 0 {
+			footer, rest = rest[idx:], rest[:idx]
+		}
+	}
+
+	return prefix + statuscomment.NeutralizeMarkers(rest) + footer
+}
 
 // BuildUpdatedBody collapses the old comment body into a flat list of
 // <details> blocks and prepends the new body. Footer content (delimited

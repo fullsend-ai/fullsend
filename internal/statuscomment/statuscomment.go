@@ -33,6 +33,10 @@ var startBodyRe = regexp.MustCompile(`🤖 (.+?) · Started (\d{1,2}:\d{2} [AP]M
 
 const terminalTag = "<!-- fullsend:status:terminal -->"
 
+// statusMarkerPrefix is the invariant part of the per-run status marker
+// buildMarker writes. Used to recognise the runner's own status comments.
+const statusMarkerPrefix = "<!-- fullsend:agent-status:"
+
 // TerminationReason describes why the agent process was terminated.
 type TerminationReason string
 
@@ -86,6 +90,7 @@ type Notifier struct {
 	runURL        string
 	sha           string
 	marker        string
+	steerMarker   string
 
 	startCommentID string
 	// startReactionID is in-memory only, unlike startCommentID which can be
@@ -131,6 +136,14 @@ func New(client tracker.Client, cfg config.StatusNotificationConfig,
 // errors during fail-open operations). Defaults to a no-op.
 func (n *Notifier) SetWarnFunc(f func(string, ...any)) {
 	n.warnf = f
+}
+
+// SetSteerMarker records what the run absorbed so the terminal status
+// comment carries the steer marker the queued follow-up run's skip check
+// reads (ADR 0101). An empty marker (nothing consumed, no head) leaves the
+// comment unchanged.
+func (n *Notifier) SetSteerMarker(m SteerMarker) {
+	n.steerMarker = BuildSteerMarker(m)
 }
 
 // SetRunInfo sets optional runtime/model metadata rendered in the
@@ -405,6 +418,11 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 func visibleStatusBody(body tracker.Body, marker string) tracker.Body {
 	text := strings.TrimPrefix(string(body), marker+"\n")
 	text = strings.TrimPrefix(text, terminalTag+"\n")
+	if strings.HasPrefix(text, steerMarkerPrefix) {
+		if idx := strings.Index(text, "\n"); idx >= 0 {
+			text = text[idx+1:]
+		}
+	}
 	return tracker.Body(text)
 }
 
@@ -476,7 +494,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 		if c.Author != botUser {
 			continue
 		}
-		isStatus := strings.Contains(string(c.Body), "fullsend:agent-status:")
+		isStatus := strings.Contains(string(c.Body), statusMarkerPrefix)
 		if statusClient, ok := n.client.(tracker.StatusCommentClient); ok {
 			isStatus, err = statusClient.IsStatusComment(ctx, n.project, n.number, c.ID)
 			if err != nil {
@@ -517,6 +535,10 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	b.WriteString("\n")
 	b.WriteString(terminalTag)
 	b.WriteString("\n")
+	if n.steerMarker != "" {
+		b.WriteString(n.steerMarker)
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "🤖 Finished %s · %s · Started %s · Completed %s",
 		description, statusLabel, formatTime(n.startTime), formatTime(completionTime))
 
@@ -683,7 +705,7 @@ func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
 	}
-	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+	return statusMarkerPrefix + runID + " -->", nil
 }
 
 func mustBuildMarker(runID string) string {

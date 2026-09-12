@@ -1191,9 +1191,37 @@ func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 	t.Fatal("gen_ai.request.model attribute not found")
 }
 
-func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
-	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
-		"gate off must leave OnEvent nil so the runtime's default renderer runs")
+// TestContentEventHandler_NilCollectorStillRenders replaces an assertion
+// that required the opposite — a nil handler when the gate is off, so the
+// runtime would build its own renderer. That held only while nothing
+// wrapped the result. steerTurnEndHandler wraps a nil inner into a non-nil
+// closure, so a steered run with collection off handed the runtime an
+// OnEvent that rendered nothing and the console went silent for the whole
+// run. Rendering must not depend on collection being enabled.
+func TestContentEventHandler_NilCollectorStillRenders(t *testing.T) {
+	var rendered []agentruntime.AgentEvent
+	handler := contentEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, nil)
+	require.NotNil(t, handler, "the gate being off must not cost the renderer")
+
+	handler(agentruntime.TextEvent{Text: "hello"})
+	assert.Len(t, rendered, 1)
+}
+
+// TestSteeredRunWithCollectionOffStillRenders is the composition that was
+// silent: this is the default configuration of a steered run.
+func TestSteeredRunWithCollectionOffStillRenders(t *testing.T) {
+	var rendered []agentruntime.AgentEvent
+	render := func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }
+
+	// A non-nil session, as a steered iteration has; its turn-end hook is
+	// exercised by the ResultEvent below.
+	handler := steerTurnEndHandler(contentEventHandler(render, nil), &steerSession{})
+	require.NotNil(t, handler)
+
+	handler(agentruntime.TextEvent{Text: "hello"})
+	handler(agentruntime.ToolUseEvent{Name: "Bash"})
+
+	assert.Len(t, rendered, 2, "a steered run with collection off must still render to the console")
 }
 
 func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {

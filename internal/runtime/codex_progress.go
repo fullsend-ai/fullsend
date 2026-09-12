@@ -372,6 +372,20 @@ const (
 //     processor shuts down silently — so a stream with no terminal event is
 //     reported as an incomplete, failed run rather than a success.
 func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, err error) {
+	return parseCodexStreamWith(r, onEvent, nil)
+}
+
+// parseCodexStreamWith is parseCodexStream with a hook fired the moment the
+// thread.started header names the rollout, rather than only when the stream
+// ends.
+//
+// The timing is load-bearing for steering. A steer can only interrupt a
+// codex turn once there is a thread to resume onto, and for codex the first
+// process is normally the whole run — so publishing the id at EOF would
+// mean a steer during that turn never interrupts and silently waits for the
+// turn to end on its own, which is the behaviour steering exists to remove.
+// The hook runs on the parsing goroutine, so it must not block.
+func parseCodexStreamWith(r io.Reader, onEvent func(AgentEvent), onThreadStarted func(string)) (threadID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -575,6 +589,9 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			}
 			if threadID == "" && evt.ThreadID != "" {
 				threadID = evt.ThreadID
+				if onThreadStarted != nil {
+					onThreadStarted(threadID)
+				}
 			}
 
 		case "turn.started":

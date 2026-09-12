@@ -65,6 +65,14 @@ You can control the pipeline from issue or PR comments:
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
+If the stage you name is already running on that item, your comment reaches
+the agent mid-run instead of cancelling it: an authorized `/fs-review` or
+`/fs-fix` while that stage is in flight is delivered to the running agent,
+and the run your comment queued then exits rather than repeating the work.
+This needs steering enabled for the repository
+([ADR 0101](../../ADRs/0101-steer-the-running-agent-on-work-item-updates.md));
+without it the comment queues a fresh run as it always has.
+
 Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and

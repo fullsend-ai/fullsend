@@ -32,12 +32,20 @@ func newContentCollectorIfEnabled() *contentCollector {
 }
 
 // contentEventHandler tees the normalized event stream to the console
-// renderer and the collector. A nil collector returns a nil handler so
-// the runtime keeps its default renderer path — supplying any OnEvent
-// replaces that renderer, and losing it silences CI output.
+// renderer and the collector. It ALWAYS returns a handler that renders:
+// with no collector it returns render itself.
+//
+// It used to return nil when collection was off, so the runtime would fall
+// back to building its own renderer. That worked only while nothing else
+// wrapped the result. steerTurnEndHandler does, and it wraps a nil inner
+// into a non-nil closure — so a steered run with collection off (the
+// default) handed the runtime an OnEvent that rendered nothing, and the
+// console stayed silent for the whole run. Rendering must not depend on
+// collection being enabled, so the decision is made here rather than
+// inferred from nil-ness downstream.
 func contentEventHandler(render func(agentruntime.AgentEvent), c *contentCollector) func(agentruntime.AgentEvent) {
 	if c == nil {
-		return nil
+		return render
 	}
 	return func(evt agentruntime.AgentEvent) {
 		render(evt)

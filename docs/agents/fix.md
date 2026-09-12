@@ -93,7 +93,11 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 - When a bot-triggered run is approaching the bot cap, the agent applies the
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
-  starts a new one.
+  starts a new one. With steering enabled for the repository
+  ([ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md))
+  the in-flight run absorbs the comment instead, and the run the comment
+  queued exits rather than repeating the work. Steering is off by default,
+  so the cancel-and-restart above is what a repository sees until it opts in.
 
 ## How it helps
 
