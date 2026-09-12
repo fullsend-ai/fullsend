@@ -70,9 +70,9 @@ Project-wide instructions for humans and agents (conventions, testing, architect
 
 ### Always-on Skill
 
-> **Planned:** Default activation for harness-listed skills via agent-definition `skills:` frontmatter injection is tracked in [#6681](https://github.com/fullsend-ai/fullsend/issues/6681) / [#6859](https://github.com/fullsend-ai/fullsend/pull/6859). Do not use abandoned `metadata.apply: always` / soft Skill-tool directive designs.
+Default activation for harness-listed skills via agent-definition `skills:` frontmatter injection is active for the Claude runtime. Do not use abandoned `metadata.apply: always` / soft Skill-tool directive designs.
 
-A harness [skill](#skill) load mode that **will** activate every harness-listed skill on each run of that harness once [#6681](https://github.com/fullsend-ai/fullsend/issues/6681) lands: bootstrap will inject those skills into the agent definition's `skills:` frontmatter (harness-listed only; repo-discovered skills remain [#237](https://github.com/fullsend-ai/fullsend/issues/237)). Until then, today's harness-listed skills follow the upload-and-list path described under [on-demand skill](#on-demand-skill). Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill) (planned per-skill optional mode).
+A harness [skill](#skill) load mode that activates every harness-listed skill on each run of that harness: Claude bootstrap injects those skills into the agent definition's `skills:` frontmatter (harness-listed only; repo-discovered skills remain [#237](https://github.com/fullsend-ai/fullsend/issues/237)). The pi and other runtimes retain their own skill-loading behavior. Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill) (planned per-skill optional mode).
 See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Automerge
