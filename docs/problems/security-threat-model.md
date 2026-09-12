@@ -404,7 +404,10 @@ DOS has elements that touch several existing threats:
 - How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
 - How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
 - Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
-- Should the event debouncing strategy from the March 31 concurrency discussion be treated as a DOS defense or purely a correctness concern? (It serves both purposes.)
+- ~~Should the event debouncing strategy from the March 31 concurrency
+  discussion be treated as a DOS defense or purely a correctness concern?~~ It
+  serves both purposes; the finish-and-coalesce policy is decided in
+  [ADR 0098](../ADRs/0098-serialize-agent-runs-and-coalesce-subsequent-events.md).
 
 ## Cross-cutting concern: agent self-report unreliability
 
