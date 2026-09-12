@@ -1734,7 +1734,10 @@ jobs:
           FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: |
           set -euo pipefail
-          ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]')
+          # GitHub Actions / bash identifiers cannot contain hyphens.
+          # Map the role the same way mintcore.RoleIdentifier does: uppercase
+          # and replace '-' with '_' so ci-check becomes CI_CHECK.
+          ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
           export AGENT_PREFIX="${ROLE_UPPER}_"
           export "${ROLE_UPPER}_TARGET_REPO_DIR=target-repo"
           export "${ROLE_UPPER}_ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT}"

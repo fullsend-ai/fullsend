@@ -1217,9 +1217,9 @@ func runGitHubStatus(ctx context.Context, client forge.Client, printer *ui.Print
 		printer.StepWarn("Could not list org variables: " + err.Error())
 	} else {
 		for _, v := range vars {
-			if role, ok := parseForeignVariableName(v.Name); ok {
+			if _, ok := parseForeignVariableName(v.Name); ok {
 				entries := mintcore.ParseForeignAllowlist(v.Value)
-				printer.StepDone(fmt.Sprintf("%s (%s): %s", v.Name, role, strings.Join(entries, ", ")))
+				printer.StepDone(fmt.Sprintf("%s: %s", v.Name, strings.Join(entries, ", ")))
 			}
 		}
 	}

@@ -12,7 +12,7 @@ const (
 
 // ForeignVariableName returns the org variable name for cross-org allowlist policy.
 func ForeignVariableName(role string) string {
-	return foreignVarPrefix + strings.ToUpper(role) + foreignVarSuffix
+	return foreignVarPrefix + RoleIdentifier(role) + foreignVarSuffix
 }
 
 // ParseForeignAllowlist splits a comma-separated FOREIGN variable value into entries.

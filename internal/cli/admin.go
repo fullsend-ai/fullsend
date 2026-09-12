@@ -1607,8 +1607,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		})
 	} else if mintURL == "" {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
-			secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
-			return client.RepoSecretExists(ctx, org, forge.ConfigRepoName, secretName)
+			return client.RepoSecretExists(ctx, org, forge.ConfigRepoName, roleAppPrivateKeySecret(role))
 		})
 	}
 
@@ -1622,8 +1621,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		})
 	} else if mintURL == "" {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
-			secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
-			return client.CreateRepoSecret(sctx, org, forge.ConfigRepoName, secretName, pem)
+			return client.CreateRepoSecret(sctx, org, forge.ConfigRepoName, roleAppPrivateKeySecret(role), pem)
 		})
 	}
 
@@ -1642,6 +1640,13 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 
 	printer.Blank()
 	return creds, nil
+}
+
+// roleAppPrivateKeySecret is the .fullsend repo secret that stores a role's
+// GitHub App PEM. Hyphens in the role become underscores so the name is a
+// valid GitHub Actions secret identifier.
+func roleAppPrivateKeySecret(role string) string {
+	return fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", mintcore.RoleIdentifier(role))
 }
 
 // ensureConfigRepoExists creates the .fullsend config repo if it doesn't

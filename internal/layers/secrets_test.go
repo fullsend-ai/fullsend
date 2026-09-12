@@ -45,6 +45,12 @@ func TestSecretsLayer_Name(t *testing.T) {
 	assert.Equal(t, "secrets", layer.Name())
 }
 
+func TestSecretAndVariableNames_HyphenatedRole(t *testing.T) {
+	assert.Equal(t, "FULLSEND_CI_CHECK_APP_PRIVATE_KEY", secretName("ci-check"))
+	assert.Equal(t, "FULLSEND_CI_CHECK_CLIENT_ID", variableName("ci-check"))
+	assert.Equal(t, "FULLSEND_TRIAGE_APP_PRIVATE_KEY", secretName("triage"))
+}
+
 func TestSecretsLayer_Install_StoresSecrets(t *testing.T) {
 	client := &forge.FakeClient{}
 	agents := twoAgents()

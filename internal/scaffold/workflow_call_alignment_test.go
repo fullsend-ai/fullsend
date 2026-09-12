@@ -1379,6 +1379,20 @@ func TestHarnessRunResolvesBotIdentity(t *testing.T) {
 	assert.Less(t, identityIndex, setupIndex, "harness-run must resolve identity before agent environment setup")
 }
 
+// TestHarnessRunMapsHyphensInRoleIdentifiers pins the custom-harness env-prefix
+// mapping so a hyphenated role (ci-check) becomes a valid bash identifier
+// (CI_CHECK_), matching mintcore.RoleIdentifier (#7140).
+func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	harnessStart := strings.Index(content, "  harness-run:\n")
+	require.NotEqual(t, -1, harnessStart, "reusable-dispatch.yml must define harness-run")
+	harnessJob := content[harnessStart:]
+
+	setup := extractStepSection(t, harnessJob, "Setup agent environment")
+	assert.Contains(t, setup, `ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')`,
+		"Setup agent environment must uppercase the role and map hyphens to underscores")
+}
+
 // TestLayeredDirsMatchWorkspacePreparation pins the LAYERED_DIRS list in
 // every workspace-preparation step to scaffold.layeredDirs. The scaffold
 // skips these directories at install time on the promise that workspace
