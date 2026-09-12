@@ -1189,7 +1189,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 1b. Log token scope for debugging cross-org issues (see #1321).
 	// Non-fatal: if the check fails (e.g., non-installation token), log a
 	// warning and continue.
-	if ghToken := os.Getenv("GH_TOKEN"); ghToken != "" {
+	if ghToken := envGHToken(); ghToken != "" {
 		repos, err := fetchTokenScope(context.Background(), ghToken, "https://api.github.com")
 		if err != nil {
 			printer.StepWarn("Token scope check: " + err.Error())

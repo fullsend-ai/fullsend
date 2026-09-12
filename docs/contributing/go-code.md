@@ -337,7 +337,7 @@ if errors.Is(err, errGitLabTokenMissing) {
 
 **Do not** match errors by substring: `strings.Contains(err.Error(), "token")` couples error handling to message wording and breaks when messages change. Use `errors.Is` or `errors.As` for all programmatic error checks.
 
-See `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
+See `internal/cli/github_client.go` (`errGitHubTokenMissing`), `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
 
 ### Use `%q` for values in error messages
 

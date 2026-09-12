@@ -368,7 +368,7 @@ Most agents need additional flags for credentials and target repo — see [Runni
 
 Register agents in `.fullsend/config.yaml` so fullsend discovers them. Registration is what makes your agent visible to dispatch — without it, the agent can only be invoked via `fullsend run`.
 
-Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment variable. For URL agents, the CLI resolves GitHub blob URLs to `raw.githubusercontent.com` URLs automatically.
+Authentication for CLI commands uses `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (in that order). For URL agents, the CLI resolves GitHub blob URLs to `raw.githubusercontent.com` URLs automatically.
 
 Harness agents route via CEL triggers on arbitrary labels — there is no prefix constraint.
 
