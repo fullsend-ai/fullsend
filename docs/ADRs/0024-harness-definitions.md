@@ -786,30 +786,12 @@ intentionally deferred to keep scope manageable:
 
 ### Open questions
 
-- **Skills loading policy
-  ([#237](https://github.com/fullsend-ai/fullsend/issues/237)).** The harness
-  declares an explicit `skills:` list, but how does this interact with
-  org-level and repo-level skills?
-
-  *Approach A (explicit + org, opt-in repo):* The harness `skills:` list is
-  always loaded. Org-level skills from `.fullsend/skills/` are always included
-  (org-controlled, trusted). Repo-level skills from the target repo are **not**
-  auto-loaded by default due to prompt injection risk
-  ([#48](https://github.com/fullsend-ai/fullsend/pull/48)). To opt in, the
-  harness or org config declares `allow_repo_skills: true`.
-
-  *Approach B (all skills with scanning):* Fullsend-provided skills are
-  installed in a released/versioned format. Org-level and repo-level skills are
-  both available by default but scanned for injection risks at a preparation
-  step before the agent launches. Repo-level skills are important for domain
-  knowledge (e.g. quirks about a specific repo). Disabling repo skills would
-  be the exception, not the default.
-
-  The team has not reached consensus. Approach A is more conservative (secure
-  by default, opt-in to risk). Approach B prioritizes agent effectiveness
-  (skills are lazy-loaded by the agent, scanning provides the guard).
-  Related: the skill installation mechanism (copy into sandbox vs.
-  `claude plugin install` vs. agent-native format) also needs resolution.
+- ~~**Skills loading policy
+  ([#237](https://github.com/fullsend-ai/fullsend/issues/237)).**~~ Decided
+  in [ADR 0106](0106-skill-loading-policy.md): "extend, don't override" —
+  repo skills are available by default (scanned for injection), built-in
+  skills win on name collisions via personal > project precedence, and
+  intentional override uses `base:` harness composition.
 
 - **Overridable content beyond skills.** Can users at the repo level introduce
   new agent definitions, new env requirements, new images or tools? This

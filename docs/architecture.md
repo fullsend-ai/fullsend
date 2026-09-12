@@ -176,6 +176,11 @@ repo baseline and overrides)
   property (source system, event type, etc.) rather than only the forge
   platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
+- Skill loading policy: "extend, don't override" — repo skills are available
+  by default (scanned for injection via `InputPipeline`), built-in skills win
+  on name collisions via personal > project precedence, and intentional
+  override uses `base:` harness composition
+  ([ADR 0106](ADRs/0106-skill-loading-policy.md)).
 
 **Open questions:**
 
