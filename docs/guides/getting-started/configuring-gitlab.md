@@ -16,9 +16,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
 * A GCP project with Vertex AI enabled, from
   [Getting Inference](getting-inference.md). GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
-  `repos install --inference-project` (see [Inference setup](#inference-setup)
+  `repos install --inference-project` (see [Inference Setup](#inference-setup)
   below). Unless you also pass `--inference-wif-provider` (see
-  [Inference setup](#inference-setup)), `repos install` derives the
+  [Inference Setup](#inference-setup)), `repos install` derives the
   project number from `--inference-project` via the GCP Resource
   Manager API, so the machine running `repos install` needs
   Application Default Credentials with `cloudresourcemanager.googleapis.com`
@@ -31,7 +31,7 @@ GitHub repositories use a different command (`fullsend github setup`). See
   command.
 * A GitLab runner that can execute agent jobs. Shared GitLab.com runners
   are usually not enough (polling consumes CI minutes). See
-  [Runner configuration](#runner-configuration).
+  [Runner Configuration](#runner-configuration).
 
 > **GitLab tier:** Project access tokens require GitLab Premium or
 > Ultimate **on gitlab.com**; self-managed Community Edition can create
@@ -55,7 +55,7 @@ GitHub repositories use a different command (`fullsend github setup`). See
 > This gap does not stay quiet: only the *first* `repos install` merely
 > warns when schedule creation fails and still exits successfully. Every
 > later `repos install` run — including the
-> [Runner configuration](#runner-configuration) step below, which asks
+> [Runner Configuration](#runner-configuration) step below, which asks
 > you to re-run install after setting the runner tag — takes the
 > converge path, which retries creating the missing schedules and treats
 > a repeat failure as a hard `convergence errors` failure instead of a
@@ -187,7 +187,7 @@ set in the environment. `--project` falls back to `CI_PROJECT_PATH`, and the
 pipeline-ref falls back to `CI_COMMIT_REF_NAME` then `CI_DEFAULT_BRANCH` —
 one of each pair is required or the command errors.
 
-## Inference setup
+## Inference Setup
 
 Pass `--inference-project` so install writes `FULLSEND_GCP_PROJECT_ID`
 and `FULLSEND_GCP_WIF_PROVIDER`. **This only writes CI/CD variables
@@ -233,17 +233,29 @@ path; setting it to a higher-level group (`my-group`) to try to cover
 every project underneath it will not match, and jobs from nested
 projects will be rejected at STS.
 
-Widening `--attribute-condition` alone does not authorize a group
-tree: GCP IAM `principalSet://.../attribute.namespace_path/$VALUE`
-bindings are exact-match on the mapped attribute, so the single
-`$GROUP_PATH` principalSet shown below would still deny a token from a
-nested namespace even if the CEL condition let STS mint one for it. To
-cover an entire tree, either bind a separate `principalSet` (one per
-concrete `namespace_path` you want to allow), or grant the broader
+Covering a group tree takes changes at both layers, not just one. GCP
+IAM `principalSet://.../attribute.namespace_path/$VALUE` bindings are
+exact-match on the mapped attribute, so the single `$GROUP_PATH`
+principalSet shown below only ever admits that one namespace — and
+binding additional principalSets for nested namespaces has no effect
+by itself, because the single-value `--attribute-condition` above
+still makes STS refuse to mint a token for any assertion whose
+`namespace_path` isn't exactly `$GROUP_PATH`. To cover a tree, do
+both: (1) widen `--attribute-condition` so STS accepts every
+`namespace_path` you intend to allow (for example, an OR of exact
+values, or a documented prefix check), and (2) bind a separate
+`principalSet` for each of those same values.
+
+Do not grant the broader
 `principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/*`
-(every identity in the pool) and keep the `--attribute-condition`
-above to control which GitLab assertions STS will exchange in the
-first place.
+(every identity in the pool) as a shortcut. That IAM member is
+authorized regardless of the GitLab-specific `--attribute-condition`
+above — the condition only gates which assertions STS will exchange
+for the `gitlab-oidc` provider, it does not narrow the IAM member
+itself, and it has no effect on `github-oidc` or any other provider
+already federated into the same shared pool. Binding it grants Vertex
+AI access to every identity in the pool, not just the GitLab
+namespaces you intend to cover.
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -253,6 +265,16 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --role="roles/aiplatform.user" \
   --member="$WIF_PRINCIPAL" \
   --condition=None
+```
+
+This grants `roles/aiplatform.user` to every GitLab project whose
+immediate parent namespace is exactly `$GROUP_PATH` — not just the one
+repo being installed. For a single-repo, least-privilege grant instead,
+bind `attribute.project_path` (already included in the attribute
+mapping above) to the exact `<group>/<project>` path:
+
+```bash
+export WIF_PRINCIPAL="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.project_path/<group/project>"
 ```
 
 Create the `fullsend-inference` pool first if it doesn't already exist
@@ -275,7 +297,7 @@ The GCP project still needs the Vertex AI APIs enabled as described in
 [Getting Inference](getting-inference.md). `--inference-region` defaults
 to `global` when `--inference-project` is set.
 
-## Runner configuration
+## Runner Configuration
 
 Agent jobs run on GitLab CI using the `fullsend-runner` image and the
 tags embedded in the scaffold. Empty tags (`[]`) match untagged runners;
@@ -295,7 +317,7 @@ GCE, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
 README.
 
-## Verifying the installation
+## Verifying the Installation
 
 Compare the manifest against the project:
 
@@ -365,7 +387,7 @@ may see agent pipelines canceled by later commits. Fullsend needs
 `on_new_commit: none` for reliable agent runs. If pipelines disappear
 unexpectedly, set that value in the root `workflow:` block.
 
-## Self-hosted GitLab instances
+## Self-Hosted GitLab Instances
 
 Pass `--gitlab-url` at install time to record the instance URL in
 `repos.yaml` (`gitlab.url`):
