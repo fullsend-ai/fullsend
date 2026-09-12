@@ -5,6 +5,8 @@
 # This script:
 #   1. Auto-numbers the VM (fullsend-gitlab-runner-01, -02, ...)
 #   2. Creates a GCE VM via gcloud compute instances create
+#      with --no-service-account --no-scopes (the VM needs no Compute
+#      SA; the default editor SA would expose a stealable metadata token)
 #   3. Waits for SSH readiness, then installs packages via dnf
 #   4. Registers a new runner via the GitLab API, or joins an existing
 #      runner pool when RUNNER_TOKEN is set (runner-hub)
@@ -353,6 +355,11 @@ if [ "${GCP_USE_IAP}" = "true" ]; then
   address_flag=(--no-address)
 fi
 
+# No Compute SA / no OAuth scopes. The VM does not need a service
+# account (operator gcloud is workstation-side; inference uses GitLab
+# OIDC → WIF). The default Compute SA is roles/editor, and anything in
+# the orchestration container can steal its token from the metadata
+# server — #7254.
 gcloud compute instances create "${vm_name}" \
   --project="${GCP_PROJECT}" \
   --zone="${GCP_ZONE}" \
@@ -361,6 +368,8 @@ gcloud compute instances create "${vm_name}" \
   "${subnet_flag[@]+"${subnet_flag[@]}"}" \
   --tags="gitlab-runner" \
   "${address_flag[@]+"${address_flag[@]}"}" \
+  --no-service-account \
+  --no-scopes \
   --image-family="${GCP_IMAGE_FAMILY}" \
   --image-project="${GCP_IMAGE_PROJECT}" \
   --boot-disk-size="20GB" \

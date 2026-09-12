@@ -178,6 +178,23 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
   (`StrictHostKeyChecking=accept-new`) — the first connection accepts the key
   and subsequent connections within the same run reject changes.
   The script prints a command to remove the external IP afterward.
+- GCE VMs are created with `--no-service-account --no-scopes`. The runner
+  does not need a Compute Engine service account: operator `gcloud` runs on
+  the workstation, and inference auth is GitLab OIDC → WIF. Attaching the
+  default Compute SA (`roles/editor`) would expose a stealable OAuth token
+  via the metadata server (`169.254.169.254`) to the orchestration container
+  (`--network=host`, no L7 egress policy). Existing VMs created without these
+  flags should have the SA removed (stop, set-service-account, start) or be
+  recreated with `create-gcp-vm.sh`:
+
+  ```bash
+  gcloud compute instances stop "${vm}" --project="${GCP_PROJECT}" --zone="${GCP_ZONE}"
+  gcloud compute instances set-service-account "${vm}" \
+    --project="${GCP_PROJECT}" --zone="${GCP_ZONE}" \
+    --no-service-account --no-scopes
+  gcloud compute instances start "${vm}" --project="${GCP_PROJECT}" --zone="${GCP_ZONE}"
+  ```
+
 - The CA trust bootstrap uses trust-on-first-use (TOFU). For higher assurance,
   provide the CA bundle out-of-band before running setup.sh.
 - The OCI CA-injection hook fires for all containers on the host. It only
