@@ -195,6 +195,25 @@ What a local pi run needs, beyond the guide:
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 
+### What to write in `tools:`
+
+`tools:` is written in Claude Code's names on every runtime, and the runner translates. On pi:
+
+| You write | pi runs | Worth knowing |
+|---|---|---|
+| `Bash`, `Read`, `Write`, `Edit`, `Grep` | `bash`, `read`, `write`, `edit`, `grep` | — |
+| `MultiEdit` | `edit` | pi has one edit tool |
+| `Glob` | `find` | `find` takes a **glob pattern**, not a bare directory. A model that means "list this directory" and sends `{"path": "docs/"}` gets a validation error and has to retry |
+| `LS` | `ls` | The tool to grant for directory listing. Claude Code itself dropped `LS`, so the entry does nothing on that runtime, and codex lists through the shell — it is pi where it counts |
+| anything else | — | A persona naming a Claude-only tool (`WebFetch`, `TodoWrite`, ...) fails rather than silently losing it; see [Sub-agents troubleshooting](#troubleshooting-sub-agents) |
+
+So an agent that browses the tree wants `Glob` **and** `LS`: `Glob` to match a pattern, `LS` to see
+what is in a directory. With `Glob` alone the model tends to reach for a listing it cannot make.
+
+If your org enables the optional `tool_allowlist_pretool.py` hook, write `LS` in
+`FULLSEND_TOOL_ALLOWLIST` too — the hook's vocabulary is Claude Code's, and pi's `ls` arrives as
+`LS`.
+
 ## Plugins (pi extensions)
 
 pi's tool surface grows through extensions — JavaScript/TypeScript modules pi loads with `-e`. A
