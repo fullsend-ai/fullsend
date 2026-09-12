@@ -254,6 +254,35 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   assert.ok(!empty.includes("--tools"));
 });
 
+test("childArgs loads the edit repair only for a child whose tools name edit", () => {
+  const { manifest } = fixture();
+  const editExt = "/sandbox/pi-config/fullsend-edit-repair.js";
+  const agent = { ...manifest.agent, editRepairExtension: editExt };
+  const loaded = (tools) => {
+    const args = childArgs(agent, { seq: 1, modelSpec: "anthropic-vertex/claude-opus-4-6", tools });
+    return args.filter((_, i) => i > 0 && args[i - 1] === "-e");
+  };
+
+  assert.deepEqual(loaded(["read", "edit"]).slice(-1), [editExt], "after the shared list");
+  assert.ok(!loaded(["read", "grep"]).includes(editExt), "--tools filters it anyway; not loading it keeps argv honest");
+  // A persona that declares no tools runs under --no-builtin-tools, where pi
+  // does not filter extension tools: loading the extension there would
+  // hand that child the edit tool its persona withheld.
+  assert.ok(!loaded([]).includes(editExt));
+  assert.ok(!childArgs(manifest.agent, { seq: 2, modelSpec: "m", tools: ["edit"] }).includes(editExt),
+    "no manifest entry (parent without edit): nothing to load");
+
+  // The path a dispatch actually takes: childTools resolves the persona, and
+  // its result is what gates the -e. A parent that kept edit passes it on to
+  // a general-purpose child; Explore, which is read-only, never sees it.
+  const withEdit = { ...agent, tools: ["read", "edit", "Agent", "Task"] };
+  const resolved = (persona) => loaded(childTools(withEdit, persona));
+  assert.deepEqual(childTools(withEdit, "general-purpose"), ["read", "edit"]);
+  assert.deepEqual(resolved("general-purpose").slice(-1), [editExt], "a persona holding edit gets the repair");
+  assert.deepEqual(childTools(withEdit, "Explore"), ["read"]);
+  assert.ok(!resolved("Explore").includes(editExt), "Explore drops edit, so the repair does not follow it");
+});
+
 test("childEnv scrubs the provider credentials the child does not use", () => {
   const base = {
     PATH: "/usr/bin",
@@ -509,7 +538,7 @@ test("run: a hook adapter rewritten after load stops the next dispatch", async (
   writeFileSync(adapter, "// no hooks here\n");
   const res = await tool.run({ prompt: "p2" }, {});
   assert.equal(res.isError, true);
-  assert.equal(res.error, "hook adapter changed since load; refusing to dispatch");
+  assert.equal(res.error, "fullsend-hooks.js changed since load; refusing to dispatch");
   assert.equal(res.stopReason, "rejected");
   assert.equal(children.length, 1, "nothing was spawned against the rewritten adapter");
   assert.equal(tool.inFlight(), 0);

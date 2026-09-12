@@ -139,14 +139,16 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 // TestBuildPiRunCommand_AgentTool is the golden for the Agent tool wiring:
 // the extension's integrity guard runs before .env whether or not hooks are
-// on, its -e comes right after the hook adapter and before declared
-// extensions, --tools carries Agent,Task, and the parent's own provider
-// -e set is unchanged (the manifest's child extension list is for children).
+// on, its -e comes right after the hook adapter and before the edit repair
+// and declared extensions, --tools carries Agent,Task, and the parent's own
+// provider -e set is unchanged (the manifest's child extension list is for
+// children).
 func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	agentExt := "/sandbox/pi-config/fullsend-agent.js"
 	hooksExt := "/sandbox/pi-config/fullsend-hooks.js"
+	editExt := "/sandbox/pi-config/fullsend-edit-repair.js"
 	agent := &piAgentManifest{Enabled: true, Extensions: []string{piVertexExtensionPath, piXaiVertexExtensionPath, hooksExt}}
 	declared := []piManifestExtension{{Name: "go-diagnostics", Path: "/sandbox/pi-config/extensions/go-diagnostics", SHA256: strings.Repeat("a", 64)}}
 
@@ -155,13 +157,13 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	params := piTestParams()
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
 	cmd := buildPiRunCommand(params, m, declared, "")
-	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
-		"load order: hook adapter, Agent extension, declared extensions")
+	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '"+editExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
+		"load order: hook adapter, Agent extension, edit repair, declared extensions")
 	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+hooksExt+"'", "the provider extension still comes first")
 	assert.NotContains(t, cmd, "-e '"+piXaiVertexExtensionPath+"'", "the parent loads only its own provider; the child list in the manifest is not the parent's")
 	assert.NotContains(t, cmd, "--tools", "no tools: frontmatter → pi's default set plus the extension's tools")
 	guard := piAgentGuard(agentExt)
-	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+guard+" && "+piExtensionsGuard(declared),
+	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+guard+" && "+piEditRepairGuard(editExt)+" && "+piExtensionsGuard(declared),
 		"the runner-owned guards run in order, ahead of the declared-extension guard")
 	assert.Contains(t, cmd, piExtensionsGuard(declared)+" && . '/sandbox/workspace/.env'",
 		"every guard runs before the agent-writable .env is sourced")
@@ -175,13 +177,15 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	params.HooksSettingsPath = ""
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.NotContains(t, cmd, hooksExt)
-	assert.Contains(t, cmd, "&& "+guard+" && . '/sandbox/workspace/.env'")
-	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' --model")
+	assert.Contains(t, cmd, "&& "+guard+" && "+piEditRepairGuard(editExt)+" && . '/sandbox/workspace/.env'")
+	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' -e '"+editExt+"' --model")
 
-	// A declared tools: list naming Agent carries both names into --tools.
+	// A declared tools: list naming Agent carries both names into --tools;
+	// it names no edit, so the edit repair is not loaded.
 	m.Tools = []string{"bash", "read", "Agent", "Task"}
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--tools 'bash,read,Agent,Task'")
+	assert.NotContains(t, cmd, "fullsend-edit-repair")
 
 	// Tool off: nothing of it in the command line.
 	off := &piManifest{AgentName: "triage", Tools: []string{"bash"}, Hooks: &piHooksManifest{}}
@@ -728,7 +732,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	assert.NotContains(t, cmd, "--tools", "nil tools keeps pi's default tool set")
 	assert.NotContains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
-	assert.NotContains(t, cmd, "test -f")
+	assert.NotContains(t, cmd, "pi hook adapter or manifest missing", "and no hook guard")
 	assert.Contains(t, cmd, "-e '/usr/local/share/pi-extensions/anthropic-vertex'")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }

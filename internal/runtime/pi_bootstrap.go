@@ -81,6 +81,13 @@ type piAgentManifest struct {
 	// extension re-hashes them before every dispatch; see
 	// piAgentExtensionDigests for why the vendored ones are absent.
 	ExtensionDigests map[string]string `json:"extensionDigests,omitempty"`
+	// EditRepairExtension is the edit-repair extension's -e path (see
+	// pi_edit_repair.go), empty when the children's tool set has no edit.
+	// It is kept out of Extensions on purpose: the extension registers the
+	// edit tool, and a child launched with --no-builtin-tools (a persona
+	// declaring no tools) does not filter extension tools, so the Agent
+	// extension adds it only for a child whose --tools list names edit.
+	EditRepairExtension string `json:"editRepairExtension,omitempty"`
 	// Models maps "default" (the agent's model) and the Claude aliases to
 	// pi model specs; the extension translates a child's `model` through
 	// it and rejects anything else it cannot serve.
@@ -288,6 +295,12 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		Extensions:        extensions,
 	}
 
+	if piEditRepairEnabled(tools) {
+		if err := uploadBytes(sandboxName, cfg+"/"+piEditRepairExtensionFile, piEditRepairExtensionJS); err != nil {
+			return fmt.Errorf("installing edit-repair extension: %w", err)
+		}
+	}
+
 	if hooksEnabled {
 		hooks := hooksInput.SandboxHookConfig()
 		if err := installHookScripts(sandboxName, r.piHooksDir(), hooks); err != nil {
@@ -461,11 +474,6 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 	if err != nil {
 		return nil, err
 	}
-	exts := append([]string{}, providerExts...)
-	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
-	if hooksEnabled {
-		exts = append(exts, hooksExt)
-	}
 	childTools := []string{}
 	if tools == nil {
 		childTools = append(childTools, piDefaultTools...)
@@ -476,12 +484,19 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 			}
 		}
 	}
+	exts := append([]string{}, providerExts...)
+	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
+	if hooksEnabled {
+		exts = append(exts, hooksExt)
+	}
+	editRepairExt := r.ConfigDir() + "/" + piEditRepairExtensionFile
+	editRepair := piEditRepairEnabled(childTools)
 	manifest := &piAgentManifest{
 		Enabled:          true,
 		PiBin:            piBin,
 		SessionsDir:      r.piSessionsDir(),
 		Extensions:       exts,
-		ExtensionDigests: piAgentExtensionDigests(hooksExt, hooksEnabled),
+		ExtensionDigests: piAgentExtensionDigests(hooksExt, hooksEnabled, editRepairExt, editRepair),
 		Models:           piAgentModels(def.Model, configAliases),
 		ProviderModels:   piAgentProviderModels(),
 		Thinking:         piAgentThinking(),
@@ -490,6 +505,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		MaxConcurrent:    piAgentMaxConcurrent,
 		TimeoutSeconds:   piAgentTimeoutSeconds,
 		UsageFile:        r.piAgentUsagePath(),
+	}
+	if editRepair {
+		manifest.EditRepairExtension = editRepairExt
 	}
 
 	// Resolve per-persona models and the blanket subagents.default (#7031).
@@ -520,25 +538,34 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 }
 
 // piAgentExtensionDigests records the sha256 of every child -e entry that
-// Bootstrap itself writes under the runner-owned config dir — today only
-// the hook adapter, and the same bytes piHooksGuard checks before pi
-// starts. fullsend-agent.js re-hashes them immediately before every
-// dispatch: the launch guard fires once, and nothing else re-verifies the
-// adapter afterwards, so a parent with `write` could replace it
-// mid-iteration and dispatch children whose adapter runs no hooks and
-// silently skips its own manifest-digest check. The map travels inside the
-// manifest, so the manifest digest already covers it.
+// Bootstrap itself writes under the runner-owned config dir — the hook
+// adapter (the same bytes piHooksGuard checks before pi starts) and the
+// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js
+// re-hashes them immediately before every dispatch: the launch guard
+// fires once, and nothing else re-verifies the adapter afterwards, so a
+// parent with `write` could replace it mid-iteration and dispatch
+// children whose adapter runs no hooks and silently skips its own
+// manifest-digest check. The map travels inside the manifest, so the
+// manifest digest already covers it.
 //
 // The vendored provider extensions under piVertexExtensionPath /
 // piXaiVertexExtensionPath are deliberately absent: the image installs them
 // root-owned and read-only outside the config dir, so there is nothing
 // there for the agent to rewrite and nothing to re-check.
-func piAgentExtensionDigests(hooksExt string, hooksEnabled bool) map[string]string {
-	if !hooksEnabled {
+func piAgentExtensionDigests(hooksExt string, hooksEnabled bool, editRepairExt string, editRepair bool) map[string]string {
+	digests := map[string]string{}
+	if hooksEnabled {
+		sum := sha256.Sum256(piHooksExtensionJS)
+		digests[hooksExt] = hex.EncodeToString(sum[:])
+	}
+	if editRepair {
+		sum := sha256.Sum256(piEditRepairExtensionJS)
+		digests[editRepairExt] = hex.EncodeToString(sum[:])
+	}
+	if len(digests) == 0 {
 		return nil
 	}
-	sum := sha256.Sum256(piHooksExtensionJS)
-	return map[string]string{hooksExt: hex.EncodeToString(sum[:])}
+	return digests
 }
 
 // piAgentModels is the child model table: "default" is the agent
