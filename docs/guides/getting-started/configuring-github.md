@@ -92,12 +92,11 @@ For the full list of setup flags, see the
 ### Using a vendor preset
 
 If your platform operator provides a curated preset configuration, you can
-install it directly instead of relying on per-flag generation:
+install it directly — no individual inference flags are needed when the preset
+supplies those values:
 
 ```bash
 fullsend github setup <org>/<repo> \
-  --inference-project "<gcp-project>" \
-  --inference-wif-provider "<wif-provider-url>" \
   --config "<path-or-url>" \
   --config-hash "<sha256-hex>"
 ```
@@ -107,6 +106,10 @@ When `--config` is provided, the preset content is committed as
 `.fullsend/config.yaml`. The `--config-hash` flag is optional but
 recommended for remote URLs — it verifies the SHA-256 digest of the
 fetched content before committing.
+
+If you need to override specific values from the preset, the corresponding
+flags (`--inference-project`, `--inference-wif-provider`, `--mint-url`,
+`--inference-region`) remain available and take precedence over preset values.
 
 > **Note:** `--config` cannot be combined with `--runtime` or `--agents`,
 > because the preset provides its own configuration. `--config` is only

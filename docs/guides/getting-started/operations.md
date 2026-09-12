@@ -51,6 +51,9 @@ fullsend github setup "$OWNER/$REPO" \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
+> On preset-based installs (`--config`), both `--inference-project` and
+> `--inference-wif-provider` are optional when the preset supplies those values.
+
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
 ```bash
