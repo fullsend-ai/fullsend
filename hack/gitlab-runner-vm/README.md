@@ -159,7 +159,8 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `delete-openshift-vm.sh` — OpenShift VM teardown + runner deregistration
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — GCE VM teardown + runner deregistration
-- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh)
+- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257).
+- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
 - `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)

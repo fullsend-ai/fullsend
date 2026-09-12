@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # GitLab Runner custom executor — prepare stage.
 # Pulls the job image and creates a container for the build.
+# Idempotent: safe to re-run (reaps leftovers from a killed prior job)
+# and must stay that way.
 set -euo pipefail
 
 IMAGE="${CUSTOM_ENV_CI_JOB_IMAGE:-}"

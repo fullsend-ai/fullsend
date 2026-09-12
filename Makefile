@@ -196,6 +196,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/prepare_validation_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/gateway_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/lib_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)

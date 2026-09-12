@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
-# Reproducible setup for a GitLab Runner VM with Podman custom executor
-# and OpenShell gateway for fullsend agent jobs.
+#
+# setup.sh — Configure a GitLab Runner VM for fullsend agent jobs.
+#
+# What it provisions (on a VM created from vm.yaml / create-*-vm.sh):
+#   - gitlab-runner (pinned version) with a Podman custom executor
+#   - rootless Podman + an OCI hook that injects the host CA bundle
+#   - OpenShell CLI (pinned) and a per-job gateway (no long-lived daemon)
+#   - pre-pulled runner + supervisor images
+#
+# Idempotent: safe to re-run, and must stay that way. Each step is guarded
+# (version checks, grep-for-existing-config, early returns) so a second run
+# converges with no accumulated artifacts. In-place re-run is a developer/
+# debug convenience — fast script iteration on a test VM without a ~20-min
+# re-provision. Recreation (drain → delete → create) is the compliance
+# path; see issue #7257.
 #
 # Prerequisites:
 #   - VM created from vm.yaml (provides Fedora + podman + gitlab-runner)
 #   - sudo access for the running user
 #
-# Normally called by create-openshift-vm.sh / create-gcp-vm.sh. Can also be run standalone:
+# Normally called by create-openshift-vm.sh / create-gcp-vm.sh. Can also
+# be run standalone:
 #   GITLAB_URL=https://gitlab.example.com RUNNER_IMAGE=ghcr.io/org/runner:v1 \
 #     REGISTRATION_TOKEN=glrt-xxx ./setup.sh
 #
@@ -70,19 +84,6 @@ GITLAB_RUNNER_VERSION="${GITLAB_RUNNER_VERSION:-19.2.1}"
 info()  { echo "==> $*"; }
 ok()    { echo "  OK: $*"; }
 fail()  { echo "  FAIL: $*" >&2; exit 1; }
-
-if [ -z "${GITLAB_URL}" ]; then
-  fail "GITLAB_URL is required (e.g. GITLAB_URL=https://gitlab.example.com)"
-fi
-if ! [[ "${GITLAB_URL}" =~ ^https://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
-  fail "GITLAB_URL must start with https:// (got: ${GITLAB_URL})"
-fi
-if [ -z "${RUNNER_IMAGE}" ]; then
-  fail "RUNNER_IMAGE is required (e.g. RUNNER_IMAGE=ghcr.io/fullsend-ai/fullsend-runner:v1.2.3)"
-fi
-if ! [[ "${GITLAB_RUNNER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  fail "GITLAB_RUNNER_VERSION must be semver (got: ${GITLAB_RUNNER_VERSION})"
-fi
 
 # --------------------------------------------------------------------------
 # 0. Fix Fedora repo config for egress-restricted environments
@@ -639,6 +640,26 @@ configure_per_job_gateway() {
   info "Configuring per-job OpenShell gateway (no long-lived daemon)"
 
   systemctl --user daemon-reload
+
+  # Already-seeded re-run: a previous setup.sh patched the runner to the
+  # custom executor and left the unit disabled and stopped. Skip the
+  # start→stop→disable seed so re-running setup.sh is a true no-op for
+  # the gateway. First run still seeds: patch_config (which writes
+  # executor = "custom") runs after this function, so config.toml is
+  # still executor = "shell" on a fresh VM.
+  #
+  # If the unit has been re-enabled or is running, fall through and
+  # pin it back to per-job.
+  if [ -f "${CONFIG_TOML}" ] \
+    && grep -q 'executor = "custom"' "${CONFIG_TOML}" \
+    && systemctl --user cat openshell-gateway.service >/dev/null 2>&1 \
+    && ! systemctl --user is-enabled --quiet openshell-gateway.service \
+    && ! systemctl --user is-active --quiet openshell-gateway.service; then
+    openshell gateway remove openshell >/dev/null 2>&1 || true
+    ok "openshell-gateway.service already seeded and disabled; skipping seed start"
+    return
+  fi
+
   # Seed PKI + gateway.toml.default via a one-shot start, then stop and
   # disable. The next job's prepare.sh starts it for real with a wiped store.
   systemctl --user start openshell-gateway.service || true
@@ -704,6 +725,10 @@ patch_config() {
     fail "config.toml not found at ${CONFIG_TOML}"
   fi
 
+  # Single-runner VM assumption: these VMs register exactly one runner.
+  # The executor = "custom" early-return greps the whole file, so a
+  # partially-patched multi-runner config (one custom block, one still
+  # shell) would skip the remaining shell block. Patch those by hand.
   if grep -q 'executor = "custom"' "${CONFIG_TOML}"; then
     ok "already using custom executor"
     return
@@ -715,7 +740,9 @@ patch_config() {
     fail "expected exactly 1 [[runners]] block in config.toml, found ${runner_count} — patch manually"
   fi
 
-  cp "${CONFIG_TOML}" "${CONFIG_TOML}.bak.$(date +%Y%m%d%H%M%S)"
+  # Single overwriting backup — a timestamped name accumulated a new
+  # file on every real patch.
+  cp "${CONFIG_TOML}" "${CONFIG_TOML}.bak"
   ok "backed up config.toml"
 
   # Build the replacement block
@@ -848,6 +875,25 @@ verify() {
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
+# Sourced by setup_test.sh to call functions without provisioning.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+  # shellcheck disable=SC2168
+  return 0
+fi
+
+if [ -z "${GITLAB_URL}" ]; then
+  fail "GITLAB_URL is required (e.g. GITLAB_URL=https://gitlab.example.com)"
+fi
+if ! [[ "${GITLAB_URL}" =~ ^https://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
+  fail "GITLAB_URL must start with https:// (got: ${GITLAB_URL})"
+fi
+if [ -z "${RUNNER_IMAGE}" ]; then
+  fail "RUNNER_IMAGE is required (e.g. RUNNER_IMAGE=ghcr.io/fullsend-ai/fullsend-runner:v1.2.3)"
+fi
+if ! [[ "${GITLAB_RUNNER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail "GITLAB_RUNNER_VERSION must be semver (got: ${GITLAB_RUNNER_VERSION})"
+fi
+
 echo "GitLab Runner VM Setup"
 echo "======================"
 echo "GitLab:       ${GITLAB_URL}"

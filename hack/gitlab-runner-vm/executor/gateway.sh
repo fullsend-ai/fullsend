@@ -2,6 +2,9 @@
 # Per-job OpenShell gateway lifecycle for the GitLab custom executor.
 #
 # Sourced by prepare.sh and cleanup.sh. Not executed directly.
+# Idempotent: every helper is safe to re-run and must stay that way
+# (teardown/wipe/reap are no-ops on a clean host; start_fresh always
+# recreates from a wiped store).
 #
 # GitLab runner VMs are long-lived. A systemd --user gateway that stays up
 # across jobs accumulates a stale profile registry (`openshell provider
