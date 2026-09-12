@@ -259,6 +259,7 @@ test("childEnv scrubs the provider credentials the child does not use", () => {
     PATH: "/usr/bin",
     ANTHROPIC_API_KEY: "sk-parent",
     ANTHROPIC_AUTH_TOKEN: "tok",
+    ANTHROPIC_OAUTH_TOKEN: "oauth-tok",
     ANTHROPIC_BASE_URL: "https://evil",
     ANTHROPIC_VERTEX_BASE_URL: "https://evil",
     ANTHROPIC_VERTEX_PROJECT_ID: "claude-proj",
@@ -269,7 +270,7 @@ test("childEnv scrubs the provider credentials the child does not use", () => {
   // for the parent's provider, so this is the extension's job.
   const claude = childEnv(base, "anthropic-vertex/claude-opus-4-6");
   assert.equal(claude.FULLSEND_SUBAGENT_DEPTH, "1");
-  for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL"]) {
+  for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL"]) {
     assert.ok(!(k in claude), `${k} is removed`);
   }
   assert.equal(claude.GOOGLE_CLOUD_PROJECT, "claude-proj", "pinned to the variable Claude on Vertex is driven by");

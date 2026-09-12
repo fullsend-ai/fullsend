@@ -409,15 +409,15 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Claude-on-Vertex: the vendored extension reads none of these -- it
 		// builds its endpoint from the region and takes its credential from
 		// ADC -- but pi's built-in anthropic provider is loaded in the same
-		// process and discovers ANTHROPIC_AUTH_TOKEN and the API-key
-		// variables from the environment, so a stray value in the
-		// agent-writable .env would authenticate a direct-to-Anthropic path
-		// that never reaches Vertex. The project is pinned to the variable
-		// Claude Code on Vertex is driven by, so both runtimes hit the same
-		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
-		// extension reads that one first).
+		// process and discovers ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN
+		// and ANTHROPIC_API_KEY from the environment (env-api-keys), so a
+		// stray value in the agent-writable .env would authenticate a
+		// direct-to-Anthropic path that never reaches Vertex. The project
+		// is pinned to the variable Claude Code on Vertex is driven by, so
+		// both runtimes hit the same GCP project regardless of an ambient
+		// GOOGLE_CLOUD_PROJECT (the extension reads that one first).
 		parts = append(parts,
-			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
+			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
 			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
 		)
 	}
