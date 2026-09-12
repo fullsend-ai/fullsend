@@ -144,23 +144,24 @@ See [bugfix workflow](bugfix-workflow.md) for the full agent-driven flow from is
 
 **Two dimensions of Fly:**
 
-### Progressive Auto-Merge
+### Dedicated Auto-Merge
 
-The code agent supports auto-merge via the `CODE_AUTO_MERGE` environment variable. Set it to `"true"` to enable GitHub auto-merge on code agent PRs. Use `CODE_AUTO_MERGE_METHOD` to control the merge method (`squash`, `rebase`, or `merge` — defaults to squash).
+Autonomous merging is being moved to a dedicated, opt-in `auto-merge` stage
+([ADR 0110](../../ADRs/0110-dedicated-auto-merge-authority-boundary.md)). The
+Code agent creates and updates PRs; it does not autonomously merge them. The
+legacy `CODE_AUTO_MERGE` and `CODE_AUTO_MERGE_METHOD` variables are removed and
+must not be used as an enablement mechanism.
 
-For path-scoped auto-merge, you can use GitHub's native CODEOWNERS mechanism:
+The dedicated stage consumes structured Review evidence, then a host-side forge
+driver revalidates the current head SHA, policy, required checks, human intent,
+and merge or queue path before requesting the normal forge operation. Start in
+observe-only or explicitly human-triggered mode, and graduate only allowlisted
+low-risk cohorts with dated evidence. See the [autonomy spectrum](../../problems/autonomy-spectrum.md)
+for the remaining graduation questions.
 
-1. Add the fullsend review bot as a CODEOWNER for specific low-risk paths (e.g., `docs/**`).
-2. Enable GitHub auto-merge on the repo.
-3. Configure branch protection to require CODEOWNERS approval and CI passing.
-
-When a PR only touches paths where the bot is a CODEOWNER, its approval satisfies the required review. CI passes, and GitHub auto-merges — no human approval needed for that scope.
-
-Start small — docs-only paths, or dependency update paths already covered by Renovate / Dependabot. Expand gradually by adding more paths to the bot's CODEOWNERS entries as trust builds.
-
-The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time by editing CODEOWNERS.
-
-For more granular control, the review agent includes a [PR-level risk assessment](../../ADRs/0089-pr-risk-assessment-scoring.md) sub-agent that produces a composite risk score based on blast radius, path sensitivity, CI impact, dependency risk, test coverage, and author context. This score can further gate auto-merge eligibility beyond file-path matching. The team is still gathering evidence on graduation criteria for autonomous merging — see the [autonomy spectrum](../../problems/autonomy-spectrum.md) for the open questions.
+Forge-native or third-party automation, such as Renovate / Dependabot, is a
+separate integration and must be governed by its own policy; it is not a second
+Fullsend Code-agent enablement path.
 
 ### Bring Your Own Agents
 
