@@ -147,3 +147,16 @@ on the host, before the sandbox exists**, from a `routing:` block in
 - The review orchestrator's model can move only by amending #6527's wording
   in a later ADR, on shadow `per_model_usage` evidence; persona routing on the
   Claude Code runtime remains the second half of ADR 0104.
+
+### Deferred
+
+- **A routing advisor.** Rules cannot read a diff; a short, read-only run on
+  the fast tier can, and its schema-validated verdict (`scope`, `risk`,
+  `domains`) can become a `task.assessment` fact beside the system-derived
+  ones, with an in-run counterpart that lets a worker consult a stronger
+  model without switching session model
+  ([#6531](https://github.com/fullsend-ai/fullsend/issues/6531)). That is a
+  follow-on decision. The constraint this record fixes for it: an assessment
+  read from author-controlled content may fire an escalation rule alone but
+  may satisfy a downgrade rule only together with a system-derived fact, and
+  it never widens the allowed set or crosses the never-downgrade floor.
