@@ -127,7 +127,7 @@ Retry loops can become flapping when the system does not converge. See [flapping
 
 ## Open questions
 
-- Which run outcomes are safe to feed forward automatically, and which require human review first?
+- Which run outcomes are safe to feed forward automatically, and which require human review first? (For routing decisions, [ADR 0112](../ADRs/0112-task-grain-routing-policy-on-the-host.md): none automatically — outcomes feed an offline replay whose result is a reviewed config change; the general question remains open.)
 - Should memory entries be observations only, or can any of them become instructions?
 - How should future agents distinguish system-derived facts from agent-authored interpretations?
 - Can non-review-gated memory be made safe enough, or should all durable memory promotion go through reviewed repo instructions or skills?
