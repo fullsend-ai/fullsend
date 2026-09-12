@@ -373,11 +373,24 @@ def rewrite_note(output: Any, script: str) -> str:
     return f"fullsend: {script} would have rewritten this tool output"
 
 
+def _cwd(hook_input: dict[str, Any]) -> dict[str, str]:
+    """codex's hook input carries its working directory — the checkout,
+    which codex is started in — and the wire protocol has adapters forward
+    it as `cwd`, as Claude Code's hooks do (the pi adapter on PostToolUse
+    only); the redact stage scopes its checkout-only bare-JWT skip on it.
+    Under codex that scopes nothing today: apply_patch's tool_input is the
+    patch text with no file path, and reads are shell output, which is
+    never skipped."""
+    cwd = hook_input.get("cwd")
+    return {"cwd": cwd} if isinstance(cwd, str) else {}
+
+
 def run_pre_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name: str) -> None:
     tool_input = hook_input.get("tool_input")
     payload = {
         "tool_name": tool_name,
         "tool_input": tool_input if isinstance(tool_input, dict) else {},
+        **_cwd(hook_input),
     }
     for script in scripts:
         verdict = run_script(script, payload)
@@ -408,6 +421,7 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
             # `tool_result` (v1); send both, as the pi adapter does.
             "tool_response": current,
             "tool_result": current,
+            **_cwd(hook_input),
         }
         verdict = run_script(script, payload)
         if verdict["block"]:
