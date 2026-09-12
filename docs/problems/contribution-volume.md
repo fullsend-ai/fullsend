@@ -8,7 +8,7 @@ Fullsend's core model assumes an organization deploying agents into its own repo
 
 Steve Yegge's experience maintaining Beads and Gas Town illustrates the near-term reality: ~50 community PRs per day, most AI-assisted, submitted by external contributors the maintainer didn't direct and doesn't control. This isn't a theoretical concern — it's happening now on popular open-source projects, and the volume will only increase.
 
-This document examines the contribution volume problem: what happens when anyone with an API key can generate and submit polished-looking contributions faster than any human can evaluate them.
+This document examines the contribution volume problem: what happens when anyone with an API key can generate and submit polished-looking contributions faster than any human can evaluate them. It assumes those contributors are acting in good faith — they want the project to succeed, even if their volume exceeds the project's capacity. Coordinated inauthentic contributions, where volume is the weapon rather than a side effect, are a distinct threat class treated in the [security threat model](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 
 ## How this differs from the internal model
 
@@ -66,6 +66,7 @@ This inverts the traditional model. Instead of the contributor iterating until t
 - **Con:** Can set expectations that all contributions will be polished for the contributor, reducing their incentive to submit quality work.
 - **Con:** The "idea" extracted from a poor PR may not match the contributor's actual intent. The project may be building something the contributor didn't really want.
 - **Con:** Attribution and credit become complicated. Who "wrote" the contribution?
+- **Con:** A contributor who always accepts review and expects the project to rewrite is indistinguishable from the [speed-to-merge](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) pattern that coordinated inauthentic actors use. Salvage-for-throughput can reward the attack.
 
 ## The taste problem
 
@@ -92,6 +93,22 @@ If a project consistently rejects contributions, contributors can fork. Before A
 
 This is a project-level version of the [autonomy spectrum](autonomy-spectrum.md) problem: how much to accept vs. how much to gate. But it operates at the project boundary rather than within a controlled organization.
 
+## When volume is the attack
+
+The rest of this document treats volume as a capacity problem created by cheap, good-faith AI-assisted work: too many real ideas, not enough maintainer hours. A distinct class of actor manufactures that volume on purpose.
+
+Coordinated inauthentic contributions — sometimes called "claws" — use the same cheap-PR economics to farm credibility, promote clones, and exhaust attention. Individually the artifacts look like the "needs work but has value" or even "trivially good" categories above. Collectively they are a campaign. The [security threat model](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) treats this as its own threat class; this section is only about how it changes the volume problem.
+
+Consequences for the workflows this document discusses:
+
+- **Triage at the project boundary** cannot be only "is this salvageable?" It also has to ask "is this part of a campaign?" — a question about identity and cross-repo pattern, not about the diff. Getting that wrong either burns capacity on inauthentic work or rejects a legitimate first-time contributor.
+- **Salvage** is an attractive target. A claw that always accepts reviewer feedback looks like the ideal salvage candidate: low social friction, high apparent cooperation. The project pays tokens to rewrite work that was never meant to land as the contributor wrote it.
+- **Signals of thoughtful vs. spammy AI use** (see [open questions](#open-questions)) are necessary but not sufficient. A campaign can satisfy stated contribution rules, pass CI, and still be inauthentic in intent. Content quality is not a proxy for authenticity.
+- **Actor-trust tiering** is gamed by graduating from "untrusted external" to "recognized contributor" through a series of small, seemingly legitimate contributions. See [Threat 6](security-threat-model.md#threat-6-denial-of-service-dos--resource-exhaustion) and [Threat 7](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
+- **Per-actor rate limits** are gamed by distributing volume across accounts so no single actor trips a limit. See [Threat 6](security-threat-model.md#threat-6-denial-of-service-dos--resource-exhaustion) and [Threat 7](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
+
+Existing platform controls (write-permission gating so untrusted actors cannot trigger agents) reduce the *agentic* amplification of this volume. They do not reduce the human-attention cost of a full issue and PR queue, which is the original volume problem with a hostile twist.
+
 ## Relationship to other problem areas
 
 - **[Downstream/Upstream](downstream-upstream.md)** addresses organizational contributors and priority reconciliation. This document extends that to unaffiliated individual contributors and the volume problem specifically.
@@ -101,15 +118,16 @@ This is a project-level version of the [autonomy spectrum](autonomy-spectrum.md)
 - **[Human factors](human-factors.md)** discusses review fatigue for internal work. External contribution volume compounds this — maintainers reviewing unsolicited PRs experience a different kind of fatigue than reviewing work they directed.
 - **[Contributor guidance](contributor-guidance.md)** focuses on making rules clear. Under volume pressure, the question becomes whether clear rules reduce volume (by discouraging misaligned contributions) or just make them more sophisticated (contributors use AI to satisfy all stated requirements while still submitting strategically misaligned work).
 - **[Governance](governance.md)** — contribution volume intersects with governance when the project must decide its philosophy: optimize for throughput (accept and improve) vs. optimize for coherence (gate strictly). This is a governance decision that shapes the project's identity.
+- **[Security threat model](security-threat-model.md)** — high-volume external PRs are a natural vector for temporal split-payload attacks, and [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) are a distinct identity-level class that uses volume as a weapon rather than a side effect.
 
 ## Open questions
 
 - At what volume does the traditional review model break? Is it 10 PRs/day? 50? 100? The answer likely depends on project size and team capacity, but are there useful heuristics?
 - Can triage agents reliably distinguish "needs work but valuable" from "well-implemented but unwanted"? The former deserves investment; the latter deserves a clear, quick rejection. Getting this wrong in either direction is costly.
 - How should salvaged contributions be attributed? The idea came from contributor A, but the code was rewritten by an agent. Does contributor A get a co-author credit? A mention in the commit message? Nothing?
-- What signals indicate that a contributor is using AI thoughtfully vs. spamming PRs? Is there a way to distinguish genuine AI-assisted contributions from "I told the AI to make PRs to every project I've starred"?
+- What signals indicate that a contributor is using AI thoughtfully vs. spamming PRs? Is there a way to distinguish genuine AI-assisted contributions from "I told the AI to make PRs to every project I've starred"? Coordinated inauthentic campaigns raise a harder version of this question: the artifacts may be thoughtful-looking and still be a land-grab. See [Threat 7](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 - Should projects set explicit contribution policies for AI-generated PRs? Some Linux kernel subsystems are experimenting with this. What works and what creates perverse incentives?
 - How does the cost of PR salvaging compare to the cost of contributor churn from rejection? Is there a crossover point where salvaging is net-positive?
 - Can the "taste" dimension of review be approximated by agents that are deeply calibrated on a project's existing decisions, or does it fundamentally require human judgment?
-- How does contribution volume interact with the [security threat model](security-threat-model.md)? High-volume external PRs are a natural vector for the temporal split-payload attack pattern — one "innocent" PR weakens a test, a later one exploits the gap. Does volume make this harder to detect?
+- How does contribution volume interact with the [security threat model](security-threat-model.md)? High-volume external PRs are a natural vector for the temporal split-payload attack pattern — one "innocent" PR weakens a test, a later one exploits the gap. Does volume make this harder to detect? Separately, when the volume is itself inauthentic, the problem is no longer only cover for a later payload — see [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 - What's the governance model for accepting or rejecting a contribution philosophy? If maintainers disagree about throughput vs. coherence, how is that resolved?
