@@ -23,6 +23,14 @@ resolve through fullsend's pinned alias table, and a bare id gets the provider f
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
 
+The OTEL GenAI identity (`gen_ai.system` / `gen_ai.provider.name`) on the
+agent span is the serving-endpoint prefix of that spec, not the model
+publisher and not the runtime name: `anthropic-vertex`, `google-vertex`,
+`xai-vertex`, `openai`. A Claude model on Vertex is `anthropic-vertex` even
+though the publisher is Anthropic; `fullsend.runtime` stays `pi`. An explicit
+`anthropic/...` spec reports `anthropic` because that is the endpoint the run
+actually called.
+
 > **Grok's spec has three segments on purpose.** pi sends the model id on the wire verbatim and
 > Vertex wants the publisher-qualified `xai/grok-4.6`, so the id keeps its slash. Use the full
 > `xai-vertex/xai/grok-4.6`; a bare `xai/grok-4.6` would otherwise reach pi's **built-in** `xai`

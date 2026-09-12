@@ -44,3 +44,12 @@ func TestWantsClaudeMDBridge(t *testing.T) {
 	assert.False(t, WantsClaudeMDBridge(CodexRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(DummyRuntime{}))
 }
+
+func TestGenAISystemFor_FallsBackToSystem(t *testing.T) {
+	t.Parallel()
+	// Single-vendor runtimes omit ProviderResolver; the vendor is System().
+	assert.Equal(t, "anthropic", GenAISystemFor(ClaudeRuntime{}, "claude-sonnet-5", "", nil))
+	assert.Equal(t, "openai", GenAISystemFor(CodexRuntime{}, "openai/gpt-5.6-luna", "", nil))
+	assert.Equal(t, "opencode", GenAISystemFor(OpenCodeRuntime{}, "anthropic/claude-sonnet-5", "", nil))
+	assert.Equal(t, "fullsend.dummy", GenAISystemFor(DummyRuntime{}, "anything", "", nil))
+}
