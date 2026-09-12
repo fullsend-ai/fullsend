@@ -154,6 +154,15 @@ Provider identity is the **serving endpoint**, not the model publisher and not t
 
 The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
 
+> **Breaking change — Pi runtime:** `agent` spans from the Pi runtime used to
+> report the literal string `pi` under `gen_ai.system` / `gen_ai.provider.name`.
+> They now report the resolved serving-endpoint provider described above
+> (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`).
+> Downstream consumers that filtered or classified on
+> `gen_ai.system == "pi"` will silently stop matching Pi-runtime spans and
+> must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
+> or update their provider allowlist to include the resolved values above.
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
