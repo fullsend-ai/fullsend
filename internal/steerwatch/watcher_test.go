@@ -444,8 +444,8 @@ func TestWatch_TickerPollSteersMidTurn(t *testing.T) {
 func TestNew_AppliesDefaults(t *testing.T) {
 	w := New(Config{Repo: "org/repo"}, nil, &stubItems{}, nil, nil)
 	assert.Equal(t, 30*time.Second, w.cfg.PollInterval)
-	// Must match harness.DefaultSteerMaxSteers and ADR 0101, both of which
-	// say 2; a floor of 1 here would silently halve the documented cap for
+	// Must match harness.DefaultSteerMaxSteers and the configuration section
+	// of docs/contributing/steering.md, both of which say 2; a floor of 1 here would silently halve the documented cap for
 	// any caller that passed none.
 	assert.Equal(t, 2, w.cfg.MaxSteers)
 }
