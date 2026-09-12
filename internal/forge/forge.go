@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 )
 
 // ConfigRepoName is the conventional name for the org-level fullsend
@@ -143,9 +145,16 @@ func IsNotFork(err error) bool {
 //   - HTTP client/network timeouts
 //   - unexpected connection closures (io.EOF, io.ErrUnexpectedEOF)
 //
+// ctx is the caller's context for the operation that produced err.
+// Caller-context cancellation and deadline expiry are never transient;
+// nested timeouts (net/http Client.Timeout wrapping DeadlineExceeded
+// from an internal context) are, because the caller's context is still
+// live. Callers must pass the same ctx used for the operation — using
+// context.Background() cannot distinguish the two.
+//
 // Callers can use this to decide whether retrying an operation is
 // worthwhile before falling back to a log-and-continue strategy.
-func IsTransient(err error) bool {
+func IsTransient(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
@@ -166,7 +175,9 @@ func IsTransient(err error) bool {
 	// they reflect caller intent, not a server-side failure.
 	// context.DeadlineExceeded implements Timeout() bool (returning
 	// true), so this guard must come before the Timeout() check.
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	// Use ctxerr rather than errors.Is: net/http Client.Timeout
+	// unwraps to DeadlineExceeded from an internal context.
+	if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 		return false
 	}
 	// HTTP client timeout (e.g. net/http.Client.Timeout exceeded).

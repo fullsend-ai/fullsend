@@ -32,7 +32,7 @@ func cleanupRetry(logf func(string, ...any), desc string, fn func() error) error
 		if lastErr == nil {
 			return nil
 		}
-		if !forge.IsTransient(lastErr) {
+		if !forge.IsTransient(context.Background(), lastErr) {
 			return lastErr
 		}
 		if attempt < cleanupMaxAttempts-1 {

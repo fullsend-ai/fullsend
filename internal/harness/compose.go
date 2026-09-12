@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -1671,7 +1672,7 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 				if err == nil {
 					return dep, contentPath, nil
 				}
-				if !isTransientFetchError(err) {
+				if !isTransientFetchError(ctx, err) {
 					return Dependency{}, "", err
 				}
 				// Transient tree-fetch failure — fall through to single-file fetch.
@@ -1825,7 +1826,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 
 	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
 	if err != nil && staleFallback != nil {
-		if !isTransientFetchError(err) {
+		if !isTransientFetchError(ctx, err) {
 			return Dependency{}, "", err
 		}
 		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
@@ -1835,8 +1836,16 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 }
 
 // isTransientFetchError returns true for errors that indicate a temporary
-// network issue where serving stale cached content is appropriate.
-func isTransientFetchError(err error) bool {
+// network issue where serving stale cached content is appropriate. Unlike
+// most ctxerr.IsDeadlineExceededOrCanceled call sites, this classifier does
+// not distinguish caller-context expiry from a nested timeout (for example
+// a git-fetch HTTP client's own Client.Timeout unwrapping to
+// context.DeadlineExceeded): both mean the re-fetch didn't finish in time,
+// and stale cache is an acceptable fallback either way.
+func isTransientFetchError(ctx context.Context, err error) bool {
+	if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
+		return true
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
@@ -2024,7 +2033,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 
 	dep, dirPath, err := fetchBaseDirTree(ctx, kind, field, dirURL, keyURL, dirPath, allowedBy, allowlist, opts)
 	if err != nil && staleFallback != nil {
-		if !isTransientFetchError(err) {
+		if !isTransientFetchError(ctx, err) {
 			return Dependency{}, "", err
 		}
 		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -6111,22 +6112,30 @@ func TestFetchBaseSkill_TreeFetchErrorWithToken(t *testing.T) {
 }
 
 func TestIsTransientFetchError(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	expiredCtx, expire := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(expire)
+	live := context.Background()
+
 	tests := []struct {
 		name      string
+		ctx       context.Context
 		err       error
 		transient bool
 	}{
-		{"context deadline", fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
-		{"context canceled", fmt.Errorf("git fetch: %w", context.Canceled), true},
-		{"transient error type", &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}, true},
-		{"wrapped transient", fmt.Errorf("gitfetch: %w", &gitfetch.TransientError{Err: fmt.Errorf("no such host")}), true},
-		{"auth error", fmt.Errorf("authentication failed"), false},
-		{"generic error", fmt.Errorf("something went wrong"), false},
-		{"404 error", fmt.Errorf("not found"), false},
+		{"context deadline with expired context", expiredCtx, fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
+		{"context canceled with cancelled context", cancelledCtx, fmt.Errorf("git fetch: %w", context.Canceled), true},
+		{"context deadline with live context is still transient (nested timeout)", live, fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
+		{"transient error type", live, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}, true},
+		{"wrapped transient", live, fmt.Errorf("gitfetch: %w", &gitfetch.TransientError{Err: fmt.Errorf("no such host")}), true},
+		{"auth error", live, fmt.Errorf("authentication failed"), false},
+		{"generic error", live, fmt.Errorf("something went wrong"), false},
+		{"404 error", live, fmt.Errorf("not found"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.transient, isTransientFetchError(tt.err))
+			assert.Equal(t, tt.transient, isTransientFetchError(tt.ctx, tt.err))
 		})
 	}
 }
