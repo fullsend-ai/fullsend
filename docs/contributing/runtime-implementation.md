@@ -572,7 +572,7 @@ User-facing pi behaviour is in [Pi](../runtimes/pi.md). This section keeps the
 verification provenance: what was checked against pi's source, on which version, and what must be
 re-checked on a `PI_VERSION` or extension bump.
 
-One iteration, end to end — the amber decision is what makes "hooks enabled" enforceable, since pi silently skips a missing `-e` extension:
+One iteration, end to end — the amber decision is what makes "hooks enabled" enforceable, since pi would otherwise load and run a rewritten `-e` extension undetected:
 
 ```mermaid
 flowchart TB
@@ -661,7 +661,7 @@ The Claude-style agent `.md` is parsed by `Bootstrap`:
 
 - PreToolUse groups run in `HookPlan` order and stop at the first block; a script that cannot be spawned blocks; PostToolUse blocks withhold the result and mark it `isError`.
 - An unreadable manifest, or one without a hook plan, blocks every tool call.
-- Because pi silently skips a missing `-e` path, `Run` checks — before sourcing the agent-writable `.env`, with `command -p sha256sum` / `command -p cut` so nothing in the shell environment can stand in for them — that the adapter exists and matches the embedded copy's SHA-256 and that the manifest exists, failing closed (exit 97) otherwise; it refuses to start at all (exit -1) when security is enabled but the manifest carries no hook plan; and it decides whether to load the adapter from the runner's security signal rather than the manifest.
+- A missing `-e` path already fails closed in pi itself (exit 1), but a rewritten copy would still load and run, so `Run` checks — before sourcing the agent-writable `.env`, with `command -p sha256sum` / `command -p cut` so nothing in the shell environment can stand in for them — that the adapter exists and matches the embedded copy's SHA-256 and that the manifest exists, failing closed with its own distinguishable exit code (exit 97) otherwise; it refuses to start at all (exit -1) when security is enabled but the manifest carries no hook plan; and it decides whether to load the adapter from the runner's security signal rather than the manifest.
 - The manifest and the hook scripts themselves stay agent-writable between iterations — the same residue Claude Code has with `claude-config/hooks.json` and its scripts (both are written once at `Bootstrap`).
 - The pi-format entries of the harness's `plugins:` list ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)) get the same treatment — uploaded at `Bootstrap`, re-hashed and preflighted before every iteration, appended with `-e` after the adapter so the sandbox hooks see every call first ([Pi extensions](#pi-extensions-adr-0094)). The adapter itself grants them nothing: it logs a tool name that is neither a pi built-in nor a Claude-vocabulary name once at first use when the manifest lists extensions, and that is all. No hook is skipped for an extension tool, and an org running the optional `tool_allowlist_pretool.py` lists extension tool names in `FULLSEND_TOOL_ALLOWLIST` the way `mcp__*` names already are.
 - Edit inputs keep pi's `edits[]` shape, with `path` mirrored to `file_path` and the first `oldText`/`newText` pair mirrored to `old_string`/`new_string`; no shipped script reads the latter.

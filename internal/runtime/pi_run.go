@@ -534,8 +534,10 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	}
 	if editRepair {
 		// It registers tools and no tool_call handler, so its place among
-		// the runner-owned extensions does not affect the hook order; a
-		// declared extension that also registers edit loads later and wins.
+		// the runner-owned extensions does not affect the hook order. pi
+		// rejects two extensions that register the same tool name
+		// regardless of -e order, so a declared extension must not also
+		// register edit while this extension is loaded.
 		parts = append(parts, "-e "+shellQuote(editRepairExt))
 	}
 	// Declared extensions come after the hook adapter: pi runs tool_call

@@ -46,9 +46,10 @@ func piEditRepairEnabled(tools []string) bool {
 
 // piEditRepairGuard is the extension's counterpart of piAgentGuard: the file
 // must exist and match the embedded copy, else piEditRepairTamperedExit. It
-// sits in the config dir the agent can write between iterations, and pi
-// silently skips a missing -e path, so a deleted copy would quietly drop
-// the repair and a rewritten one would run agent-chosen code in pi.
+// sits in the config dir the agent can write between iterations. A deleted
+// copy already fails closed in pi itself, which exits 1 on a missing -e
+// path; the guard exists for a rewritten copy, which pi would otherwise
+// load and run, and to give tampering its own, distinguishable exit code.
 func piEditRepairGuard(ext string) string {
 	sum := sha256.Sum256(piEditRepairExtensionJS)
 	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: pi edit-repair extension missing or modified; refusing to run' >&2; exit %d; }; }`,

@@ -249,7 +249,9 @@ ever picked up from the target repository.
 - **Pick a free name.** Not `fullsend-hooks`, `fullsend-agent`, `fullsend-edit-repair`,
   `anthropic-vertex` or `xai-vertex` — those are the runner's own sandbox names — and not the
   directory name another entry already uses. Allowed characters are `a-z`, `A-Z`, `0-9`, `_`
-  and `-`.
+  and `-`. Also do not register a tool named `edit`: pi rejects two extensions that register the
+  same tool name, and the runner's own `fullsend-edit-repair` extension already registers `edit`
+  whenever the agent has the edit tool.
 - **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
   repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
   sources and `..` segments are refused: pi would fetch them from the network at startup.

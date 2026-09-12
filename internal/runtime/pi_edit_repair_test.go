@@ -44,7 +44,7 @@ func TestBuildPiRunCommand_EditRepairGate(t *testing.T) {
 	require.True(t, guardIdx > 0 && envIdx > 0, cmd)
 	assert.Less(t, guardIdx, envIdx, "the guard runs before .env can shadow its tools")
 	assert.Contains(t, cmd, "-e '"+ext+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
-		"runner-owned before declared, so a declared extension that registers edit still wins")
+		"runner-owned before declared; a declared extension must not also register edit, since pi rejects two extensions that register the same tool name")
 
 	cmd = buildPiRunCommand(piTestParams(), &piManifest{AgentName: "code", Tools: []string{}}, nil, "")
 	assert.Contains(t, cmd, "--no-builtin-tools")
