@@ -162,6 +162,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
+- `executor/job_id.sh` — shared helper resolving the trusted job ID
 - `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
 - `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
@@ -169,14 +170,21 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 
 ## Executor script layout
 
-`install_executor` in [`setup.sh`](setup.sh) copies `executor/*.sh` into a
-flat `EXECUTOR_DIR` (`~/gitlab-runner-executor`) when the VM is provisioned.
-Parent directories from the source tree are **not** preserved, except those
-explicitly seeded by `install_executor`. Today that exception is only
-`.github/scripts/openshell-version.sh`.
+`install_executor` in [`setup.sh`](setup.sh) does not glob `executor/*.sh`;
+it copies an explicit five-file allowlist — `job_id.sh`, `prepare.sh`,
+`run.sh`, `cleanup.sh`, `gateway.sh` — into a flat `EXECUTOR_DIR`
+(`~/gitlab-runner-executor`) when the VM is provisioned. `create-gcp-vm.sh`
+and `create-openshift-vm.sh` independently hard-code the same five-file list
+to stage and `chmod +x` the scripts on the VM. A script under `executor/`
+that is not on all three lists (e.g. `gateway_test.sh`,
+`prepare_validation_test.sh`) is never installed at all, regardless of what
+paths it references — a new script must be added to all three lists first.
 
-Any script added under `executor/` that needs a file outside its own
-directory must either:
+Once a script is on those lists, parent directories from the source tree are
+**not** preserved when it lands in `EXECUTOR_DIR`, except those explicitly
+seeded by `install_executor`. Today that exception is only
+`.github/scripts/openshell-version.sh`. Any such script that needs a file
+outside its own directory must either:
 
 1. Reference only same-directory siblings (the path still works after
    flattening), or
