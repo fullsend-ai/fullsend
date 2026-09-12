@@ -2324,8 +2324,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
+		// Provider identity is the serving endpoint of the model this span
+		// used, not the runtime name. Multi-provider runtimes (pi) resolve
+		// it from the same model/alias path as the inference request; the
+		// rest fall back to System() (#7245).
+		genAISystem := agentruntime.GenAISystemFor(rt, h.Model, agentDefModel, configModelAliases)
+
 		if cancelled, cancelExitCode, cancelledErr := handleRunCancellation(
-			ctx, runErr, iteration, exitCode, rt.System(), rt.Name(),
+			ctx, runErr, iteration, exitCode, genAISystem, rt.Name(),
 			&metrics, aggMetrics, runDir, agentSpan, attachIterationContent,
 			printer, lastIterElapsed,
 		); cancelled {
@@ -2335,7 +2341,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if runErr != nil {
 			attachIterationContent("error")
-			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, genAISystem, rt.Name(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
@@ -2382,7 +2388,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			contentFinishReason = "error"
 		}
 		attachIterationContent(contentFinishReason)
-		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg)
+		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, genAISystem, rt.Name(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
@@ -3516,7 +3522,10 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
+		// gen_ai.system is the pre-v1.37 name; emit both so EM-001 and
+		// backends that already read the modern key agree during migration.
 		stringAttr("gen_ai.system", system),
+		stringAttr("gen_ai.provider.name", system),
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),

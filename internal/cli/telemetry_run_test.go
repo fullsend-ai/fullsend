@@ -360,6 +360,7 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.Int("iteration", 2))
 	assert.Contains(t, a, attribute.Int("exit_code", 0))
 	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic"))
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
@@ -384,6 +385,57 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
 		"reasoning_tokens attribute should be present when non-zero")
+}
+
+func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {
+	// The identity tuple is (fullsend.runtime, provider, gen_ai.request.model).
+	// Claude and Pi on the same Anthropic model share the request model and
+	// differ in runtime; Pi's provider is the Vertex serving endpoint, not
+	// the runtime name. Other Pi endpoints must report that endpoint (#7245).
+	for _, tc := range []struct {
+		runtime  string
+		provider string
+		model    string
+	}{
+		{runtime: "claude", provider: "anthropic", model: "claude-sonnet-5"},
+		{runtime: "pi", provider: "anthropic-vertex", model: "claude-sonnet-5"},
+		{runtime: "pi", provider: "xai-vertex", model: "xai/grok-4.6"},
+		{runtime: "pi", provider: "google-vertex", model: "gemini-3.8-flash"},
+		{runtime: "pi", provider: "openai", model: "gpt-5.6-luna"},
+	} {
+		t.Run(tc.runtime+"/"+tc.provider+"/"+tc.model, func(t *testing.T) {
+			m := agentruntime.RunMetrics{Model: tc.model}
+			a := agentSpanEndAttrs(1, 0, tc.provider, tc.runtime, &m)
+			assert.Contains(t, a, attribute.String("fullsend.runtime", tc.runtime))
+			assert.Contains(t, a, attribute.String("gen_ai.system", tc.provider))
+			assert.Contains(t, a, attribute.String("gen_ai.provider.name", tc.provider))
+			assert.Contains(t, a, attribute.String("gen_ai.request.model", tc.model))
+			assert.NotContains(t, a, attribute.String("gen_ai.system", "pi"))
+		})
+	}
+}
+
+// TestAgentSpanEndAttrs_GenAISystemForWiring exercises the producer-to-
+// consumer path run.go actually uses: GenAISystemFor resolves the provider,
+// and that value (not rt.System()) is what agentSpanEndAttrs stamps onto
+// gen_ai.system / gen_ai.provider.name. TestAgentSpanEndAttrs_IdentityTuple
+// only checks agentSpanEndAttrs in isolation with hand-picked provider
+// strings, so it would not catch a regression where run.go goes back to
+// passing rt.System() ("pi") instead of calling GenAISystemFor (#7245).
+func TestAgentSpanEndAttrs_GenAISystemForWiring(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "")
+
+	rt := agentruntime.PiRuntime{}
+	genAISystem := agentruntime.GenAISystemFor(rt, "claude-sonnet-5", "", nil)
+	require.Equal(t, "anthropic-vertex", genAISystem,
+		"GenAISystemFor must resolve the serving endpoint via ProviderFor, not fall back to System()")
+
+	m := agentruntime.RunMetrics{Model: "claude-sonnet-5"}
+	a := agentSpanEndAttrs(1, 0, genAISystem, rt.Name(), &m)
+	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic-vertex"))
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic-vertex"))
+	assert.NotContains(t, a, attribute.String("gen_ai.system", "pi"),
+		"a regression to rt.System() would stamp the runtime name instead of the resolved provider")
 }
 
 func TestAggregateRunMetrics(t *testing.T) {

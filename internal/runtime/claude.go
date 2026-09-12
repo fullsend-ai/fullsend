@@ -24,7 +24,10 @@ type ClaudeRuntime struct{}
 
 func (ClaudeRuntime) Name() string { return "claude" }
 
-// System returns the OTEL GenAI `gen_ai.system` vendor for Claude Code's models.
+// System returns the OTEL GenAI provider identity. Claude Code serves a
+// single model vendor — it speaks the Anthropic API and has no Vertex,
+// OpenAI or Gemini path — so the system is the vendor ("anthropic"), not
+// the runtime name.
 func (ClaudeRuntime) System() string { return "anthropic" }
 
 func (ClaudeRuntime) ConfigDir() string { return sandbox.SandboxClaudeConfig }

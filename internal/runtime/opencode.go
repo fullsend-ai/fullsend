@@ -27,11 +27,12 @@ type OpenCodeRuntime struct{}
 
 func (OpenCodeRuntime) Name() string { return "opencode" }
 
-// System returns the OTEL GenAI gen_ai.system value. OpenCode is multi-provider
-// (Anthropic, OpenAI, Google, etc.), so the system is the runtime itself rather
-// than a single model vendor. The actual model vendor may be capturable from
-// opencode's stream/export events in a future PR once the event schema is
-// confirmed (see #1935).
+// System returns the fallback OTEL GenAI provider identity. OpenCode is
+// multi-provider (Anthropic, OpenAI, Google, etc.) and does not yet implement
+// ProviderResolver, so the system is the runtime itself rather than a model
+// vendor. The actual serving endpoint may be capturable from opencode's
+// stream/export events in a future PR once the event schema is confirmed
+// (see #1935).
 func (OpenCodeRuntime) System() string { return "opencode" }
 
 // ConfigDir returns the opencode config directory inside the sandbox.

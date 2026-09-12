@@ -134,9 +134,14 @@ func (te TranscriptError) DisplayMessage() string {
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
 type Runtime interface {
 	Name() string
-	// System returns the OTEL GenAI `gen_ai.system` value (the model vendor) for
-	// this runtime, e.g. "anthropic". Kept on the runtime so telemetry stays
-	// runtime-agnostic rather than hardcoding a vendor in the CLI (ADR 0050).
+	// System returns a fallback OTEL GenAI provider identity (gen_ai.system /
+	// gen_ai.provider.name) when the runtime does not implement
+	// ProviderResolver. Single-vendor runtimes return the model vendor
+	// (e.g. "anthropic"). Multi-provider runtimes must implement
+	// ProviderResolver so the agent span reports the serving endpoint for
+	// the model actually used (#7245); System() is then unused on agent
+	// spans. Kept on the runtime so telemetry stays runtime-agnostic rather
+	// than hardcoding a vendor in the CLI (ADR 0050).
 	System() string
 	ConfigDir() string
 	WorkspaceDir() string
@@ -202,4 +207,30 @@ func WantsClaudeMDBridge(rt Runtime) bool {
 		return b.NeedsClaudeMDBridge()
 	}
 	return false
+}
+
+// ProviderResolver is an optional Runtime extension for multi-provider
+// backends. ProviderFor returns the OTEL GenAI provider identity
+// (gen_ai.system / gen_ai.provider.name) for the model that run will call,
+// using the same resolution as the inference request. model is the runner-
+// resolved value (flag > env > agents: entry > harness model:); agentModel
+// is the agent definition's frontmatter model:; aliases are the repo's
+// models.aliases. The identity is the serving endpoint (the pi provider
+// prefix after translatePiModel), not the model publisher: a Claude id on
+// Vertex is "anthropic-vertex", not "anthropic". That matches how the run
+// authenticates and which catalog a downstream consumer should look up.
+// Single-vendor runtimes omit this; GenAISystemFor falls back to System().
+type ProviderResolver interface {
+	ProviderFor(model, agentModel string, aliases map[string]string) string
+}
+
+// GenAISystemFor returns the OTEL GenAI provider identity for rt and the
+// given model. A ProviderResolver is preferred; otherwise System() is used.
+func GenAISystemFor(rt Runtime, model, agentModel string, aliases map[string]string) string {
+	if r, ok := rt.(ProviderResolver); ok {
+		if provider := r.ProviderFor(model, agentModel, aliases); provider != "" {
+			return provider
+		}
+	}
+	return rt.System()
 }

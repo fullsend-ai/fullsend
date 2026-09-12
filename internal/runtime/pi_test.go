@@ -18,6 +18,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	t.Parallel()
 	rt := PiRuntime{}
 	assert.Equal(t, "pi", rt.Name())
+	// System() is the no-model fallback; agent spans use ProviderFor.
 	assert.Equal(t, "pi", rt.System())
 	assert.Equal(t, sandbox.SandboxPiConfig, rt.ConfigDir())
 	assert.Equal(t, sandbox.SandboxWorkspace, rt.WorkspaceDir())
@@ -103,4 +104,78 @@ func TestPiRuntimeNoopMethods(t *testing.T) {
 	rt.EmitTranscriptErrors(&sb, nil)
 	assert.Empty(t, sb.String())
 	_ = os.Stderr
+}
+
+func TestPiRuntimeProviderFor(t *testing.T) {
+	// Not Parallel: several cases set FULLSEND_PI_PROVIDER.
+	rt := PiRuntime{}
+
+	for _, tc := range []struct {
+		name        string
+		model       string
+		agentModel  string
+		aliases     map[string]string
+		providerEnv string
+		want        string
+	}{
+		{name: "claude alias defaults to anthropic-vertex", model: "sonnet", want: "anthropic-vertex"},
+		{name: "claude-sonnet-5 alias still anthropic-vertex", model: "claude-sonnet-5", want: "anthropic-vertex"},
+		{name: "explicit anthropic publisher prefix", model: "anthropic/claude-sonnet-5", want: "anthropic"},
+		{name: "xai short form normalizes to xai-vertex", model: "xai/grok-4.6", want: "xai-vertex"},
+		{name: "xai three-segment spec", model: "xai-vertex/xai/grok-4.6", want: "xai-vertex"},
+		{name: "google-vertex gemini", model: "google-vertex/gemini-3.8-flash", want: "google-vertex"},
+		{name: "openai gpt", model: "openai/gpt-5.6-luna", want: "openai"},
+		{name: "openai mixed case", model: "OpenAI/gpt-5.6-luna", want: "openai"},
+		{name: "agent frontmatter fallback", agentModel: "openai/gpt-5.6-luna", want: "openai"},
+		{name: "run model wins over agent frontmatter", model: "sonnet", agentModel: "openai/gpt-5.6-luna", want: "anthropic-vertex"},
+		{
+			name:    "alias remapped to openai",
+			model:   "sonnet",
+			aliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"},
+			want:    "openai",
+		},
+		{
+			name:    "alias remapped to google-vertex",
+			model:   "haiku",
+			aliases: map[string]string{"haiku": "google-vertex/gemini-3.8-flash"},
+			want:    "google-vertex",
+		},
+		{
+			name:    "alias to claude-sonnet-5 stays anthropic-vertex",
+			model:   "sonnet",
+			aliases: map[string]string{"sonnet": "claude-sonnet-5"},
+			want:    "anthropic-vertex",
+		},
+		{
+			name:  "subagent-style google-vertex model",
+			model: "google-vertex/gemini-3.8-flash",
+			want:  "google-vertex",
+		},
+		{
+			name:        "bare grok under xai-vertex env",
+			model:       "grok-4.6",
+			providerEnv: piXaiVertexProvider,
+			want:        "xai-vertex",
+		},
+		{
+			name:        "empty model uses default alias and provider",
+			providerEnv: "",
+			want:        "anthropic-vertex",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(piProviderEnv, tc.providerEnv)
+			got := rt.ProviderFor(tc.model, tc.agentModel, tc.aliases)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, GenAISystemFor(rt, tc.model, tc.agentModel, tc.aliases),
+				"GenAISystemFor must use ProviderFor, not System()")
+			assert.NotEqual(t, "pi", got, "provider identity must not be the runtime name")
+		})
+	}
+
+	// Same requested Anthropic model: Claude reports the vendor, Pi reports
+	// the Vertex serving endpoint, and neither reports the runtime as the
+	// provider. fullsend.runtime is how they differ on the span.
+	assert.Equal(t, "anthropic", GenAISystemFor(ClaudeRuntime{}, "claude-sonnet-5", "", nil))
+	assert.Equal(t, "anthropic-vertex", GenAISystemFor(PiRuntime{}, "claude-sonnet-5", "", nil))
 }

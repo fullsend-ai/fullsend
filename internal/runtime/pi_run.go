@@ -810,8 +810,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases)
 	// Telemetry and the renderer get the bare model id, as they do for
-	// Claude Code, so runs group by model across runtimes; the provider is
-	// gen_ai.system's job and stays visible on the command line.
+	// Claude Code, so runs group by model across runtimes; the serving
+	// endpoint is gen_ai.system / gen_ai.provider.name's job (ProviderFor)
+	// and stays visible on the command line.
 	metrics.Model = piBareModelID(modelSpec)
 	// The wire carries no CLI version and the model only on the first
 	// assistant message; Bootstrap's preflight and the resolved model are

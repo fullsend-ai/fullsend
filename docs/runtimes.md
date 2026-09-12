@@ -207,7 +207,7 @@ frontmatter is not remapped).
 | Run plan block | `Runtime: <name> (from <source>)` next to Model and Effort; `<source>` is the flag, the variable, or `<config path>` (suffixed ` agents.<name>` when the agent's entry decided) |
 | stderr | `runtime: selected "<name>" from <source>` |
 | Status comment / `::notice::` | `Runtime · Model: <requested → reported> · Effort · Cost` |
-| OTel span | `fullsend.runtime`, next to `gen_ai.request.model` |
+| OTel span | `fullsend.runtime` (harness), `gen_ai.system` / `gen_ai.provider.name` (serving endpoint of the model used), next to `gen_ai.request.model` |
 | `metrics.json` | `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, `override_source` |
 
 `requested_model` is the model after the per-run overrides (an alias stays the alias name) and

@@ -24,10 +24,11 @@ type CodexRuntime struct{}
 
 func (CodexRuntime) Name() string { return "codex" }
 
-// System returns the OTEL GenAI gen_ai.system value. Unlike pi and opencode,
-// codex serves a single model vendor — it speaks the OpenAI Responses API and
-// has no Vertex, Anthropic or Gemini path — so the system is the vendor
-// ("openai"), not the runtime name.
+// System returns the OTEL GenAI provider identity. Unlike pi, which is
+// multi-provider and implements ProviderResolver, codex serves a single
+// model vendor — it speaks the OpenAI Responses API and has no Vertex,
+// Anthropic or Gemini path — so the system is the vendor ("openai"), not
+// the runtime name.
 func (CodexRuntime) System() string { return "openai" }
 
 // ConfigDir returns the codex config directory inside the sandbox. It is
