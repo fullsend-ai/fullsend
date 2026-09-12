@@ -163,10 +163,40 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
+- `executor/job_id.sh` — shared helper resolving the trusted job ID
 - `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
 - `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
 - `executor/gateway.sh` — shared per-job gateway helpers sourced by prepare/cleanup
+
+## Executor script layout
+
+`install_executor` in [`setup.sh`](setup.sh) does not glob `executor/*.sh`;
+it copies an explicit five-file allowlist — `job_id.sh`, `prepare.sh`,
+`run.sh`, `cleanup.sh`, `gateway.sh` — into a flat `EXECUTOR_DIR`
+(`~/gitlab-runner-executor`) when the VM is provisioned. `create-gcp-vm.sh`
+and `create-openshift-vm.sh` independently hard-code the same five-file list
+to stage and `chmod +x` the scripts on the VM. A script under `executor/`
+that is not on all three lists (e.g. `gateway_test.sh`,
+`prepare_validation_test.sh`) is never installed at all, regardless of what
+paths it references — a new script must be added to all three lists first.
+
+Once a script is on those lists, parent directories from the source tree are
+**not** preserved when it lands in `EXECUTOR_DIR`, except those explicitly
+seeded by `install_executor`. Today that exception is only
+`.github/scripts/openshell-version.sh`. Any such script that needs a file
+outside its own directory must either:
+
+1. Reference only same-directory siblings (the path still works after
+   flattening), or
+2. Have `install_executor` explicitly copy the needed file into
+   `EXECUTOR_DIR`, mirroring the `openshell-version.sh` precedent.
+
+Guessing a `BASH_SOURCE`-relative path across the flattening boundary
+silently fails at per-job runtime: `prepare.sh`/`cleanup.sh` source the
+flattened copy, not the source-tree file. [`gateway.sh`](executor/gateway.sh)
+is the current example of (2); `job_id.sh`, `prepare.sh`, `run.sh`, and
+`cleanup.sh` only reference same-directory siblings.
 
 ## Security notes
 
