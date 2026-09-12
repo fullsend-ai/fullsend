@@ -51,6 +51,21 @@ GitHub repositories use a different command (`fullsend github setup`). See
 > [Off-system polling](#off-system-polling) below and
 > [ADR 0067](../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for
 > the design. Self-hosted runners are required on GitLab.com Free.
+>
+> This gap does not stay quiet: only the *first* `repos install` merely
+> warns when schedule creation fails and still exits successfully. Every
+> later `repos install` run — including the
+> [Runner configuration](#runner-configuration) step below, which asks
+> you to re-run install after setting the runner tag — takes the
+> converge path, which retries creating the missing schedules and treats
+> a repeat failure as a hard `convergence errors` failure instead of a
+> warning. There is currently no flag to make `repos install` skip
+> repairing schedules, so on a GitLab.com Free repo where schedules were
+> never created, expect that later re-run to fail even though it's
+> otherwise applying an unrelated change (like the runner tag). Rely on
+> [Off-system polling](#off-system-polling) for pickup either way; this
+> is a known limitation of the current converge behavior, not something
+> this guide can work around.
 
 ## Installing Fullsend
 
@@ -216,11 +231,19 @@ parent namespace path (for example, a project at
 it is not any ancestor group. `GROUP_PATH` above must equal that exact
 path; setting it to a higher-level group (`my-group`) to try to cover
 every project underneath it will not match, and jobs from nested
-projects will be rejected at STS. To authorize an entire group tree,
-use a CEL condition such as
-`assertion.namespace_path == 'my-group' || assertion.namespace_path.startsWith('my-group/')`
-(with a matching `principalSet`), or create a separate provider or
-condition per namespace level.
+projects will be rejected at STS.
+
+Widening `--attribute-condition` alone does not authorize a group
+tree: GCP IAM `principalSet://.../attribute.namespace_path/$VALUE`
+bindings are exact-match on the mapped attribute, so the single
+`$GROUP_PATH` principalSet shown below would still deny a token from a
+nested namespace even if the CEL condition let STS mint one for it. To
+cover an entire tree, either bind a separate `principalSet` (one per
+concrete `namespace_path` you want to allow), or grant the broader
+`principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/*`
+(every identity in the pool) and keep the `--attribute-condition`
+above to control which GitLab assertions STS will exchange in the
+first place.
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -283,8 +306,9 @@ fullsend repos status -f repos.yaml
 Confirm:
 
 * Status is `installed` with `DRIFT` `none`. On instances where schedule
-  creation failed (expected on GitLab.com Free), `repos status` will show
-  `schedule:slash-poll`/`schedule:event-poll` drift instead — that is
+  creation failed (expected on GitLab.com Free), the `DRIFT` column will
+  show `slash-poll differs, event-poll differs` instead (JSON: `field`
+  values `slash-poll`/`event-poll` with `actual` `missing`) — that is
   expected; verify off-system `fullsend poll` instead, per
   [Off-system polling](#off-system-polling) above.
 * **Pipeline schedules** — Settings → CI/CD → Pipeline schedules shows
