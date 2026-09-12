@@ -199,7 +199,8 @@ func (w *Watcher) isFollowUp(run forge.WorkflowRun) bool {
 	}
 }
 
-// candidateChecks applies checks 2, 3, 6 of ADR 0101 §"provenance" — the
+// candidateChecks applies checks 2, 3, 6 of the provenance table in
+// docs/contributing/steering.md — the
 // ones answerable from the run record alone, without a second API call.
 // Check 1 (same repository) is implicit in the API path.
 func (w *Watcher) candidateChecks(run forge.WorkflowRun) *rejection {

@@ -413,7 +413,7 @@ func TestCodexSteerAggregator_SumsAcrossProcesses(t *testing.T) {
 func TestSteerEnvelopeOpeningLineIsStable(t *testing.T) {
 	// Spelled out once, here. This is what stops the exported constant
 	// changing without the agents repository changing with it, and it is
-	// the string ADR 0101 quotes.
+	// the string docs/normative/steer-envelope/v1 quotes.
 	const opening = "Runner update: your task inputs changed after this run started."
 	if SteerEnvelopeOpeningLine != opening {
 		t.Fatalf("SteerEnvelopeOpeningLine = %q, want %q — the agent definitions in "+

@@ -416,9 +416,10 @@ const (
 // cross-repo interface: the agent definitions in fullsend-ai/agents match on
 // it to recognise a runner amendment, and also to flag the same line
 // appearing INSIDE work-item content as an injection attempt. It is
-// exported, and named in ADR 0101, so the agents repository has one place
-// to match against and this string has one place to change — which it must
-// not do without that repository changing with it.
+// exported, and specified in docs/normative/steer-envelope/v1, so the
+// agents repository has one place to match against and this string has one
+// place to change — which it must not do without that repository changing
+// with it.
 const SteerEnvelopeOpeningLine = "Runner update: your task inputs changed after this run started."
 
 func renderSteerEnvelope(msg SteerMessage) string {

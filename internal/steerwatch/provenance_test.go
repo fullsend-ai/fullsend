@@ -129,7 +129,7 @@ func TestBoundToItem(t *testing.T) {
 }
 
 // The provenance checks are the security boundary: each rejection below is a
-// threat from ADR 0101's threat table.
+// threat from the provenance table in docs/contributing/steering.md.
 func TestCandidateChecks(t *testing.T) {
 	api := newFakeAPI()
 	w := newWatcher(t, api, &stubItems{}, &recorder{}, nil)
