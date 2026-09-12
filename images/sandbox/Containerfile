@@ -98,7 +98,7 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
-ARG PI_VERSION=0.85.0
+ARG PI_VERSION=0.85.1
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
