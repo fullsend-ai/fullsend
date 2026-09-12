@@ -1034,3 +1034,124 @@ if ! grep -q "::warning::test-repo: non-comment content above sentinel was rejec
 fi
 
 echo "PASS: non-comment YAML above sentinel rejected by content-injection guard"
+
+# ===========================
+# Test 5: empty repo (no commits) emits actionable error
+# ===========================
+
+# Reset state for test 5.
+rm -f "${GH_LOG}" "${COMMIT_MSGS_LOG}" "${TMPDIR}/blob-input-"*.json
+
+# Config with only an empty repo enabled.
+cat > "${CONFIG_DIR}/config.yaml" <<'CFGEOF'
+version: 1
+repos:
+  empty-repo:
+    enabled: true
+CFGEOF
+
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+query="${1:-}"
+if [[ "$query" == *"enabled == true"* ]]; then
+  echo "empty-repo"
+elif [[ "$query" == *"enabled == false"* ]]; then
+  true  # no disabled repos
+else
+  echo "unexpected yq query: $*" >&2
+  exit 1
+fi
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
+cat > "${MOCK_BIN}/gh" <<EOF5
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/empty-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/empty-repo/contents/*)
+    # No shim on default branch.
+    rc=1
+    ;;
+  repos/test-org/empty-repo/git/ref/heads/main)
+    # Empty repo — GitHub returns 409.
+    json='{"message":"Git Repository is empty.","documentation_url":"https://docs.github.com/rest/git/refs#get-a-reference"}'
+    rc=1
+    ;;
+  repos/test-org/empty-repo)
+    # Repo metadata — even empty repos return a default_branch.
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF5
+chmod +x "${MOCK_BIN}/gh"
+
+# The script should fail (exit 1) because the empty repo enrollment fails.
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout5.log" 2>&1 && test5_rc=0 || test5_rc=$?
+
+if [ "$test5_rc" -eq 0 ]; then
+  echo "FAIL: script should have exited non-zero for empty repo"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+# Verify the actionable error message was emitted.
+if ! grep -q "empty-repo has no commits; push at least one commit before enrolling" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: expected actionable error message for empty repo"
+  echo "Got:"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+# Verify the script did NOT attempt to create a blob (no downstream Git API calls).
+if grep -q "git/blobs" "${GH_LOG}"; then
+  echo "FAIL: script attempted to create a blob for an empty repo"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: empty repo emits actionable error and skips enrollment"
