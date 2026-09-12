@@ -33,13 +33,15 @@ func NewHostPEMAccessor(pemFn js.Value) (*HostPEMAccessor, error) {
 }
 
 // AccessPEM retrieves PEM data for the given role via the host callback.
-func (h *HostPEMAccessor) AccessPEM(_ context.Context, role string) ([]byte, error) {
+// The context is honored: if the deadline expires while waiting for
+// the JS Promise, AccessPEM returns ctx.Err() immediately.
+func (h *HostPEMAccessor) AccessPEM(ctx context.Context, role string) ([]byte, error) {
 	secretRole := PemSecretRole(role)
 	if err := ValidateRoleName(secretRole); err != nil {
 		return nil, err
 	}
 
-	result, err := awaitPromise(h.pemFn.Invoke(secretRole))
+	result, err := awaitPromiseWithContext(ctx, h.pemFn.Invoke(secretRole))
 	if err != nil {
 		return nil, fmt.Errorf("host PEM accessor failed for role %q: %w", role, err)
 	}
