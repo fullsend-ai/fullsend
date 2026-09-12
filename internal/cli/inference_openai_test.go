@@ -240,6 +240,9 @@ func TestDefaultServiceAccountID(t *testing.T) {
 	assert.Equal(t, "fullsend-widget-ci", defaultServiceAccountID("acme/widget"))
 	assert.Equal(t, "fullsend-gadget-ci", defaultServiceAccountID("acme/gadget"))
 	assert.Equal(t, "fullsend-my-repo-ci", defaultServiceAccountID("org/my-repo"))
+	// GitLab subgroup paths: slashes in the repo portion are replaced with hyphens.
+	assert.Equal(t, "fullsend-subgroup-project-ci", defaultServiceAccountID("group/subgroup/project"))
+	assert.Equal(t, "fullsend-a-b-project-ci", defaultServiceAccountID("group/a/b/project"))
 }
 
 // --- import command tests ---
@@ -716,14 +719,21 @@ func TestRunInferenceOpenAIStatus_FullConfigNoActions(t *testing.T) {
 
 // --- buildRequestDoc tests ---
 
+// ghDoc is a test helper that calls buildRequestDoc with the default
+// GitHub forge parameters so existing tests read unchanged.
+func ghDoc(repos []string, audience, project, serviceAccount, ref string) openAIRequestDoc {
+	return buildRequestDoc(repos, audience, project, serviceAccount, ref,
+		forgeGitHub, githubOIDCIssuer, false, nil)
+}
+
 func TestBuildRequestDoc_DefaultAudience(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget"}, "fullsend://acme", "", "", "")
+	doc := ghDoc([]string{"acme/widget"}, "fullsend://acme", "", "", "")
 	assert.Equal(t, "fullsend://acme", doc.Provider.Audience)
 	assert.Equal(t, "fullsend://acme", doc.Reply.Audience)
 }
 
 func TestBuildRequestDoc_CorrectAssertions(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
 
 	require.Len(t, doc.Mappings, 2)
 
@@ -738,13 +748,13 @@ func TestBuildRequestDoc_CorrectAssertions(t *testing.T) {
 }
 
 func TestBuildRequestDoc_ServiceAccountIDPerRepo(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "aud", "", "", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "aud", "", "", "")
 	assert.Equal(t, "fullsend-widget-ci", doc.Mappings[0].Target.ServiceAccount)
 	assert.Equal(t, "fullsend-gadget-ci", doc.Mappings[1].Target.ServiceAccount)
 }
 
 func TestBuildRequestDoc_SharedServiceAccount(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "aud", "", "shared-sa", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "aud", "", "shared-sa", "")
 	assert.Equal(t, "shared-sa", doc.Mappings[0].Target.ServiceAccount)
 	assert.Equal(t, "shared-sa", doc.Mappings[1].Target.ServiceAccount)
 }
@@ -752,8 +762,8 @@ func TestBuildRequestDoc_SharedServiceAccount(t *testing.T) {
 // --- renderRequestMarkdown tests ---
 
 func TestRenderRequestMarkdown_ContainsExpectedSections(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget"}, "fullsend://acme", "", "", "")
-	md, err := renderRequestMarkdown(doc)
+	doc := ghDoc([]string{"acme/widget"}, "fullsend://acme", "", "", "")
+	md, err := renderRequestMarkdown(doc, forgeGitHub)
 	require.NoError(t, err)
 
 	assert.Contains(t, md, "## Provider (reuse or create)")
@@ -849,7 +859,7 @@ func TestInferenceOpenAIStatusCmd_DoesNotRequireGitHubToken(t *testing.T) {
 // --- request JSON round-trip test (golden) ---
 
 func TestBuildRequestDoc_JSONRoundTrip(t *testing.T) {
-	doc := buildRequestDoc(
+	doc := ghDoc(
 		[]string{"acme/widget", "acme/gadget"},
 		"fullsend://acme",
 		"openai-proj-001",
@@ -954,7 +964,7 @@ func TestInferenceOpenAIRequestCmd_MarkdownMultiRepo(t *testing.T) {
 // --- round trip: the document we generate is the document an admin returns ---
 
 func TestImport_AcceptsTheFilledInRequestDocument(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
 	// What an administrator does: fill in the reply section of the file
 	// `request --format json` produced, and send the same file back.
 	doc.Reply.IdentityProviderID = "idp_live"
@@ -974,7 +984,7 @@ func TestImport_AcceptsTheFilledInRequestDocument(t *testing.T) {
 }
 
 func TestImport_MultiRepoReplyNeedsASelector(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
 	doc.Reply.IdentityProviderID = "idp_live"
 	doc.Reply.ServiceAccountIDs["acme/widget"] = "sa_widget"
 	doc.Reply.ServiceAccountIDs["acme/gadget"] = "sa_gadget"
@@ -1019,14 +1029,14 @@ func TestRequest_MixedOwnersNeedAnExplicitAudience(t *testing.T) {
 }
 
 func TestRequest_RefIsOverridable(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget"}, "aud", "", "", "refs/heads/trunk")
+	doc := ghDoc([]string{"acme/widget"}, "aud", "", "", "refs/heads/trunk")
 	require.Len(t, doc.Mappings, 2, "explicit --ref emits two mappings: one for the ref, one for refs/pull/*")
 	assert.Equal(t, "refs/heads/trunk", doc.Mappings[0].Assertions.Ref,
 		"a repository whose default branch is not main needs its own ref")
 	assert.Equal(t, openAIPullRefPattern, doc.Mappings[1].Assertions.Ref,
 		"companion mapping for PR-review-triggered runs")
 
-	defaultDoc := buildRequestDoc([]string{"acme/widget"}, "aud", "", "", "")
+	defaultDoc := ghDoc([]string{"acme/widget"}, "aud", "", "", "")
 	require.Len(t, defaultDoc.Mappings, 1, "default: one mapping with no ref assertion")
 	assert.Empty(t, defaultDoc.Mappings[0].Assertions.Ref, "default: no ref assertion")
 }
@@ -1038,18 +1048,18 @@ func TestParseRepoList_Dedupes(t *testing.T) {
 }
 
 func TestRequestMarkdown_ExistingServiceAccountIsNotCreated(t *testing.T) {
-	md, err := renderRequestMarkdown(buildRequestDoc([]string{"acme/widget"}, "aud", "p", "sa_existing", ""))
+	md, err := renderRequestMarkdown(ghDoc([]string{"acme/widget"}, "aud", "p", "sa_existing", ""), forgeGitHub)
 	require.NoError(t, err)
 	assert.Contains(t, md, "sa_existing (existing — map it, do not create a new one)")
 	assert.NotContains(t, md, "sa_existing (create inline")
 
-	md, err = renderRequestMarkdown(buildRequestDoc([]string{"acme/widget"}, "aud", "p", "", ""))
+	md, err = renderRequestMarkdown(ghDoc([]string{"acme/widget"}, "aud", "p", "", ""), forgeGitHub)
 	require.NoError(t, err)
 	assert.Contains(t, md, "create inline in the mapping")
 }
 
 func TestRequestMarkdown_StatesTheAssertionRules(t *testing.T) {
-	md, err := renderRequestMarkdown(buildRequestDoc([]string{"acme/widget"}, "aud", "p", "", ""))
+	md, err := renderRequestMarkdown(ghDoc([]string{"acme/widget"}, "aud", "p", "", ""), forgeGitHub)
 	require.NoError(t, err)
 	for _, want := range []string{
 		"`repository_owner`",
@@ -1065,7 +1075,7 @@ func TestRequestMarkdown_StatesTheAssertionRules(t *testing.T) {
 }
 
 func TestRequestMarkdown_WithRefShowsRefAssertions(t *testing.T) {
-	md, err := renderRequestMarkdown(buildRequestDoc([]string{"acme/widget"}, "aud", "p", "", "refs/heads/main"))
+	md, err := renderRequestMarkdown(ghDoc([]string{"acme/widget"}, "aud", "p", "", "refs/heads/main"), forgeGitHub)
 	require.NoError(t, err)
 	assert.Contains(t, md, "`ref` = `refs/heads/main`", "first mapping has explicit ref")
 	assert.Contains(t, md, "`ref` = `refs/pull/*`", "companion mapping for PR-triggered runs")
@@ -1277,7 +1287,7 @@ func TestResolveOpenAIStatusSources_StaticKeyWinsOffActions(t *testing.T) {
 }
 
 func TestImport_ServiceAccountFlagResolvesAnAmbiguousReply(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
 	doc.Reply.IdentityProviderID = "idp_live"
 	doc.Reply.ServiceAccountIDs["acme/widget"] = "sa_widget"
 	doc.Reply.ServiceAccountIDs["acme/gadget"] = "sa_gadget"
@@ -1292,7 +1302,7 @@ func TestImport_ServiceAccountFlagResolvesAnAmbiguousReply(t *testing.T) {
 }
 
 func TestImport_RepoSelectionIsCaseInsensitive(t *testing.T) {
-	doc := buildRequestDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget", "acme/gadget"}, "fullsend://acme", "proj-1", "", "")
 	doc.Reply.IdentityProviderID = "idp_live"
 	doc.Reply.ServiceAccountIDs["acme/widget"] = "sa_widget"
 	doc.Reply.ServiceAccountIDs["acme/gadget"] = "sa_gadget"
@@ -1311,15 +1321,26 @@ func TestParseRepoList_DedupesCaseInsensitively(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acme/widget", "acme/gadget"}, repos)
 
-	// The same rule keeps the mixed-owner guard honest.
-	assert.Equal(t, []string{"acme"}, repoOwners([]string{"acme/widget", "Acme/gadget"}))
+	// The same rule keeps the mixed-owner guard honest (GitHub is case-insensitive).
+	assert.Equal(t, []string{"acme"}, repoOwners([]string{"acme/widget", "Acme/gadget"}, forgeGitHub))
+}
+
+func TestRepoOwners_GitLabCaseSensitive(t *testing.T) {
+	// GitLab group names are case-sensitive, so MyGroup and mygroup are
+	// distinct owners and must not be collapsed.
+	owners := repoOwners([]string{"MyGroup/project1", "mygroup/project2"}, forgeGitLab)
+	assert.Equal(t, []string{"MyGroup", "mygroup"}, owners)
+
+	// Same-case entries still dedup.
+	owners = repoOwners([]string{"group/proj1", "group/proj2"}, forgeGitLab)
+	assert.Equal(t, []string{"group"}, owners)
 }
 
 func TestImport_AudienceFromProviderBlockWhenReplyLeavesItDefault(t *testing.T) {
 	// An administrator who reuses an existing provider is told to put its
 	// audience in the provider block; import must honour that rather than
 	// recording the audience we proposed.
-	doc := buildRequestDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
 	doc.Reply.IdentityProviderID = "idp_live"
 	doc.Reply.Audience = ""
 	doc.Reply.ServiceAccountIDs["acme/widget"] = "sa_live"
@@ -1477,7 +1498,7 @@ func TestImport_RefusesADocumentThatDisagreesAboutTheAudience(t *testing.T) {
 	// who reuses a provider and edits only the provider block leaves the two
 	// disagreeing. Recording either one silently configures an audience no
 	// mapping asserts, and every exchange then fails far from the cause.
-	doc := buildRequestDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
+	doc := ghDoc([]string{"acme/widget"}, "fullsend://acme", "proj-1", "", "")
 	doc.Reply.IdentityProviderID = "idp_live"
 	doc.Reply.ServiceAccountIDs["acme/widget"] = "sa_live"
 	doc.Provider.Audience = "corp-existing-audience"
@@ -1505,7 +1526,7 @@ func TestImport_RefusesADocumentThatDisagreesAboutTheAudience(t *testing.T) {
 func TestRequestMarkdown_ReplyListsEachRepositoryOnce(t *testing.T) {
 	// --ref emits two mappings per repository; the reply table asks for one
 	// service account per repository, not one per mapping.
-	md, err := renderRequestMarkdown(buildRequestDoc([]string{"acme/widget"}, "aud", "p", "", "refs/heads/main"))
+	md, err := renderRequestMarkdown(ghDoc([]string{"acme/widget"}, "aud", "p", "", "refs/heads/main"), forgeGitHub)
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(md, "Service account ID for acme/widget"),
 		"one reply row per repository, however many mappings it takes")
@@ -1513,7 +1534,7 @@ func TestRequestMarkdown_ReplyListsEachRepositoryOnce(t *testing.T) {
 
 func TestBuildRequestDoc_ExplicitPullRefEmitsOneMapping(t *testing.T) {
 	// --ref refs/pull/* asks for the mapping the companion already provides.
-	doc := buildRequestDoc([]string{"acme/widget"}, "aud", "p", "", openAIPullRefPattern)
+	doc := ghDoc([]string{"acme/widget"}, "aud", "p", "", openAIPullRefPattern)
 	require.Len(t, doc.Mappings, 1)
 	assert.Equal(t, openAIPullRefPattern, doc.Mappings[0].Assertions.Ref)
 }
@@ -1581,4 +1602,433 @@ repos:
 	}, fullsendDir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "org-mode config")
+}
+
+// --- GitLab forge tests ---
+
+func TestOpenAIRequest_GitLabForge(t *testing.T) {
+	// --forge gitlab --issuer produces assertions on project_path,
+	// uses the custom issuer, and accepts group/subgroup/project format.
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/subgroup/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	assert.Equal(t, "https://gitlab.example.com", doc.Provider.Issuer)
+	assert.False(t, doc.Provider.UploadedJWKS)
+	require.Len(t, doc.Mappings, 1)
+	m := doc.Mappings[0]
+	assert.Equal(t, "group/subgroup/project", m.Repository)
+	assert.Equal(t, "https://gitlab.example.com", m.Assertions.Iss)
+	assert.Equal(t, "group/subgroup/project", m.Assertions.ProjectPath)
+	assert.Empty(t, m.Assertions.Repository,
+		"GitLab forge asserts project_path, not repository")
+}
+
+func TestOpenAIRequest_GitLabForge_RequiresIssuer(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--issuer is required")
+}
+
+func TestOpenAIRequest_GitLabForge_Markdown(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--format", "md"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "`project_path` = `group/project`",
+		"GitLab markdown uses project_path claim")
+	assert.Contains(t, output, "https://gitlab.example.com")
+	assert.Contains(t, output, "a GitLab OIDC token")
+}
+
+// --- GHES issuer override test ---
+
+func TestOpenAIRequest_GHESIssuerOverride(t *testing.T) {
+	// --issuer on default github forge overrides the issuer but keeps
+	// repository claims.
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://github.example.com/_services/token",
+		"--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	assert.Equal(t, "https://github.example.com/_services/token",
+		doc.Provider.Issuer, "GHES issuer overrides the default")
+	require.Len(t, doc.Mappings, 1)
+	m := doc.Mappings[0]
+	assert.Equal(t, "acme/widget", m.Assertions.Repository,
+		"github forge still uses repository claim")
+	assert.Empty(t, m.Assertions.ProjectPath)
+	assert.Equal(t, "https://github.example.com/_services/token",
+		m.Assertions.Iss)
+}
+
+// --- Uploaded JWKS test ---
+
+func TestOpenAIRequest_UploadedJWKS(t *testing.T) {
+	// --jwks-file sets uploaded_jwks: true and embeds the key set
+	// with kid values.
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	jwksData := `{
+		"keys": [
+			{
+				"kid": "key-1",
+				"kty": "RSA",
+				"alg": "RS256",
+				"n": "0vx...",
+				"e": "AQAB"
+			},
+			{
+				"kid": "key-2",
+				"kty": "RSA",
+				"n": "abc...",
+				"e": "AQAB"
+			}
+		]
+	}`
+	require.NoError(t, os.WriteFile(jwksPath, []byte(jwksData), 0o644))
+
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--jwks-file", jwksPath,
+		"--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	assert.True(t, doc.Provider.UploadedJWKS,
+		"uploaded_jwks must be true with --jwks-file")
+	require.Len(t, doc.Provider.JWKSKeys, 2)
+	assert.Equal(t, "key-1", doc.Provider.JWKSKeys[0].Kid)
+	assert.Equal(t, "RSA", doc.Provider.JWKSKeys[0].Kty)
+	assert.Equal(t, "RS256", doc.Provider.JWKSKeys[0].Alg)
+	assert.Equal(t, "key-2", doc.Provider.JWKSKeys[1].Kid)
+	assert.Empty(t, doc.Provider.JWKSKeys[1].Alg,
+		"alg is optional and omitted when empty")
+}
+
+func TestOpenAIRequest_UploadedJWKS_Markdown(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	jwksData := `{"keys": [{"kid": "key-1", "kty": "RSA", "alg": "RS256"}]}`
+	require.NoError(t, os.WriteFile(jwksPath, []byte(jwksData), 0o644))
+
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--jwks-file", jwksPath,
+		"--format", "md"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "**On**",
+		"markdown shows uploaded JWKS as On")
+	assert.Contains(t, output, "key-1")
+	assert.Contains(t, output, "rotation runbook")
+}
+
+func TestOpenAIRequest_JWKSFile_MissingKid(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	jwksData := `{"keys": [{"kty": "RSA"}]}`
+	require.NoError(t, os.WriteFile(jwksPath, []byte(jwksData), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--jwks-file", jwksPath,
+		"--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kid")
+}
+
+func TestOpenAIRequest_JWKSFile_EmptyKeys(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	require.NoError(t, os.WriteFile(jwksPath, []byte(`{"keys": []}`), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--jwks-file", jwksPath,
+		"--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no keys")
+}
+
+// --- Default unchanged (golden) ---
+
+func TestOpenAIRequest_DefaultUnchanged(t *testing.T) {
+	// No new flags produces byte-identical output to the pre-change
+	// implementation: github forge, github issuer, no uploaded JWKS,
+	// repository claim.
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request", "acme/widget",
+		"--format", "json"})
+	require.NoError(t, cmd.Execute())
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	assert.Equal(t, openAIRequestSchemaVersion, doc.Version)
+	assert.Equal(t, githubOIDCIssuer, doc.Provider.Issuer)
+	assert.Equal(t, "fullsend://acme", doc.Provider.Audience)
+	assert.False(t, doc.Provider.UploadedJWKS)
+	assert.Nil(t, doc.Provider.JWKSKeys,
+		"no jwks_keys field when not using uploaded JWKS")
+	require.Len(t, doc.Mappings, 1)
+	m := doc.Mappings[0]
+	assert.Equal(t, "acme/widget", m.Repository)
+	assert.Equal(t, githubOIDCIssuer, m.Assertions.Iss)
+	assert.Equal(t, "fullsend://acme", m.Assertions.Aud)
+	assert.Equal(t, "acme/widget", m.Assertions.Repository)
+	assert.Empty(t, m.Assertions.ProjectPath,
+		"github forge does not emit project_path")
+	assert.Empty(t, m.Assertions.Ref)
+
+	// Verify the JSON does not contain project_path or jwks_keys
+	// when they are empty (omitempty).
+	raw := buf.String()
+	assert.NotContains(t, raw, `"project_path"`,
+		"project_path must not appear in default output")
+	assert.NotContains(t, raw, `"jwks_keys"`,
+		"jwks_keys must not appear in default output")
+}
+
+// --- forge validation ---
+
+func TestOpenAIRequest_InvalidForge(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--forge", "bitbucket"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--forge must be one of")
+}
+
+// --- GitLab subgroup parsing ---
+
+func TestParseRepoListForForge_GitLabSubgroups(t *testing.T) {
+	repos, err := parseRepoListForForge("group/subgroup/project", forgeGitLab)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"group/subgroup/project"}, repos)
+}
+
+func TestParseRepoListForForge_GitLabRejectsEmpty(t *testing.T) {
+	_, err := parseRepoListForForge("group//project", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty path segment")
+}
+
+func TestParseRepoListForForge_GitLabRejectsOrgOnly(t *testing.T) {
+	_, err := parseRepoListForForge("mygroup", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo")
+}
+
+func TestParseRepoListForForge_GitLabRejectsInvalidCharacters(t *testing.T) {
+	_, err := parseRepoListForForge("group/pro ject", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+
+	_, err = parseRepoListForForge("group/pro<ject", forgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+
+	// Valid path should still work.
+	repos, err := parseRepoListForForge("group/my-project.v2", forgeGitLab)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"group/my-project.v2"}, repos)
+}
+
+// --- GitLab forge + --ref: no companion mapping ---
+
+func TestOpenAIRequest_GitLabForge_RefSkipsCompanion(t *testing.T) {
+	// GitLab MR jobs do not produce refs/pull/* claims, so the companion
+	// mapping that covers PR-triggered runs on GitHub must not be emitted
+	// for the GitLab forge — it would waste a mapping slot and never match.
+	doc := buildRequestDoc(
+		[]string{"group/project"},
+		"fullsend://group",
+		"", "",
+		"refs/heads/main",
+		forgeGitLab,
+		"https://gitlab.example.com",
+		false, nil,
+	)
+
+	require.Len(t, doc.Mappings, 1,
+		"GitLab forge: --ref emits one mapping, no refs/pull/* companion")
+	m := doc.Mappings[0]
+	assert.Equal(t, "refs/heads/main", m.Assertions.Ref)
+	assert.Equal(t, "group/project", m.Assertions.ProjectPath)
+	assert.Empty(t, m.Assertions.Repository,
+		"GitLab forge asserts project_path, not repository")
+}
+
+func TestOpenAIRequest_GitLabForge_RefViaCmd(t *testing.T) {
+	// End-to-end: --forge gitlab --ref produces a single mapping.
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"group/project",
+		"--forge", "gitlab",
+		"--issuer", "https://gitlab.example.com",
+		"--ref", "refs/heads/main",
+		"--format", "json"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	var doc openAIRequestDoc
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc))
+
+	require.Len(t, doc.Mappings, 1,
+		"GitLab + --ref: one mapping, no companion")
+	assert.Equal(t, "refs/heads/main", doc.Mappings[0].Assertions.Ref)
+	assert.Equal(t, "group/project", doc.Mappings[0].Assertions.ProjectPath)
+}
+
+// --- issuer URL validation ---
+
+func TestOpenAIRequest_IssuerRejectsNonHTTPS(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "http://insecure.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
+}
+
+func TestOpenAIRequest_IssuerRejectsNoHost(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-empty host")
+}
+
+func TestOpenAIRequest_IssuerRejectsQueryString(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com?foo=bar"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "query string")
+}
+
+func TestOpenAIRequest_IssuerRejectsFragment(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com#frag"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fragment")
+}
+
+func TestOpenAIRequest_IssuerRejectsTrailingSlash(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://gitlab.example.com/"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing slash")
+}
+
+func TestOpenAIRequest_IssuerRejectsUserinfo(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--issuer", "https://user:pass@gitlab.example.com"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+}
+
+// --- GitLab case-sensitive dedup ---
+
+func TestParseRepoListForForge_GitLabCaseSensitiveDedup(t *testing.T) {
+	repos, err := parseRepoListForForge("group/Project,group/project", forgeGitLab)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"group/Project", "group/project"}, repos,
+		"GitLab paths are case-sensitive; both spellings should be kept")
+}
+
+func TestParseRepoListForForge_GitHubCaseInsensitiveDedup(t *testing.T) {
+	repos, err := parseRepoListForForge("acme/Widget,acme/widget", forgeGitHub)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/Widget"}, repos,
+		"GitHub paths are case-insensitive; second spelling should be deduped")
+}
+
+// --- JWKS kty validation ---
+
+func TestOpenAIRequest_JWKSFile_MissingKty(t *testing.T) {
+	dir := t.TempDir()
+	jwksPath := filepath.Join(dir, "keys.json")
+	jwksData := `{"keys": [{"kid": "key-1"}]}`
+	require.NoError(t, os.WriteFile(jwksPath, []byte(jwksData), 0o644))
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "openai", "request",
+		"acme/widget",
+		"--jwks-file", jwksPath,
+		"--format", "json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kty")
 }

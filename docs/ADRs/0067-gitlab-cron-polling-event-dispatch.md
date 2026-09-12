@@ -241,15 +241,21 @@ Key properties:
   (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`,
   `FULLSEND_GCP_REGION`) are configured via OIDC/WIF when inference is
   enabled, so that agent jobs can authenticate to Vertex AI.
-- **OIDC issuer reachability requirement.** Inference WIF requires the
-  GitLab instance's OIDC discovery endpoints to be publicly reachable
-  by GCP's Security Token Service (STS). During the WIF token exchange,
-  GCP's STS resolves the GitLab instance hostname to validate the JWT
-  issuer. Internal or private GitLab instances (e.g., those accessible
-  only via VPN or corporate DNS) will fail with
+- **OIDC issuer reachability requirement.** *Discovery-based* WIF
+  provider configuration requires the GitLab instance's OIDC discovery
+  endpoints to be publicly reachable by GCP's Security Token Service
+  (STS). During the WIF token exchange, GCP's STS resolves the GitLab
+  instance hostname to validate the JWT issuer. Internal or private
+  GitLab instances (e.g., those accessible only via VPN or corporate
+  DNS) will fail with
   `Error code invalid_grant: Error connecting to the given credential's issuer`.
-  Inference is not available for GitLab instances that are not
-  resolvable in public DNS.
+  This limitation applies only when the WIF provider uses OIDC
+  discovery. Uploading the key set directly (`gcloud iam
+  workload-identity-pools providers update-oidc --jwk-json-path`)
+  bypasses discovery entirely, allowing instances behind private DNS
+  to use inference. See the [uploaded-JWKS procedure in the
+  getting-started guide](../guides/getting-started/getting-inference.md#self-managed-instances-behind-private-dns)
+  for the steps.
 
 ### Cron poller (`gitlab-poll` input driver)
 
