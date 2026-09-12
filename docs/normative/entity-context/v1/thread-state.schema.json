@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/thread-state.schema.json",
+  "title": "ThreadState",
+  "type": "object",
+  "required": ["threads"],
+  "properties": {
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "thread_key", "resolved", "outdated"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "thread_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "resolved": { "type": "boolean" },
+          "outdated": { "type": "boolean" },
+          "minimized": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

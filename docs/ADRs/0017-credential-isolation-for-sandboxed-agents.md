@@ -18,6 +18,9 @@ Date: 2026-04-01
 
 Accepted (credential delivery tiers extended by [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md))
 
+The default prefetch model is standardized for handled entity content by
+[ADR 0107](0107-deterministic-filtered-entity-context-staging.md).
+
 ## Context
 
 When sandboxed agents need to perform operations requiring credentials (e.g. reading or writing GitHub issues), the credential must be kept away from the agent process. A compromised agent with access to a credential can exfiltrate it — once the credential leaves the sandbox, the attacker can use it without any sandbox constraints.

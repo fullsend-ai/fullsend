@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/agent-runs.schema.json",
+  "title": "AgentRuns",
+  "type": "object",
+  "required": ["runs"],
+  "properties": {
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "agent", "status", "input_revision", "result_record_keys", "source_url", "completed_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "agent": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "input_revision": { "type": "string", "minLength": 1 },
+          "input_head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
+          "result_record_keys": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "uniqueItems": true
+          },
+          "resulting_commit_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
+          "source_url": { "type": "string", "format": "uri" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

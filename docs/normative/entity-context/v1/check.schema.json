@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/check.schema.json",
+  "title": "CheckMetadata",
+  "type": "object",
+  "required": ["id", "name", "status", "attempt"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "status": { "type": "string", "minLength": 1 },
+    "conclusion": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "source_url": { "type": "string", "format": "uri" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

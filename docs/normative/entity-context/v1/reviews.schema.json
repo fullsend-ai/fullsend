@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/reviews.schema.json",
+  "title": "ReviewRelationships",
+  "type": "object",
+  "required": ["reviews", "threads"],
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "record_key", "state", "reviewed_sha", "submitted_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "state": { "type": "string", "minLength": 1 },
+          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
+          "submitted_at": { "type": "string", "format": "date-time" },
+          "dismissed_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "thread_key", "created_at", "order_path", "record_keys", "replies"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "thread_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "order_path": { "type": "string", "pattern": "^threads/[0-9a-f]{64}[.]order$" },
+          "record_keys": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "uniqueItems": true
+          },
+          "replies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["record_key", "parent_record_key"],
+              "properties": {
+                "record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "parent_record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "review_id": { "type": "string", "minLength": 1 },
+          "review_record_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$" },
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "side": { "enum": ["left", "right"] },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "original_line": { "type": "integer", "minimum": 1 },
+          "original_start_line": { "type": "integer", "minimum": 1 },
+          "original_side": { "enum": ["left", "right"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
