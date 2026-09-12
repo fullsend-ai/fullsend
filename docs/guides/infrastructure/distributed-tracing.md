@@ -195,7 +195,9 @@ Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 Fullsend does not calculate inference cost from token counts or maintain a
 model-price table. Each runtime reports a USD cost value and fullsend
 records it as-is. This section defines the source, aggregation, rounding,
-and display behavior of that value across every output surface.
+and display behavior of that value across every output surface. To compute
+a dollar figure from persisted token counts using your own contracted
+rates, see [Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry).
 
 ### Runtime cost extraction
 
@@ -253,7 +255,9 @@ differently than the sum of parts.
 
 If a runtime does not report cost (returns zero or the field is absent),
 fullsend records zero. There is no fallback cost calculation from token
-counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+counts. A missing runtime cost propagates as `$0.00` on all surfaces. See
+[Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry)
+for how to apply your own contracted rates to the persisted token fields.
 
 ### Distinction from backend-derived cost estimates
 
@@ -269,6 +273,118 @@ Tracing backends may display their own cost estimates alongside
 The authoritative cost for a fullsend run is always `fullsend.cost_usd`
 (on spans) or `total_cost_usd` (in `metrics.json`). Backend-derived
 estimates are informational and may diverge.
+
+## Computing dollar cost from token telemetry
+
+Fullsend never converts token counts into dollars. When a runtime reports
+`total_cost_usd`, that value is recorded as-is — typically a list-price
+estimate, not your contracted rate. Codex never reports a cost, so the
+field stays `0` regardless of whether the run completed or was cancelled.
+Claude reports `0` on any cancelled run too, because cost is copied only
+from the terminal `ResultEvent`, which cancellation never emits. pi is
+different: its parser always synthesizes a `ResultEvent` at end of stream —
+including on cancellation — carrying `total_cost_usd` accumulated from
+every assistant message's cost seen before cancellation, so a cancelled pi
+run can still persist a non-zero `total_cost_usd` if at least one assistant
+message completed first. Whenever the field is `0`, you can compute a
+dollar figure from the persisted token counts using rates from your own
+contract.
+
+The token fields below are the counters
+[PR #6938](https://github.com/fullsend-ai/fullsend/pull/6938) persists on
+cancelled runs (and records on completed runs too), plus `reasoning`.
+`reasoning` is always present in `metrics.json` (`0` when there is none);
+whether it is non-zero on a *cancelled* run depends on the runtime — see
+below. They are disjoint: `input` is uncached input only, cache tokens are
+not included in `input` or `output`, and — for Codex and pi specifically —
+`reasoning` is not included in `output` either.
+
+### Persisted token fields
+
+| Kind | `metrics.json` `token_usage` | `agent` span attribute |
+|------|------------------------------|------------------------|
+| Uncached input | `input` | `gen_ai.usage.input_tokens` |
+| Output | `output` | `gen_ai.usage.output_tokens` |
+| Cache creation | `cache_creation` | `gen_ai.usage.cache_creation.input_tokens` |
+| Cache read | `cache_read` | `gen_ai.usage.cache_read.input_tokens` |
+| Reasoning | `reasoning` | `gen_ai.usage.reasoning_tokens` |
+
+`metrics.json` always includes `reasoning` (`0` when there is none). The
+`gen_ai.usage.reasoning_tokens` span attribute, unlike the other four
+`gen_ai.usage.*` attributes above, is omitted entirely when reasoning is
+zero rather than being attached as `0` — do not rely on its presence or
+absence when filtering OTel spans.
+
+For a cancelled GitHub Actions run, use `metrics.json` — it is the
+run-level aggregate and is uploaded even when the job is cancelled. Span
+attributes are per-iteration.
+
+`token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
+recorded on completed runs. On cancelled Claude runs it is typically zero,
+because reasoning is taken from the terminal result event that cancellation
+never emits. Cancelled Codex and pi runs behave differently: both parsers
+synthesize a result on every stream — including killed or interrupted
+ones — from the high-water/accumulated token counters observed before
+cancellation, so `reasoning` is non-zero there whenever at least one turn
+(Codex) or assistant message (pi) finished before the run was cancelled.
+Whether `reasoning` needs adding to the cost formula depends on the
+runtime, not on whether the run completed: for Codex and pi, reasoning
+tokens are counted separately from `output` (`output` excludes them), so
+omitting `reasoning` undercounts on any Codex or pi run — completed or
+cancelled — where it is non-zero. For Claude, `output` already includes
+reasoning tokens, so adding `reasoning` on top of `output` double-counts
+and overbills.
+
+### Worked example
+
+A cancelled run's `metrics.json` might look like (`reasoning` is `0` here
+because this example is a cancelled Claude run, where reasoning — like
+cost — is typically zero. A cancelled pi run can carry non-zero
+`reasoning` the same way it can carry non-zero cost, depending on whether
+an assistant message finished before cancellation; see the caveat above):
+
+```json
+{
+  "total_cost_usd": 0,
+  "token_usage": {
+    "input": 1000,
+    "output": 500,
+    "cache_creation": 150000,
+    "cache_read": 600000,
+    "reasoning": 0
+  }
+}
+```
+
+Using hypothetical contracted rates of $2.00 / $10.00 / $2.50 / $0.20 per
+million tokens (uncached input / output / cache-creation / cache-read):
+
+```
+cost = 1000/1e6 * 2.00
+     + 500/1e6 * 10.00
+     + 150000/1e6 * 2.50
+     + 600000/1e6 * 0.20
+     = 0.002 + 0.005 + 0.375 + 0.120
+     = $0.502
+```
+
+Pricing only uncached input and output would give $0.007 and miss the cache
+tokens that dominate this run. Substitute your contracted rates; do not
+copy these numbers into a billing pipeline.
+
+For any Codex or pi run with non-zero `reasoning` — completed, or
+cancelled after at least one turn (Codex) or assistant message (pi)
+finished — add a fifth term, `reasoning/1e6 * <reasoning rate>`, to the
+formula above: both runtimes' `reasoning` counters are disjoint from
+`output`, so the four-field formula alone will undercount whenever
+reasoning tokens are non-trivial. Don't add this term for Claude runs —
+Claude already folds reasoning tokens into `output`, so adding `reasoning`
+on top would double-count it. OpenCode is a separate case: its parser
+passes `reasoning` through unmodified from the wire with no subtraction
+from `output`, so whether OpenCode's `output` already includes reasoning
+(the Claude shape) or excludes it (the Codex/pi shape) is not established
+here — verify against actual `output`/`reasoning` values for your run
+before applying either rule to OpenCode.
 
 ## Output file format
 
