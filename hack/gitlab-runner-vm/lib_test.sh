@@ -135,6 +135,11 @@ assert_succeeds_with \
   "fedora-cloud-43-x86-64" \
   with_clean_env bash "${CREATE_GCP}" --help
 
+assert_succeeds_with \
+  "gcp: --help documents no Compute SA" \
+  "with --no-service-account --no-scopes" \
+  with_clean_env bash "${CREATE_GCP}" --help
+
 echo "== create-openshift-vm.sh validation =="
 assert_fails_with \
   "ocp: neither token" \
@@ -219,6 +224,16 @@ if grep -Fq 'executor/gateway.sh' "${CREATE_GCP}" \
   pass "both create scripts copy and checksum executor/gateway.sh"
 else
   fail "create scripts missing executor/gateway.sh in copy/checksum lists"
+fi
+
+# --no-service-account --no-scopes must be actual create-command flags
+# (indented, not only mentioned in comments) so new VMs get no default
+# Compute SA. See #7254.
+if grep -E '^[[:space:]]*--no-service-account' "${CREATE_GCP}" >/dev/null \
+  && grep -E '^[[:space:]]*--no-scopes' "${CREATE_GCP}" >/dev/null; then
+  pass "gcp: VM create passes --no-service-account and --no-scopes"
+else
+  fail "gcp: VM create missing --no-service-account/--no-scopes (metadata SA-token theft)"
 fi
 
 if [ "${FAILURES}" -ne 0 ]; then
