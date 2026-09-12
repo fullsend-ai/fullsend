@@ -170,6 +170,11 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
+- Safe GitHub side effects: Fullsend will migrate compatible GitHub writes from
+  privileged post-scripts to gh-aw safe outputs; advanced GitHub operations use
+  custom safe outputs rather than general privileged post-scripts. Post-scripts
+  retain deterministic Fullsend logic and non-GitHub behavior
+  ([ADR 0093](ADRs/0093-reuse-gh-aw-safe-outputs-for-github-side-effects.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors
   condition scripts, skills, env vars, and other fields on any event
