@@ -19,6 +19,11 @@ Date: 2026-06-29
 
 Accepted
 
+> **Note (2026-09-03):** Preset provenance (a bot-owned
+> `.fullsend/preset.lock.yaml`) and the refresh path (Renovate running
+> `fullsend update` as a post-upgrade task) are decided in
+> [ADR 0103](0103-shared-config-presets-converged-by-fullsend-update.md).
+
 ## Context
 
 `fullsend github setup` today spreads installation decisions across many CLI
