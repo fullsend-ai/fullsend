@@ -84,6 +84,8 @@ The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLA
 
 Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from site-deploy credentials and intended only for this test path.
 
+The same `TEST_CLOUDFLARE_API_TOKEN` is also used during behaviour test teardown to query the [Workers Observability Telemetry Query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) for mint log/event records (`cfWorkerLogCollector`). The token therefore needs **Workers Observability read** access in addition to Workers Edit permissions. If the token lacks Observability access, log collection is skipped gracefully — it does not fail the suite.
+
 **STAGE environment:** The STAGE driver (`NewRepoPoolCFMintStage`) deploys a separate durable Worker **`stage-mint`** at `stage-mint.fullsend.sh` instead of using preview aliases on `mint-test`. The `TEST_CLOUDFLARE_API_TOKEN` must have permissions to manage the `stage-mint` Worker in addition to `mint-test`. If the Cloudflare account uses a Specified-Workers-only token policy, operators need a distinct Workers Edit token (for example `fullsend-ai/fullsend-stage-mint`) that covers the `stage-mint` Worker.
 
 ### Behaviour tests and per-repo mint enrollment
@@ -340,11 +342,13 @@ continue using the mint's rollout warning path.
 enrolled on a test mint, update the PEM secret there as well.
 
 **Cloudflare test token rotation:** Create a new Account API token with Workers
-Edit (or the Edit Cloudflare Workers template), store it as
-`TEST_CLOUDFLARE_API_TOKEN`, and keep `TEST_CLOUDFLARE_ACCOUNT_ID` aligned with
-the account that hosts Workers `mint-test` and `stage-mint`. The token must
-cover both Workers. Do not put the new value into site-deploy
-`CLOUDFLARE_API_TOKEN`.
+Edit (or the Edit Cloudflare Workers template) **and Workers Observability read**
+permissions, store it as `TEST_CLOUDFLARE_API_TOKEN`, and keep
+`TEST_CLOUDFLARE_ACCOUNT_ID` aligned with the account that hosts Workers
+`mint-test` and `stage-mint`. The token must cover both Workers. Workers
+Observability read is required for mint log/event record collection during behaviour
+test teardown (`cfWorkerLogCollector`); without it, log collection is skipped
+gracefully. Do not put the new value into site-deploy `CLOUDFLARE_API_TOKEN`.
 
 **Installing on a new pool org:** Install each app via its public install
 URL:

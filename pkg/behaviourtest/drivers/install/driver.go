@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -19,6 +20,14 @@ type mintDriver interface {
 	// Teardown tears down suite-scoped mint resources. The driver owns
 	// its own state (e.g. preview alias) — no external state is needed.
 	Teardown(ctx context.Context) error
+
+	// CollectLogs collects mint logs from the time range [since, now]
+	// and writes them to artifactDir. For isolated/per-suite mints
+	// (e.g. CF preview), this queries the mint backend's log API.
+	// For shared/central mints (e.g. stage) this is a no-op — those
+	// environments use distributed tracing. Errors are informational;
+	// callers should log but not fail on them.
+	CollectLogs(ctx context.Context, since time.Time, artifactDir string) error
 }
 
 // Factory constructs a unified Driver for a given org. The factory

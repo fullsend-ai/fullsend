@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -28,6 +31,10 @@ type composedDriver struct {
 
 	names    chan string // buffered channel of available repo names
 	capacity int
+
+	// suiteStart records when the driver was constructed so
+	// CollectLogs can scope its query to the suite's activity window.
+	suiteStart time.Time
 
 	mu          sync.Mutex
 	outstanding map[string]struct{} // names currently leased
@@ -58,6 +65,7 @@ func newComposedDriver(
 		logf:        logf,
 		names:       names,
 		capacity:    capacity,
+		suiteStart:  time.Now(),
 		outstanding: make(map[string]struct{}),
 	}, nil
 }
@@ -131,6 +139,19 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 		leakErr = fmt.Errorf("Finalize: %d outstanding lease(s) not deallocated: %v", len(leaked), leaked)
 	}
 	d.mu.Unlock()
+
+	// Collect mint logs before teardown so the mint is still live.
+	// Best-effort: errors are logged but not joined into the return.
+	if d.mint != nil {
+		artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
+		if artifactDir != "" {
+			if err := d.mint.CollectLogs(ctx, d.suiteStart, artifactDir); err != nil {
+				d.logf("[driver] Finalize: mint log collection: %v", err)
+			}
+		} else {
+			d.logf("[driver] Finalize: BEHAVIOUR_ARTIFACT_DIR unset, skipping mint log collection")
+		}
+	}
 
 	var teardownErr error
 	if d.mint != nil {

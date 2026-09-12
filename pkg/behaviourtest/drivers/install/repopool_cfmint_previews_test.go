@@ -3,10 +3,13 @@ package install
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -309,6 +312,7 @@ type testCFMintMintDriver struct {
 	installMintURL string
 	installErr     error
 	teardownErr    error
+	collectLogsErr error
 }
 
 func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (string, error) {
@@ -317,6 +321,10 @@ func (m *testCFMintMintDriver) Install(_ context.Context, _ string) (string, err
 
 func (m *testCFMintMintDriver) Teardown(_ context.Context) error {
 	return m.teardownErr
+}
+
+func (m *testCFMintMintDriver) CollectLogs(_ context.Context, _ time.Time, _ string) error {
+	return m.collectLogsErr
 }
 
 func TestBuildCFMintDriver_HappyPath(t *testing.T) {
@@ -460,6 +468,66 @@ func TestEnvAppSet_Default(t *testing.T) {
 func TestEnvAppSet_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_APP_SET", "my-app-set")
 	assert.Equal(t, "my-app-set", envAppSet())
+}
+
+func TestCFMintCollectLogs_NoCFCredentials(t *testing.T) {
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+
+	d := newTestCFMintDriver(nil)
+	d.workerName = "bt-mint"
+
+	// Should return nil (graceful skip) when credentials are unavailable.
+	err := d.CollectLogs(context.Background(), time.Now().Add(-10*time.Minute), t.TempDir())
+	require.NoError(t, err)
+}
+
+func TestCFMintCollectLogs_WithCredentials(t *testing.T) {
+	// Exercise the collector directly with a test server to avoid
+	// hitting the real Cloudflare API (cfmintMintDriver.CollectLogs
+	// constructs the collector internally with http.DefaultClient).
+	//
+	// Response shape matches the documented Telemetry Query API: a
+	// Cloudflare envelope wrapping "result.events" for the "events"
+	// view.
+	responseJSON := `{
+		"success": true,
+		"errors": [],
+		"result": {
+			"events": {
+				"count": 1,
+				"events": [
+					{"dataset": "cloudflare-workers", "timestamp": 1700000000000, "source": {"message": "ok"}, "$metadata": {"id": "evt-1", "service": "bt-mint", "type": "cf-worker-event"}}
+				]
+			}
+		}
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/accounts/test-account/workers/observability/telemetry/query", r.URL.Path)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, responseJSON)
+	}))
+	defer server.Close()
+
+	artifactDir := t.TempDir()
+	collector := &cfWorkerLogCollector{
+		accountID:  "test-account",
+		apiToken:   "test-token",
+		baseURL:    server.URL,
+		httpClient: server.Client(),
+		logf:       t.Logf,
+	}
+
+	err := collector.Collect(context.Background(), "bt-mint", time.Now().Add(-10*time.Minute), artifactDir)
+	require.NoError(t, err)
+
+	// Verify the log file was written with the extracted event records.
+	logPath := filepath.Join(artifactDir, "debug-mint-logs", "mint-events.json")
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"dataset": "cloudflare-workers", "timestamp": 1700000000000, "source": {"message": "ok"}, "$metadata": {"id": "evt-1", "service": "bt-mint", "type": "cf-worker-event"}}]`, string(data))
 }
 
 // --- NewRepoPoolCFMintPreviews factory tests ---

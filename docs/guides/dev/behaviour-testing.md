@@ -227,7 +227,7 @@ The `Given the enrolled test repository` step allocates a repo via `Driver.Alloc
 3. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
 4. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
 
-The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
+The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` collects mint log/event records (when `BEHAVIOUR_ARTIFACT_DIR` is set), then tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error. Log collection is best-effort and does not fail the suite.
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
@@ -241,7 +241,7 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
-BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
+BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs, mint log/event records, and run artifacts; temp dir when unset
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
 E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
