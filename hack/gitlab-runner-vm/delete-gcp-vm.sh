@@ -23,15 +23,21 @@
 #
 # Mode-specific environment variables:
 #   RUNNER_TOKEN — when set, skip GitLab deregistration (fleet mode).
-#   GL_TOKEN     — GitLab PAT (scopes: api + manage_runner). Required only
-#                  when deregistering an individual (non-fleet) runner.
-#   GITLAB_URL   — GitLab instance URL. Required only when GL_TOKEN is used
-#                  to look up / deregister a runner.
+#   GL_TOKEN     — GitLab PAT (scopes: api + manage_runner). Required unless
+#                  RUNNER_TOKEN is set (fleet mode).
+#   GITLAB_URL   — GitLab instance URL. Required unless RUNNER_TOKEN is set.
 #
 # Optional environment variables:
 #   GCP_ZONE           — GCE zone (default: us-east1-b)
 #   RUNNER_TAG         — runner tag used for lookup (default: fullsend-gitlab-runner)
 #   DRAIN_TIMEOUT_SEC  — drain cap in seconds (default: 600)
+#   RUNNER_USER        — Unix account gitlab-runner/podman run as on the VM
+#                        (setup.sh's RUNNER_USER, i.e. whichever identity ran
+#                        setup.sh). Used to drain as the correct identity when
+#                        the caller's `gcloud compute ssh` connects as someone
+#                        else. Default: unset (drain runs as the connecting
+#                        identity; may under-report idle if that identity
+#                        differs from the one gitlab-runner runs as).
 #
 # Arguments:
 #   --no-drain  — skip the drain step and delete immediately
@@ -61,9 +67,10 @@ GITLAB_URL="${GITLAB_URL:-}"
 GCP_PROJECT="${GCP_PROJECT:-}"
 GCP_ZONE="${GCP_ZONE:-us-east1-b}"
 RUNNER_TAG="${RUNNER_TAG:-fullsend-gitlab-runner}"
+RUNNER_USER="${RUNNER_USER:-}"
 PREFIX="fullsend-gitlab-runner"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NO_DRAIN=false
+no_drain=false
 
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
@@ -75,7 +82,7 @@ usage() {
   echo "Run '$0' with --help for details."
 }
 
-if test "${1:-}" = "--help" || test "${1:-}" = "-h"; then
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   # Extract the comment block after the shebang until the first non-comment
   # line, stripping the leading "# " prefix.  This is immune to header edits
   # (no hardcoded line numbers).
@@ -83,12 +90,12 @@ if test "${1:-}" = "--help" || test "${1:-}" = "-h"; then
   exit 0
 fi
 
-if test -z "${GCP_PROJECT}"; then
+if [ -z "${GCP_PROJECT}" ]; then
   echo "ERROR: GCP_PROJECT is required (GCP project ID)" >&2
   exit 1
 fi
 
-if test "${1:-}" = "--list"; then
+if [ "${1:-}" = "--list" ]; then
   echo "Runner VMs in ${GCP_PROJECT} (${GCP_ZONE}):"
   gcloud compute instances list \
     --project="${GCP_PROJECT}" \
@@ -100,31 +107,37 @@ fi
 
 vm_names=()
 for arg in "$@"; do
-  if test "${arg}" = "--no-drain"; then
-    NO_DRAIN=true
+  if [ "${arg}" = "--no-drain" ]; then
+    no_drain=true
   else
     vm_names+=("${arg}")
   fi
 done
 
-if test "${#vm_names[@]}" -eq 0; then
+if [ "${#vm_names[@]}" -eq 0 ]; then
   echo "ERROR: specify at least one VM name to delete" >&2
   usage >&2
   exit 1
 fi
 
-# GL_TOKEN is required only when a deregistration will actually occur.
-# Fleet mode (RUNNER_TOKEN set) never deregisters. Without GL_TOKEN we
-# cannot look up a proj/vm match, so we skip deregistration the same way.
+if [ -n "${RUNNER_USER}" ] && ! [[ "${RUNNER_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+  echo "ERROR: RUNNER_USER must be a plain Unix user name (got: ${RUNNER_USER})" >&2
+  exit 1
+fi
+
+# GL_TOKEN is required unless RUNNER_TOKEN signals fleet mode. Fleet mode
+# never deregisters, so it never needs GitLab credentials. Otherwise we must
+# be able to look up a proj/vm match before deciding whether to deregister —
+# omitting GL_TOKEN is not itself authorization to skip deregistration.
 lookup_runners=false
 if uses_runner_token; then
   :
-elif test -n "${GL_TOKEN:-}"; then
+elif [ -n "${GL_TOKEN:-}" ]; then
   if ! [[ "${GL_TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "ERROR: GL_TOKEN contains invalid characters" >&2
     exit 1
   fi
-  if test -z "${GITLAB_URL}"; then
+  if [ -z "${GITLAB_URL}" ]; then
     echo "ERROR: GITLAB_URL is required (e.g. https://gitlab.example.com)" >&2
     exit 1
   fi
@@ -133,6 +146,10 @@ elif test -n "${GL_TOKEN:-}"; then
     exit 1
   fi
   lookup_runners=true
+else
+  echo "ERROR: GL_TOKEN is required unless RUNNER_TOKEN is set (fleet mode)" >&2
+  echo "  Hint: set RUNNER_TOKEN for a fleet VM, or GL_TOKEN + GITLAB_URL to look up and deregister an individually-registered runner" >&2
+  exit 1
 fi
 
 # SSH helper for drain_runner_vm. Reads vm_name from the caller's loop.
@@ -160,10 +177,10 @@ for vm_name in "${vm_names[@]}"; do
   # ------------------------------------------------------------------
   # 0. Drain in-flight jobs (SIGQUIT + runner-* containers)
   # ------------------------------------------------------------------
-  if test "${NO_DRAIN}" = "true"; then
+  if [ "${no_drain}" = "true" ]; then
     echo "  skipping drain (--no-drain)"
   else
-    drain_runner_vm gcp_drain_ssh
+    drain_runner_vm gcp_drain_ssh "${RUNNER_USER}"
   fi
 
   # ------------------------------------------------------------------
@@ -172,12 +189,12 @@ for vm_name in "${vm_names[@]}"; do
   runner_id=""
   lookup_failed=false
 
-  if test "${lookup_runners}" = "true"; then
+  if [ "${lookup_runners}" = "true" ]; then
     # Look up the runner by description via the GitLab API (paginated).
     # Uses /runners (user-scoped) instead of /runners/all (admin-only).
     encoded_tag=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${RUNNER_TAG}")
     page=1
-    while test -z "${runner_id}" && test "${page}" -le 50; do
+    while [ -z "${runner_id}" ] && [ "${page}" -le 50 ]; do
       if ! page_json=$(gl_curl \
         "${GITLAB_URL}/api/v4/runners?per_page=100&page=${page}&tag_list=${encoded_tag}" 2>/dev/null); then
         lookup_failed=true
@@ -193,13 +210,13 @@ for r in runners:
         print(r['id'])
         break
 " "${GCP_PROJECT}" "${vm_name}" 2>/dev/null) || true
-      test -n "${runner_id}" && break
+      [ -n "${runner_id}" ] && break
       count=$(echo "${page_json}" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null) || { lookup_failed=true; break; }
-      test "${count}" -lt 100 && break
+      [ "${count}" -lt 100 ] && break
       page=$((page + 1))
     done
 
-    if test "${lookup_failed}" = "true"; then
+    if [ "${lookup_failed}" = "true" ]; then
       echo "  ERROR: GitLab API request failed — refusing to delete VM without deregistering runner" >&2
       echo "  Hint: check GL_TOKEN scopes (needs api + manage_runner) and network connectivity" >&2
       echo "  To force: manually deregister at ${GITLAB_URL}, then: gcloud compute instances delete ${vm_name} --project=${GCP_PROJECT} --zone=${GCP_ZONE} --quiet" >&2
@@ -207,13 +224,13 @@ for r in runners:
       continue
     fi
   else
-    echo "  skipping GitLab deregistration (fleet mode or no GL_TOKEN)"
+    echo "  skipping GitLab deregistration (fleet mode)"
   fi
 
   # ------------------------------------------------------------------
   # 2. Deregister from GitLab (only when a proj/vm match was found)
   # ------------------------------------------------------------------
-  if test -n "${runner_id}"; then
+  if [ -n "${runner_id}" ]; then
     if gl_curl -X DELETE \
       "${GITLAB_URL}/api/v4/runners/${runner_id}" >/dev/null 2>&1; then
       echo "  OK: deregistered runner ID ${runner_id}"
@@ -223,7 +240,7 @@ for r in runners:
       had_errors=true
       continue
     fi
-  elif test "${lookup_runners}" = "true"; then
+  elif [ "${lookup_runners}" = "true" ]; then
     echo "  WARN: no matching runner found — skipping deregistration"
   fi
 
@@ -243,7 +260,7 @@ for r in runners:
   echo ""
 done
 
-if test "${had_errors}" = "true"; then
+if [ "${had_errors}" = "true" ]; then
   echo "Done (with errors — some VMs were skipped)."
   exit 1
 fi

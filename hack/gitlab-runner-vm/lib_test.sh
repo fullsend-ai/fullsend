@@ -11,6 +11,8 @@ source "${SCRIPT_DIR}/lib.sh"
 
 CREATE_GCP="${SCRIPT_DIR}/create-gcp-vm.sh"
 CREATE_OCP="${SCRIPT_DIR}/create-openshift-vm.sh"
+DELETE_GCP="${SCRIPT_DIR}/delete-gcp-vm.sh"
+DELETE_OCP="${SCRIPT_DIR}/delete-openshift-vm.sh"
 FAILURES=0
 
 pass() { echo "ok       $*"; }
@@ -176,7 +178,148 @@ assert_succeeds_with \
   "Join an existing runner pool" \
   with_clean_env bash "${CREATE_OCP}" --help
 
+echo "== delete script validation =="
+# Neither RUNNER_TOKEN nor GL_TOKEN must fail closed — omitting GL_TOKEN is
+# not authorization to skip deregistration (Issue #7257 fail-open finding).
+assert_fails_with \
+  "delete-gcp-vm.sh: neither RUNNER_TOKEN nor GL_TOKEN fails closed" \
+  "GL_TOKEN is required unless RUNNER_TOKEN is set" \
+  with_clean_env GCP_PROJECT=my-gcp-project bash "${DELETE_GCP}" fullsend-gitlab-runner-01
+
+assert_fails_with \
+  "delete-openshift-vm.sh: neither RUNNER_TOKEN nor GL_TOKEN fails closed" \
+  "GL_TOKEN is required unless RUNNER_TOKEN is set" \
+  with_clean_env NAMESPACE=my-namespace bash "${DELETE_OCP}" fullsend-gitlab-runner-01
+
+echo "== drain_runner_vm =="
+
+# drain_runner_vm bounds every remote_exec call with `timeout`, which execs
+# a real program and cannot invoke a shell function directly — it must run
+# each mock (and, in production, gcp_drain_ssh/ocp_drain_ssh) via
+# `export -f` + `bash -c`. Each such call is therefore a fresh subprocess:
+# mocks below that need to remember state across calls (poll-fail,
+# cap-overrun) use a counter file rather than an in-memory variable.
+
+assert_fails_with \
+  "drain_runner_vm: missing remote_exec fn" \
+  "requires a remote exec function" \
+  drain_runner_vm ""
+
+# drain_idle_mock: succeeds every call and never reports a runner-*
+# container, so drain_runner_vm should detect idle on the first poll.
+drain_idle_mock() { return 0; }
+
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=1 assert_succeeds_with \
+  "drain_runner_vm: idle on first poll reports OK" \
+  "OK: runner idle" \
+  drain_runner_vm drain_idle_mock
+
+# drain_signal_fail_mock: the drain-signal call itself fails (covers both a
+# transport failure and, since the remote script now propagates in-guest
+# systemctl/config-edit failures via its own exit status, a fully-failed
+# in-guest drain). drain_runner_vm always returns 0 (drain-then-proceed
+# policy), so assert on the WARN text rather than the exit code.
+drain_signal_fail_mock() { return 1; }
+
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=1 assert_succeeds_with \
+  "drain_runner_vm: signal failure warns and proceeds" \
+  "WARN: drain signal failed" \
+  drain_runner_vm drain_signal_fail_mock
+
+# drain_poll_fail_mock: signal succeeds, the podman-ps poll transport fails.
+# Counter lives in a file (DRAIN_POLL_FAIL_COUNTER) since drain_runner_vm
+# runs every remote_exec call (including this mock) via `export -f` +
+# `bash -c` under `timeout`, so each call is a separate subprocess and an
+# in-memory counter would not persist across calls.
+DRAIN_POLL_FAIL_COUNTER=$(mktemp)
+echo 0 > "${DRAIN_POLL_FAIL_COUNTER}"
+drain_poll_fail_mock() {
+  local n
+  n=$(( $(cat "${DRAIN_POLL_FAIL_COUNTER}") + 1 ))
+  echo "${n}" > "${DRAIN_POLL_FAIL_COUNTER}"
+  if [ "${n}" -eq 1 ]; then
+    return 0
+  fi
+  return 1
+}
+export DRAIN_POLL_FAIL_COUNTER
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=1 assert_succeeds_with \
+  "drain_runner_vm: poll failure warns and proceeds" \
+  "WARN: drain poll failed" \
+  drain_runner_vm drain_poll_fail_mock
+rm -f "${DRAIN_POLL_FAIL_COUNTER}"
+unset DRAIN_POLL_FAIL_COUNTER
+
+# drain_cap_overrun_mock: signal succeeds, podman always reports a
+# runner-* container still running — the cap must still be honored.
+DRAIN_CAP_OVERRUN_COUNTER=$(mktemp)
+echo 0 > "${DRAIN_CAP_OVERRUN_COUNTER}"
+drain_cap_overrun_mock() {
+  local n
+  n=$(( $(cat "${DRAIN_CAP_OVERRUN_COUNTER}") + 1 ))
+  echo "${n}" > "${DRAIN_CAP_OVERRUN_COUNTER}"
+  if [ "${n}" -eq 1 ]; then
+    return 0
+  fi
+  echo "runner-abc123"
+  return 0
+}
+export DRAIN_CAP_OVERRUN_COUNTER
+DRAIN_TIMEOUT_SEC=1 DRAIN_POLL_SEC=1 assert_succeeds_with \
+  "drain_runner_vm: cap overrun warns and proceeds" \
+  "WARN: drain cap 1s reached" \
+  drain_runner_vm drain_cap_overrun_mock
+rm -f "${DRAIN_CAP_OVERRUN_COUNTER}"
+unset DRAIN_CAP_OVERRUN_COUNTER
+
+# Non-numeric DRAIN_TIMEOUT_SEC / DRAIN_POLL_SEC must fall back to the
+# documented defaults rather than being passed through to `test`/`timeout`.
+DRAIN_TIMEOUT_SEC=notanumber DRAIN_POLL_SEC=1 assert_succeeds_with \
+  "drain_runner_vm: non-numeric DRAIN_TIMEOUT_SEC falls back to 600" \
+  "cap 600s" \
+  drain_runner_vm drain_idle_mock
+
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=-1 assert_succeeds_with \
+  "drain_runner_vm: negative DRAIN_POLL_SEC falls back to 5 (still idles fine)" \
+  "OK: runner idle" \
+  drain_runner_vm drain_idle_mock
+
+# runner_user, when passed, must thread sudo -u into both the podman query
+# and the remote config edit — not just rely on whichever identity the
+# caller's SSH plumbing happens to connect as.
+DRAIN_CAPTURE_FILE=$(mktemp)
+drain_capture_mock() {
+  printf '%s\n' "$1" >> "${DRAIN_CAPTURE_FILE}"
+  return 0
+}
+export DRAIN_CAPTURE_FILE
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=1 drain_runner_vm drain_capture_mock "fedora" >/dev/null 2>&1
+if grep -Fq "sudo -u fedora podman ps" "${DRAIN_CAPTURE_FILE}" \
+  && grep -Fq "sudo -u fedora sed -i" "${DRAIN_CAPTURE_FILE}" \
+  && grep -Fq "sudo -u fedora tee -a" "${DRAIN_CAPTURE_FILE}"; then
+  pass "drain_runner_vm: runner_user threads sudo -u into podman query and config edit"
+else
+  fail "drain_runner_vm: runner_user not threaded into remote commands"
+  cat "${DRAIN_CAPTURE_FILE}" >&2
+fi
+: > "${DRAIN_CAPTURE_FILE}"
+
+DRAIN_TIMEOUT_SEC=5 DRAIN_POLL_SEC=1 drain_runner_vm drain_capture_mock >/dev/null 2>&1
+if grep -Fq "podman ps" "${DRAIN_CAPTURE_FILE}" && ! grep -Fq "sudo -u" "${DRAIN_CAPTURE_FILE}"; then
+  pass "drain_runner_vm: without runner_user, remote commands have no sudo -u"
+else
+  fail "drain_runner_vm: expected no 'sudo -u' when runner_user is unset"
+  cat "${DRAIN_CAPTURE_FILE}" >&2
+fi
+rm -f "${DRAIN_CAPTURE_FILE}"
+unset DRAIN_CAPTURE_FILE
+
 echo "== static regressions =="
+if grep -E 'timeout[[:space:]]+"\$\{cmd_timeout\}"[[:space:]]+"\$\{remote_exec\}"' "${SCRIPT_DIR}/lib.sh" >/dev/null; then
+  fail "lib.sh: timeout still wraps remote_exec directly (timeout cannot call shell functions)"
+else
+  pass "lib.sh: timeout wraps remote_exec via bash -c (shell functions inherit via export -f)"
+fi
 if grep -E 'timeout[[:space:]]+[0-9]+[[:space:]]+gce_ssh' "${CREATE_GCP}"; then
   fail "gcp: timeout still wraps gce_ssh (timeout cannot call shell functions)"
 else
