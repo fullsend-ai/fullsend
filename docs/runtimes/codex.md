@@ -164,11 +164,13 @@ What a local codex run needs, beyond the guide:
   `Command blocked by PreToolUse hook: <reason>`, so the agent understands it was refused rather
   than that the command broke — in a smoke run it summarised the block as "blocked by a safety hook"
   and moved on.
-- **The security hooks block a tool result or warn about it; they never edit it.** Codex does not
-  let a hook replace the output of a built-in tool, so where another runtime would hand the model a
-  redacted result, codex either withholds it entirely or passes it through with a note saying what
-  it contained. Your run artifacts are redacted either way — `output.jsonl`, the transcripts and
-  `codex-debug.log` are all scrubbed before they are written.
+- **The security hooks can withhold a tool result, but cannot edit it.** Codex does not let a hook
+  replace the output of a built-in tool, so a result containing a secret, unsafe hidden Unicode or
+  a canary is withheld instead of reaching the model unredacted. Context-only suppression and
+  ANSI cleanup are skipped because those results are safe to pass unchanged; suppressed output runs
+  through the full security chain again with suppression disabled first. OSC and unclassified rewrites are withheld. Your run
+  artifacts are redacted either way — `output.jsonl`, the transcripts and `codex-debug.log` are all
+  scrubbed before they are written.
 - **Skills** work as they do on Claude Code: the harness's skills, plus your repository's own
   `.agents/skills`, both scanned for injected content before the agent sees them. Codex's bundled
   skills (`skill-installer`, `imagegen` and friends) are switched off, so an agent sees only yours.

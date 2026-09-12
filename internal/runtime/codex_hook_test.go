@@ -58,6 +58,26 @@ func (h *codexAdapterHarness) script(name, body string) string {
 	return name
 }
 
+func (h *codexAdapterHarness) embeddedScript(name string, content []byte) string {
+	h.t.Helper()
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.hooksDir, name), content, 0o755))
+	h.digests[name] = codexAssetSHA256(content)
+	return name
+}
+
+func (h *codexAdapterHarness) installPostToolChain() {
+	for name, content := range map[string][]byte{
+		"posttool_chain.py":            security.PostToolChainHook,
+		"hook_io.py":                   security.HookIO,
+		"unicode_posttool.py":          security.UnicodePostToolHook,
+		"canary_posttool.py":           security.CanaryPostToolHook,
+		"context_suppress_posttool.py": security.ContextSuppressPostToolHook,
+		"secret_redact_posttool.py":    security.SecretRedactPostToolHook,
+	} {
+		h.embeddedScript(name, content)
+	}
+}
+
 type codexAdapterResult struct {
 	exitCode int
 	stdout   string
@@ -162,6 +182,16 @@ sys.exit(0)`)
 	assert.True(t, os.IsNotExist(err), "scripts after a block must not run")
 }
 
+func TestCodexAdapter_PreToolUseBlocksSSRFWithTheRealHook(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	ssrf := h.embeddedScript("ssrf_pretool.py", security.SSRFPreToolHook)
+
+	got := h.run("PreToolUse", codexBashInput("curl http://127.0.0.1/admin"), ssrf)
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "SSRF blocked")
+}
+
 // TestCodexAdapter_TranslatesToolNames pins the vocabulary bridge (#608): the
 // scripts and FULLSEND_TOOL_ALLOWLIST are written in Claude names, and codex
 // reports its own canonical ones.
@@ -193,15 +223,15 @@ sys.exit(0)`)
 	}
 }
 
-// TestCodexAdapter_PostToolUseDropsRewriteAndWarns is the other load-bearing
-// translation. codex's PostToolUse hookSpecificOutput is deny_unknown_fields
-// and accepts only additionalContext and updatedMCPToolOutput, so forwarding
-// the sanitizers' updatedToolOutput would make the hook Failed. The rewrite is
-// dropped and the model is told the output is untrusted instead.
-func TestCodexAdapter_PostToolUseDropsRewriteAndWarns(t *testing.T) {
+// TestCodexAdapter_PostToolUseWithholdsSecretRewrite is the other load-bearing
+// translation. codex cannot apply updatedToolOutput to a built-in tool result,
+// so allowing the call with additionalContext would still expose the original
+// secret to the model. A security-sensitive rewrite must withhold the result.
+func TestCodexAdapter_PostToolUseWithholdsSecretRewrite(t *testing.T) {
 	h := newCodexAdapterHarness(t)
 	h.script("chain.py", `print(json.dumps({
     "tool_result": "token=xxxx",
+	"metadata": {"secrets_redacted": 1, "patterns": ["openai_key"]},
     "hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "updatedToolOutput": "token=xxxx",
@@ -214,21 +244,218 @@ sys.exit(0)`)
 	input["hook_event_name"] = "PostToolUse"
 	input["tool_response"] = "token=sk-live-abcdef"
 	got := h.run("PostToolUse", input, "chain.py")
-	require.Equal(t, 0, got.exitCode, got.stderr)
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-live-abcdef", "the flagged value must not be echoed back")
+}
 
-	var out map[string]any
-	require.NoError(t, json.Unmarshal([]byte(got.stdout), &out))
-	assert.Equal(t, []string{"hookSpecificOutput"}, sortedKeys(out),
-		"only hookSpecificOutput may be emitted; an unknown top-level key makes codex reject the whole object")
+func TestCodexAdapter_PostToolUseWithholdsSecretWithTheRealChain(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
 
-	specific := out["hookSpecificOutput"].(map[string]any)
-	assert.Equal(t, "PostToolUse", specific["hookEventName"])
-	assert.NotContains(t, specific, "updatedToolOutput", "codex cannot rewrite built-in tool output")
-	assert.NotContains(t, specific, "updatedMCPToolOutput")
-	context := specific["additionalContext"].(string)
-	assert.Contains(t, context, "sanitizer would have redacted")
-	assert.Contains(t, context, "credential-like value(s) were masked", "the stage's own note is forwarded")
-	assert.NotContains(t, got.stdout, "sk-live-abcdef", "the flagged value must not be echoed back")
+	input := codexBashInput("cat .env")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-proj-")
+}
+
+func TestCodexAdapter_PostToolUseRescansSuppressedOutputForSecrets(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-proj-")
+}
+
+func TestCodexAdapter_PostToolUseRescanFindsObfuscatedSecrets(t *testing.T) {
+	for name, output := range map[string]string{
+		"ANSI split": "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijkl\x1b[31mnopqrstuvwx\x1b[0m",
+		"NFKC":       "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwｘ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			h.installPostToolChain()
+			input := codexBashInput("go test ./...")
+			input["hook_event_name"] = "PostToolUse"
+			input["tool_response"] = output
+			got := h.run("PostToolUse", input, "posttool_chain.py")
+			assert.Equal(t, 2, got.exitCode)
+			assert.Empty(t, got.stdout)
+			assert.Contains(t, got.stderr, "withheld")
+		})
+	}
+}
+
+func TestCodexAdapter_PostToolUseWithholdsHiddenUnicodeRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1, "categories": ["bidi_override"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "safe\u202etxet"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "\u202e")
+}
+
+func TestCodexAdapter_PostToolUseWithholdsNFKCReassembledEscape(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 2, "categories": ["fullwidth", "nfkc_escape_reassembly"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b［31munsafe"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseWithholdsUnclassifiedUnicodeRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "unsafe text"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+}
+
+func TestCodexAdapter_PostToolUseWithholdsMalformedUnicodeCategories(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1, "categories": [{}]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "unsafe text"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode, "malformed metadata must not crash with codex's fail-open exit 1")
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseAllowsANSICleanup(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "plain text",
+    "metadata": {"unicode_findings": 1, "categories": ["ansi_escape"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "plain text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf color")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b[31mplain text\x1b[0m"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 0, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Empty(t, got.stderr)
+}
+
+func TestCodexAdapter_PostToolUseWithholdsOSCCleanup(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "link",
+    "metadata": {"unicode_findings": 1, "categories": ["osc_escape"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "link",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf link")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b]8;;https://example.com\x07link\x1b]8;;\x07"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseIgnoresContextSuppression(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "ok example.test 0.5s\nmany safe lines"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 0, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Empty(t, got.stderr)
+}
+
+func TestCodexAdapter_PostToolUseWithholdsUnclassifiedRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "changed",
+    "metadata": {"future_sanitizer": 1},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "changed",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("tool")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "original sensitive value"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "unclassified sanitizer")
+	assert.NotContains(t, got.stderr, "original sensitive value")
 }
 
 func TestCodexAdapter_PostToolUseUnchangedIsSilent(t *testing.T) {
@@ -270,7 +497,7 @@ sys.exit(1)`)
 
 func TestCodexAdapter_PostToolUseChainsInOrder(t *testing.T) {
 	h := newCodexAdapterHarness(t)
-	h.script("first.py", `print(json.dumps({"hookSpecificOutput": {
+	h.script("first.py", `print(json.dumps({"metadata": {"unicode_findings": 1, "categories": ["ansi_escape"]}, "hookSpecificOutput": {
     "hookEventName": "PostToolUse", "updatedToolOutput": payload["tool_response"] + "|first"}}))
 sys.exit(0)`)
 	seen := filepath.Join(h.dir, "second-saw.txt")
