@@ -340,6 +340,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   until its versioned normalized-entity contract exists. Every run uses the
   harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+- Cancelling the run in flight on a work-item update is the repository's choice, not the
+  workflow's: every stage job gates `cancel-in-progress` on `FULLSEND_PRESERVE_RUNS`, unset
+  keeps cancellation, and a preserved run's successor works from current state. The runner
+  exports `FULLSEND_RUN_HEAD_SHA` and `FULLSEND_RUN_STARTED_AT` so an agent can see what
+  moved beneath it
+  ([ADR 0113](ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 
 **Open questions:**
 
