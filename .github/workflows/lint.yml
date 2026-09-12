@@ -63,8 +63,8 @@ jobs:
           files: coverage.out
 
   test-sandbox-darwin:
-    # Run Go tests on macOS to exercise darwin-specific behavior (e.g. bsdtar
-    # AppleDouble suppression via COPYFILE_DISABLE=1 in UploadDir).
+    # Run sandbox and harness tests on macOS to exercise Darwin-specific
+    # behavior, including path canonicalization and archive handling.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,7 +73,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: go test -race ./internal/sandbox/...
+      - run: go test -race ./internal/sandbox/... ./internal/harness/... ./internal/harnessdispatch/...
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""

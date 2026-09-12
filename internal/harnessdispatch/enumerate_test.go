@@ -208,6 +208,8 @@ func urlHarnessServer(t *testing.T, harnessName, harnessYAML string, badHash boo
 
 func TestListTriggeredHarnesses_BaseComposition(t *testing.T) {
 	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
 	harnessDir := filepath.Join(dir, "harness")
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 
