@@ -203,9 +203,9 @@ The experiment should actively pressure-test three assumptions:
 - GA vs. Thompson Sampling — or both at different layers? TS for team/config selection, GA for workflow evolution is the leading hypothesis, but it needs validation.
 - How fine-grained should context tuples be? A hierarchical split-on-variance approach avoids committing to a fixed schema, but adds implementation complexity.
 - How do we handle model version changes — reset fitness data, apply a discount, or version-tag and keep history?
-- Should the fitness function include a cost term from the start, or should cost optimization be a separate experiment after quality optimization is validated?
+- Should the fitness function include a cost term from the start, or should cost optimization be a separate experiment after quality optimization is validated? (For runtime and model selection, [ADR 0112](../ADRs/0112-task-grain-routing-policy-on-the-host.md) judges cost per work item including re-review and fix rounds, and requires shadow-mode outcome evidence before any routed default changes; the composite fitness question remains open.)
 - What is the right exploration budget, and how should it decay? Too high wastes runs on poor configurations; too low starves new options.
 - Can fitness data transfer across repos with similar characteristics, and how do we measure "similar"?
-- How should the adaptive layer interact with the deterministic safety model — is selection-only sufficient, or are there edge cases where the choice of configuration implicitly affects safety coverage?
+- How should the adaptive layer interact with the deterministic safety model — is selection-only sufficient, or are there edge cases where the choice of configuration implicitly affects safety coverage? (Partially decided in [ADR 0112](../ADRs/0112-task-grain-routing-policy-on-the-host.md) for the runtime/model surface: selection only over four config fields, with a never-downgrade set, persona floors and a closed model set as constraints, and no author-controlled input as a routing key.)
 - What prevents a well-scoring configuration from being well-scoring only because it is assigned to a biased subset of tasks (selection bias in the evaluation)?
 - Should there be a human-in-the-loop approval step before any configuration is retired, or is soft retirement with recovery probing sufficient?
