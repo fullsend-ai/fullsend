@@ -195,6 +195,9 @@ func useFakeOpenshell(t *testing.T) {
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
 	neutralizeAgentsRepoFallback(t)
+	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
+	// and the providers-stub records imported ids there; isolate both.
+	t.Setenv("TMPDIR", t.TempDir())
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "providers-stub"))
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
@@ -697,7 +700,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 func TestRunAgent_ProviderProfileOrchestration(t *testing.T) {
 	// Exercises the provider/profile orchestration block in runAgent
 	// (steps 2a-2c): CheckGateway, checkProviderProfileIntegrity,
-	// EnableProvidersV2, ImportProfile, EnsureProvider, CreateWithRetry.
+	// EnableProvidersV2, ImportProfileVerified, EnsureProvider, CreateWithRetry.
 	// Uses the providers-stub that passes all openshell commands.
 	useFakeOpenshellProviders(t)
 

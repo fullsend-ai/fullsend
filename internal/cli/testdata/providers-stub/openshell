@@ -13,8 +13,34 @@ case "$1" in
     exit 0
     ;;
   provider)
+    # Track imported profile ids so list-profiles can satisfy
+    # ImportProfileVerified (Forget → import → ProfileExists).
+    # TMPDIR is per-test when callers isolate it.
+    STATE="${TMPDIR:-/tmp}/fullsend-providers-stub.profiles"
     case "$2" in
+      list-profiles)
+        printf '['
+        first=1
+        if [ -f "$STATE" ]; then
+          while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+            printf '{"id":"%s"}' "$id"
+          done < "$STATE"
+        fi
+        printf ']\n'
+        exit 0
+        ;;
       profile)
+        case "$3" in
+          delete)
+            if [ -n "$4" ] && [ -f "$STATE" ]; then
+              grep -v "^$4$" "$STATE" > "$STATE.tmp" || true
+              mv "$STATE.tmp" "$STATE"
+            fi
+            exit 0
+            ;;
+        esac
         # Validate --file argument has .yaml/.yml extension when present.
         prev=""
         for arg in "$@"; do
@@ -24,6 +50,12 @@ case "$1" in
                 *.yaml|*.yml) ;;
                 *) echo "openshell stub: --file must end in .yaml or .yml, got: $arg" >&2; exit 1 ;;
               esac
+              if [ -f "$arg" ]; then
+                id=$(awk '/^id:/{print $2; exit}' "$arg")
+                if [ -n "$id" ]; then
+                  printf '%s\n' "$id" >> "$STATE"
+                fi
+              fi
               ;;
           esac
           prev="$arg"
