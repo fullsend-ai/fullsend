@@ -146,16 +146,19 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|---------|------------|
 | `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
-| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
+| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` | `agent` (serving endpoint of the model used on this span; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
 
 Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate Fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
+The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
+| `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |

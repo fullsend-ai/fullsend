@@ -415,6 +415,29 @@ func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {
 	}
 }
 
+// TestAgentSpanEndAttrs_GenAISystemForWiring exercises the producer-to-
+// consumer path run.go actually uses: GenAISystemFor resolves the provider,
+// and that value (not rt.System()) is what agentSpanEndAttrs stamps onto
+// gen_ai.system / gen_ai.provider.name. TestAgentSpanEndAttrs_IdentityTuple
+// only checks agentSpanEndAttrs in isolation with hand-picked provider
+// strings, so it would not catch a regression where run.go goes back to
+// passing rt.System() ("pi") instead of calling GenAISystemFor (#7245).
+func TestAgentSpanEndAttrs_GenAISystemForWiring(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "")
+
+	rt := agentruntime.PiRuntime{}
+	genAISystem := agentruntime.GenAISystemFor(rt, "claude-sonnet-5", "", nil)
+	require.Equal(t, "anthropic-vertex", genAISystem,
+		"GenAISystemFor must resolve the serving endpoint via ProviderFor, not fall back to System()")
+
+	m := agentruntime.RunMetrics{Model: "claude-sonnet-5"}
+	a := agentSpanEndAttrs(1, 0, genAISystem, rt.Name(), &m)
+	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic-vertex"))
+	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic-vertex"))
+	assert.NotContains(t, a, attribute.String("gen_ai.system", "pi"),
+		"a regression to rt.System() would stamp the runtime name instead of the resolved provider")
+}
+
 func TestAggregateRunMetrics(t *testing.T) {
 	var agg aggregateMetrics
 
