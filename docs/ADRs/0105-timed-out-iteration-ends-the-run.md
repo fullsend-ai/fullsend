@@ -87,3 +87,9 @@ retries output defects only.
   minutes needs the steer channel of
   [#6959](https://github.com/fullsend-ai/fullsend/pull/6959), not on `main`;
   resuming a killed iteration from its partial state is out of scope.
+
+Note (2026-09-06): [NVIDIA/OpenShell#3159](https://github.com/NVIDIA/OpenShell/issues/3159)
+was closed as expected usage rather than a refused feature: an exec's processes
+are not expected to exit with the caller, and a runner that reuses one sandbox
+across execs owns their cleanup. The sweep above is that cleanup, and it is
+best effort (see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline)).
