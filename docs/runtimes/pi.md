@@ -616,6 +616,11 @@ pi; the plan block's `Runtime:` line and stderr's `runtime: selected ...` show w
 runner-owned `/sandbox/pi-config/fullsend-edit-repair.js` is not the copy bootstrap wrote. Treat it
 as tampering, like the hook adapter's guard: something inside the sandbox rewrote runner config.
 
+**`Tool "edit" conflicts with .../fullsend-edit-repair.js` and pi exits 1.** One of the harness's
+own extensions registers an `edit` tool, and pi refuses two extensions claiming one tool name
+whatever order they load in. Rename that tool, or drop `Edit` from the agent's `tools:` so the
+repair does not load ([Plugins](#plugins-pi-extensions)).
+
 **The agent fails with nothing in the terminal.** Sandbox-side pi failures land in `pi-debug.log`
 inside the run directory, next to the transcripts; kept sandboxes must be removed manually
 (`openshell sandbox delete <name>`).

@@ -8,8 +8,9 @@
 // repairs only a well-formed stringified array (a bare JSON.parse with an
 // empty catch), so both shapes fail validation with `edits.0: must be object`
 // and the model has to redo the call: 46 times in one fullsend code-agent run
-// (fullsend#7231). The upstream fixes, earendil-works/pi#8521 and #8962, were
-// auto-closed without review.
+// (fullsend#7231). Both shapes are reported upstream — earendil-works/pi#8521
+// and #8962 — and closed as not planned; the fix offered for the first,
+// pi#8513, was closed unreviewed.
 //
 // This re-registers pi's own edit tool (createEditToolDefinition) with only
 // prepareArguments wrapped: the repair runs first, then pi's preparation.
