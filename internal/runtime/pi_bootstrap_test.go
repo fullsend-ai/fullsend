@@ -795,6 +795,17 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Nil(t, m.Hooks)
 	})
 
+	t.Run("enabled by a tools list naming Edit and Task, hooks off", func(t *testing.T) {
+		m, store, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Edit, Task\n---\nbody", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, []string{"read", "edit"}, m.Agent.Tools, "children keep edit, minus the sub-agent tools")
+		assert.Equal(t, cfg+"/fullsend-edit-repair.js", m.Agent.EditRepairExtension, "a declared list naming Edit carries the extension")
+		assert.NotContains(t, m.Agent.Extensions, cfg+"/fullsend-edit-repair.js", "never in the shared list: a child without edit must not load it")
+		require.Len(t, m.Agent.ExtensionDigests, 1, "hooks are off, so the repair is the only digest")
+		require.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-edit-repair.js"])
+		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, cfg+"/fullsend-edit-repair.js"))
+	})
+
 	t.Run("disabled by a tools list without Agent or Task", func(t *testing.T) {
 		// Same shape as testAgentDef, named to match the requested agent so
 		// Bootstrap's name-mismatch check does not fire first.

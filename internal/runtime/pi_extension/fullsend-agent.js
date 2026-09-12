@@ -317,7 +317,9 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
   }
   if (tools.length === 0) {
     // Mirror the runner: an empty allowlist means "no built-in tools", not
-    // "the default set". `--tools ''` would be read as one empty name.
+    // "the default set". `--tools ''` and `--no-tools` drop extension tools
+    // too; --no-builtin-tools keeps them, which is the behaviour the
+    // edit-repair gate above compensates for (all three measured on 0.85.0).
     args.push("--no-builtin-tools");
   } else {
     args.push("--tools", tools.join(","));

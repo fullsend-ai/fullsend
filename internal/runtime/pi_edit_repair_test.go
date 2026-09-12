@@ -161,3 +161,43 @@ exit 0
 	require.ErrorContains(t, err, "edit-repair extension fullsend-edit-repair.js missing or modified")
 	assert.NotContains(t, err.Error(), "Agent extension")
 }
+
+// TestPiRuntimeRun_Exit93WithoutTheGateIsNotRelabelled: 93 is claimed only
+// when the gate is on. An agent whose tools omit edit never gets the guard
+// written, so a 93 from inside the sandbox is the agent's own exit code and
+// must reach the caller unchanged rather than be reported as tampering.
+func TestPiRuntimeRun_Exit93WithoutTheGateIsNotRelabelled(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	forgetPiManifestHash(t, "sb")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, "---\nname: triage\nmodel: opus\ntools: Read, Grep\n---\nTriage the issue."),
+		agentName:   "triage",
+	}))
+	binDir := t.TempDir()
+	// Every pi invocation exits 93, as an agent-run command could.
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + store + `'/"$f"; exit $? ;;
+    *"--print --mode json"*) exit 93 ;;
+  esac
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second,
+		OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &RunMetrics{})
+	assert.Equal(t, piEditRepairTamperedExit, exit, "the agent's own exit code passes through")
+	if err != nil {
+		assert.NotContains(t, err.Error(), "edit-repair extension", "no guard was written, so nothing to blame on it")
+	}
+}

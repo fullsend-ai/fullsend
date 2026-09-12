@@ -5,8 +5,9 @@
 // edit tool's `edits` as a JSON string holding raw control characters — real
 // newlines and tabs inside string values, routine for a multi-line code edit
 // — or as an array whose items are JSON strings. pi's own preparation
-// repairs only a well-formed stringified array (a bare JSON.parse with an
-// empty catch), so both shapes fail validation with `edits.0: must be object`
+// repairs a well-formed stringified array and a bare edit object (a
+// JSON.parse with an empty catch), so both shapes fail validation with
+// `edits.0: must be object`
 // and the model has to redo the call: 46 times in one fullsend code-agent run
 // (fullsend#7231). Both shapes are reported upstream — earendil-works/pi#8521
 // and #8962 — and closed as not planned; the fix offered for the first,

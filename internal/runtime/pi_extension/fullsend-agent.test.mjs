@@ -271,6 +271,16 @@ test("childArgs loads the edit repair only for a child whose tools name edit", (
   assert.ok(!loaded([]).includes(editExt));
   assert.ok(!childArgs(manifest.agent, { seq: 2, modelSpec: "m", tools: ["edit"] }).includes(editExt),
     "no manifest entry (parent without edit): nothing to load");
+
+  // The path a dispatch actually takes: childTools resolves the persona, and
+  // its result is what gates the -e. A parent that kept edit passes it on to
+  // a general-purpose child; Explore, which is read-only, never sees it.
+  const withEdit = { ...agent, tools: ["read", "edit", "Agent", "Task"] };
+  const resolved = (persona) => loaded(childTools(withEdit, persona));
+  assert.deepEqual(childTools(withEdit, "general-purpose"), ["read", "edit"]);
+  assert.deepEqual(resolved("general-purpose").slice(-1), [editExt], "a persona holding edit gets the repair");
+  assert.deepEqual(childTools(withEdit, "Explore"), ["read"]);
+  assert.ok(!resolved("Explore").includes(editExt), "Explore drops edit, so the repair does not follow it");
 });
 
 test("childEnv scrubs the provider credentials the child does not use", () => {
