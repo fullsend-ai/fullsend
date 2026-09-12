@@ -1,5 +1,5 @@
 ---
-title: "101. Steer the running agent on work-item updates instead of cancelling the run"
+title: "101. Steer the running agent on work-item updates"
 status: Accepted
 relates_to:
   - security-threat-model
@@ -11,7 +11,7 @@ topics:
   - runtime
 ---
 
-# 101. Steer the running agent on work-item updates instead of cancelling the run
+# 101. Steer the running agent on work-item updates
 
 Date: 2026-09-03
 
