@@ -51,10 +51,15 @@ jobs:
         || startsWith(github.event.label.name, 'ready-')
       )
     permissions:
+      # A workflow_call caller must grant at least what the callee requests,
+      # or the run fails validation before any job. dispatch.yml clears stale
+      # merge labels as a step of its single job (ADR 0096 §4), so it needs
+      # issues: write and pull-requests: write — grant them here too.
       actions: write
       id-token: write
       contents: read
-      pull-requests: read
+      issues: write
+      pull-requests: write
     uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}

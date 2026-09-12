@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=612
+# lint-workflow-size: max-lines=640
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -26,7 +26,8 @@ jobs:
       actions: write
       contents: read
       id-token: write
-      pull-requests: read
+      issues: write
+      pull-requests: write
     outputs:
       dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
@@ -50,6 +51,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
           ORG_NAME: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -175,7 +177,7 @@ jobs:
                     STAGE="code"
                   fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]] && ! has_label "fullsend-no-review"; then
                     STAGE="review"
                   fi
                 fi
@@ -185,12 +187,19 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
-                    STAGE="review"
+                  # Drafts don't get an automatic review on open/sync — the
+                  # review fires once the PR is marked ready (ADR 0096).
+                  # fullsend-no-review blocks automatic dispatch only, mirroring
+                  # the fullsend-no-fix label (ADR 0034); an explicit /fs-review
+                  # comment still works on drafts and labeled PRs alike.
+                  if [[ "${EVENT_ACTION}" == "ready_for_review" || "${PR_IS_DRAFT}" != "true" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
+                    if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                      STAGE="review"
+                    fi
                   fi
                   ;;
                 labeled)
-                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
                     STAGE="review"
                   fi
                   ;;
@@ -349,11 +358,21 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != '' && steps.pr-check.outputs.skipped != 'true'
+        id: kill-switch
+        # Always runs so it can publish kill_switch to the label-clearing step
+        # below, which fires on paths where no stage routed. Dispatch is still
+        # halted (exit 1) only when a stage routed and was not skipped.
+        env:
+          STAGE: ${{ steps.route.outputs.stage }}
+          PR_CHECK_SKIPPED: ${{ steps.pr-check.outputs.skipped }}
         run: |
           set -euo pipefail
-          KILL_SWITCH=$(yq '.kill_switch // false' config.yaml)
-          if [[ "$KILL_SWITCH" == "true" ]]; then
+          KILL_SWITCH=false
+          if [[ -f config.yaml ]]; then
+            KILL_SWITCH=$(yq '.kill_switch // false' config.yaml)
+          fi
+          echo "kill_switch=${KILL_SWITCH}" >> "${GITHUB_OUTPUT}"
+          if [[ "$KILL_SWITCH" == "true" && -n "$STAGE" && "$PR_CHECK_SKIPPED" != "true" ]]; then
             echo "::error::Kill switch is active — all agent dispatch halted"
             echo "::error::Set kill_switch: false in config.yaml to resume"
             exit 1
@@ -587,3 +606,31 @@ jobs:
 
           echo "dispatched_count=$dispatched" >> "${GITHUB_OUTPUT}"
           echo "Successfully dispatched $dispatched workflow(s) for stage $STAGE: ${dispatched_workflows[*]}"
+
+      - name: Remove ready-for-merge and ready-for-review
+        # New commits that no review round will look at: the labels the round
+        # would have cleared at start are cleared here instead. Skipped while
+        # the kill switch is active — a halted repo mutates no labels.
+        if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && (steps.route.outputs.stage != 'review' || steps.role-check.outputs.skipped == 'true' || steps.agent-check.outputs.skipped == 'true') && steps.kill-switch.outputs.kill_switch != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # A push that starts no review round still supersedes the head that
+          # ready-for-merge and ready-for-review described. A review run start
+          # clears both (docs/architecture.md, coordinator merge algorithm); when
+          # the round is skipped — draft, fullsend-no-review, documentation prose,
+          # or a pusher below triage — nothing else would, and ready-for-merge
+          # would keep describing a head nobody reviewed (ADR 0096). A 404 means
+          # the label was not there; anything else fails the job so the stale
+          # label is visible rather than silently kept.
+          for label in ready-for-merge ready-for-review; do
+            if out=$(gh api --method DELETE "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/labels/${label}" 2>&1); then
+              echo "::notice::Removed stale ${label} from PR #${PR_NUMBER} — this push was not reviewed"
+            elif [[ "${out}" != *"HTTP 404"* ]]; then
+              echo "::error::Could not remove ${label} from PR #${PR_NUMBER}: ${out}"
+              exit 1
+            fi
+          done

@@ -482,6 +482,7 @@ Aggregates review verdicts and applies labels:
 - unanimous rework → triggers [fix agent](agents/fix.md)
 - split/conflicting (including conflicting security severities) → `requires-manual-review`
 - each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
+- a push whose review round is **skipped** (draft, `fullsend-no-review`, documentation prose, pusher below triage — [ADR 0096](ADRs/0096-skip-provably-unnecessary-review-dispatch.md)) clears the same two labels from the dispatch workflow, so the invariant holds whether or not a round starts
 ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).
 
 ### 13. Observability
