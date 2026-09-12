@@ -23,6 +23,8 @@
 # since that's where prepare.sh/cleanup.sh actually source this file from at
 # per-job runtime), then the VM source-tree layout (.github/scripts/ as a
 # sibling of executor/), then the repo checkout layout.
+# See ../README.md#executor-script-layout for the flattening constraint any
+# new executor script that reaches outside its own directory must follow.
 _gateway_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _openshell_version_sh="${_gateway_dir}/.github/scripts/openshell-version.sh"
 if [ ! -f "${_openshell_version_sh}" ]; then

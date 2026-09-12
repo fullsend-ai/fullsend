@@ -167,6 +167,28 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
 - `executor/gateway.sh` — shared per-job gateway helpers sourced by prepare/cleanup
 
+## Executor script layout
+
+`install_executor` in [`setup.sh`](setup.sh) copies `executor/*.sh` into a
+flat `EXECUTOR_DIR` (`~/gitlab-runner-executor`) when the VM is provisioned.
+Parent directories from the source tree are **not** preserved, except those
+explicitly seeded by `install_executor`. Today that exception is only
+`.github/scripts/openshell-version.sh`.
+
+Any script added under `executor/` that needs a file outside its own
+directory must either:
+
+1. Reference only same-directory siblings (the path still works after
+   flattening), or
+2. Have `install_executor` explicitly copy the needed file into
+   `EXECUTOR_DIR`, mirroring the `openshell-version.sh` precedent.
+
+Guessing a `BASH_SOURCE`-relative path across the flattening boundary
+silently fails at per-job runtime: `prepare.sh`/`cleanup.sh` source the
+flattened copy, not the source-tree file. [`gateway.sh`](executor/gateway.sh)
+is the current example of (2); `job_id.sh`, `prepare.sh`, `run.sh`, and
+`cleanup.sh` only reference same-directory siblings.
+
 ## Security notes
 
 - By default (`GCP_USE_IAP=true`), GCE VMs are created with `--no-address`
