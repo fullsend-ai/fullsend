@@ -19,9 +19,20 @@ fullsend across an organization. Individual repo owners should use
 ## Prerequisites
 
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
 - **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+**GitLab:** none of the GitHub-specific prerequisites above apply — GitLab
+does not use `gh`, `fullsend inference provision`, or mint enrollment. See
+[Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab access token, GCP inference project, and runner
+requirements.
 
 ## Getting started
 

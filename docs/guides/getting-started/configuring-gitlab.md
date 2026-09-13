@@ -53,19 +53,21 @@ GitHub repositories use a different command (`fullsend github setup`). See
 > the design. Self-hosted runners are required on GitLab.com Free.
 >
 > This gap does not stay quiet: only the *first* `repos install` merely
-> warns when schedule creation fails and still exits successfully. Every
-> later `repos install` run — including the
-> [Runner Configuration](#runner-configuration) step below, which asks
-> you to re-run install after setting the runner tag — takes the
-> converge path, which retries creating the missing schedules and treats
-> a repeat failure as a hard `convergence errors` failure instead of a
-> warning. There is currently no flag to make `repos install` skip
-> repairing schedules, so on a GitLab.com Free repo where schedules were
-> never created, expect that later re-run to fail even though it's
-> otherwise applying an unrelated change (like the runner tag). Rely on
-> [Off-system polling](#off-system-polling) for pickup either way; this
-> is a known limitation of the current converge behavior, not something
-> this guide can work around.
+> warns when schedule creation fails and still exits successfully. Any
+> later `repos install` run on an already-installed repo takes the
+> converge path instead, which retries creating the missing schedules
+> and treats a repeat failure as a hard `convergence errors` failure
+> instead of a warning. There is currently no flag to make `repos
+> install` skip repairing schedules, so on a GitLab.com Free repo where
+> schedules were never created, expect any such re-run to fail even when
+> it's otherwise applying an unrelated change. Set manifest options like
+> `gitlab.runner_tags` (see [Runner Configuration](#runner-configuration)
+> below) with `repos set-default` *before* your first install so they're
+> captured by that first, non-converge run instead of requiring a
+> converge-path re-run later. Rely on [Off-system
+> polling](#off-system-polling) for pickup on repos where schedule
+> creation already failed and a converge re-run to fix something else
+> isn't an option.
 
 ## Installing Fullsend
 
@@ -304,12 +306,28 @@ tags embedded in the scaffold. Empty tags (`[]`) match untagged runners;
 tagged jobs only match runners that carry those tags.
 
 The runner VM scripts default to tag `fullsend-gitlab-runner`. Set that
-tag in the manifest, then re-run install so the scaffold picks it up:
+tag in the manifest **before your first `repos install`** so the initial
+install already embeds it in the scaffold, with no second install
+needed:
 
 ```bash
 fullsend repos set-default gitlab.runner_tags fullsend-gitlab-runner
-fullsend repos install -f repos.yaml
+fullsend repos install <group/project> \
+  --forge gitlab \
+  --gitlab-url https://gitlab.com \
+  --inference-project "<gcp-project>"
 ```
+
+If the repo is already installed, setting the tag with `repos
+set-default` and re-running `fullsend repos install -f repos.yaml`
+takes the converge path instead of a fresh install: it retries any
+not-yet-created pipeline schedules, and on GitLab.com Free (or any
+instance where schedule creation previously failed) that retry fails
+hard with a `convergence errors` error — even though the runner-tag
+change itself would otherwise apply cleanly. See the [GitLab tier
+note](#prerequisites) above, and rely on [Off-system
+polling](#off-system-polling) for pickup instead of re-running install
+just to add the tag in that case.
 
 The target project (or its group) must have a runner registered with
 that tag. For provisioning runner VMs on OpenShift Virtualization or
