@@ -28,7 +28,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 
 ### GitLab
 
-For GitLab repos, re-run `repos install` with updated values to converge configuration:
+For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). For day-2 updates, re-run `repos install` with updated values to converge configuration:
 
 ```bash
 fullsend repos install -f repos.yaml "$OWNER/$REPO" \
@@ -79,7 +79,8 @@ To remove fullsend from a single repository:
 
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
-4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+4. If you installed using the Free-tier PAT fallback (`--gitlab-bot-token`/`FULLSEND_GITLAB_BOT_TOKEN` — see [Configuring GitLab § Free-tier bot token](configuring-gitlab.md#free-tier-bot-token)), also revoke that personal access token on the dedicated bot account (User Settings → Access Tokens, or Group Access Tokens if group-scoped). Deleting the `FULLSEND_FORGE_TOKEN` CI/CD variable in step 2 does not revoke the underlying PAT — it remains valid until revoked directly on the account that issued it.
+5. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
@@ -209,9 +210,12 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 `GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
 
+If you installed via [`fullsend repos install`](../../cli/repos.md#repos-install) (see [Configuring GitLab](configuring-gitlab.md)), you don't need to separately provision `GITLAB_TOKEN`: install already creates the protected `FULLSEND_FORGE_TOKEN` CI/CD variable (also requested as masked, though GitLab falls back to unmasked if the value fails its masking rules — see [Configuring GitLab](configuring-gitlab.md#verifying-the-installation)), and the generated `.gitlab/ci/fullsend-*.yml` scaffold exports `GITLAB_TOKEN` from it at runtime. The variable above only needs manual provisioning when wiring fullsend into GitLab CI outside of that scaffold.
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation
+- [Configuring GitLab](configuring-gitlab.md) — Initial GitLab per-repo setup
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details

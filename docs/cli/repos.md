@@ -126,9 +126,9 @@ When repos are specified as positional arguments, only those repos are processed
 
 ### GitLab bot token
 
-For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable. Creating project access tokens requires GitLab Premium or Ultimate.
+For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable. Creating project access tokens requires GitLab Premium or Ultimate **on gitlab.com (SaaS)**; self-managed Community Edition can create them without a paid tier.
 
-On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
+On gitlab.com Free instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
 
 ```bash
 fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
@@ -322,5 +322,6 @@ fullsend repos set-default gitlab.url https://gitlab.example.com
 ## See also
 
 - [Getting Started](../guides/getting-started/) — Standard per-repo installation
+- [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) — Single-repo GitLab setup
 - [Operations](../guides/getting-started/operations.md) — Day-2 administration
 - [CLI Internals](../guides/dev/cli-internals.md) — Command structure and implementation details
