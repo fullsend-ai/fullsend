@@ -790,7 +790,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, strings.EqualFold(agentDescription, "Review"))
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -827,7 +827,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, strings.EqualFold(agentDescription, "Review"))
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
@@ -848,7 +848,7 @@ func parseStartBody(body string) (description, startTime string) {
 
 // buildInterruptedBody constructs the comment body for an orphaned status
 // comment that was interrupted by a hard process kill or job cancellation.
-func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
+func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason, reviewRun bool) string {
 	statusLabel, heading := reasonLabel(reason, description)
 
 	var b strings.Builder
@@ -872,6 +872,9 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 	if len(parts) > 0 {
 		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
+	}
+	if reason == ReasonCancelled && reviewRun {
+		b.WriteString("\n\nAutomated review did not complete for the current pull request HEAD. Do not merge until `fullsend/review-completed` succeeds on that commit.")
 	}
 	return b.String()
 }

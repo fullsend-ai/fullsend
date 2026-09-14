@@ -922,6 +922,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
+      statuses: write
 
     steps:
       - name: Checkout caller repository
@@ -1696,6 +1697,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
+      statuses: write
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1867,6 +1869,7 @@ jobs:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          role: ${{ matrix.role }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
