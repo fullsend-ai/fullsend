@@ -86,8 +86,8 @@ func (r OpenCodeRuntime) EnvExports() []string {
 		// opencode.json cannot widen tool permissions. The run prelude
 		// re-attaches workspace AGENTS.md via config.instructions.
 		"export OPENCODE_DISABLE_PROJECT_CONFIG=true",
-		"export OPENCODE_CONFIG_CONTENT",        // Vertex provider + permission denials (merges last)
-		"export GOOGLE_APPLICATION_CREDENTIALS", // WIF credential file
+		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission denials (merges last)
+		"export GOOGLE_APPLICATION_CREDENTIALS", // re-export: WIF credential file
 	}
 }
 

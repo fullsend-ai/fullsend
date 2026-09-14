@@ -80,14 +80,14 @@ content that must be updated whenever a runtime is added or renamed.
 - [ ] `docs/runtimes.md` — add a row to the
   [harness config-keys table](../runtimes.md#harness-config-keys-per-runtime)
   (item 4 above) and add the runtime to any prose lists of valid values.
-- [ ] `docs/architecture.md` — update the runtime selection diagram
+- [x] `docs/architecture.md` — update the runtime selection diagram
   (the Mermaid `CFG` node lists valid runtime names) and any prose
   references.
 - [ ] `docs/cli/run.md` — update any `--runtime` flag description or
   valid-values list if the page documents runtime flags.
 - [ ] `docs/cli/github.md` — same as `run.md` if this page documents
   runtime flags.
-- [ ] `docs/guides/infrastructure/layered-config-reference.md` — update
+- [x] `docs/guides/infrastructure/layered-config-reference.md` — update
   the `runtime` field's valid values in the config-key table.
 
 Use this list as a mechanical walkthrough — check every box, even if the

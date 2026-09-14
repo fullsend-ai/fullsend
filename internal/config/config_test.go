@@ -429,10 +429,9 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 	cfg.Defaults.Runtime = "pi"
 	require.NoError(t, cfg.Validate(), "pi is user-selectable (#6464)")
 
-	// opencode became user-selectable once the runtime was implemented
-	// (unbound-force#510).
-	cfg.Defaults.Runtime = "opencode"
-	require.NoError(t, cfg.Validate(), "opencode is user-selectable (unbound-force#510)")
+	// No opencode case here: org mode is deprecated (ADR 0044), so
+	// opencode's selectability is asserted on the per-repo and agents:
+	// paths instead (TestPerRepoConfigValidate_Runtime).
 
 	cfg.Defaults.Runtime = "invalid"
 	require.Error(t, cfg.Validate())
