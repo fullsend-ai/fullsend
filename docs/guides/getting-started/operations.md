@@ -59,6 +59,35 @@ fullsend repos install -f repos.yaml
 
 This is idempotent — it provisions new repos, repairs missing or drifted components (workflow, thin callers, variables, secrets, pipeline schedules), repairs scaffold content drift, and upgrades workflow refs. Variables with manifest-specified values (e.g. mint URL, GCP region, review app client ID) are checked for value drift; secrets and runtime-mutated variables are checked for presence only.
 
+## Requiring review completion on GitHub
+
+After syncing the current workflow template, add
+`fullsend/review-completed` as a required status check in the default branch's
+branch protection rule or ruleset. Keep the review role enabled for every
+repository that requires the check.
+
+Do not require this status in a repository that uses GitHub's merge queue. The
+current workflow reports only on the pull request head SHA; it does not handle
+the queue's separate `merge_group` SHA, so the queue would wait for a status
+that never arrives.
+
+The status is tied to the exact pull request head SHA:
+
+- `pending` means an automated review started for that commit.
+- `success` means the review completed without being skipped.
+- A failure, timeout, cancellation, or skip never produces success.
+- If cancellation prevents final cleanup, the status stays pending and the
+  required check continues to block the merge.
+
+The status links to its workflow run. When cancellation cleanup runs and status
+comments are enabled, it also produces a PR comment warning that the current
+head was not reviewed. Comment `/fs-review` on the PR to review the current
+head again.
+
+The generated per-repo workflow grants `statuses: write` to its trusted
+workflow token, and the action uses that permission only for review-role runs.
+The review sandbox continues to use its separately minted review token.
+
 ## Uninstalling
 
 ### Per-repo teardown
@@ -180,7 +209,7 @@ gcloud services enable \
 
 See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
 
-The composite action accepts five optional inputs for status notifications:
+The composite action accepts these optional status inputs:
 
 | Input | Description |
 |-------|-------------|
@@ -189,8 +218,10 @@ The composite action accepts five optional inputs for status notifications:
 | `status-number` | Issue or PR number for status comments |
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
+| `pr-head-sha` | Exact PR head SHA used for the review-completion status; per-repo reusable workflows populate it automatically |
+| `role` | Resolved harness role; used when a custom agent performs the review role |
 
-All reusable workflows pass these inputs automatically.
+The per-repo dispatch workflow passes these inputs automatically.
 
 ### GitLab CI
 

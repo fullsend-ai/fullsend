@@ -120,6 +120,12 @@ After installing open a new issue or comment `/fs-triage` in an open issue. Then
 Actions tab to see the Fullsend workflow in action. In some minutes the
 `fullsend-ai-triage` bot should post a comment in the issue.
 
+If the review role is enabled and the repository does not use GitHub's merge
+queue, configure branch protection or a ruleset to require
+`fullsend/review-completed`. This prevents a PR head whose automated review
+failed, was skipped, or was cancelled from merging. See
+[Operations](operations.md#requiring-review-completion-on-github).
+
 ## Next steps
 
 * Read [Organization installation mode](org-mode.md) to learn how to share GCP project with other repositories

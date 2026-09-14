@@ -199,6 +199,7 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 		"issues":        "write",
 		"packages":      "read",
 		"pull-requests": "write",
+		"statuses":      "write",
 	}, pr.Jobs.Dispatch.Permissions, "dispatch job permissions")
 
 	// Stop-fix job permissions
