@@ -89,6 +89,13 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	if agentName == "" {
 		agentName = strings.TrimSuffix(agentDestName("", agentPath), ".md")
 	}
+	// Verify the agent name Bootstrap writes to disk matches what Run will
+	// pass to `--agent` (via openCodeValidatedArg). A divergence causes
+	// OpenCode to silently fall back to its default agent with the full
+	// default tool set, bypassing the translated permission record.
+	if validated := openCodeValidatedArg(agentName); validated != agentName {
+		return fmt.Errorf("agent name %q contains characters openCodeValidatedArg strips (sanitized to %q); the Run command would pass a different name than Bootstrap wrote", agentName, validated)
+	}
 
 	sandboxName := input.SandboxName()
 	cfg := r.ConfigDir()
@@ -141,14 +148,17 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 // openCodeAgentFrontmatter is the OpenCode agent frontmatter subset Bootstrap
 // emits (config/core/v1/config/agent.ts AgentSchema). OpenCode uses its own
 // schema, so the Claude-style frontmatter is translated rather than copied:
-// the body becomes the prompt, `tools:` becomes OpenCode's
-// {toolname: bool} record, and `model:`/`description` map across. mode is
-// pinned to "primary" so `--agent` selects it as the top-level agent.
+// the body becomes the prompt, `permission:` becomes OpenCode's
+// {toolname: "allow"|"deny"} record, and `model:`/`description` map across.
+// mode is pinned to "primary" so `--agent` selects it as the top-level agent.
+//
+// The deprecated `tools:` key is not emitted; `permission:` is the current
+// upstream schema (agent.ts).
 type openCodeAgentFrontmatter struct {
-	Description string          `json:"description,omitempty"`
-	Mode        string          `json:"mode"`
-	Model       string          `json:"model,omitempty"`
-	Tools       map[string]bool `json:"tools,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Mode        string            `json:"mode"`
+	Model       string            `json:"model,omitempty"`
+	Permission  map[string]string `json:"permission"`
 }
 
 // openCodeAgentMarkdown renders the translated agent definition as a markdown
@@ -159,9 +169,7 @@ func openCodeAgentMarkdown(agentName string, def *piAgentDef) ([]byte, error) {
 		Description: def.Description,
 		Mode:        "primary",
 		Model:       def.Model,
-	}
-	if tools := openCodeToolsRecord(def.Tools); tools != nil {
-		fm.Tools = tools
+		Permission:  openCodePermissionRecord(def.Tools),
 	}
 	front, err := json.MarshalIndent(fm, "", "  ")
 	if err != nil {
@@ -176,16 +184,18 @@ func openCodeAgentMarkdown(agentName string, def *piAgentDef) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// openCodeToolsRecord translates the Claude tool-name allowlist into
-// OpenCode's {toolID: enabled} record. nil claudeTools (no restriction) yields
-// nil so the frontmatter omits tools and OpenCode's default set applies. A
-// non-nil list enables only the mapped tools; Claude names without an OpenCode
-// counterpart are dropped with a warning.
-func openCodeToolsRecord(claudeTools []string) map[string]bool {
+// openCodePermissionRecord translates the Claude tool-name allowlist into
+// OpenCode's {toolID: "allow"|"deny"} permission record. nil claudeTools (no
+// restriction) yields an empty map (serialised as `"permission": {}`) so
+// OpenCode's default set applies. A non-nil list allows only the mapped tools;
+// Claude names without an OpenCode counterpart are dropped with a warning.
+// Per-argument Bash restrictions (e.g. Bash(gh,jq)) cannot be represented in
+// OpenCode's permission model and collapse to a bare bash: "allow".
+func openCodePermissionRecord(claudeTools []string) map[string]string {
 	if claudeTools == nil {
-		return nil
+		return map[string]string{}
 	}
-	rec := map[string]bool{}
+	rec := map[string]string{}
 	for _, ct := range claudeTools {
 		if ct == "Skill" {
 			// OpenCode has a native skill tool; skills are discovered from the
@@ -197,20 +207,17 @@ func openCodeToolsRecord(claudeTools []string) map[string]bool {
 			fmt.Fprintf(os.Stderr, "Agent tool %q has no OpenCode equivalent and is dropped from the allowlist\n", ct)
 			continue
 		}
-		rec[ot] = true
+		rec[ot] = "allow"
 	}
-	if len(rec) == 0 {
-		// An agent that listed only unsupported/Skill tools gets an explicit
-		// empty record rather than nil, so OpenCode does not silently fall
-		// back to its full default tool set.
-		return map[string]bool{}
-	}
+	// An agent that listed only unsupported/Skill tools gets an explicit
+	// empty record (serialised as `"permission": {}`), so OpenCode does not
+	// silently fall back to its full default tool set.
 	return rec
 }
 
 // openCodeToolForClaude maps the Claude Code tool names an agent definition
 // may list to OpenCode's tool IDs (packages/opencode/src/tool: bash, read,
-// write, edit, grep, glob, webfetch, task, list). OpenCode's tool IDs are
+// write, edit, grep, glob, webfetch, task). OpenCode's tool IDs are
 // lowercase, like pi's. The shell tool's exposed ID is "bash"
 // (tool/shell/id.ts). Task maps to OpenCode's task (sub-agent) tool. Claude
 // tools without an OpenCode counterpart are reported as unsupported.
@@ -222,17 +229,17 @@ var openCodeToolForClaude = map[string]string{
 	"MultiEdit": "edit",
 	"Grep":      "grep",
 	"Glob":      "glob",
-	"LS":        "list",
+	"LS":        "read", // OpenCode's read tool handles both files and directories
 	"WebFetch":  "webfetch",
 	"Task":      "task",
 }
 
-// openCodeToolNamesSorted returns the enabled tool IDs in a stable order (for
+// openCodeToolNamesSorted returns the allowed tool IDs in a stable order (for
 // deterministic tests and logs).
-func openCodeToolNamesSorted(rec map[string]bool) []string {
+func openCodeToolNamesSorted(rec map[string]string) []string {
 	out := make([]string, 0, len(rec))
 	for k, v := range rec {
-		if v {
+		if v == "allow" {
 			out = append(out, k)
 		}
 	}

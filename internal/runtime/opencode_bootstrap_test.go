@@ -74,8 +74,8 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Contains(t, agentMD, `"mode": "primary"`)
 	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
 	assert.Contains(t, agentMD, `"model": "opus"`)
-	assert.Contains(t, agentMD, `"bash": true`)
-	assert.Contains(t, agentMD, `"read": true`)
+	assert.Contains(t, agentMD, `"bash": "allow"`)
+	assert.Contains(t, agentMD, `"read": "allow"`)
 	assert.Contains(t, agentMD, "You are the triage agent. Use gh.")
 
 	log, err := os.ReadFile(logPath)

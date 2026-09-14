@@ -80,10 +80,12 @@ const openCodeHooksMissingExit = 97
 // into a file under openCodeOutputSubdir (inside WorkspaceDir);
 // ExtractTranscripts downloads it after the run. openCodeRunRCFile holds
 // opencode's exit code so the tee pipeline can re-raise it (see
-// buildOpenCodeRunCommand).
+// buildOpenCodeRunCommand). It lives under openCodeOutputSubdir so
+// ClearIterationArtifacts wipes it between iterations, preventing a stale rc
+// from masking prelude failures.
 const (
 	openCodeOutputSubdir = "output"
-	openCodeRunRCFile    = ".opencode-run-rc"
+	openCodeRunRCFile    = "output/.opencode-run-rc"
 )
 
 // openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json
@@ -134,12 +136,24 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	}
 	prelude = append(prelude,
 		"&& . "+shellQuote(envFile),
+		// .env is agent-writable; re-pin the runner-owned config locations
+		// after it so a rewritten .env cannot move OpenCode's config dir out
+		// from under the guards (mirrors pi_run.go:394 and codex_run.go:313).
+		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
 
 	// The opencode invocation itself, whose stdout is the --format json stream.
 	invocation := []string{
 		"opencode",
+	}
+	if params.Debug != "" {
+		// OpenCode's structured logs need OPENCODE_PRINT_LOGS=1 to reach
+		// stderr (logging.ts). --print-logs sets that flag, and --log-level
+		// selects verbosity. Placed before `run` so they apply globally.
+		invocation = append(invocation, "--print-logs", "--log-level", "DEBUG")
+	}
+	invocation = append(invocation,
 		"run",
 		// `--format json` emits raw JSON events on stdout (`opencode run --help`:
 		// format choices default|json), which parseOpenCodeStream normalizes.
@@ -150,7 +164,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 		// parseOpenCodeStream only emits ThinkingEvent when opencode streams
 		// "reasoning" parts (opencode_progress.go).
 		"--thinking",
-	}
+	)
 	// translateOpenCodeModel never returns empty (it falls back to the default
 	// alias), so --model is always supplied; opencode's own resolution is a
 	// backstop, not the primary path. --model takes provider/model
@@ -196,11 +210,18 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	// sandbox image's /bin/sh (dash) without relying on the non-POSIX
 	// `pipefail`. The prelude (guard, .env) runs before the pipeline so its
 	// own exits — notably the guard's 97 — are not swallowed by the subshell.
+	// The prelude joins with && so a guard or .env failure short-circuits.
+	// The pipeline captures opencode's exit code and re-raises it. The
+	// final exit is conditional on the prelude having succeeded — when the
+	// prelude short-circuits, the shell exits with the prelude's own status
+	// rather than reading a potentially stale rc file.
 	pipeline := "{ " + strings.Join(invocation, " ") + " ; echo $? > " + shellQuote(rcFile) + " ; }" +
-		" | tee " + shellQuote(sandboxTranscript) +
-		" ; exit \"$(cat " + shellQuote(rcFile) + " 2>/dev/null || echo 1)\""
+		" | tee " + shellQuote(sandboxTranscript)
 
-	return strings.Join(prelude, " ") + " && " + pipeline
+	// `&& exit` only runs when the prelude succeeded. A prelude failure
+	// propagates its own exit status.
+	return strings.Join(prelude, " ") + " && " + pipeline +
+		" && exit \"$(cat " + shellQuote(rcFile) + " 2>/dev/null || echo 1)\""
 }
 
 // openCodeValidatedArg constrains model/effort/agent-name values to a safe
@@ -320,8 +341,10 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		innerHandler(evt)
 	}
 
+	var streamParseErr error
 	if _, parseErr := parseOpenCodeStream(reader, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
+		streamParseErr = parseErr
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
@@ -338,6 +361,12 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		return exitCode, fmt.Errorf("opencode hook adapter missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
 
+	// A stream parse error means the NDJSON output was corrupt or truncated;
+	// treat as a failed run so a broken stream cannot pass as successful.
+	if exitCode == 0 && streamParseErr != nil {
+		printer.StepWarn("opencode exited 0 but the output stream failed to parse: " + sanitizeOutput(streamParseErr.Error()))
+		return 1, nil
+	}
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
 		msg := lastResult.ErrorMessage
 		if msg == "" {
@@ -349,9 +378,11 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	return exitCode, nil
 }
 
-// ClearIterationArtifacts removes the previous iteration's outputs and the
-// debug log so transcripts and output files are per-iteration.
+// ClearIterationArtifacts terminates processes the previous iteration left
+// running, then removes its outputs and the debug log so transcripts and
+// output files are per-iteration (mirrors PiRuntime.ClearIterationArtifacts).
 func (r OpenCodeRuntime) ClearIterationArtifacts(sandboxName string) error {
+	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s",
 		shellQuote(r.WorkspaceDir()), shellQuote(r.WorkspaceDir()+"/"+openCodeDebugLogFile))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
