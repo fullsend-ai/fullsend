@@ -12,11 +12,19 @@
         "required": ["id", "thread_key", "resolved", "outdated"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "thread_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "thread_key": { "$ref": "common.schema.json#/$defs/record_key" },
           "resolved": { "type": "boolean" },
+          "resolved_by_actor_id": { "type": ["string", "null"], "minLength": 1 },
           "outdated": { "type": "boolean" },
           "minimized": { "type": "boolean" }
         },
+        "allOf": [
+          {
+            "if": { "properties": { "resolved": { "const": true } }, "required": ["resolved"] },
+            "then": { "required": ["resolved_by_actor_id"] },
+            "else": { "not": { "required": ["resolved_by_actor_id"] } }
+          }
+        ],
         "additionalProperties": false
       }
     }

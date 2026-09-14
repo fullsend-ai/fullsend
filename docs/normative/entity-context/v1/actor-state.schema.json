@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context/v1/actor-state.schema.json",
+  "title": "ActorState",
+  "type": "object",
+  "required": ["actors"],
+  "properties": {
+    "actors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "login", "role", "role_verified"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["human", "bot"] },
+          "login": { "type": ["string", "null"], "minLength": 1 },
+          "role": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/actor_role" },
+              { "type": "null" }
+            ]
+          },
+          "role_verified": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "role_verified": { "const": true } }, "required": ["role_verified"] },
+            "then": { "properties": { "role": { "$ref": "common.schema.json#/$defs/actor_role" } } },
+            "else": { "properties": { "role": { "type": "null" } } }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
