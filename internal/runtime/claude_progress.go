@@ -72,6 +72,7 @@ type systemEvent struct {
 	Type              string `json:"type"`
 	Subtype           string `json:"subtype"`
 	Model             string `json:"model"`
+	SessionID         string `json:"session_id"`
 	ClaudeCodeVersion string `json:"claude_code_version"`
 	Attempt           int    `json:"attempt"`
 	MaxRetries        int    `json:"max_retries"`
@@ -187,8 +188,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			switch se.Subtype {
 			case "init":
 				onEvent(InitEvent{
-					Model:   se.Model,
-					Version: se.ClaudeCodeVersion,
+					Model:     se.Model,
+					Version:   se.ClaudeCodeVersion,
+					SessionID: se.SessionID,
 				})
 			case "api_retry":
 				onEvent(RetryEvent{
@@ -258,6 +260,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				})
 
 			case "message_start":
+				// A new message after a result means the stream is inside
+				// another turn (only a steered run gets here), so the
+				// cumulative-token salvage below applies again.
+				seenResult = false
 				var msg struct {
 					Message struct {
 						Usage struct {
@@ -309,6 +315,25 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				}
 			}
+
+		case "user":
+			// Both a replayed input line and a tool result arrive as
+			// "user". Only the replay carries isReplay, which makes it an
+			// unambiguous per-message delivery ack for the steer mailbox.
+			var ue struct {
+				IsReplay  bool   `json:"isReplay"`
+				Timestamp string `json:"timestamp"`
+				Message   struct {
+					// Content is a string for a replayed prompt and an
+					// array for a tool result; only the former unmarshals,
+					// and only the former carries isReplay anyway.
+					Content string `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(line, &ue); err != nil || !ue.IsReplay {
+				continue
+			}
+			onEvent(UserReplayEvent{At: steerEchoTime(ue.Timestamp), Content: ue.Message.Content})
 
 		case "result":
 			seenResult = true
@@ -388,6 +413,9 @@ func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error
 		case InitEvent:
 			if metrics.Model == "" {
 				metrics.Model = e.Model
+			}
+			if metrics.SessionID == "" {
+				metrics.SessionID = e.SessionID
 			}
 		case TokensEvent:
 			metrics.InputTokens = e.InputTokens

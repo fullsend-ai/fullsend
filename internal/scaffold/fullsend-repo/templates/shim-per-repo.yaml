@@ -17,6 +17,14 @@
 # stage jobs with -agent- suffix. Roles operate independently (#2452).
 name: fullsend
 
+# run-name carries the work item this run is about, which the Actions API
+# returns as display_title (ADR 0101). issue_comment and issues runs expose
+# no pull_requests[], so without this an in-flight agent run has no
+# server-side way to tell a follow-up run on its own work item from one on
+# another. For a comment on a PR, github.event.issue.number IS the PR number,
+# so the pair covers every event this shim listens for.
+run-name: ${{ github.repository }}#${{ github.event.issue.number || github.event.pull_request.number }}
+
 on:
   issues:
     types: [opened, edited, labeled]

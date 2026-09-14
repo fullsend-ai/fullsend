@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2489,4 +2490,79 @@ func TestParseProviderDef(t *testing.T) {
 	require.Error(t, err)
 	_, err = ParseProviderDef([]byte("name: bad name\ntype: x\n"))
 	require.Error(t, err)
+}
+
+func TestSteerDefaults_NilConfig(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test"}
+	require.NoError(t, h.Validate())
+	assert.False(t, h.SteerEnabled())
+	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
+	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())
+}
+
+func TestSteerDefaults_ZeroFields(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{Enabled: true}}
+	require.NoError(t, h.Validate())
+	assert.True(t, h.SteerEnabled())
+	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
+	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())
+}
+
+func TestSteerDefaults_ExplicitValues(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/code.md",
+		Role:  "test",
+		Steer: &SteerConfig{Enabled: true, MaxSteers: 5, PollIntervalSeconds: 15},
+	}
+	require.NoError(t, h.Validate())
+	assert.Equal(t, 5, h.SteerMaxSteers())
+	assert.Equal(t, 15*time.Second, h.SteerPollInterval())
+}
+
+func TestSteerDisabledByDefaultWhenBlockPresent(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{MaxSteers: 3}}
+	require.NoError(t, h.Validate())
+	assert.False(t, h.SteerEnabled(), "steer must stay off unless enabled: true")
+}
+
+func TestValidate_SteerNegativeMaxSteers(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{MaxSteers: -1}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.max_steers must not be negative")
+}
+
+func TestValidate_SteerNegativePollInterval(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{PollIntervalSeconds: -5}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.poll_interval_seconds must not be negative")
+}
+
+func TestValidate_SteerPollIntervalTooLong(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{PollIntervalSeconds: 601}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.poll_interval_seconds must be at most 600")
+}
+
+func TestLoad_SteerBlock(t *testing.T) {
+	content := `
+agent: agents/hello-world.md
+role: triage
+steer:
+  enabled: true
+  max_steers: 3
+  poll_interval_seconds: 20
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello-world.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.Steer)
+	assert.True(t, h.SteerEnabled())
+	assert.Equal(t, 3, h.SteerMaxSteers())
+	assert.Equal(t, 20*time.Second, h.SteerPollInterval())
 }

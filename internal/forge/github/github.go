@@ -2554,28 +2554,116 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 		return nil, fmt.Errorf("get workflow run %d: %w", runID, err)
 	}
 
-	var run struct {
-		ID         int    `json:"id"`
-		Name       string `json:"name"`
-		Event      string `json:"event"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
-		HTMLURL    string `json:"html_url"`
-		CreatedAt  string `json:"created_at"`
-	}
+	var run workflowRunJSON
 	if err := decodeJSON(resp, &run); err != nil {
 		return nil, fmt.Errorf("decode workflow run: %w", err)
 	}
 
-	return &forge.WorkflowRun{
-		ID:         run.ID,
-		Name:       run.Name,
-		Event:      run.Event,
-		Status:     run.Status,
-		Conclusion: run.Conclusion,
-		HTMLURL:    run.HTMLURL,
-		CreatedAt:  run.CreatedAt,
-	}, nil
+	return run.toForge(), nil
+}
+
+// workflowRunJSON is the wire shape of a workflow run, including the
+// provenance fields a caller needs to establish that two runs came through
+// the same dispatch chain (ADR 0101).
+type workflowRunJSON struct {
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Path            string                 `json:"path"`
+	Event           string                 `json:"event"`
+	Status          string                 `json:"status"`
+	Conclusion      string                 `json:"conclusion"`
+	HTMLURL         string                 `json:"html_url"`
+	CreatedAt       string                 `json:"created_at"`
+	DisplayTitle    string                 `json:"display_title"`
+	Actor           struct{ Login string } `json:"actor"`
+	TriggeringActor struct{ Login string } `json:"triggering_actor"`
+	PullRequests    []struct {
+		Number int `json:"number"`
+	} `json:"pull_requests"`
+	ReferencedWorkflows []struct {
+		Path string `json:"path"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+	} `json:"referenced_workflows"`
+}
+
+func (r workflowRunJSON) toForge() *forge.WorkflowRun {
+	out := &forge.WorkflowRun{
+		ID:              r.ID,
+		Name:            r.Name,
+		Path:            r.Path,
+		Event:           r.Event,
+		Status:          r.Status,
+		Conclusion:      r.Conclusion,
+		HTMLURL:         r.HTMLURL,
+		CreatedAt:       r.CreatedAt,
+		DisplayTitle:    r.DisplayTitle,
+		Actor:           r.Actor.Login,
+		TriggeringActor: r.TriggeringActor.Login,
+	}
+	for _, pr := range r.PullRequests {
+		out.PullRequestNumbers = append(out.PullRequestNumbers, pr.Number)
+	}
+	for _, w := range r.ReferencedWorkflows {
+		out.ReferencedWorkflows = append(out.ReferencedWorkflows,
+			forge.ReferencedWorkflow{Path: w.Path, Ref: w.Ref, SHA: w.SHA})
+	}
+	return out
+}
+
+// maxWorkflowRunPages bounds the run listing. The caller that paginates
+// deepest is the steer watcher, which re-lists on every poll, so the cap is
+// a rate-limit budget as much as a safety net: at 4 pages of 100 and a 30
+// second poll it is at most 480 requests an hour against a job token's
+// ~1000 per hour per repository, leaving room for the per-candidate job
+// reads. The listing is newest-first, so what the cap drops is the oldest
+// runs in the window — the ones a watcher is least likely to still need.
+const maxWorkflowRunPages = 4
+
+// ListWorkflowRunsSince returns runs of one workflow file created at or
+// after since, newest first as GitHub returns them, with the provenance
+// fields populated.
+//
+// The per-workflow endpoint is used rather than the repository-wide one so
+// runs of other workflows are filtered out server-side. There is no event
+// filter: the endpoint accepts a single event value, so a caller that cares
+// about several must filter client-side.
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]forge.WorkflowRun, error) {
+	if perPage <= 0 {
+		perPage = 50
+	}
+
+	runs := make([]forge.WorkflowRun, 0, perPage)
+	for page := 1; page <= maxWorkflowRunPages; page++ {
+		q := url.Values{}
+		q.Set("created", ">="+since.UTC().Format(time.RFC3339))
+		q.Set("per_page", strconv.Itoa(perPage))
+		q.Set("page", strconv.Itoa(page))
+
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?%s",
+			owner, repo, url.PathEscape(workflowFile), q.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("list workflow runs since %s: %w", since.UTC().Format(time.RFC3339), err)
+		}
+
+		var result struct {
+			TotalCount   int               `json:"total_count"`
+			WorkflowRuns []workflowRunJSON `json:"workflow_runs"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode workflow runs: %w", err)
+		}
+
+		for _, r := range result.WorkflowRuns {
+			runs = append(runs, *r.toForge())
+		}
+		// A short page is the last page. total_count is also consulted so a
+		// server that fills the final page exactly still terminates.
+		if len(result.WorkflowRuns) < perPage || (result.TotalCount > 0 && len(runs) >= result.TotalCount) {
+			break
+		}
+	}
+	return runs, nil
 }
 
 // DispatchWorkflow triggers a workflow_dispatch event on a workflow file.
@@ -2681,16 +2769,21 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
+		// Present only when the number is a pull request.
+		PullRequest *struct {
+			URL string `json:"url"`
+		} `json:"pull_request"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
-		Number: result.Number,
-		Title:  result.Title,
-		Body:   result.Body,
-		URL:    result.HTMLURL,
-		Labels: labelNames(result.Labels),
+		Number:        result.Number,
+		Title:         result.Title,
+		Body:          result.Body,
+		URL:           result.HTMLURL,
+		Labels:        labelNames(result.Labels),
+		IsPullRequest: result.PullRequest != nil,
 	}, nil
 }
 
@@ -2769,10 +2862,32 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 
 // ListIssueComments returns all comments on an issue, paginating automatically.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
+	return c.listIssueComments(ctx, owner, repo, number, time.Time{})
+}
+
+// ListIssueCommentsSince returns only comments updated at or after since.
+//
+// GitHub's `since` filters on updated_at, not created_at, so an old comment
+// edited recently still comes back — which is why this is a bandwidth
+// optimization and not a semantic filter. A caller that wants "created after
+// X" must still check CreatedAt itself; nothing it would have kept is
+// missing, because a comment created after X necessarily has an updated_at
+// after X too.
+func (c *LiveClient) ListIssueCommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]forge.IssueComment, error) {
+	return c.listIssueComments(ctx, owner, repo, number, since)
+}
+
+func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]forge.IssueComment, error) {
 	var result []forge.IssueComment
 
+	sinceParam := ""
+	if !since.IsZero() {
+		sinceParam = "&since=" + url.QueryEscape(since.UTC().Format(time.RFC3339))
+	}
+
 	for page := 1; page <= 100; page++ {
-		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100&page=%d", owner, repo, number, page))
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100&page=%d%s",
+			owner, repo, number, page, sinceParam))
 		if err != nil {
 			return nil, fmt.Errorf("list issue comments page %d: %w", page, err)
 		}
@@ -2785,6 +2900,7 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 				Login string `json:"login"`
 			} `json:"user"`
 			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding issue comments page %d: %w", page, err)
@@ -2798,6 +2914,7 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 				Body:      r.Body,
 				Author:    r.User.Login,
 				CreatedAt: r.CreatedAt,
+				UpdatedAt: r.UpdatedAt,
 			})
 		}
 
@@ -3368,30 +3485,49 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	return runs, nil
 }
 
+// maxWorkflowJobPages bounds the job listing. 100 pages of 100 jobs is far
+// past any real matrix and stops a paging bug from looping forever.
+const maxWorkflowJobPages = 100
+
 // ListWorkflowRunJobs returns the jobs within a workflow run.
+//
+// Paginated: a caller looking for one job by name — the steer watcher's
+// provenance checks do exactly that — would otherwise silently miss it on a
+// run whose matrix expanded past the first page, and read the absence as a
+// verdict.
 func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID))
-	if err != nil {
-		return nil, fmt.Errorf("list workflow run jobs: %w", err)
-	}
-	var result struct {
-		Jobs []struct {
-			ID         int    `json:"id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"jobs"`
-	}
-	if err := decodeJSON(resp, &result); err != nil {
-		return nil, fmt.Errorf("decode workflow run jobs: %w", err)
-	}
-	jobs := make([]forge.WorkflowJob, len(result.Jobs))
-	for i, j := range result.Jobs {
-		jobs[i] = forge.WorkflowJob{
-			ID:         j.ID,
-			Name:       j.Name,
-			Status:     j.Status,
-			Conclusion: j.Conclusion,
+	var jobs []forge.WorkflowJob
+
+	for page := 1; page <= maxWorkflowJobPages; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100&page=%d",
+			owner, repo, runID, page))
+		if err != nil {
+			return nil, fmt.Errorf("list workflow run jobs: %w", err)
+		}
+		var result struct {
+			TotalCount int `json:"total_count"`
+			Jobs       []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode workflow run jobs: %w", err)
+		}
+		for _, j := range result.Jobs {
+			jobs = append(jobs, forge.WorkflowJob{
+				ID:         j.ID,
+				Name:       j.Name,
+				Status:     j.Status,
+				Conclusion: j.Conclusion,
+			})
+		}
+		// A short page is the last page. total_count is also consulted so a
+		// server that fills the final page exactly still terminates.
+		if len(result.Jobs) < 100 || (result.TotalCount > 0 && len(jobs) >= result.TotalCount) {
+			break
 		}
 	}
 	return jobs, nil

@@ -30,8 +30,11 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-code` still require
 write or higher.
 
-The `/fs-triage` command does not accept arguments — it re-evaluates the issue
-using current content, comments, and any prior triage analysis.
+The `/fs-triage` command does not accept arguments when it starts a run — it re-evaluates
+the issue using current content, comments, and any prior triage analysis. Where the agent has
+steering enabled (`steer.enabled` in its harness), a `/fs-triage` comment posted while triage
+is already in flight is different: the run absorbs it and the text after the command reaches
+the running agent as an amendment to its task.
 
 Triage also runs automatically when a new issue is opened or edited by a
 user with triage-level permission or higher, and when the `ready-for-triage`
