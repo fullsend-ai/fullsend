@@ -1637,6 +1637,45 @@ func TestCreatePipeline(t *testing.T) {
 	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/99", p.WebURL)
 }
 
+func TestSetCommitStatus(t *testing.T) {
+	tests := []struct {
+		state     forge.CommitStatusState
+		wantState string
+	}{
+		{state: forge.CommitStatusPending, wantState: "pending"},
+		{state: forge.CommitStatusSuccess, wantState: "success"},
+		{state: forge.CommitStatusFailure, wantState: "failed"},
+		{state: forge.CommitStatusError, wantState: "failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.state), func(t *testing.T) {
+			client, mux := setupTest(t)
+			handlerCalled := false
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/statuses/0123456789abcdef0123456789abcdef01234567", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				assert.Equal(t, http.MethodPost, r.Method)
+				var body map[string]string
+				readJSONBody(t, r, &body)
+				assert.Equal(t, tt.wantState, body["state"])
+				assert.Equal(t, "fullsend/review-completed", body["name"])
+				assert.Equal(t, "Automated review did not complete", body["description"])
+				assert.Equal(t, "https://gitlab.example/myorg/myrepo/-/pipelines/42", body["target_url"])
+				writeJSON(t, w, http.StatusCreated, map[string]any{"status": tt.wantState})
+			})
+
+			err := client.SetCommitStatus(context.Background(), "myorg", "myrepo", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+				State:       tt.state,
+				Context:     "fullsend/review-completed",
+				Description: "Automated review did not complete",
+				TargetURL:   "https://gitlab.example/myorg/myrepo/-/pipelines/42",
+			})
+			require.NoError(t, err)
+			assert.True(t, handlerCalled, "status handler was not called")
+		})
+	}
+}
+
 func TestCreatePipeline_NoVariables(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
