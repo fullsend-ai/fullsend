@@ -22,6 +22,12 @@ Date: 2026-03-25
 
 Accepted
 
+> **Note (2026-09-03):** Per-org installation is deprecated
+> ([ADR 0044](0044-deprecate-per-org-installation-mode.md)). A dedicated
+> `<org>/.fullsend` repo is no longer required: shared configuration is a
+> preset hosted in any repo and bumped per consuming repo by Renovate
+> ([ADR 0103](0103-shared-config-presets-converged-by-fullsend-update.md)).
+
 ## Context
 
 An organization adopting fullsend must configure it: the intent repo, the

@@ -58,6 +58,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — install, convergence (provision, sync, upgrade), status, and uninstall across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md), [ADR 0074](ADRs/0074-repos-command-consolidation.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
+- Shared presets bumped by Renovate: a bot-owned `.fullsend/preset.lock.yaml` records the preset's source and tracked ref; Renovate custom managers bump the preset record, `agents[].source` and harness `base:` pins, and run `fullsend update` as a post-upgrade task to refresh `config.base.yaml`, recompute hashes and regenerate `lock.yaml` ([ADR 0103](ADRs/0103-shared-config-presets-converged-by-fullsend-update.md)).
 - GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT stored as a protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
@@ -539,6 +540,10 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 In per-repo installation the middle tier is replaced by files inside the
 target repo: `.fullsend/config.base.yaml` (vendor preset or baseline) and
 `.fullsend/config.yaml` (repo overlay), with code defaults below both. The
+preset may live in any repo; Renovate bumps its pins and `fullsend update`
+refreshes the tooling-owned files (`config.base.yaml`, `preset.lock.yaml`,
+`lock.yaml`), never `config.yaml` or local harness files
+([ADR 0103](ADRs/0103-shared-config-presets-converged-by-fullsend-update.md)). The
 org-tier box above describes the historical per-org model, now deprecated
 ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md),
 [ADR 0069](ADRs/0069-ready-made-configuration-presets.md)).
