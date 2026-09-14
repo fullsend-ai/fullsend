@@ -16,9 +16,10 @@ import (
 // org/repo with `runtime: opencode` (#6035, unbound-force#510).
 //
 // Unlike pi, OpenCode reads AGENTS.md natively (no CLAUDE.md bridge — it does
-// not implement ContextBridger), and its config search path is driven by an
-// explicit OPENCODE_CONFIG_DIR pointer to the runner-owned dir rather than a
-// working-directory scan, so the agent-writable workspace is never consulted.
+// not implement ContextBridger). Its runner-owned config is pointed at by
+// OPENCODE_CONFIG_DIR, and OPENCODE_DISABLE_PROJECT_CONFIG=true suppresses
+// the workspace-directory config walk so a target repo's own
+// .opencode/opencode.json cannot widen tool permissions.
 type OpenCodeRuntime struct{}
 
 func (OpenCodeRuntime) Name() string { return "opencode" }
@@ -69,6 +70,12 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 func (r OpenCodeRuntime) EnvExports() []string {
 	return []string{
 		fmt.Sprintf("export OPENCODE_CONFIG_DIR=%s", r.ConfigDir()),
+		// Defense in depth: suppress OpenCode's project-config walk so the
+		// target repo's .opencode/opencode.json cannot widen tool permissions
+		// via deep-merge before OPENCODE_CONFIG_CONTENT is applied. Without
+		// this, a hostile repo could set permission keys the runner-owned
+		// policy doesn't explicitly touch.
+		"export OPENCODE_DISABLE_PROJECT_CONFIG=true",
 		"OPENCODE_CONFIG_CONTENT",        // Vertex provider + permission denials (merges last)
 		"GOOGLE_APPLICATION_CREDENTIALS", // WIF credential file
 	}
