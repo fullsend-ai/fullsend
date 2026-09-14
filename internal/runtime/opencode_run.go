@@ -85,7 +85,7 @@ const openCodeHooksMissingExit = 97
 // from masking prelude failures.
 const (
 	openCodeOutputSubdir = "output"
-	openCodeRunRCFile    = "output/.opencode-run-rc"
+	openCodeRunRCFile    = "output/opencode-run-rc"
 )
 
 // openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json

@@ -1,7 +1,6 @@
 # OpenCode
 
-[OpenCode](https://github.com/anomalyco/opencode) is fullsend's third agent runtime, opt-in per org
-or repo. Like pi, it runs through the same sandbox, credentials and egress policy, and reads
+[OpenCode](https://github.com/anomalyco/opencode) is fullsend's third agent runtime, opt-in per repo. Like pi, it runs through the same sandbox, credentials and egress policy, and reads
 `AGENTS.md` natively.
 
 ```bash
@@ -11,11 +10,13 @@ fullsend run triage --runtime opencode --model anthropic-vertex/claude-opus-4-6
 Selecting it, and how it compares to Claude Code and pi, is in [Agent runtimes](../runtimes.md). This
 page is what changes once you are on it.
 
-> **Experimental — read-only agents only.** OpenCode is enabled for read-only agents (`triage`,
+> **Planned: write-path support.** OpenCode is enabled for read-only agents (`triage`,
 > `prioritize`). Write-capable agents (`code`, `fix`) are gated on the security-hook adapter, tracked
 > in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515): OpenCode has no
 > native PreToolUse/PostToolUse hooks, so until the runner-owned, sha256-gated plugin adapter lands,
-> no sandbox tool hooks are installed. Pilot on a disposable repo before relying on it.
+> no sandbox tool hooks are installed. Harnesses using the default `security.enabled: true` will
+> exit 97 (hook adapter missing); set `security.enabled: false` on the harness entry until #515
+> lands. Pilot on a disposable repo before relying on it.
 
 ## Models and providers
 
@@ -88,8 +89,9 @@ What a local OpenCode run needs, beyond the guide:
 
 - **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected (like pi).
 - **The Claude-style agent definition is translated** into OpenCode's `agent/<name>.md` layout with
-  JSON frontmatter (`mode: primary`, `tools:` as a `{toolID: bool}` record). Claude tool names are
-  mapped to OpenCode tool ids; names without an OpenCode equivalent are dropped with a warning.
+  JSON frontmatter (`mode: primary`, `permission:` as a `{toolID: "allow"|"deny"}` record). Claude
+  tool names are mapped to OpenCode tool ids; names without an OpenCode equivalent are dropped with
+  a warning. Per-argument Bash restrictions collapse to a bare `bash: "allow"`.
 - **`plugins:` are unsupported** — the Claude marketplace layout is warned and skipped.
 - **Effort maps to `--variant`** — the harness `effort` value selects OpenCode's model reasoning
   variant.

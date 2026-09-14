@@ -333,6 +333,12 @@ func ValidProviders() []string {
 // "codex" (#6920), and "opencode" (#6035, unbound-force#510) are opt-in per
 // repo, per agent, or as a repos.yaml default; "dummy" and "dummy-playback"
 // are for behaviour tests only.
+//
+// NOTE: opencode does not yet support write-capable agents (code, fix).
+// The runtime-level hooks guard (openCodeHooksExtensionBytes → exit 97)
+// enforces this at run time. A config-level gate is deferred to
+// unbound-force#515 when the hook adapter lands and the gate can be
+// removed.
 func ValidRuntimes() []string {
 	return []string{"claude", "pi", "codex", "opencode", "dummy", "dummy-playback"}
 }

@@ -76,8 +76,8 @@ func (r OpenCodeRuntime) EnvExports() []string {
 		// this, a hostile repo could set permission keys the runner-owned
 		// policy doesn't explicitly touch.
 		"export OPENCODE_DISABLE_PROJECT_CONFIG=true",
-		"OPENCODE_CONFIG_CONTENT",        // Vertex provider + permission denials (merges last)
-		"GOOGLE_APPLICATION_CREDENTIALS", // WIF credential file
+		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission denials (merges last)
+		"export GOOGLE_APPLICATION_CREDENTIALS", // re-export: WIF credential file
 	}
 }
 
