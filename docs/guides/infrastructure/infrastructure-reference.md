@@ -356,6 +356,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (stored as protected CI/CD variable)
+- `FULLSEND_DISPATCH_SECRET` — HMAC shared secret for signing API-triggered dispatch variables (protected, masked). Operator-configured — `repos install` does not provision it — and API-triggered dispatch runs unsigned if it is left unset. GitLab-only; GitHub dispatch does not use HMAC ([forged CI dispatch payloads](../../problems/security-threat-model.md#forged-ci-dispatch-payloads))
 - `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
 - `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable

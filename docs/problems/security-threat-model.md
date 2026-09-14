@@ -109,6 +109,7 @@ A team member (or someone who has compromised a team member's credentials) manip
 - Modifying agent configuration or CODEOWNERS to expand agent authority
 - Using knowledge of the agent's decision-making to craft changes that slip past review
 - Poisoning training data or examples that agents learn from
+- Injecting forged CI dispatch variables so a trusted agent job runs against an attacker-chosen stage, payload, or actor identity
 
 ### Why it's dangerous
 
@@ -122,11 +123,43 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
 - **CODEOWNERS for agent config** — changes to agent rules, permissions, and configuration always require human approval
 - **Separation of duties** — different agents for different concerns, with no single agent having end-to-end authority
 
+### Forged CI dispatch payloads
+
+An insider who cannot modify protected CI YAML can still choose what a trusted agent job believes it was asked to do, if the CI platform lets them create a run of that YAML with attacker-supplied variables. The job then reads stage, event payload, actor identity, and fork flags from the attacker rather than from the poller or from the forge's own event object. That is a different path from "open a PR that changes the workflow" — it reuses the already-reviewed definition.
+
+This is forge-specific. The attack exists where the platform exposes a generic "run this pipeline and attach extra variables" API. It does not exist merely because a scheduled job computes a dispatch matrix.
+
+**GitLab.** `POST /projects/:id/pipeline` accepts arbitrary CI variables from anyone with pipeline-create access (Developer+). After [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) moved from child pipelines to API-triggered pipelines, those variables are exactly what the agent job's authorization gate and fork protection consume. HMAC signing of dispatch variables (`FULLSEND_DISPATCH_HMAC` / `FULLSEND_DISPATCH_SECRET`, [#5572](https://github.com/fullsend-ai/fullsend/issues/5572)) is the mitigation in use: the poller signs, the agent job verifies before trust. The secret must be a protected, masked CI/CD variable so a Developer cannot substitute their own key. Checking the pipeline `.source` and creator identity (mitigation #1 in ADR 0067) is a complementary control; HMAC remains because CI-provided URLs used in that check can themselves be overridden. This reduces the residual risk rather than eliminating it: verification is gated on `PIPELINE_SOURCE`, which is itself derived from the overridable `CI_API_V4_URL`/`CI_PIPELINE_ID`, and verification does not run at all when `PIPELINE_SOURCE != "api"` or when `FULLSEND_DISPATCH_SECRET` is unset — dispatch is unsigned in that case.
+
+**GitHub.** There is no equivalent generic API. Two current handoffs illustrate why HMAC is not required today:
+
+- **Native events.** The shim triggers on GitHub Events (`issues`, `issue_comment`, `pull_request_target`, `pull_request_review`) and calls `reusable-dispatch.yml` via `workflow_call`. Routing reads `github.event.*`, populated by GitHub from real activity. A caller cannot POST a substitute event into that path.
+- **GitHub+Jira and other custom pollers.** A scheduled workflow runs `fullsend poll`, writes a matrix as a job output, and passes it to `reusable-dispatch.yml` through `workflow_call` in the same authenticated run ([Jira integration](../guides/user/jira-integration.md), [custom poller example](../guides/user/custom-poller-example.md)). Reaching the `matrix` input requires a workflow file that `uses:` the reusable workflow — write access to create or modify a workflow file in the repo — not merely permission to start a run. CODEOWNERS and branch protection, where configured, gate merges of the canonical caller to the default branch; they do not stop a write-access collaborator from pushing a new caller workflow on another ref and passing an arbitrary matrix without a reviewed merge. `reusable-dispatch.yml` is `on: workflow_call` only. `workflow_dispatch` on the poll workflow starts a poll; it does not accept the matrix.
+
+GitHub's `workflow_dispatch` API accepts only inputs declared in the workflow YAML. GitLab's pipeline API accepts any variable names regardless of the CI YAML. That is the structural asymmetry.
+
+**When the GitHub conclusion would change.** HMAC (or an equivalent authenticity check) becomes relevant if dispatch data from an untrusted caller can reach the agent job without a workflow-YAML change:
+
+- Declaring `on: workflow_dispatch` or `repository_dispatch` on `reusable-dispatch.yml` or a wrapper, with `matrix` or `event_payload` as an input — any user with Actions write access can then POST a forged matrix.
+- A custom poller that forwards unauthenticated external input (webhook body, gist, issue form) into `matrix` without validation.
+- Splitting poll and harness into separate workflow runs and triggering the harness with `gh workflow run`, passing the matrix as a `workflow_dispatch` input.
+
+**Defense considerations:**
+
+- **Refuse the surface** — keep dispatch data on native events or same-run `workflow_call` job outputs; do not accept matrix/payload as `workflow_dispatch` / `repository_dispatch` inputs. This is the current GitHub control.
+- **Sign the payload** — HMAC or similar over dispatch variables, with the key stored so the injecting principal cannot override it (GitLab's protected, masked `FULLSEND_DISPATCH_SECRET`). Needed when the platform allows variable injection into a trusted job definition.
+- **Bind to a trusted creator** — verify the run was created by the bot/poller identity (GitLab pipeline `.source` + `.user.id`). Weaker alone if the identity check itself reads attacker-overridable fields.
+- **Defense in depth on GitHub** — signing the same-run matrix is an option; it does not close a current injection path and adds a secret to manage.
+
+See [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the GitLab decision record and the GitHub comparison annotation.
+
 ### Open questions
 
 - How do we distinguish a compromised account from a legitimate team member making unusual but valid changes?
 - Should agent authority be tied to individual human identity, or to roles?
 - How do we handle the bootstrap problem — who sets up the initial agent configuration, and how is that secured?
+- If a future GitHub dispatch path accepted caller-supplied matrix or event payload without a workflow-YAML merge, should that path gain HMAC (or equivalent) signing, or is refusing to expose the surface the intended control?
+- Is signing the same-run `workflow_call` matrix worthwhile as defense in depth, or does it add secret-management cost without changing the trust boundary?
 
 ## Threat 3: Agent drift
 
