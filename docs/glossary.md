@@ -32,7 +32,7 @@ When someone says they "customized an agent," ask which of these they mean — c
 
 | Goal | Resource |
 |------|----------|
-| Classify your change | [Default, derived, and custom agents](agents/topics/default-vs-custom.md) |
+| Classify your change | [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md) |
 | Configure a harness | [Configuring agents](guides/user/customizing-agents.md) |
 | Bring your own agent | [Bring Your Own Agent](guides/user/bring-your-own-agent.md) |
 | Add skills | [Configuring with skills](guides/user/customizing-with-skills.md) |
@@ -47,7 +47,7 @@ When someone says they "customized an agent," ask which of these they mean — c
 ### Additive Skill
 
 A [skill](#skill) that **extends** an agent's skill set without replacing a [built-in skill](#built-in-skill). Typical paths: list a new unique name under harness `skills:` via [base composition](#base-composition), or add a uniquely named [repo skill](#repo-skill). The default agent's identity is unchanged — this yields a [configured default agent](#configured-default-agent), not a [custom agent](#custom-agent). Example pattern: a team brevity or house-style skill composed alongside existing skills.
-See [Configuring with skills](guides/user/customizing-with-skills.md) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Configuring with skills](guides/user/customizing-with-skills.md) and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Agent Infrastructure
 
@@ -107,12 +107,12 @@ See [Bring Your Own Agent](guides/user/bring-your-own-agent.md), [ADR 0058](ADRs
 ### Configured Default Agent
 
 A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields (`agent:`, [pre-script](#pre-script) / [post-script](#post-script), `role:`, `validation_loop`). Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override), [AGENTS.md](#agentsmd), env vars, plugins, host files, sandbox image layers, and policy composition. Changing install-time `slug:` alone stays a configured default (the mint never reads it). Replacing `role:` is normally [derived](#derived-agent), except when that agent's docs recommend a specific role override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Custom Agent
 
 An agent whose `base` chain does **not** trace back to a default agent harness in `fullsend-ai/agents`, or that has no `base` at all. Built from scratch — even if it resembles triage, code, or review. Adding skills to triage is not a custom agent; that is a [configured default](#configured-default-agent). Contrast with [derived agent](#derived-agent) (starts from a default via `base:` but replaces identity).
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
 
 ### Customized Agent
 
@@ -133,12 +133,12 @@ See [architecture.md](architecture.md) (building block 1).
 ### Default Agent
 
 An agent shipped by fullsend: harness files and agent definitions in `fullsend-ai/agents`. Unmodified, it is simply a default agent. Documented configuration yields a [configured default agent](#configured-default-agent). Replacing identity-defining fields on a `base:` of that harness yields a [derived agent](#derived-agent). An agent with no default `base` lineage is a [custom agent](#custom-agent).
-See [Agents reference](agents/) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Agents reference](agents/) and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Derived Agent
 
 An agent that uses `base` [base composition](#base-composition) from a [default agent](#default-agent) but replaces identity-defining components — system prompt (`agent:`), [pre-script](#pre-script) / [post-script](#post-script), mint `role:` (unless that agent's docs recommend a specific role override), or `validation_loop` — beyond documented [extension points](#extension-point). Changing install-time `slug:` alone does **not** make the agent derived. It reuses default lineage but is no longer recognizably that default. Example: changing the post-script so the agent can call a forge API the stock script does not support. Contrast with [configured default](#configured-default-agent) and [custom agent](#custom-agent).
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ## E
 
@@ -169,7 +169,7 @@ A workflow concept where a repository automatically stays up-to-date with depend
 ### Extension Point
 
 A documented hook on a [default agent](#default-agent) that teams are expected to use — for example a named optional skill (`customer-research` on prioritize) or a published configuration variable (`REVIEW_FINDING_SEVERITY_THRESHOLD` on review). Using an extension point keeps the result a [configured default agent](#configured-default-agent). Each agent lists its extension points in [`docs/agents/<agent>.md`](agents/).
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Configuring with skills](guides/user/customizing-with-skills.md#extension-points).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md) and [Configuring with skills](guides/user/customizing-with-skills.md#extension-points).
 
 ## F
 
@@ -249,12 +249,12 @@ See [architecture.md](architecture.md) and [governance.md](problems/governance.m
 ### Post-script
 
 A host-side script declared as `post_script` in the harness. Runs **outside** the sandbox **after** the agent exits, with credentials, to apply untrusted agent output (labels, comments, pushes, board updates). Credential isolation depends on this boundary ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)). Changing `post_script` on a default `base:` is a [script override](#script-override) and makes the agent [derived](#derived-agent) — skills cannot replace post-script API actions the stock script does not perform.
-See [ADR 0024](ADRs/0024-harness-definitions.md) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [ADR 0024](ADRs/0024-harness-definitions.md) and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Pre-script
 
 A host-side script declared as `pre_script` in the harness. Runs **outside** the sandbox **before** the agent starts, with credentials, to fetch inputs and write them into the workspace for the sandbox. Changing `pre_script` on a default `base:` is a [script override](#script-override) and makes the agent [derived](#derived-agent).
-See [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), [ADR 0024](ADRs/0024-harness-definitions.md), and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), [ADR 0024](ADRs/0024-harness-definitions.md), and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ## R
 
@@ -282,7 +282,7 @@ See [architecture.md](architecture.md) and [security-threat-model.md](problems/s
 ### Script Override
 
 Setting `pre_script` or `post_script` on a child harness so it **replaces** the base script. Under [base composition](#base-composition) these are scalars: override only — not additive concatenation (unlike unique skill names). Replacing scripts on a default `base:` yields a [derived agent](#derived-agent).
-See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [Default, derived, and custom agents](agents/topics/default-vs-custom.md), and [Configuring agents](guides/user/customizing-agents.md).
+See [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md), and [Configuring agents](guides/user/customizing-agents.md).
 
 ### Sidecar
 
@@ -297,7 +297,7 @@ See [architecture.md](architecture.md), [codebase-context.md](problems/codebase-
 ### Skill Override
 
 Intentionally **replacing** a [built-in skill](#built-in-skill) so the agent does not load the shipped version. Distinct from an [additive skill](#additive-skill) (new unique name). Under [base composition](#base-composition), `skills` merges with **deduplication by basename** — a child entry with the same basename overrides the base. Historically also done via `customized/skills/` ([ADR 0035](ADRs/0035-layered-content-resolution.md)), now deprecated ([ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md) / [Customized Directory](#customized-directory)). Classification: still [configured default](#configured-default-agent) when you only replace the skill (not `agent:` or scripts). Do not rely on a same-named [repo skill](#repo-skill) for override — that path is shadowed without fail-fast (see [Repo Skill](#repo-skill) / [Skill precedence](guides/user/customizing-with-skills.md#skill-precedence)). Fail-fast on duplicate basenames applies only when two harness-listed skills collide in `SkillDirs()`, not to repo-vs-built-in collisions.
-See [Base composition](#base-composition), [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Base composition](#base-composition), [ADR 0045](ADRs/0045-forge-portable-harness-schema.md), and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Stage
 

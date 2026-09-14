@@ -9,3 +9,4 @@
 .gitmodules
 experiments
 eval/.agent-eval-harness
+_agents/
