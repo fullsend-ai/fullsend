@@ -67,6 +67,11 @@ on:
         type: string
         required: false
         default: "ubuntu-24.04"
+      review_status_enabled:
+        description: "Publish the built-in review completion status. The caller must grant statuses: write."
+        type: boolean
+        required: false
+        default: false
       matrix:
         description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix."
         required: false
@@ -958,6 +963,7 @@ jobs:
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+          review-status-enabled: ${{ inputs.review_status_enabled }}
 
   fix:
     name: Fix
@@ -1619,7 +1625,6 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
-      statuses: write
     steps:
       - name: Checkout config repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1804,7 +1809,6 @@ jobs:
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
-          role: ${{ matrix.role }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -153,7 +153,7 @@ For path-scoped auto-merge, you can use GitHub's native CODEOWNERS mechanism:
 1. Add the fullsend review bot as a CODEOWNER for specific low-risk paths (e.g., `docs/**`).
 2. Enable GitHub auto-merge on the repo.
 3. Configure branch protection to require CODEOWNERS approval, CI passing, and
-   `fullsend/review-completed` when the review role is enabled and the
+   `fullsend/review-completed` when the built-in review agent is enabled and the
    repository does not use GitHub's merge queue.
 
 When a PR only touches paths where the bot is a CODEOWNER, its approval satisfies the required review. CI passes, and GitHub auto-merges — no human approval needed for that scope.

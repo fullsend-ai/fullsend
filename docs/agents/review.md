@@ -17,10 +17,11 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** posts the review on the PR.
 
-On GitHub, the workflow also publishes `fullsend/review-completed` on the exact
-PR head commit. It is pending while the review runs and succeeds only after a
-non-skipped review completes. A failed or cancelled run leaves a non-successful
-status; if final cleanup cannot publish an outcome, the pending status remains.
+On GitHub, the built-in review workflow also publishes
+`fullsend/review-completed` on the exact PR head commit. It is pending while the
+review runs and succeeds only after a non-skipped review completes. A failed or
+cancelled run leaves a non-successful status; if final cleanup cannot publish
+an outcome, the pending status remains.
 Repositories that do not use GitHub's merge queue can require this status in
 branch protection or a ruleset to prevent an unreviewed head commit from
 merging. See
