@@ -36,8 +36,8 @@ func TestOpenCodeRuntimeEnvExports(t *testing.T) {
 	env := rt.EnvExports()
 	assert.Contains(t, env, "export OPENCODE_CONFIG_DIR="+rt.ConfigDir())
 	assert.Contains(t, env, "export OPENCODE_DISABLE_PROJECT_CONFIG=true")
-	assert.Contains(t, env, "OPENCODE_CONFIG_CONTENT")
-	assert.Contains(t, env, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.Contains(t, env, "export OPENCODE_CONFIG_CONTENT")
+	assert.Contains(t, env, "export GOOGLE_APPLICATION_CREDENTIALS")
 }
 
 func TestOpenCodeRuntimeResolvesFromRegistry(t *testing.T) {

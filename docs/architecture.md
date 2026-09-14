@@ -201,7 +201,7 @@ The runner talks to every runtime through one contract, so the harness, sandbox,
 flowchart TB
   subgraph RUNNER["fullsend run — runner host"]
     direction LR
-    CFG[".fullsend/config.yaml\nruntime: claude | pi | codex | dummy | dummy-playback"]
+    CFG[".fullsend/config.yaml\nruntime: claude | pi | codex | opencode | dummy | dummy-playback"]
     RT["runtime.Runtime\nBootstrap · Run (+ TranscriptHandler)"]
     HOOKS["security.HookPlan\nruntime-neutral scripts (ADR 0090)"]
     CFG --> RT
@@ -211,31 +211,35 @@ flowchart TB
     CC["Claude Code\nclaude -p --agent\nhooks via --settings"]
     PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js"]
     CX["codex\ncodex exec --json\nhooks via hooks.json + adapter"]
+    OC["opencode\nopencode run --format json\nhooks via plugin adapter (#515)"]
     DM["dummy\nscripted ops\n(behaviour tests)"]
     DP["dummy-playback\nplaylist replay\n(behaviour tests)"]
   end
   RT -->|"/sandbox/claude-config"| CC
   RT -->|"/sandbox/pi-config"| PI
   RT -->|"/sandbox/codex-config"| CX
+  RT -->|"/sandbox/opencode-config"| OC
   RT --> DM
   RT --> DP
   HOOKS -.-> CC
   HOOKS -.-> PI
   HOOKS -.-> CX
+  HOOKS -.-> OC
   VX["Vertex AI — *.googleapis.com\nWIF: OIDC token → STS"]
   OA["OpenAI — api.openai.com\nWIF: OIDC token → run-scoped provider"]
   CC --> VX
   PI -->|"same credential path"| VX
+  OC -->|"same credential path"| VX
   CX -->|"POST /v1/responses only"| OA
   classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
   classDef def fill:#eceee8,stroke:#a9afa4,color:#1b2230;
-  class PI,CX opt;
+  class PI,CX,OC opt;
   class CC,DM,DP def;
 ```
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path) and [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI-only through a custom model provider whose bearer token comes from a runner-seeded file, with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI-only through a custom model provider whose bearer token comes from a runner-seeded file, with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 
 ### Behaviour testing

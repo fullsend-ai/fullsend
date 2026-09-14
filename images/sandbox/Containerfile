@@ -10,6 +10,9 @@
 #   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
 #     the OpenShell base image ships, with the same shadow-proof symlink
 #     and build-time assertion as Claude Code — stub runtime, see #6920)
+#   - OpenCode (GitHub release, SHA256-verified static musl build via
+#     OPENCODE_VERSION + per-arch checksum ARGs; opt-in runtime, see
+#     unbound-force#510)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -288,6 +291,40 @@ RUN mkdir -p /etc/codex \
       'enabled = false' \
       > /etc/codex/config.toml \
     && chmod 0644 /etc/codex/config.toml
+
+# ---------------------------------------------------------------------------
+# OpenCode — opt-in agent runtime (anomalyco/opencode, unbound-force#510).
+# Static musl build from GitHub releases, SHA256-verified per architecture.
+# To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/anomalyco/opencode/releases
+ARG OPENCODE_VERSION=1.18.30
+ARG OPENCODE_SHA256_AMD64=a4eb84374d4f262ac46fe8b25c9e193a54a6f40f44bbe155a29c9c6309a34a5e
+ARG OPENCODE_SHA256_ARM64=7a4dc1171ca78426a4611f9a1e15c0168dc0408475d24aab32bb51187e1865ad
+RUN case "$TARGETARCH" in \
+      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64-musl.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
+      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64-musl.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_ARM64}" ;; \
+      *)     echo "unsupported TARGETARCH=$TARGETARCH for opencode" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 "${OPENCODE_URL}" -o /tmp/opencode.tar.gz \
+    && GOT="$(sha256sum /tmp/opencode.tar.gz | cut -d' ' -f1)" \
+    && if [ "${GOT}" != "${EXPECTED}" ]; then \
+         echo "opencode checksum mismatch: got ${GOT}, expected ${EXPECTED}" >&2; \
+         exit 1; \
+       fi \
+    && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz \
+    && GOT_VER="$(opencode --version)" \
+    && echo "${GOT_VER}" | grep -q "${OPENCODE_VERSION}" \
+    || { echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; exit 1; }
+
+# OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
+# sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
+RUN install -d -o sandbox -g sandbox -m 0755 /sandbox/opencode-config
+ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
+    OPENCODE_DISABLE_PROJECT_CONFIG="true"
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
