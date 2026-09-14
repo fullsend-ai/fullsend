@@ -1,6 +1,6 @@
 ---
 title: "40. Org pool for parallel e2e tests"
-status: Accepted
+status: Superseded
 relates_to:
   - testing-agents
 topics:
@@ -15,7 +15,8 @@ Date: 2026-05-19
 
 ## Status
 
-Accepted
+Superseded by [ADR 0114](0114-ephemeral-repo-lifecycle-for-testing.md) and
+[ADR 0115](0115-lock-based-pool-coordination-for-testing-orgs.md).
 
 ## Context
 
