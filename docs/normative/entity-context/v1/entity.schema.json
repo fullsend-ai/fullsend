@@ -5,21 +5,36 @@
   "type": "object",
   "required": ["kind", "id", "number", "title", "state", "source_url", "author_id", "author", "created_at", "updated_at", "labels"],
   "properties": {
-    "kind": { "enum": ["issue", "change_proposal"] },
-    "id": { "type": "string", "minLength": 1 },
-    "number": { "type": ["integer", "string"] },
-    "title": { "type": "string" },
-    "state": { "type": "string", "minLength": 1 },
-    "source_url": { "type": "string", "format": "uri" },
-    "author_id": { "type": ["string", "null"] },
-    "author": { "type": ["string", "null"] },
-    "created_at": { "type": "string", "format": "date-time" },
-    "updated_at": { "type": "string", "format": "date-time" },
+    "kind": { "enum": ["work_item", "change_proposal"] },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Immutable opaque forge object ID used for record keys; distinct from normalized-event v1 entity.id."
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive forge display number projected into normalized-event v1 entity.id."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "state": { "enum": ["open", "closed", "merged"] },
+    "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
+    "author_id": { "type": ["string", "null"], "minLength": 1 },
+    "author": { "type": ["string", "null"], "minLength": 1 },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "labels": {
       "type": "array",
       "items": { "type": "string" },
-      "uniqueItems": true
+      "uniqueItems": true,
+      "description": "Filtered label strings sorted by UTF-8 byte order."
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "work_item" } }, "required": ["kind"] },
+      "then": { "properties": { "state": { "enum": ["open", "closed"] } } }
+    }
+  ],
   "additionalProperties": false
 }

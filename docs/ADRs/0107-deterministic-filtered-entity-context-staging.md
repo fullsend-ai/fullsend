@@ -34,16 +34,21 @@ the preferred prefetch model from
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md) to every issue and
 change-proposal run.
 
+This ADR's *entity context* is the staged data snapshot. It is distinct from
+the dispatch-layer routing category called entity context in
+[ADR 0076](0076-slash-command-entity-context-separation.md).
+
 ## Decision
 
 Before the harness pre-script, `fullsend run` uses `forge.Client` to assemble
 one immutable snapshot of the handled entity. The runner applies a mandatory,
-deterministic content pipeline: size limits, Unicode safety normalization,
-secret and sensitive-data redaction, and injection scanning. It fails closed
-when required data cannot be fetched or safely represented. Filtered content
-is the only copy exposed to scripts and the agent; the manifest records every
-truncation, replacement, finding, and fetch error without retaining rejected
-content.
+deterministic content pipeline to each complete selected source: Unicode safety
+normalization, secret and sensitive-data redaction, injection scanning, then
+size limits. A detector failure or timeout aborts snapshot assembly. It fails
+closed when required data cannot be fetched or safely represented. Filtered
+content is the only copy exposed to scripts and the agent; the manifest records
+every truncation, replacement, finding, and fetch error without retaining
+rejected content.
 
 The snapshot is written outside the repository clone. Host-side pre- and
 post-scripts receive `FULLSEND_CONTEXT_DIR` pointing to
@@ -80,16 +85,28 @@ to relate a finding, the reviewed revision, a subsequent fix, and a re-review.
 
 The pre-script may inspect the host snapshot and skip the run. It cannot mutate
 the agent's view: Fullsend verifies the manifest digests before upload and
-restores or rejects changed files. The sandbox copy is read-only to the agent.
+restores or rejects changed files. The uploaded tree must contain exactly the
+paths listed by the manifest; Fullsend removes extra paths or aborts assembly
+before upload. The sandbox copy is read-only to the agent.
 When a runtime injects staged context into a model request, it emits each
 ordered record as a distinct content block, followed by relationship and
 mutable-state blocks and then run-specific instructions. It must not collapse
 the records into one changing prompt block when cache reuse is intended.
 Provider prompt caching remains an optimization, not a conformance guarantee;
 agents that read records through tools still pay the corresponding tool-result
-tokens. `summary.md` and deterministic projections remain navigation aids for
-selective reads. Runtime forge reads are an explicit fallback for data outside
-the snapshot, not the default way to obtain it.
+tokens. Deterministic order projections remain navigation aids for selective
+reads. Runtime forge reads for entity-context source kinds are denied by
+default. An explicitly configured host-side extension may fetch a kind outside
+the snapshot only when it applies the same versioned pipeline and fail-closed
+rules and exposes no raw payload to the sandbox; it records the omission and
+extension result outside the immutable v1 snapshot. A present extension
+configuration that cannot be parsed denies every runtime entity-context fetch.
+Extension output uses the snapshot's `filter_version`, filter statuses
+including `rejected`, and the same detector-failure abort rules. V1 extension
+output outside the manifest is host-only and never sandbox-visible. Making an
+extension result sandbox-visible requires a versioned schema that lists its
+path in the manifest and subjects it to the same filtering, digest,
+permissions, exact-path, and cleanup rules.
 
 The host snapshot uses a mode-`0700` directory and mode-`0600` files. Fullsend
 removes the sandbox copy after its last sandbox consumer and the host copy after

@@ -3,16 +3,33 @@
   "$id": "https://fullsend.ai/normative/entity-context/v1/check.schema.json",
   "title": "CheckMetadata",
   "type": "object",
-  "required": ["id", "name", "status", "attempt"],
+  "required": ["id", "name", "status", "created_at"],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
-    "name": { "type": "string" },
-    "status": { "type": "string", "minLength": 1 },
-    "conclusion": { "type": "string" },
-    "attempt": { "type": "integer", "minimum": 1 },
-    "source_url": { "type": "string", "format": "uri" },
-    "started_at": { "type": "string", "format": "date-time" },
-    "completed_at": { "type": "string", "format": "date-time" }
+    "name": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["queued", "in_progress", "completed"] },
+    "conclusion": { "enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"] },
+    "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "queued" } }, "required": ["status"] },
+      "then": { "not": { "anyOf": [{ "required": ["started_at"] }, { "required": ["completed_at"] }, { "required": ["conclusion"] }] } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "in_progress" } }, "required": ["status"] },
+      "then": {
+        "required": ["started_at"],
+        "not": { "anyOf": [{ "required": ["completed_at"] }, { "required": ["conclusion"] }] }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+      "then": { "required": ["started_at", "completed_at", "conclusion"] }
+    }
+  ],
   "additionalProperties": false
 }
