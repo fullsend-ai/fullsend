@@ -274,6 +274,24 @@ type WorkflowRun struct {
 	CreatedAt  string
 }
 
+// CommitStatusState is the forge-neutral state of a commit status.
+type CommitStatusState string
+
+const (
+	CommitStatusPending CommitStatusState = "pending"
+	CommitStatusSuccess CommitStatusState = "success"
+	CommitStatusFailure CommitStatusState = "failure"
+	CommitStatusError   CommitStatusState = "error"
+)
+
+// CommitStatus describes a named status attached to an exact commit SHA.
+type CommitStatus struct {
+	State       CommitStatusState
+	Context     string
+	Description string
+	TargetURL   string
+}
+
 // WorkflowJob represents a job within a workflow run.
 type WorkflowJob struct {
 	ID         int
@@ -729,6 +747,9 @@ type Client interface {
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
+
+	// SetCommitStatus creates or updates a named status on an exact commit SHA.
+	SetCommitStatus(ctx context.Context, owner, repo, sha string, status CommitStatus) error
 
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)

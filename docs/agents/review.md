@@ -17,7 +17,20 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** posts the review on the PR. Findings that include a file path and a line in the change diff are also posted as inline comments on that line (GitHub review comments; GitLab merge-request discussions). Findings that cannot be positioned — file-level notes, lines outside the diff, or a GitLab diff version whose `head_sha` no longer matches the reviewed commit — stay in the sticky review comment, and on GitLab as general MR notes.
 
+On GitHub, the workflow also publishes `fullsend/review-completed` on the exact
+PR head commit. It is pending while the review runs and succeeds only after a
+non-skipped review completes. A failed or cancelled run leaves a non-successful
+status; if final cleanup cannot publish an outcome, the pending status remains.
+Repositories that do not use GitHub's merge queue can require this status in
+branch protection or a ruleset to prevent an unreviewed head commit from
+merging. See
+[Operations](../guides/getting-started/operations.md#requiring-review-completion-on-github).
+
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
+
+When cancellation cleanup runs and status comments are enabled, the comment
+explicitly warns maintainers not to merge until `fullsend/review-completed`
+succeeds on the current PR head. Run `/fs-review` on the PR to retry it.
 
 ## How it helps
 

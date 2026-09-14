@@ -1045,6 +1045,40 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 	assert.Contains(t, body, terminalTag)
 }
 
+func TestReconcileOrphaned_CancelledReviewWarnsAgainstMerge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Custom reviewer · Started 2:34 PM UTC",
+			Author: "fullsend-bot[bot]",
+		}},
+	}
+
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Do not merge")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "current pull request HEAD")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "`fullsend/review-completed`")
+}
+
+func TestReconcileOrphaned_CancelledNonReviewDoesNotWarnAgainstMerge(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 2:34 PM UTC",
+			Author: "fullsend-bot[bot]",
+		}},
+	}
+
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Code")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Do not merge")
+}
+
 func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}

@@ -850,6 +850,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
+      statuses: write
 
     steps:
       - name: Checkout config repository
@@ -1632,6 +1633,7 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
+      statuses: write
     steps:
       - name: Checkout config repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1818,6 +1820,7 @@ jobs:
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
+          role: ${{ matrix.role }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

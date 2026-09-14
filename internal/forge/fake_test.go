@@ -1564,6 +1564,25 @@ func TestNewFakeClient_MapsInitialized(t *testing.T) {
 	assert.NotNil(t, fc.PipelineSchedules)
 }
 
+func TestFakeClient_SetCommitStatus(t *testing.T) {
+	fc := NewFakeClient()
+	status := CommitStatus{
+		State:       CommitStatusSuccess,
+		Context:     "fullsend/review-completed",
+		Description: "Automated review completed",
+		TargetURL:   "https://ci.example/runs/42",
+	}
+
+	require.NoError(t, fc.SetCommitStatus(context.Background(), "acme", "widget", "0123456789abcdef0123456789abcdef01234567", status))
+	require.Equal(t, []CommitStatusRecord{{
+		Owner: "acme", Repo: "widget", SHA: "0123456789abcdef0123456789abcdef01234567", Status: status,
+	}}, fc.CommitStatuses)
+
+	wantErr := errors.New("status failed")
+	fc.Errors["SetCommitStatus"] = wantErr
+	require.ErrorIs(t, fc.SetCommitStatus(context.Background(), "acme", "widget", "sha", status), wantErr)
+}
+
 func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()

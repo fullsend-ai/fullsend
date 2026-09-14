@@ -2610,6 +2610,25 @@ func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflow
 	return nil
 }
 
+// SetCommitStatus creates a commit status on an exact SHA.
+func (c *LiveClient) SetCommitStatus(ctx context.Context, owner, repo, sha string, status forge.CommitStatus) error {
+	payload := map[string]string{
+		"state":       string(status.State),
+		"context":     status.Context,
+		"description": status.Description,
+		"target_url":  status.TargetURL,
+	}
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/statuses/%s", owner, repo, sha), payload)
+	if err != nil {
+		return fmt.Errorf("set commit status: %w", err)
+	}
+	if err := checkStatus(resp, http.StatusCreated); err != nil {
+		return fmt.Errorf("set commit status: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // CreateIssue creates a new issue on a repository. Labels are best-effort:
 // if GitHub rejects the create because a label is unavailable in the target
 // repo, the request is retried without labels so issue creation still succeeds.
