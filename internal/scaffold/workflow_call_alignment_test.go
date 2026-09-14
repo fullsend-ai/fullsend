@@ -955,6 +955,8 @@ func TestPerRepoShimReviewEventFilter(t *testing.T) {
 			assert.NotContains(t, job.If, "github.event.review.user.login",
 				"shim must preserve review events used by custom harness triggers")
 			assert.Equal(t, "write", job.Permissions["statuses"])
+			assert.Equal(t, "true", job.With["review_status_enabled"],
+				"managed shims must opt in only after granting statuses: write")
 		})
 	}
 }
@@ -1067,17 +1069,22 @@ func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 
-	assert.Contains(t, s, "  role:\n    description: Resolved harness role",
-		"action.yml must accept the resolved harness role")
+	assert.NotContains(t, s, "  role:\n    description: Resolved harness role",
+		"the shared status must not be selected by a custom harness role")
+	assert.Contains(t, s, "review-status-enabled:",
+		"the shared status lifecycle must require an explicit action opt-in")
 	pending := extractActionStepSection(t, s, "Set review completion status pending")
-	assert.Contains(t, pending, `RESOLVED_ROLE="${INPUT_ROLE:-${AGENT}}"`)
-	assert.Contains(t, pending, `[[ "${RESOLVED_ROLE}" != "review" ]]`)
+	assert.Contains(t, pending, "if: inputs.agent == 'review'")
+	assert.Contains(t, pending, "inputs.review-status-enabled == 'true'")
+	assert.NotContains(t, pending, "RESOLVED_ROLE")
 	assert.Contains(t, pending, `--sha "${PR_HEAD_SHA}"`)
 	assert.Contains(t, pending, "--state pending")
 	assert.Contains(t, pending, "GITHUB_TOKEN: ${{ inputs.github_token }}")
 
 	finalize := extractActionStepSection(t, s, "Finalize review completion status")
 	assert.Contains(t, finalize, "if: always()")
+	assert.Contains(t, finalize, "inputs.agent == 'review'")
+	assert.NotContains(t, finalize, "RESOLVED_ROLE")
 	assert.Contains(t, finalize, `fullsend review-status`)
 	assert.Contains(t, finalize, `--sha "${PR_HEAD_SHA}"`)
 	assert.Contains(t, finalize, `--job-status "${JOB_STATUS}"`)
@@ -1100,7 +1107,24 @@ func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
 	var dispatch callerWorkflow
 	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
 	assert.Equal(t, "write", dispatch.Jobs["review"].Permissions["statuses"])
-	assert.Equal(t, "write", dispatch.Jobs["harness-run"].Permissions["statuses"])
+	assert.NotContains(t, dispatch.Jobs["harness-run"].Permissions, "statuses",
+		"custom harness agents must not share the built-in review status")
+}
+
+func TestReusableDispatchReviewStatusOptIn(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	assert.Contains(t, content, "review_status_enabled:",
+		"reusable dispatch must offer a backwards-compatible status opt-in")
+	assert.Contains(t, content, "default: false",
+		"legacy callers without statuses: write must remain compatible")
+
+	review := extractStepSection(t, content, "Run review agent")
+	assert.Contains(t, review, "review-status-enabled: ${{ inputs.review_status_enabled }}",
+		"only opted-in callers may activate the review status lifecycle")
+
+	harness := extractStepSection(t, content, "Run harness agent")
+	assert.NotContains(t, harness, "review-status-enabled:",
+		"custom harness agents must never activate the shared status")
 }
 
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
@@ -1138,8 +1162,8 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 			"harness-run pr-head-sha must be populated from event_payload")
 		assert.Contains(t, section, "matrix.event_payload",
 			"harness-run must use matrix.event_payload, not needs.route.outputs")
-		assert.Contains(t, section, "role: ${{ matrix.role }}",
-			"harness-run must pass the resolved role to action.yml")
+		assert.NotContains(t, section, "role: ${{ matrix.role }}",
+			"custom harness roles must not select the shared review status")
 	})
 }
 

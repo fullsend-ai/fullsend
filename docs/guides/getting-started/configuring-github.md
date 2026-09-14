@@ -117,15 +117,14 @@ To apply the same preset across many repositories, declare `defaults.config` (an
 
 ## Testing Fullsend
 
-After installing open a new issue or comment `/fs-triage` in an open issue. Then visit the
-Actions tab to see the Fullsend workflow in action. In some minutes the
-`fullsend-ai-triage` bot should post a comment in the issue.
-
-If the review role is enabled and the repository does not use GitHub's merge
-queue, configure branch protection or a ruleset to require
-`fullsend/review-completed`. This prevents a PR head whose automated review
-failed, was skipped, or was cancelled from merging. See
-[Operations](operations.md#requiring-review-completion-on-github).
+1. Open a new issue or comment `/fs-triage` in an open issue.
+2. Visit the Actions tab to see the Fullsend workflow run. In a few minutes,
+   the `fullsend-ai-triage` bot should post a comment on the issue.
+3. If the built-in review agent is enabled and the repository does not use
+   GitHub's merge queue, configure branch protection or a ruleset to require
+   `fullsend/review-completed`. This prevents a PR head whose automated review
+   failed, was skipped, or was cancelled from merging. See
+   [Operations](operations.md#requiring-review-completion-on-github).
 
 ## Next steps
 

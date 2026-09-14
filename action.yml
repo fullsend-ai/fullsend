@@ -12,9 +12,6 @@ inputs:
   agent:
     description: Agent name passed to fullsend run (e.g. triage, code, review).
     required: true
-  role:
-    description: Resolved harness role when it differs from the agent name.
-    default: ""
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
@@ -56,6 +53,11 @@ inputs:
       callers where GITHUB_EVENT_PATH lacks the dispatched event_payload
       wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
     default: ""
+  review-status-enabled:
+    description: >-
+      Publish the built-in review completion status. The calling workflow
+      must grant statuses: write.
+    default: "false"
 
 outputs:
   skipped:
@@ -367,21 +369,15 @@ runs:
       run: fullsend --version
 
     - name: Set review completion status pending
-      if: inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.pr-head-sha != ''
+      if: inputs.agent == 'review' && inputs.review-status-enabled == 'true' && inputs.status-repo != '' && inputs.pr-head-sha != ''
       shell: bash
       env:
-        AGENT: ${{ inputs.agent }}
-        INPUT_ROLE: ${{ inputs.role }}
         STATUS_REPO: ${{ inputs.status-repo }}
         RUN_URL: ${{ inputs.run-url }}
         PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
-        RESOLVED_ROLE="${INPUT_ROLE:-${AGENT}}"
-        if [[ "${RESOLVED_ROLE}" != "review" ]]; then
-          exit 0
-        fi
         if [[ -z "${PR_HEAD_SHA}" ]]; then
           echo "::error::Review completion status requires an explicit pull request head SHA"
           exit 1
@@ -549,12 +545,9 @@ runs:
         path: ${{ github.workspace }}/output
 
     - name: Finalize review completion status
-      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.pr-head-sha != ''
+      if: always() && inputs.agent == 'review' && inputs.review-status-enabled == 'true' && inputs.status-repo != '' && inputs.pr-head-sha != ''
       shell: bash
       env:
-        AGENT: ${{ inputs.agent }}
-        INPUT_ROLE: ${{ inputs.role }}
-        HARNESS_ROLE: ${{ steps.run.outputs.role }}
         STATUS_REPO: ${{ inputs.status-repo }}
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
@@ -563,10 +556,6 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
-        RESOLVED_ROLE="${INPUT_ROLE:-${HARNESS_ROLE:-${AGENT}}}"
-        if [[ "${RESOLVED_ROLE}" != "review" ]]; then
-          exit 0
-        fi
         STATUS_FLAGS=(
           --repo "${STATUS_REPO}"
           --sha "${PR_HEAD_SHA}"
@@ -589,7 +578,6 @@ runs:
       env:
         MINT_URL: ${{ inputs.mint-url }}
         AGENT: ${{ inputs.agent }}
-        INPUT_ROLE: ${{ inputs.role }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
         RUN_ID: ${{ github.run_id }}
@@ -630,7 +618,7 @@ runs:
         fi
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
-        RESOLVED_ROLE="${INPUT_ROLE:-${HARNESS_ROLE:-${AGENT}}}"
+        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")

@@ -64,15 +64,15 @@ This is idempotent — it provisions new repos, repairs missing or drifted compo
 
 ## Requiring review completion on GitHub
 
-After syncing the current workflow template, add
-`fullsend/review-completed` as a required status check in the default branch's
-branch protection rule or ruleset. Keep the review role enabled for every
-repository that requires the check.
-
-Do not require this status in a repository that uses GitHub's merge queue. The
-current workflow reports only on the pull request head SHA; it does not handle
-the queue's separate `merge_group` SHA, so the queue would wait for a status
-that never arrives.
+1. Sync the current managed workflow template.
+2. Keep the built-in review agent enabled for every repository that requires
+   the check.
+3. Add `fullsend/review-completed` as a required status check in the default
+   branch's branch protection rule or ruleset.
+4. Do not require this status in a repository that uses GitHub's merge queue.
+   The current workflow reports only on the pull request head SHA; it does not
+   handle the queue's separate `merge_group` SHA, so the queue would wait for a
+   status that never arrives.
 
 The status is tied to the exact pull request head SHA:
 
@@ -88,8 +88,11 @@ head was not reviewed. Comment `/fs-review` on the PR to review the current
 head again.
 
 The generated per-repo workflow grants `statuses: write` to its trusted
-workflow token, and the action uses that permission only for review-role runs.
-The review sandbox continues to use its separately minted review token.
+workflow token and passes `review_status_enabled: true`. Older or custom
+callers leave the status disabled by default; they must grant the same
+permission and explicitly opt in. Only the built-in `review` agent publishes
+this shared status. The review sandbox continues to use its separately minted
+review token.
 
 ## Uninstalling
 
@@ -222,7 +225,7 @@ The composite action accepts these optional status inputs:
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 | `pr-head-sha` | Exact PR head SHA used for the review-completion status; per-repo reusable workflows populate it automatically |
-| `role` | Resolved harness role; used when a custom agent performs the review role |
+| `review-status-enabled` | Set to `true` only for the built-in review agent when the calling workflow grants `statuses: write` |
 
 The per-repo dispatch workflow passes these inputs automatically.
 
