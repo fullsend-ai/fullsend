@@ -36,11 +36,24 @@ maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher —
+subject to the skips below.
+
+### Automatic skips
+
+The review agent does not run automatically — though `/fs-review` always works — when:
+
+- **The PR is a draft.** Opening or pushing to a draft does not trigger a review; it runs once the PR is marked ready for review. (Applying the `ready-for-review` label to a draft lifts the draft skip, but the label is an automatic trigger like any other and is still subject to the `fullsend-no-review` and documentation-prose skips below. Only `/fs-review` is an unconditional override.)
+- **The PR carries the `fullsend-no-review` label.** See [Control labels](#control-labels) below.
+- **The diff is documentation prose only.** A PR whose changed files are all markdown under `docs/guides/`, `docs/problems/`, `docs/agents/` or `docs/glossary.md` — and whose pages carry no executable markup — is skipped with a notice in the job summary. Prose is an allowlist: markdown anywhere else under `docs/` (ADRs, `normative/`, `contributing/`, `reference/`, `cli/`, `architecture.md`, `.vitepress/`, …), markdown elsewhere in the tree (`skills/*/SKILL.md`, `AGENTS.md`, `CLAUDE.md` are executable agent instruction) and lockfiles (a lockfile-only diff can repoint a dependency) are all still reviewed. Because VitePress compiles every page under `docs/` into a Vue component, each allowlisted page is also read at the PR head and keeps its review if it contains a `<script>` or `<style>` block, a `head:` frontmatter key, `{{ }}` interpolation, or a bound attribute or directive on raw HTML outside code. A file renamed into `docs/` is judged on the path it came from, and a page or file listing that could not be read, or a listing that was truncated, never skips.
+
+A push that is skipped for any of these reasons still clears `ready-for-merge` and `ready-for-review`, exactly as a review round would at start — the labels never describe commits nobody reviewed.
+
+See [ADR 0096](../ADRs/0096-skip-provably-unnecessary-review-dispatch.md) for the rationale.
 
 ## Control labels
 
-These labels are applied by the review post-script based on the review outcome.
+Most of these labels are applied by the review post-script based on the review outcome; `fullsend-no-review` is the exception — see its row below.
 
 | Label | Meaning |
 |-------|---------|
@@ -48,6 +61,7 @@ These labels are applied by the review post-script based on the review outcome.
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and the post-script closed it. |
+| `fullsend-no-review` | Prevents automatic (bot-triggered) review runs on this PR. Mirrors the [fix agent](fix.md)'s `fullsend-no-fix` label. Explicit `/fs-review` commands are unaffected. Currently applied manually (no `/fs-review-stop` command yet — see [ADR 0096](../ADRs/0096-skip-provably-unnecessary-review-dispatch.md)). |
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.

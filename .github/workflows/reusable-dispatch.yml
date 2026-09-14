@@ -108,9 +108,10 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.docs-lockfile-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      kill_switch: ${{ steps.kill-switch.outputs.kill_switch }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -151,6 +152,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
           ORG_NAME: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -273,7 +275,7 @@ jobs:
                     STAGE="code"
                   fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_IS_PR}" == "true" ]] && ! has_label "fullsend-no-review"; then
                     STAGE="review"
                   fi
                 fi
@@ -283,12 +285,19 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
-                    STAGE="review"
+                  # Drafts don't get an automatic review on open/sync — the
+                  # review fires once the PR is marked ready (ADR 0096).
+                  # fullsend-no-review blocks automatic dispatch only, mirroring
+                  # the fullsend-no-fix label (ADR 0034); an explicit /fs-review
+                  # comment still works on drafts and labeled PRs alike.
+                  if [[ "${EVENT_ACTION}" == "ready_for_review" || "${PR_IS_DRAFT}" != "true" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
+                    if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                      STAGE="review"
+                    fi
                   fi
                   ;;
                 labeled)
-                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
                     STAGE="review"
                   fi
                   ;;
@@ -405,16 +414,24 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        id: kill-switch
+        # Always runs so it can publish kill_switch downstream, even when no
+        # stage routed (draft, fullsend-no-review, below triage): the
+        # clear-stale-merge-labels job must honour the switch on those paths
+        # too. Dispatch is still halted (exit 1) only when a stage routed.
+        env:
+          STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
+          KILL_SWITCH=false
           if [[ -f .fullsend/config.yaml ]]; then
             KILL_SWITCH=$(yq '.kill_switch // false' .fullsend/config.yaml)
-            if [[ "$KILL_SWITCH" == "true" ]]; then
-              echo "::error::Kill switch is active — all agent dispatch halted"
-              echo "::error::Set kill_switch: false in .fullsend/config.yaml to resume"
-              exit 1
-            fi
+          fi
+          echo "kill_switch=${KILL_SWITCH}" >> "${GITHUB_OUTPUT}"
+          if [[ "$KILL_SWITCH" == "true" && -n "$STAGE" ]]; then
+            echo "::error::Kill switch is active — all agent dispatch halted"
+            echo "::error::Set kill_switch: false in .fullsend/config.yaml to resume"
+            exit 1
           fi
 
       - name: Validate agents config
@@ -511,6 +528,111 @@ jobs:
             exit 0
           fi
 
+      - name: Check docs/lockfile-only diff
+        id: docs-lockfile-check
+        if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name != 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # Skip review when every changed file is documentation prose
+          # (ADR 0096). An explicit /fs-review comment bypasses this check
+          # entirely (the issue_comment guard above), matching the draft and
+          # label bypasses.
+          #
+          # Prose is an allowlist, not "docs/ minus contracts": `case` globs
+          # match `/`, so a bare docs/*.md arm reaches every nested markdown
+          # file under docs/, and the tree keeps growing load-bearing pages
+          # (architecture.md, cli/, normative/, contributing/, reference/,
+          # ADRs/, .vitepress/) that a denylist has to chase. A directory is
+          # skippable only once it is listed here. Everything else stays
+          # reviewed — including markdown outside docs/ (skills/*/SKILL.md,
+          # AGENTS.md, CLAUDE.md are executable agent instruction) and
+          # lockfiles (npm resolves from package-lock.json, so a lockfile-only
+          # diff can repoint a transitive dependency without touching
+          # package.json).
+          is_prose() {
+            case "$1" in
+              docs/guides/*.md|docs/problems/*.md|docs/agents/*.md|docs/glossary.md) return 0 ;;
+            esac
+            return 1
+          }
+          if [[ -z "${PR_NUMBER}" || "${PR_NUMBER}" == "null" ]]; then
+            exit 0
+          fi
+          # per_page belongs in the query string: `-F per_page=100` makes
+          # `gh api` issue a POST, which this endpoint answers with a 404.
+          # previous_filename is listed too, so a file renamed into docs/ is
+          # classified on the path it came from as well; it goes last because
+          # `read` with IFS=tab collapses an empty middle field.
+          FILES=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files?per_page=100" --paginate \
+            --jq '.[] | [.status, .filename, .contents_url, (.previous_filename // "")] | @tsv') || {
+            echo "::warning::Failed to fetch changed files for PR #${PR_NUMBER} — not skipping review"
+            exit 0
+          }
+          [[ -z "${FILES}" ]] && exit 0
+          # GitHub caps this endpoint at 3000 files and stops paginating
+          # without erroring, so a larger PR would look docs-only from a
+          # truncated head. Never skip on a truncated listing.
+          if [[ "$(wc -l <<< "${FILES}")" -ge 3000 ]]; then
+            echo "::notice::PR #${PR_NUMBER} file list may be truncated — not skipping review"
+            exit 0
+          fi
+          skippable=true
+          while IFS=$'\t' read -r status path url prev; do
+            [[ -z "${path}" ]] && continue
+            if ! is_prose "${path}" || { [[ -n "${prev}" ]] && ! is_prose "${prev}"; }; then
+              skippable=false; break
+            fi
+            [[ "${status}" == "removed" ]] && continue
+            # A prose path is not enough. VitePress compiles every markdown
+            # page under docs/ into a Vue component (config.ts srcExclude
+            # only drops icons and testing/), so a page can carry a
+            # root-level <script setup> that runs at build time, a <style>
+            # block, a head: frontmatter key that injects tags, {{ }}
+            # expressions evaluated during SSG, a build-time <!-- @include -->,
+            # or bound attributes and directives (:prop, @event, v-*, on*) on
+            # raw HTML — docs/v/index.md already ships a <script setup>. Read
+            # the page at the PR head and keep the review unless it is free of
+            # all of these outside code, where VitePress renders text verbatim
+            # (v-pre).
+            #
+            # The scan is deliberately over-eager — a false positive only
+            # keeps the review (ADR 0096). Fenced code is stripped because it
+            # renders verbatim, EXCEPT a fence whose info string ends in -vue,
+            # which VitePress evaluates; then inline code spans are stripped.
+            # Matching is case-insensitive because config.ts KNOWN_TAGS is /i,
+            # so <SCRIPT> renders too; head: tolerates spaces before the colon;
+            # and the attribute/directive pattern runs over the page with
+            # newlines flattened, so a binding wrapped onto its own line still
+            # matches. An unreadable page never skips.
+            BODY=$(gh api -H 'Accept: application/vnd.github.raw' "${url}") || {
+              skippable=false; break
+            }
+            SCANNED=$(awk '
+              /^```/ {
+                if (fence) { fence = 0 }
+                else { fence = 1; vue = ($0 ~ /-vue[[:space:]]*$/) }
+                next
+              }
+              !fence || vue
+            ' <<< "${BODY}" | sed 's/`[^`]*`//g')
+            if grep -Eiq '<script|<style|^head[[:space:]]*:|\{\{|@include[[:space:]]*:' <<< "${SCANNED}" \
+                || printf '%s' "${SCANNED}" | tr '\n' ' ' \
+                   | grep -Eiq '<[A-Za-z][^>]*[[:space:]](:|@|v-|on)[A-Za-z-]+='; then
+              echo "::notice::${path} carries executable markup — not skipping review"
+              skippable=false; break
+            fi
+          done <<< "${FILES}"
+          if [[ "${skippable}" == "true" ]]; then
+            echo "::notice::Skipping review — PR #${PR_NUMBER} only touches documentation prose under docs/"
+            echo "### fullsend review skipped" >> "${GITHUB_STEP_SUMMARY}"
+            echo "PR #${PR_NUMBER} only touches documentation prose (markdown under \`docs/guides/\`, \`docs/problems/\`, \`docs/agents/\` or \`docs/glossary.md\`, with no executable markup) — no review dispatched." >> "${GITHUB_STEP_SUMMARY}"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Resolve PR head for issue_comment events
         id: pr-head
         if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
@@ -581,6 +703,43 @@ jobs:
             echo "${EVENT_PAYLOAD}"
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
+
+  clear-stale-merge-labels:
+    name: Clear stale merge labels
+    needs: route
+    # New commits that no review round will look at: the labels the round
+    # would have cleared at start are cleared here instead. Kept out of the
+    # route job so that job stays read-only. Skipped while the kill switch is
+    # active — a halted repo mutates no labels.
+    if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && needs.route.outputs.stage != 'review' && needs.route.outputs.kill_switch != 'true'
+    runs-on: ${{ inputs.runner_image }}
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove ready-for-merge and ready-for-review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # A push that starts no review round still supersedes the head that
+          # ready-for-merge and ready-for-review described. A review run start
+          # clears both (docs/architecture.md, coordinator merge algorithm); when
+          # the round is skipped — draft, fullsend-no-review, documentation prose,
+          # or a pusher below triage — nothing else would, and ready-for-merge
+          # would keep describing a head nobody reviewed (ADR 0096). A 404 means
+          # the label was not there; anything else fails the job so the stale
+          # label is visible rather than silently kept.
+          for label in ready-for-merge ready-for-review; do
+            if out=$(gh api --method DELETE "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/labels/${label}" 2>&1); then
+              echo "::notice::Removed stale ${label} from PR #${PR_NUMBER} — this push was not reviewed"
+            elif [[ "${out}" != *"HTTP 404"* ]]; then
+              echo "::error::Could not remove ${label} from PR #${PR_NUMBER}: ${out}"
+              exit 1
+            fi
+          done
 
   triage:
     name: Triage
