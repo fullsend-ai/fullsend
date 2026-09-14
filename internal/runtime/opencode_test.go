@@ -35,6 +35,7 @@ func TestOpenCodeRuntimeEnvExports(t *testing.T) {
 	rt := OpenCodeRuntime{}
 	env := rt.EnvExports()
 	assert.Contains(t, env, "export OPENCODE_CONFIG_DIR="+rt.ConfigDir())
+	assert.Contains(t, env, "export OPENCODE_DISABLE_PROJECT_CONFIG=true")
 	assert.Contains(t, env, "OPENCODE_CONFIG_CONTENT")
 	assert.Contains(t, env, "GOOGLE_APPLICATION_CREDENTIALS")
 }
@@ -74,19 +75,21 @@ func TestOpenCodeBareModelID(t *testing.T) {
 	assert.Equal(t, "bare", openCodeBareModelID("bare"))
 }
 
-func TestOpenCodeToolsRecord(t *testing.T) {
+func TestOpenCodePermissionRecord(t *testing.T) {
 	t.Parallel()
 
-	// nil (no restriction) → nil, so OpenCode's default set applies.
-	assert.Nil(t, openCodeToolsRecord(nil))
+	// nil (no restriction) → empty map, so OpenCode's default set applies.
+	rec := openCodePermissionRecord(nil)
+	assert.NotNil(t, rec)
+	assert.Empty(t, rec)
 
-	rec := openCodeToolsRecord([]string{"Bash", "Read", "Edit", "Glob", "LS", "Task"})
-	assert.Equal(t, []string{"bash", "edit", "glob", "list", "read", "task"}, openCodeToolNamesSorted(rec))
+	rec = openCodePermissionRecord([]string{"Bash", "Read", "Edit", "Glob", "LS", "Task"})
+	assert.Equal(t, []string{"bash", "edit", "glob", "read", "task"}, openCodeToolNamesSorted(rec))
 
 	// Skill is dropped (native discovery), unsupported names dropped, and an
 	// agent listing only those gets an explicit empty record (not nil, so
 	// OpenCode does not fall back to its full default set).
-	rec = openCodeToolsRecord([]string{"Skill", "NoSuchTool"})
+	rec = openCodePermissionRecord([]string{"Skill", "NoSuchTool"})
 	assert.NotNil(t, rec)
 	assert.Empty(t, openCodeToolNamesSorted(rec))
 }
@@ -108,8 +111,8 @@ func TestOpenCodeAgentMarkdown(t *testing.T) {
 	assert.Contains(t, s, `"mode": "primary"`)
 	assert.Contains(t, s, `"description": "Triage incoming issues"`)
 	assert.Contains(t, s, `"model": "opus"`)
-	assert.Contains(t, s, `"bash": true`)
-	assert.Contains(t, s, `"read": true`)
+	assert.Contains(t, s, `"bash": "allow"`)
+	assert.Contains(t, s, `"read": "allow"`)
 	assert.Contains(t, s, "You are the triage agent.")
 	assert.True(t, strings.HasSuffix(s, "\n"))
 	// The body follows a closing fence.
