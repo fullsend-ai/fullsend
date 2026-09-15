@@ -135,6 +135,12 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
+	if len(def.BashAllowlist) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" (see docs/contributing/runtime-implementation.md)\n",
+			strings.Join(def.BashAllowlist, ", "))
+	}
+
 	// Hook wiring is #515's responsibility (OpenCode has no native hooks); the
 	// plugin adapter path is reserved at openCodeHooksExtensionPath(). Nothing
 	// is installed here.
@@ -232,6 +238,7 @@ var openCodeToolForClaude = map[string]string{
 	"LS":        "read", // OpenCode's read tool handles both files and directories
 	"WebFetch":  "webfetch",
 	"Task":      "task",
+	"Agent":     "task", // Agent is the current name; Task is the legacy alias
 }
 
 // openCodeToolNamesSorted returns the allowed tool IDs in a stable order (for
