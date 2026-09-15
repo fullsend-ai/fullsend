@@ -30,6 +30,7 @@ while the product direction calls for a dedicated, opt-in auto-merge agent
 ([agents#1132](https://github.com/fullsend-ai/agents/issues/1132)). Keeping both
 paths would create two Fullsend-owned ways to authorize autonomous merging and
 would make repository policy and operational auditing ambiguous.
+
 Review determines whether a change is acceptable; merge authorization must also
 account for current repository policy, required checks, human intent, and the
 exact pull-request revision. Combining those responsibilities makes it harder
@@ -74,9 +75,10 @@ The dedicated stage is the sole Fullsend-owned path for autonomous merge. The
 `CODE_AUTO_MERGE` and `CODE_AUTO_MERGE_METHOD` variables and their Code
 post-script implementation will be removed from the agents repository,
 including generated bundles, forge helpers, tests, and user documentation. They
-will not be aliased or migrated as a compatibility fallback. Existing values
-therefore have no effect; repositories that want autonomous merging must opt in
-to the dedicated stage. Forge-native or third-party automation, such as
+will not be aliased or migrated as a compatibility fallback. Once the removal
+lands, existing values will have no effect; repositories that want autonomous
+merging must opt in to the dedicated stage.
+Forge-native or third-party automation, such as
 Renovate's own `automerge` setting, is outside this Fullsend-owned stage
 contract and requires separate policy ownership and audit.
 

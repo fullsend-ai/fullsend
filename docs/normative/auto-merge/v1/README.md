@@ -124,7 +124,7 @@ policy, actors, checks, mechanism, and result without recording credentials.
 flowchart LR
     E[Forge event] --> D[Stage dispatch]
     D --> F[Deterministic candidate filter]
-    F -->|not a candidate| O[Record non-mutating outcome]
+    F -->|not a candidate| O[Record outcome with reason codes]
     F --> C[Host builds AutoMergeContext]
     C --> A[Sandboxed Auto-Merge agent]
     A --> V[Validate structured assessment]
@@ -410,8 +410,8 @@ The context must be serializable as a secret-free fixture for replay tests.
 The agent returns exactly one structured result with:
 
 - schema version;
-- decision: `eligible`, `ineligible`, `needs_human`, `waiting`, `stale`,
-  `superseded`, or `platform_error`;
+- decision: `eligible`, `ineligible`, `needs_human`, `waiting`, `stale`, or
+  `platform_error`;
 - reviewed and observed head SHAs;
 - candidate cohort and risk classification;
 - one or more stable reason codes;
@@ -667,7 +667,8 @@ Before `automatic` mode is available, the implementation must prove:
 
 ## Rollout and rollback
 
-Rollout proceeds in this order:
+Rollout proceeds in this order. This contract document and ADR 0110 are
+normative specifications and may land before step 1.
 
 1. merge the removal of the legacy `CODE_AUTO_MERGE*` implementation;
 2. land contracts, schemas, fixtures, and host-side refusal tests;
@@ -719,8 +720,9 @@ focused implementation PRs:
   or a dedicated merge identity;
 - the exact GitHub API used to enqueue under each supported ruleset;
 - the model/runtime selected for semantic evaluation;
-- the first approved repository and cohort; and
-- the length and thresholds of the post-merge evidence window.
+- the first approved repository and cohort;
+- the length and thresholds of the post-merge evidence window; and
+- the author trust class taxonomy and how it is determined.
 
 An implementation choice that weakens any required invariant is not an open
 detail; it requires a new architectural decision and contract revision.

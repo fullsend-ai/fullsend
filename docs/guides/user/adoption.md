@@ -149,15 +149,19 @@ See [bugfix workflow](bugfix-workflow.md) for the full agent-driven flow from is
 Autonomous merging is being moved to a dedicated, opt-in `auto-merge` stage
 ([ADR 0110](../../ADRs/0110-dedicated-auto-merge-authority-boundary.md)). The
 Code agent creates and updates PRs; it does not autonomously merge them. The
-legacy `CODE_AUTO_MERGE` and `CODE_AUTO_MERGE_METHOD` variables are removed and
+legacy `CODE_AUTO_MERGE` and `CODE_AUTO_MERGE_METHOD` variables are being
+removed ([agents#1219](https://github.com/fullsend-ai/agents/pull/1219)) and
 must not be used as an enablement mechanism.
 
 The dedicated stage consumes structured Review evidence, then a host-side forge
 driver revalidates the current head SHA, policy, required checks, human intent,
 and merge or queue path before requesting the normal forge operation. Start in
 observe-only or explicitly human-triggered mode, and graduate only allowlisted
-low-risk cohorts with dated evidence. See the [autonomy spectrum](../../problems/autonomy-spectrum.md)
-for the remaining graduation questions.
+low-risk cohorts with dated evidence. The Review agent's
+[risk assessment](../../ADRs/0089-pr-risk-assessment-scoring.md) informs cohort
+eligibility; a `risk_too_high` finding prevents autonomous merge. See the
+[autonomy spectrum](../../problems/autonomy-spectrum.md) for the remaining
+graduation questions.
 
 Forge-native or third-party automation, such as Renovate / Dependabot, is a
 separate integration and must be governed by its own policy; it is not a second
