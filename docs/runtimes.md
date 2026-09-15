@@ -94,10 +94,12 @@ flowchart LR
 | Effort | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry | harness `effort:` |
 
 In CI these are repository variables of the same name, plain or role-prefixed
-(`TRIAGE_FULLSEND_MODEL`), so a repo can switch one role's model without a pull request. For
-**durable** per-agent configuration that lives in the repository and is reviewable, use
-the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.runner` does **not** reach the
-`fullsend` process.
+(`TRIAGE_FULLSEND_MODEL`), so a repo can switch one role's model without a pull request.
+The `<ROLE>_` prefix is the role identifier — uppercased with hyphens mapped to
+underscores (`ci-check` → `CI_CHECK_FULLSEND_MODEL`). For **durable** per-agent
+configuration that lives in the repository and is reviewable, use the agent's
+`agents:` entry in `.fullsend/config.yaml` instead. Harness `env.runner` does **not**
+reach the `fullsend` process.
 
 ### Per-agent runtime, model and effort
 
@@ -162,7 +164,8 @@ in the plan block — Claude Code expects an alias (`opus`, `sonnet`, …) or an
 
 **Migrating from repository variables.** A repo that carries `<ROLE>_FULLSEND_MODEL` /
 `<ROLE>_FULLSEND_RUNTIME` variables can move them onto `agents:` entries one-to-one: the variable
-prefix is the agent name (`CODE_FULLSEND_RUNTIME=claude` → `- name: code` / `runtime: claude`).
+prefix is the agent name, uppercased with hyphens mapped to underscores
+(`CODE_FULLSEND_RUNTIME=claude` → `- name: code` / `runtime: claude`; `ci-check` → `CI_CHECK_FULLSEND_MODEL`).
 Delete the variable afterwards — while it exists it still wins, so the config entry would be
 silently shadowed. Bump the workflow's fullsend pin to a version that carries per-agent settings
 *before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
