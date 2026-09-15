@@ -43,7 +43,7 @@ Behaviour tests use the same pool orgs (for `ENVIRONMENT=dev`) but install via `
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `pkg/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
 
 ## CI runs
 

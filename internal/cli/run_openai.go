@@ -479,10 +479,9 @@ func dropSkippedProviders(names []string, skipped map[string]struct{}) []string 
 // layered into .fullsend/profiles at run time — importing that directory
 // wholesale would replace the canonical profiles the fleet resolves from
 // fullsend-ai/agents — and a repository install ships only a .gitkeep, so
-// the runner brings its own, version-matched copy. ImportProfile is a
-// delete-and-reimport with a per-id lock and content cache, so a profile a
-// running sandbox still references stays in place and an unchanged one is
-// not re-sent.
+// the runner brings its own, version-matched copy. ImportProfileVerified
+// drops the content cache, re-sends, and confirms the gateway lists it, so
+// a hash match against a recreated (empty) gateway cannot skip the import.
 func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
 	data, err := scaffold.FullsendRepoFile("profiles/" + profileID + ".yaml")
 	if err != nil {
@@ -502,34 +501,14 @@ func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Prin
 	}
 	start := time.Now()
 	printer.StepStart("Importing provider profile: " + profileID)
-	// Never trust ImportProfile's content cache for this profile: the cache
-	// says whether *these bytes* were sent once, not what the gateway holds
-	// now (a same-id profile imported earlier in this run, or another
-	// gateway entirely). Re-send every run; it is one small import.
-	sandbox.ForgetProfileCache(profileID)
-	if err := sandbox.ImportProfile(ctx, profileID, tmp.Name()); err != nil {
+	// ImportProfileVerified drops the content cache, imports, and confirms
+	// the gateway lists the profile (retrying once). The cache says whether
+	// these bytes were sent once, not what the gateway holds now; skipping
+	// the send would leave the provider create below failing with
+	// "unsupported provider type or profile".
+	if err := sandbox.ImportProfileVerified(ctx, profileID, tmp.Name()); err != nil {
 		printer.StepFail("Failed to import provider profile " + profileID)
 		return fmt.Errorf("importing provider profile %q: %w", profileID, err)
-	}
-	// ImportProfile's content cache can outlive the gateway it was written
-	// against (a recreated gateway, a cache from another machine's run);
-	// the provider create below would then fail with "unsupported provider
-	// type or profile". Confirm the gateway lists it and re-send otherwise.
-	present, err := sandbox.ProfileExists(ctx, profileID)
-	if err != nil {
-		printer.StepFail("Failed to list provider profiles")
-		return fmt.Errorf("checking provider profile %q: %w", profileID, err)
-	}
-	if !present {
-		sandbox.ForgetProfileCache(profileID)
-		if err := sandbox.ImportProfile(ctx, profileID, tmp.Name()); err != nil {
-			printer.StepFail("Failed to import provider profile " + profileID)
-			return fmt.Errorf("importing provider profile %q: %w", profileID, err)
-		}
-		if present, err = sandbox.ProfileExists(ctx, profileID); err != nil || !present {
-			printer.StepFail("Provider profile missing after import: " + profileID)
-			return fmt.Errorf("provider profile %q is not on the gateway after import (err=%v)", profileID, err)
-		}
 	}
 	printer.StepDone(fmt.Sprintf("Provider profile ready: %s (%.1fs)", profileID, time.Since(start).Seconds()))
 	return nil

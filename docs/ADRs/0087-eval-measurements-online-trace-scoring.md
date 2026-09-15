@@ -99,6 +99,11 @@ Until that release lands, GHA/GitLab `eval-measure` wiring is provisional
 (clean skip when the remote manifest is missing). Local `FULLSEND_DIR`
 manifests are exercised in unit tests today.
 
+> **Implemented ([#6459](https://github.com/fullsend-ai/fullsend/pull/6459)):**
+> portable remote score export now ships via the shared OTEL path as
+> `gen_ai.evaluation.result` span events (fail-open). Decision text above
+> is unchanged; this note records delivery only.
+
 The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
 attribute fitness so later scorers can trust the trace. EM-001 reads
 OpenTelemetry GenAI attribute names (`gen_ai.*` constants in

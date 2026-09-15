@@ -84,6 +84,7 @@ gitlab:
   fullsend_ref: v2.5.0
   repos:
     - name: gitlab-group/project
+    - name: gitlab-group/subgroup/nested-project
 ```
 
 GitHub repos use a token mint for authentication. The
@@ -96,7 +97,9 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
 is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
 `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
-none are set.
+none are set. You can also pass `--gitlab-url` to `fullsend repos install`
+to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
+when no forge is specified).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -270,10 +273,11 @@ flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --direct
 ```
 
 When targeting multiple repos (via globs or bulk lists), the command
@@ -446,10 +450,14 @@ fullsend github uninstall "$ORG_NAME" --yolo
 
 ### Removing individual repos
 
-Remove a repo from the manifest and tear down its fullsend installation:
+Remove a repo from the manifest and tear down its fullsend installation.
+Scaffold file deletions open a PR by default (repository variables and
+secrets are still removed immediately via the API). Pass `--direct` to push
+file deletions to the default branch instead:
 
 ```bash
 fullsend repos uninstall acme/old-api
+fullsend repos uninstall acme/old-api --direct
 ```
 
 Tear down without modifying the manifest (temporary teardown):

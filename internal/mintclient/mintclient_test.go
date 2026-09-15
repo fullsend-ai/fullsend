@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -697,5 +698,81 @@ func TestMintToken_LocalhostHTTPAllowed(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "HTTPS") {
 		t.Errorf("localhost HTTP should be allowed, got: %v", err)
+	}
+}
+
+// TestMintToken_SurvivesTransientFailuresWithinMaxMintDuration proves a
+// caller bounding MintToken with a context.WithTimeout(ctx, MaxMintDuration)
+// deadline (as the post-script remint does, #7231) survives several
+// transient 5xx responses across both the OIDC exchange and the mint call,
+// rather than the deadline cutting retries short mid-backoff. retryBaseDelay
+// is shortened (from the package-wide 0 set by init, to a small positive
+// value here) so the exponential backoff between attempts actually runs,
+// instead of the test passing vacuously with instantaneous retries.
+func TestMintToken_SurvivesTransientFailuresWithinMaxMintDuration(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = 10 * time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	var oidcAttempts int
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oidcAttempts++
+		if oidcAttempts < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
+	}))
+	defer oidcServer.Close()
+
+	var mintAttempts int
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mintAttempts++
+		if mintAttempts < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(MintResult{Token: "ghu_after_retries", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), MaxMintDuration)
+	defer cancel()
+
+	start := time.Now()
+	result, err := MintToken(ctx, MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MintToken() error = %v, want success after transient failures within MaxMintDuration", err)
+	}
+	if result.Token != "ghu_after_retries" {
+		t.Errorf("token = %q, want %q", result.Token, "ghu_after_retries")
+	}
+	if oidcAttempts != 2 {
+		t.Errorf("oidcAttempts = %d, want 2 (one transient 5xx then success)", oidcAttempts)
+	}
+	if mintAttempts != 3 {
+		t.Errorf("mintAttempts = %d, want 3 (two transient 5xx then success)", mintAttempts)
+	}
+	if elapsed >= MaxMintDuration {
+		t.Errorf("MintToken took %s, want comfortably under MaxMintDuration (%s)", elapsed, MaxMintDuration)
 	}
 }

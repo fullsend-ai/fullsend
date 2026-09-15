@@ -73,7 +73,7 @@ To remove fullsend from a single repository:
 
 **GitLab repos:**
 
-1. Run `fullsend repos uninstall` to cleanly remove fullsend entries from `.gitlab-ci.yml` and delete `.gitlab/ci/fullsend-pipeline.yml` and `.fullsend/config.yaml`. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml` and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`dispatch`, `poll`, `agent`), the fullsend workflow rules (`merge_request_event`, `schedule`, `api`), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration.
+1. Run `fullsend repos uninstall` to open a PR that removes fullsend entries from `.gitlab-ci.yml` and deletes `.gitlab/ci/fullsend-pipeline.yml` and `.fullsend/config.yaml` (pass `--direct` to push those file changes to the default branch). Variables and secrets are deleted immediately via the API. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml` and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`dispatch`, `poll`, `agent`), the fullsend workflow rules (`merge_request_event`, `schedule`, `api`), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration.
 
 > **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when no existing value is present but does not overwrite an existing value. This only applies when the repo's `.gitlab-ci.yml` already contains a `workflow:` block — when no `workflow:` block exists, fullsend leaves it absent so push-triggered pipelines are not disrupted. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
 
@@ -116,6 +116,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Fleet Admin | `fullsend repos status` | Compare manifest against actual per-repo state: detect missing or drifted components, ref drift, and scaffold content drift |
 | Fleet Admin | `fullsend repos set-default <key> <value>` | Set or remove a platform-level default in the manifest |
 
+| Developer | `fullsend agent new <name>` | Generate a complete custom agent and register it |
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent set <name>` | Set an agent's runtime, model or effort |

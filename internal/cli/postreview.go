@@ -636,16 +636,9 @@ func lineInHunks(line int, hunks [][2]int) bool {
 }
 
 // resolvePostReviewClient creates a forge.Client for the post-review
-// command. It resolves the token and base URL based on the forge name,
-// reusing the existing newForgeClient factory that already supports
-// both GitHub and GitLab.
-//
-// When an explicit token is provided (via --token), GitHub short-circuits
-// to newGitHubLiveClient to skip redundant token resolution, while
-// GitLab always delegates to newForgeClient. Without an explicit token
-// the standard resolution chain runs:
-// GitHub → GH_TOKEN / GITHUB_TOKEN / gh auth token;
-// GitLab → GITLAB_TOKEN.
+// command. GitHub goes through newAuthenticatedGitHubClient so --token
+// overrides the standard GH_TOKEN / GITHUB_TOKEN / gh auth token chain.
+// GitLab delegates to newForgeClient (GITLAB_TOKEN or --token).
 func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, error) {
 	if baseURL != "" {
 		u, err := url.Parse(baseURL)
@@ -667,12 +660,12 @@ func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, er
 		}
 		return client, nil
 	case repos.ForgeGitHub, "":
-		if token != "" {
-			return newGitHubLiveClient(token, baseURL), nil
-		}
-		client, err := newForgeClient(repos.ForgeGitHub, "", baseURL)
+		client, err := newAuthenticatedGitHubClient(token, baseURL)
 		if err != nil {
-			return nil, fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or pass --token")
+			if errors.Is(err, errGitHubTokenMissing) {
+				return nil, githubTokenFlagError("--token")
+			}
+			return nil, err
 		}
 		return client, nil
 	default:

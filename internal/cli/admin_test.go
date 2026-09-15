@@ -21,6 +21,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func TestRoleAppPrivateKeySecret(t *testing.T) {
+	assert.Equal(t, "FULLSEND_TRIAGE_APP_PRIVATE_KEY", roleAppPrivateKeySecret("triage"))
+	assert.Equal(t, "FULLSEND_CI_CHECK_APP_PRIVATE_KEY", roleAppPrivateKeySecret("ci-check"))
+}
+
 func TestAdminCommand_HasSubcommands(t *testing.T) {
 	cmd := newAdminCmd()
 	names := make(map[string]bool)
@@ -404,24 +409,6 @@ func TestValidateEnabledRepos_EmptyDiscovered(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "some-repo")
-}
-
-func TestResolveToken_EnvVar(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token-123")
-	t.Setenv("GITHUB_TOKEN", "")
-
-	token, err := resolveToken()
-	require.NoError(t, err)
-	assert.Equal(t, "test-token-123", token)
-}
-
-func TestResolveToken_GitHubTokenFallback(t *testing.T) {
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_TOKEN", "github-token-456")
-
-	token, err := resolveToken()
-	require.NoError(t, err)
-	assert.Equal(t, "github-token-456", token)
 }
 
 type discardWriter struct{}

@@ -52,7 +52,7 @@ const maxEventRetries = 3
 //
 // Poll mode is determined by Options.Mode:
 //   - "slash": fast poll — only /fs-* slash commands via the Events API
-//   - "events": full discovery — labels, merges, non-slash notes (filters out /fs-* notes)
+//   - "events": full discovery — labels, merges, MR opens, non-slash notes (filters out /fs-* notes)
 //   - "": backward compatibility — uses events discovery path but does not filter /fs-* notes
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {

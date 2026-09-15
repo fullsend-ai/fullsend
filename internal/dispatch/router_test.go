@@ -202,6 +202,60 @@ func TestHarnessRouter_Merged(t *testing.T) {
 	}
 }
 
+func TestHarnessRouter_Opened(t *testing.T) {
+	r := NewHarnessRouter([]string{"review", "retro"})
+
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "change_proposal", ID: 8},
+		Transition: Transition{Kind: "opened"},
+		Actor:      Actor{ID: "alice", Role: "write"},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "review" {
+		t.Fatalf("expected [review], got %v", stages)
+	}
+}
+
+func TestHarnessRouter_OpenedWorkItemIgnored(t *testing.T) {
+	r := NewHarnessRouter([]string{"review", "triage"})
+
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "work_item", ID: 1},
+		Transition: Transition{Kind: "opened"},
+		Actor:      Actor{ID: "alice", Role: "write"},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages for work_item opened, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_OpenedReviewNotInValidSet(t *testing.T) {
+	r := NewHarnessRouter([]string{"code", "retro"})
+
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "change_proposal", ID: 8},
+		Transition: Transition{Kind: "opened"},
+		Actor:      Actor{ID: "alice", Role: "write"},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages when review not in valid set, got %v", stages)
+	}
+}
+
 func TestHarnessRouter_ChangesRequestedMarker(t *testing.T) {
 	r := NewHarnessRouter([]string{"fix", "review"})
 

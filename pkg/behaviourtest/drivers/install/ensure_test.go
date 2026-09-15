@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // fakeEnsurer is a test double for ensurer that records calls.
@@ -210,6 +210,24 @@ func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 
 	// Verify the returned value implements the interface.
 	var _ ensurer = e
+}
+
+func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
+	sc := &stubClient{}
+	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	re, ok := e.(*repoEnsurer)
+	require.True(t, ok)
+	assert.Equal(t, "https://example.com/preset.yaml", re.setupOpts.ConfigPreset)
+}
+
+func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "")
+	sc := &stubClient{}
+	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	re, ok := e.(*repoEnsurer)
+	require.True(t, ok)
+	assert.Empty(t, re.setupOpts.ConfigPreset)
 }
 
 func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
@@ -773,6 +791,38 @@ func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
 	assert.Contains(t, cliCalls[0], "--fullsend-ref")
 	assert.Contains(t, cliCalls[0], "main")
 	assert.NotContains(t, cliCalls[0], "--vendor")
+}
+
+func TestEnsurer_ConfigPreset_ForwardsConfigFlag(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: &stubClient{installed: true},
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		setupOpts: common.GitHubSetupOpts{
+			Vendor:       true,
+			ConfigPreset: "https://example.com/preset.yaml",
+		},
+		runCLI: func(_ string, _ string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-preset")
+	require.NoError(t, err)
+
+	require.Len(t, cliCalls, 1)
+	assert.Contains(t, cliCalls[0], "--config")
+	assert.Contains(t, cliCalls[0], "https://example.com/preset.yaml")
+	assert.NotContains(t, cliCalls[0], "--runtime")
+	assert.Contains(t, cliCalls[0], "--vendor")
 }
 
 // stubClientWithCustomFiles is a test double that returns custom file

@@ -4,17 +4,38 @@ title: Documentation
 
 # Documentation
 
-When changing CLI command behavior, adding or removing subcommands, or renaming flags, you must update every documentation file that references the affected command. CLI commands are documented across CLI reference pages, user and operator guides, ADRs, and inline Go help text. Missing even one location causes documentation drift that surfaces as review findings on later PRs.
+When adding, removing, renaming, or changing the behavior of CLI commands,
+flags, configuration variables, or environment variables, you must update
+every documentation file that references the affected feature. CLI commands
+are documented across CLI reference pages, user and operator guides, ADRs,
+and inline Go help text. Missing even one location causes documentation drift
+that surfaces as review findings on later PRs.
 
 ## General discovery rule
 
-Before considering a CLI change complete, run:
+Before considering a CLI, configuration, or environment-variable change
+complete, search for the affected command or setting:
 
 ```bash
-grep -rn '<command-name>' docs/ internal/cli/
+grep -rn '<command-or-setting-name>' docs/ internal/ .github/
 ```
 
-The `internal/cli/` path covers inline `Short`/`Long` help text in Go source. Review every hit and update references that describe behavior you changed. This catches files not listed in the cross-reference below.
+The `internal/cli/` path covers inline `Short`/`Long` help text in Go source,
+and `internal/config/` defines `config.yaml` fields. Review every hit and
+update references that describe behavior you changed. For new commands or
+settings with no literal match, also inspect tables and lists of comparable
+commands, flags, or variables. This catches files not listed in the
+cross-reference below.
+
+## Configuration and environment variables
+
+For a `.fullsend/config.yaml` field, update
+`docs/reference/config-reference.md`, the canonical reference for every field.
+If its layered resolution or defaults change, also check
+`docs/guides/infrastructure/layered-config-reference.md`. For an environment
+variable or repository variable, check the repository-variable table in
+`docs/guides/getting-started/operations.md` and the documentation for the
+feature that consumes it.
 
 ## ADR annotations
 

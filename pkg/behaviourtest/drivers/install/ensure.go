@@ -8,9 +8,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 const (
@@ -75,14 +75,17 @@ type repoEnsurer struct {
 
 // newRepoEnsurer returns an ensurer backed by the given forge client
 // and CLI binary. The ensurer shares the same credentials and
-// configuration as the per-repo install driver.
+// configuration as the per-repo install driver. BEHAVIOUR_CONFIG_PRESET
+// is applied onto the vendored-mode defaults when set.
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),
 ) ensurer {
-	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, common.DefaultGitHubSetupOpts(), logf)
+	opts := common.DefaultGitHubSetupOpts()
+	opts.ConfigPreset = envConfigPreset()
+	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, opts, logf)
 }
 
 // newRepoEnsurerWithOpts returns an ensurer like newRepoEnsurer but with

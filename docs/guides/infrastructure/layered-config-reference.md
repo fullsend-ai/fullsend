@@ -322,8 +322,9 @@ agents:
 
 ### `allowed_remote_resources` — union with deny-all
 
-This field controls which URL prefixes are allowed for remote agent sources
-and base composition. It uses special three-way semantics:
+This field controls which URL prefixes are allowed for remote resources
+(agents, policies, skills, plugins, profiles, providers, and base
+composition). It uses special three-way semantics:
 
 | Overlay value | Behavior |
 |---------------|----------|

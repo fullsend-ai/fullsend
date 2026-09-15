@@ -74,9 +74,6 @@ decide..." or "We also require...", stop. That is a second ADR.
   instead of restating them.
 - **Decision:** State the decision directly. A few paragraphs at most.
 - **Consequences:** 3-5 bullet points. Each one sentence.
-- **Total ADR length:** Aim for under 80 lines of content (excluding
-  frontmatter). If you're over 100, you are probably deciding too many things
-  or repeating context that already exists in problem docs.
 
 | Section | Target | Anti-pattern |
 |---------|--------|-------------|
@@ -194,7 +191,6 @@ If the ADR partially answers a question, add a parenthetical:
 
 ## Red Flags -- Stop and Reconsider
 
-- ADR is over 100 lines of content -- probably deciding too many things
 - Context section restates information from problem docs at length
 - You wrote "Additionally, we decide..." -- split into two ADRs
 - You're rewriting a section of architecture.md -- make a surgical edit instead

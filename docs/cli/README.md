@@ -31,6 +31,6 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 
 ## Global flags
 
-All commands that interact with GitHub resolve authentication via `gh` CLI or `GH_TOKEN` environment variable. For GitLab, set `GITLAB_TOKEN` or pass `--gitlab-token` to `repos` subcommands. The CLI runs preflight checks and tells you exactly which OAuth scopes are missing before making any changes.
+All commands that interact with GitHub resolve authentication via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (in that order). Explicit token flags such as `--token` and `--forge-token` override the chain. For GitLab, set `GITLAB_TOKEN` or pass `--gitlab-token` to `repos` subcommands. The CLI runs preflight checks and tells you exactly which OAuth scopes are missing before making any changes.
 
 For the complete command tree with implementation details, see [CLI internals](../guides/dev/cli-internals.md).

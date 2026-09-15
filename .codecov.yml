@@ -22,8 +22,8 @@ ignore:
   # behaviour/e2e CI jobs against real repos (not by the unit coverage upload).
   - "e2e/behaviour/**"
   - "pkg/behaviourtest/**"
-  - "pkg/e2etest/cleanup.go"
-  - "pkg/e2etest/build.go"
+  - "internal/e2etest/cleanup.go"
+  - "internal/e2etest/build.go"
   - "docs/**"
   - "hack/**"
   - "experiments/**"

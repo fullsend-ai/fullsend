@@ -99,6 +99,30 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 	}
 
 	for _, mr := range mrs {
+		// MR-open review cannot run on native merge_request_event
+		// pipelines: those use the unprotected MR ref, so protected
+		// CI/CD variables (FULLSEND_FORGE_TOKEN) are empty. Detect
+		// newly created MRs here so review dispatches from the
+		// poller on the protected default branch.
+		if !mr.CreatedAt.IsZero() && mr.CreatedAt.After(since) {
+			events = append(events, RoutableEvent{
+				Type:            "mr_event",
+				Action:          "opened",
+				IID:             mr.IID,
+				UpdatedAt:       mr.CreatedAt,
+				NoteAuthorID:    mr.Author.ID,
+				NoteAuthorLogin: mr.Author.Username,
+				IsBot:           mr.Author.Bot,
+				MRSource:        mr.SourceProjectID,
+				MRTarget:        mr.TargetProjectID,
+				Labels:          mr.Labels,
+				SourceBranch:    mr.SourceBranch,
+				TargetBranch:    mr.TargetBranch,
+				MRAuthorID:      mr.Author.ID,
+				MRAuthorLogin:   mr.Author.Username,
+			})
+		}
+
 		mergedBy := mergedByUser(mr)
 		if !mr.MergedAt.IsZero() && mr.MergedAt.After(since) {
 			events = append(events, RoutableEvent{
@@ -262,6 +286,13 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		if event.Type == "mr_note" &&
 			strings.Contains(event.NoteBody, "<!-- fullsend:changes-requested -->") &&
 			event.NoteAuthorID == p.botUserID {
+			filtered = append(filtered, event)
+			continue
+		}
+		// Bot-authored MR opens must dispatch review — the code agent
+		// opens MRs as the project access token bot, matching GitHub's
+		// [bot] exception on pull_request_target.opened.
+		if event.Type == "mr_event" && event.Action == "opened" {
 			filtered = append(filtered, event)
 			continue
 		}

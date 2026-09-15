@@ -25,8 +25,9 @@ on:
         type: string
       project_number:
         description: GitHub Projects V2 project number for RICE scoring
-        required: true
+        required: false
         type: string
+        default: ""
       fullsend_version:
         required: false
         type: string

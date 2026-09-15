@@ -120,6 +120,9 @@ func TestGitLabDispatchContent(t *testing.T) {
 	assert.Contains(t, s, `IS_FORK: "${IS_FORK}"`)
 	// Merged MR fallback should no-op (retro via cron-poller)
 	assert.Contains(t, s, "retro via cron-poller")
+	// Opened MR fallback should no-op (review via cron-poller; protected
+	// variables are unavailable on the unprotected MR ref).
+	assert.Contains(t, s, "review via cron-poller")
 	// Closed MRs dispatch retro (best-effort on GitLab)
 	assert.Contains(t, s, "review|retro) ;;")
 	assert.Contains(t, s, "Best-effort on GitLab")

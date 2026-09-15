@@ -428,6 +428,7 @@ type reposInstallConfig struct {
 	inferenceRegion        string
 
 	// GitLab-specific
+	gitlabURL      string
 	gitlabBotToken string
 
 	// Per-repo overrides
@@ -495,6 +496,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
+	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
@@ -523,6 +525,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		mu, muErr := url.Parse(opts.mintURL)
 		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
 			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
+	if opts.gitlabURL != "" {
+		if opts.forge == repos.ForgeGitHub {
+			return fmt.Errorf("--gitlab-url cannot be combined with --forge=github")
+		}
+		gu, guErr := url.Parse(opts.gitlabURL)
+		if guErr != nil || gu.Scheme != "https" || gu.Host == "" {
+			return fmt.Errorf("--gitlab-url must be a valid HTTPS URL, got %q", opts.gitlabURL)
+		}
+		if err := repos.RejectExtraneousURLParts(gu, "--gitlab-url"); err != nil {
+			return err
 		}
 	}
 
@@ -576,6 +590,17 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", manifest.TotalRepoCount()))
 	}
 
+	// When --gitlab-url is provided, set the URL in-memory before
+	// creating the forge client factory so it captures the correct
+	// URL for GitLab API calls during repo probing and converge.
+	// The forge-inference block below has an explicit guard that
+	// sets forgeName to ForgeGitLab when --gitlab-url is provided,
+	// so the EnsurePlatform side effect here is only for the URL.
+	if opts.gitlabURL != "" {
+		manifest.EnsurePlatform(repos.ForgeGitLab)
+		manifest.GitLab.URL = opts.gitlabURL
+	}
+
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
 		clients = newSingleClientFactory(opts.testClient)
@@ -601,6 +626,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		if len(notInManifest) > 0 {
 			forgeName := opts.forge
+			if forgeName == "" && opts.gitlabURL != "" {
+				// --gitlab-url explicitly implies --forge=gitlab. Set it
+				// before the general inference so that manifests with
+				// existing GitHub repos don't pull the new repo into the
+				// wrong platform section.
+				forgeName = repos.ForgeGitLab
+			}
 			if forgeName == "" {
 				// Infer forge from platform sections that contain repos,
 				// falling back to section existence for empty manifests
@@ -697,12 +729,31 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				opts.repoFilter = filtered
 				if len(filtered) == 0 {
+					announceGitLabURLDryRun(printer, opts.gitlabURL)
 					printer.Blank()
 					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
 						len(newlyAdded)))
 					return nil
 				}
 			}
+		}
+	}
+
+	// Persist --gitlab-url to the manifest file. The in-memory assignment
+	// was done earlier (before factory creation) so the forge client
+	// factory already has the correct URL.
+	if opts.gitlabURL != "" {
+		if len(manifest.GitLab.Repos) > 0 {
+			if opts.dryRun {
+				announceGitLabURLDryRun(printer, opts.gitlabURL)
+			} else {
+				if err := repos.SetDefault(opts.manifest, "gitlab.url", opts.gitlabURL); err != nil {
+					return fmt.Errorf("writing gitlab.url to manifest: %w", err)
+				}
+				printer.StepDone(fmt.Sprintf("Set gitlab.url=%s in manifest", opts.gitlabURL))
+			}
+		} else {
+			printer.StepWarn("--gitlab-url was provided but no GitLab repos are in the manifest; flag had no effect")
 		}
 	}
 
@@ -929,6 +980,7 @@ type reposUninstallConfig struct {
 	manifest      string
 	dryRun        bool
 	yes           bool
+	direct        bool
 	concurrency   int
 	manifestOnly  bool
 	uninstallOnly bool
@@ -945,9 +997,14 @@ func newReposUninstallCmd() *cobra.Command {
 		Short: "Tear down fullsend from repos and remove from manifest",
 		Long: `Tear down fullsend from the specified repos and remove them from the manifest.
 
-By default, tears down (deletes workflow files, variables, secrets) and then
-removes the repo entry from repos.yaml. The manifest entry is only removed
-if teardown succeeds.
+By default, tears down (removes workflow files via a pull request, deletes
+variables and secrets immediately) and then removes the repo entry from
+repos.yaml. The manifest entry is only removed if teardown succeeds.
+
+File deletions (workflow YAML, .fullsend/config.yaml, and GitLab
+.gitlab-ci.yml unmerge) are delivered as a PR unless --direct is set.
+Variable and secret deletions are API operations and always happen
+immediately. Use --direct to push file deletions to the default branch.
 
 Use --manifest-only to remove from the manifest without tearing down (e.g.
 when a repo is already deleted). Use --uninstall-only to tear down without
@@ -968,6 +1025,7 @@ prompt for confirmation unless --yes is set.`,
 	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be uninstalled without making changes")
 	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push file deletions to default branch instead of PR")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().BoolVar(&opts.manifestOnly, "manifest-only", false, "remove from manifest without tearing down")
 	cmd.Flags().BoolVar(&opts.uninstallOnly, "uninstall-only", false, "tear down without removing from manifest")
@@ -1043,6 +1101,29 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		}
 	}
 
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, _ bool) error {
+		forgeName := ""
+		if rc, ok := manifest.ResolveConfigWithGlobs(owner, repo); ok {
+			forgeName = rc.Forge
+		}
+		fc, fcErr := clients.ConfigFor(forgeName)
+		if fcErr != nil {
+			return fcErr
+		}
+		targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		meta := repos.UninstallPRMetadata()
+		if forgeName == repos.ForgeGitLab {
+			meta.CommitMsg += " [skip ci]"
+			meta.PRTitle += " [skip ci]"
+		}
+		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+			targetRepo.DefaultBranch, meta, files, direct, nil)
+		return commitErr
+	}
+
 	// Teardown phase (skipped when --manifest-only).
 	var succeededRepos []string
 	var teardownFailed int
@@ -1055,6 +1136,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			Manifest:       manifest,
 			Repos:          concreteRepos,
 			DryRun:         opts.dryRun,
+			Direct:         opts.direct,
 			MaxConcurrency: opts.concurrency,
 		}
 
@@ -1065,7 +1147,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			printer.StepStart("Uninstalling fullsend from repos")
 		}
 
-		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, progressFn)
+		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, scaffoldCommitFn, progressFn)
 		if teardownErr != nil {
 			return teardownErr
 		}
@@ -1239,4 +1321,14 @@ func (p *gcpInferenceProvisioner) Provision(ctx context.Context, owner, repo str
 		return "", fmt.Errorf("provisioning WIF: %w", err)
 	}
 	return wifProvider, nil
+}
+
+// announceGitLabURLDryRun prints a dry-run preview message for --gitlab-url
+// when the flag is set. Centralizes the message and guard so both the
+// early-return path and the main --gitlab-url handler share a single
+// definition.
+func announceGitLabURLDryRun(printer *ui.Printer, gitlabURL string) {
+	if gitlabURL != "" {
+		printer.StepDone(fmt.Sprintf("Would set gitlab.url=%s in manifest", gitlabURL))
+	}
 }

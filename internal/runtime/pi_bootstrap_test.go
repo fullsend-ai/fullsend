@@ -124,6 +124,7 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	assert.Equal(t, "never", settings["defaultProjectTrust"])
 	assert.Equal(t, false, settings["enableSkillCommands"])
 	assert.Equal(t, []any{"read", "bash", "edit", "write", "grep", "find", "ls"}, settings["defaultTools"])
+	assertPiRetrySettings(t, settings["retry"])
 
 	ext := string(storedUpload(t, store, cfg+"/fullsend-hooks.js"))
 	assert.Contains(t, ext, "export default function")
@@ -154,6 +155,31 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	assert.Contains(t, logStr, cfg+"/hooks/tirith_check.py", "hook scripts are installed under the pi config dir")
 	// Skills go through the tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
+}
+
+// TestPiSettingsJSON_RetryPolicy is the unit check for #7191: Bootstrap's
+// settings.json must carry session and provider retry numbers, not pi's
+// defaults (session 3×2 s, provider retries off).
+func TestPiSettingsJSON_RetryPolicy(t *testing.T) {
+	t.Parallel()
+	data, err := piSettingsJSON()
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	assertPiRetrySettings(t, settings["retry"])
+}
+
+func assertPiRetrySettings(t *testing.T, raw any) {
+	t.Helper()
+	retry, ok := raw.(map[string]any)
+	require.True(t, ok, "retry must be a JSON object, got %T", raw)
+	assert.Equal(t, true, retry["enabled"])
+	assert.Equal(t, float64(8), retry["maxRetries"])
+	assert.Equal(t, float64(2000), retry["baseDelayMs"])
+	provider, ok := retry["provider"].(map[string]any)
+	require.True(t, ok, "retry.provider must be a JSON object, got %T", retry["provider"])
+	assert.Equal(t, float64(6), provider["maxRetries"])
+	assert.Equal(t, float64(60000), provider["maxRetryDelayMs"])
 }
 
 func TestPiRuntimeBootstrap_NoSecurityNoHooks(t *testing.T) {
@@ -722,11 +748,18 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"xai/grok-4.6"}, m.Agent.ProviderModels[piXaiVertexProvider],
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
-		require.Len(t, m.Agent.ExtensionDigests, 1,
-			"the one child -e entry Bootstrap wrote into the config dir is digest-covered, so the extension can re-check it before every dispatch")
+		editExt := cfg + "/fullsend-edit-repair.js"
+		require.Len(t, m.Agent.ExtensionDigests, 2,
+			"both child -e entries Bootstrap wrote into the config dir are digest-covered, so the extension can re-check them before every dispatch")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
 		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
 			"and against the same digest the launch guard checks, so the two cannot drift")
+		require.NotEmpty(t, m.Agent.ExtensionDigests[editExt])
+		assert.Contains(t, piEditRepairGuard(editExt), m.Agent.ExtensionDigests[editExt], "the edit repair too")
+		assert.Equal(t, editExt, m.Agent.EditRepairExtension, "the default child tool set has edit")
+		assert.NotContains(t, m.Agent.Extensions, editExt,
+			"kept out of the shared list: a child with no tools must not load the extension that registers edit")
+		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, editExt), "Bootstrap wrote the embedded copy")
 		assert.NotContains(t, m.Agent.ExtensionDigests, piVertexExtensionPath,
 			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
 		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
@@ -749,14 +782,28 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 	})
 
 	t.Run("enabled by a tools list naming Task, hooks off", func(t *testing.T) {
-		m, _, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Grep, Task\n---\nbody", false)
+		m, store, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Grep, Task\n---\nbody", false)
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
-		assert.Empty(t, m.Agent.ExtensionDigests, "and so nothing in the child -e list that Bootstrap wrote, hence no digests")
+		assert.Empty(t, m.Agent.ExtensionDigests, "no hook adapter and no edit repair (no edit tool), hence no digests")
+		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")
+		_, err := os.Stat(filepath.Join(store, strings.ReplaceAll(cfg+"/fullsend-edit-repair.js", "/", "_")))
+		assert.True(t, os.IsNotExist(err), "not uploaded for an agent without edit")
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["default"], "the agent's own model, @suffix stripped, is the default for children")
 		assert.Nil(t, m.Hooks)
+	})
+
+	t.Run("enabled by a tools list naming Edit and Task, hooks off", func(t *testing.T) {
+		m, store, _ := bootstrap(t, "---\nname: review\nmodel: claude-sonnet-4-6@default\ntools: Read, Edit, Task\n---\nbody", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, []string{"read", "edit"}, m.Agent.Tools, "children keep edit, minus the sub-agent tools")
+		assert.Equal(t, cfg+"/fullsend-edit-repair.js", m.Agent.EditRepairExtension, "a declared list naming Edit carries the extension")
+		assert.NotContains(t, m.Agent.Extensions, cfg+"/fullsend-edit-repair.js", "never in the shared list: a child without edit must not load it")
+		require.Len(t, m.Agent.ExtensionDigests, 1, "hooks are off, so the repair is the only digest")
+		require.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-edit-repair.js"])
+		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, cfg+"/fullsend-edit-repair.js"))
 	})
 
 	t.Run("disabled by a tools list without Agent or Task", func(t *testing.T) {

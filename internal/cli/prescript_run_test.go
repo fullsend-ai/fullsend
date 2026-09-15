@@ -116,7 +116,10 @@ func TestRunAgent_PreScriptNoSkip_ProceedsToSandboxAndRelaysFalse(t *testing.T) 
 
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
-	assert.Equal(t, "skipped=false\n", string(data))
+	// role=test is emitted right after the harness loads, before the
+	// pre-script relay, and must reflect the harness role ("test") rather
+	// than the agent name ("code") passed to runAgent above (#7000).
+	assert.Equal(t, "role=test\nskipped=false\n", string(data))
 }
 
 // A harness with no pre_script must still relay skipped=false, otherwise
@@ -137,7 +140,10 @@ func TestRunAgent_NoPreScript_StillRelaysSkippedFalse(t *testing.T) {
 
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
-	assert.Equal(t, "skipped=false\n", string(data))
+	// role=test is emitted right after the harness loads, before the
+	// pre-script relay, and must reflect the harness role ("test") rather
+	// than the agent name ("code") passed to runAgent above (#7000).
+	assert.Equal(t, "role=test\nskipped=false\n", string(data))
 }
 
 // The skip path relays skipped=true. Fast: it returns before sandbox
@@ -156,7 +162,10 @@ func TestRunAgent_PreScriptSkip_RelaysSkippedTrue(t *testing.T) {
 
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
-	assert.Equal(t, "skipped=true\nreason=open PR exists\n", string(data))
+	// role=test is emitted right after the harness loads, before the
+	// pre-script relay, and must reflect the harness role ("test") rather
+	// than the agent name ("code") passed to runAgent above (#7000).
+	assert.Equal(t, "role=test\nskipped=true\nreason=open PR exists\n", string(data))
 }
 
 // A relay target that cannot be written must fail the run rather than

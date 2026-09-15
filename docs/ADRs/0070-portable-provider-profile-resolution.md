@@ -235,3 +235,9 @@ Fully backwards-compatible:
 - The validation layer ensures referential integrity: every provider's type must
   match a declared profile, preventing broken harnesses.
 - No new attack surface — same fetch + cache + audit pipeline as ADR 0038.
+
+## Amendments
+
+### 2026-09-07: Org-level allowlist fallback for profile/provider URL resolution (#6452)
+
+Profile/provider URLs now also pass validation if they match the org-level `allowed_remote_resources` from `config.yaml`, which acts as a fallback when the harness-level `AllowedRemoteResources` list does not include the URL. See ADR 0038 amendment of the same date for the broader change.

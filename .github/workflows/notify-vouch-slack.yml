@@ -1,4 +1,4 @@
-name: Notify Slack on vouch request
+name: Notify Slack on contributor request
 
 on:
   discussion:
@@ -12,6 +12,10 @@ on:
       discussion_url:
         description: 'Discussion URL (for testing)'
         required: true
+      discussion_type:
+        description: 'Discussion category slug (for testing)'
+        required: false
+        default: vouch-request
 
 permissions: {}
 
@@ -20,7 +24,9 @@ jobs:
     if: >-
       github.repository_owner == 'fullsend-ai' &&
       (github.event_name == 'workflow_dispatch' ||
-      github.event.discussion.category.slug == 'vouch-request')
+      github.event.discussion.category.slug == 'vouch-request' ||
+      github.event.discussion.category.slug == 'triage-request' ||
+      github.event.discussion.category.slug == 'write-request')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -29,6 +35,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           DISC_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.discussion_url || github.event.discussion.html_url }}
           DISC_AUTHOR: ${{ github.event_name == 'workflow_dispatch' && inputs.username || github.event.discussion.user.login }}
+          DISC_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.discussion_type || github.event.discussion.category.slug }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "::error::SLACK_WEBHOOK_URL secret is not configured"
@@ -45,16 +52,41 @@ jobs:
             exit 1
           fi
 
+          case "$DISC_TYPE" in
+            vouch-request)
+              request_label="vouch request"
+              request_emoji="🤝"
+              request_context="Review the request and comment \`/vouch\` to approve."
+              ;;
+            triage-request)
+              request_label="triage request"
+              request_emoji="🔎"
+              request_context="Review the request for triage access."
+              ;;
+            write-request)
+              request_label="write request"
+              request_emoji="✍️"
+              request_context="Review the request for write access."
+              ;;
+            *)
+              echo "::error::Invalid discussion category received"
+              exit 1
+              ;;
+          esac
+
           payload=$(jq -n \
             --arg url "$DISC_URL" \
             --arg author "$DISC_AUTHOR" \
+            --arg label "$request_label" \
+            --arg emoji "$request_emoji" \
+            --arg context "$request_context" \
             '{
               blocks: [
                 {
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("🤝 *New vouch request* from *" + $author + "* — <" + $url + "|View discussion>")
+                    text: ($emoji + " *New " + $label + "* from *" + $author + "* — <" + $url + "|View discussion>")
                   }
                 },
                 {
@@ -62,7 +94,7 @@ jobs:
                   elements: [
                     {
                       type: "mrkdwn",
-                      text: "Review the request and comment `/vouch` to approve."
+                      text: $context
                     }
                   ]
                 }

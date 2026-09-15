@@ -50,6 +50,9 @@ type ParseStats struct {
 	// but some traces were still recovered. Callers should warn; MeasureAndExport
 	// still scores those traces and returns a nil error.
 	Incomplete string
+	// RemoteExportWarning is set when portable OTLP score export failed
+	// after local JSONL persistence. Measurements stay fail-open.
+	RemoteExportWarning string
 }
 
 // ParseTelemetryFile reads OTLP JSON TracesData lines from run-telemetry.jsonl

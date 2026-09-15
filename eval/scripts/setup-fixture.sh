@@ -15,6 +15,35 @@
 #   $CASE_WORKSPACE/.hook-outputs.yaml — env vars for the runner
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# retry_cmd — retry a command with exponential backoff.
+#
+# Usage: retry_cmd <command> [args...]
+#
+# Retries up to 3 times with 2s/4s/8s delays between attempts.
+# All diagnostic output goes to stderr to avoid stdout contamination
+# when the caller captures output via command substitution (see
+# docs/contributing/shell-scripting.md).
+# ---------------------------------------------------------------------------
+retry_cmd() {
+  local max_attempts=3
+  local attempt=1
+  local delay=2
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if (( attempt >= max_attempts )); then
+      echo "ERROR: command failed after ${max_attempts} attempts: $*" >&2
+      return 1
+    fi
+    echo "WARNING: attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s: $*" >&2
+    sleep "$delay"
+    (( delay *= 2 ))
+    (( attempt++ ))
+  done
+}
+
 CASE_WORKSPACE="${CASE_WORKSPACE:?CASE_WORKSPACE is required}"
 EVAL_ORG="${EVAL_ORG:?EVAL_ORG is required}"
 
@@ -57,13 +86,19 @@ CASE_ID_SAFE=$(basename "$CASE_SOURCE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's
 repo_name="eval-${CASE_ID_SAFE}-${uuid}"
 EPHEMERAL_REPO="${EVAL_ORG}/${repo_name}"
 
-gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
+retry_cmd gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
 echo "Created repo: $EPHEMERAL_REPO"
 
 TARGET_DIR=$(mktemp -d)
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
-git -c "credential.helper=${GH_CRED_HELPER}" \
-  clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+# Clone with retry. Each attempt removes the target directory first so a
+# partial clone from a previous attempt doesn't cause the next one to fail.
+retry_clone() {
+  rm -rf "$TARGET_DIR"
+  git -c "credential.helper=${GH_CRED_HELPER}" \
+    clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+}
+retry_cmd retry_clone
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 git -C "$TARGET_DIR" config commit.gpgsign false
 
@@ -76,7 +111,7 @@ fi
 git -C "$TARGET_DIR" add -A
 if ! git -C "$TARGET_DIR" diff --cached --quiet; then
   git -C "$TARGET_DIR" commit -m "eval: initial content"
-  git -C "$TARGET_DIR" push origin HEAD
+  retry_cmd git -C "$TARGET_DIR" push origin HEAD
 fi
 
 # --- Create seed issues (if any) ---
@@ -85,7 +120,7 @@ if [[ "$SEED_COUNT" -gt 0 ]]; then
   for i in $(seq 0 $((SEED_COUNT - 1))); do
     seed_title=$(yq -r ".seed_issues[$i].title" "$INPUT")
     seed_body=$(yq -r ".seed_issues[$i].body" "$INPUT")
-    seed_url=$(gh issue create \
+    seed_url=$(retry_cmd gh issue create \
       --repo "$EPHEMERAL_REPO" \
       --title "$seed_title" \
       --body "$seed_body")
@@ -99,7 +134,7 @@ FIXTURE_NUMBER=""
 
 case "${FORGE}:${FIXTURE_TYPE}" in
   github:issue)
-    FIXTURE_URL=$(gh issue create \
+    FIXTURE_URL=$(retry_cmd gh issue create \
       --repo "$EPHEMERAL_REPO" \
       --title "$FIXTURE_TITLE" \
       --body "$FIXTURE_BODY")
@@ -117,8 +152,8 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     done
     git -C "$TARGET_DIR" add -A
     git -C "$TARGET_DIR" commit -m "eval: fixture changes"
-    git -C "$TARGET_DIR" push origin "$PR_BRANCH"
-    FIXTURE_URL=$(gh pr create \
+    retry_cmd git -C "$TARGET_DIR" push origin "$PR_BRANCH"
+    FIXTURE_URL=$(retry_cmd gh pr create \
       --repo "$EPHEMERAL_REPO" \
       --base "$FIXTURE_BASE" \
       --head "$PR_BRANCH" \

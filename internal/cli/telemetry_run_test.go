@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +27,7 @@ import (
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func TestTelemetryExitCode(t *testing.T) {
@@ -750,6 +753,120 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		s := newRecorded(nil, 1, "")
 		assert.Equal(t, codes.Error, s.Status.Code)
 		assert.Equal(t, "agent exited with code 1", s.Status.Description)
+	})
+}
+
+// TestHandleRunCancellation exercises the cancellation short-circuit
+// extracted from runAgent's per-iteration loop: the production path that
+// persists partial metrics and finalizes the agent span when the run
+// context is cancelled, before extraction and validation would otherwise
+// run on a dead sandbox (#6936). This is the load-bearing branch a prior
+// review iteration found untested — TestAggregateRunMetrics_* and
+// TestWriteMetricsJSON_* only cover the helpers it calls, not the branch
+// itself.
+func TestHandleRunCancellation(t *testing.T) {
+	pinSpanLimitEnv(t)
+
+	buildAgg := func() aggregateMetrics {
+		agg := aggregateMetrics{Iterations: 1, ToolCalls: 3, Model: "claude-opus-4-6"}
+		agg.TokenUsage.Input = 599
+		agg.TokenUsage.Output = 119
+		agg.TokenUsage.CacheCreation = 148_943
+		agg.TokenUsage.CacheRead = 583_298
+		return agg
+	}
+
+	t.Run("cancelled context persists metrics, finalizes span, skips downstream", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
+		var attachedReasons []string
+		attach := func(reason string) { attachedReasons = append(attachedReasons, reason) }
+		printer := ui.New(io.Discard)
+
+		cancelled, lastExitCode, err := handleRunCancellation(
+			ctx, nil, 2, 0, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, attach, printer, 1500*time.Millisecond,
+		)
+
+		require.True(t, cancelled, "ctx.Err() is non-nil: the short-circuit must fire")
+		assert.Equal(t, 0, lastExitCode)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled, "the returned error must wrap the cancellation cause")
+		assert.Contains(t, err.Error(), "run cancelled (iteration 2)")
+
+		assert.Equal(t, []string{"error"}, attachedReasons, "content must be attached with finish_reason=error before extraction/validation")
+
+		ended := rec.Ended()
+		require.Len(t, ended, 1, "the agent span must be finalized (ended) on this path")
+		s := tracetest.SpanStubFromReadOnlySpan(ended[0])
+		assert.Equal(t, codes.Error, s.Status.Code, "a cancelled iteration finalizes as an error status")
+
+		data, readErr := os.ReadFile(filepath.Join(runDir, metricsFile))
+		require.NoError(t, readErr, "metrics.json must be written before extraction/validation runs")
+		var got aggregateMetrics
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, 599, got.TokenUsage.Input, "partial token counts must survive the write")
+		assert.Equal(t, 119, got.TokenUsage.Output)
+		assert.Equal(t, 148_943, got.TokenUsage.CacheCreation)
+		assert.Equal(t, 583_298, got.TokenUsage.CacheRead)
+		assert.Equal(t, float64(0), got.TotalCostUSD, "dollar cost is unavailable on cancellation")
+	})
+
+	t.Run("runErr already set is preserved as the wrapped cause", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{}
+		attach := func(string) {}
+		printer := ui.New(io.Discard)
+		runErr := errors.New("sandbox killed")
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, runErr, 1, -1, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, attach, printer, 0,
+		)
+
+		require.True(t, cancelled)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sandbox killed", "a non-nil runErr from rt.Run must not be discarded")
+	})
+
+	t.Run("live context does not short-circuit", func(t *testing.T) {
+		runDir := t.TempDir()
+		ctx := context.Background() // never cancelled
+
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+
+		metrics := &agentruntime.RunMetrics{}
+		attachCalled := false
+		attach := func(string) { attachCalled = true }
+		printer := ui.New(io.Discard)
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, nil, 1, 0, "anthropic", "claude",
+			metrics, buildAgg(), runDir, span, attach, printer, 0,
+		)
+
+		assert.False(t, cancelled, "a live context must not trigger the short-circuit")
+		assert.NoError(t, err)
+		assert.False(t, attachCalled, "content must not be attached when the run was not cancelled")
+		assert.Empty(t, rec.Ended(), "the span must not be finalized when the run was not cancelled")
+		_, statErr := os.Stat(filepath.Join(runDir, metricsFile))
+		assert.True(t, os.IsNotExist(statErr), "metrics.json must not be written when the run was not cancelled")
 	})
 }
 

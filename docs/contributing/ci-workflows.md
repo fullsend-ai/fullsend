@@ -29,6 +29,43 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
+## Context-variable scoping
+
+GitHub Actions contexts describe different parts of an invocation. Do not treat similarly named properties as interchangeable when moving logic between inline workflow steps, reusable workflows, and composite actions. See the [GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts) for the complete availability matrix.
+
+| Need | Use |
+|---|---|
+| Repository that triggered the workflow | `github.repository` |
+| Repository containing the action currently being executed | `github.action_repository` |
+| Ref used to invoke the action currently being executed | `github.action_ref` |
+| Repository containing the workflow file that defines the current job on GitHub.com | `job.workflow_repository` |
+| Commit containing the workflow file that defines the current job on GitHub.com | `job.workflow_sha` |
+
+In a reusable workflow, the caller-scoped subset of `github.*` — including
+`github.repository`, `github.sha`, `github.ref`, `github.workflow`, and
+`github.token` — remains associated with the caller workflow. The
+`github.action_*` properties are an exception: they identify the action
+currently executing, not the caller workflow. In a composite action, expose
+these action-identity values through the `env` context when using them in a
+`run` step.
+
+For remote actions invoked with `owner/repo@ref`, `github.action_repository`
+and `github.action_ref` identify the referenced action. For local composite
+actions invoked with `uses: ./...`, those two properties are empty; pass an
+explicit input or environment value when the action needs its repository or
+revision identity.
+
+On GitHub.com, `job.workflow_repository` and `job.workflow_sha` identify the
+repository and commit containing the workflow file that defines the current
+job. In a reusable workflow invoked through `workflow_call`, they identify the
+reusable workflow rather than the caller workflow. They are workflow-definition
+context, not action-execution context, and must never substitute for
+`github.action_repository` or `github.action_ref`. They are unavailable on
+GitHub Enterprise Server, so they cannot serve as a documented fallback across
+platforms.
+
+When refactoring between action types, audit every `job.*` and `github.*` reference for its execution context. Add an explicit input or fallback only when the action supports invocation modes where the preferred context can be absent, and validate that the fallback refers to the same repository and revision intended by the operation.
+
 ## Timeout policy
 
 - Every non-reusable workflow job must set `timeout-minutes`.

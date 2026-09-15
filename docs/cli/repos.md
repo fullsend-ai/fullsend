@@ -121,6 +121,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. By default, the binary is auto-resolved from `--fullsend-ref`; use `--fullsend-binary` or `--fullsend-source` to provide it explicitly. |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving (requires `--vendor`) |
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
+| `--gitlab-url` | | GitLab instance URL (e.g. `https://gitlab.example.com`); sets `gitlab.url` in the manifest and implies `--forge=gitlab` when no forge is specified |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
 
 ### GitLab bot token
@@ -131,6 +132,12 @@ On free-tier or Community Edition instances where project access tokens are not 
 
 ```bash
 fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
+```
+
+Project paths can include nested groups (e.g., `group/subgroup/project`):
+
+```bash
+fullsend repos install group/subgroup/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
 ```
 
 ### Common workflows
@@ -162,7 +169,7 @@ fullsend repos install acme/api acme/web
 Add a GitLab repo and install it:
 
 ```bash
-fullsend repos install group/project --forge gitlab --direct
+fullsend repos install group/project --forge gitlab --gitlab-url https://gitlab.example.com --direct
 ```
 
 ## `repos status`
@@ -189,7 +196,7 @@ fullsend repos status --repo "acme/*" --json
 
 **Table output** (default) shows per-repo status with columns:
 
-- **REPO** — `owner/repo` name
+- **REPO** — `owner/repo` name (GitLab repos with nested groups display as `group/subgroup/project`)
 - **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`
 - **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`
@@ -206,7 +213,11 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+
+File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately.
+
+Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
 
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
@@ -218,6 +229,13 @@ fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
 fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
+fullsend repos uninstall acme/old-api --direct
+```
+
+For GitLab repos with nested group paths, use the full path:
+
+```bash
+fullsend repos uninstall group/subgroup/project
 ```
 
 ### Modes
@@ -239,6 +257,7 @@ fullsend repos uninstall acme/old-api --uninstall-only
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be uninstalled without making changes |
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
+| `--direct` | `false` | Push file deletions to the default branch instead of opening a PR |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--manifest-only` | `false` | Remove from manifest without tearing down |
 | `--uninstall-only` | `false` | Tear down without removing from manifest |
@@ -257,7 +276,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
+| `defaults.allowed_remote_resources` | comma-separated URLs | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition) |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
 | `github.url` | URL | GitHub instance URL (default: `https://github.com`) |

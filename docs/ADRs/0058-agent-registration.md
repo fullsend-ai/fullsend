@@ -94,3 +94,11 @@ in the sections below.
 - [ADR 0045](0045-forge-portable-harness-schema.md) -- harness composition via `base:` URLs
 - [ADR 0057](0057-repos-management.md) -- repos management for per-repo installations
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) -- user-facing guide for agent registration
+
+## Notes
+
+- `fullsend agent new` (added for
+  [#6966](https://github.com/fullsend-ai/fullsend/issues/6966)) generates a
+  complete custom agent and then registers it through the `agent add` path
+  described here. It adds a generator in front of this decision; the
+  registration model itself is unchanged.

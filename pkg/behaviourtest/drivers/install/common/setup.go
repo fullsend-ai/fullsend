@@ -21,6 +21,13 @@ type GitHubSetupOpts struct {
 	// FullsendRef is passed as --fullsend-ref when non-empty. Used in
 	// non-vendored mode to pin the reusable workflow ref (e.g. "main").
 	FullsendRef string
+
+	// ConfigPreset is passed as --config when non-empty (a local path
+	// or HTTPS URL to a config base layer preset). When set, --runtime
+	// dummy is omitted because github setup rejects combining --config
+	// with --runtime; the preset must supply runtime: dummy so
+	// post-install validation still passes.
+	ConfigPreset string
 }
 
 // DefaultGitHubSetupOpts returns vendored-mode defaults.
@@ -58,7 +65,13 @@ func RunGitHubSetupWithOpts(
 		"--direct",
 		"--skip-app-setup",
 		"--mint-url", mintURL,
-		"--runtime", "dummy",
+	}
+	// --config cannot be combined with --runtime: the preset supplies
+	// its own configuration (including runtime).
+	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
+		args = append(args, "--config", preset)
+	} else {
+		args = append(args, "--runtime", "dummy")
 	}
 	if opts.Vendor {
 		args = append(args, "--vendor")

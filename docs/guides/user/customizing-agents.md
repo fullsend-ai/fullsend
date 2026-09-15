@@ -8,6 +8,8 @@ disabling agents.
 For a quick overview of all customization options, see
 [Customizing Agents](customizing-overview.md). For the complete harness field
 reference, see [Harness Field Reference](../../reference/harness-reference.md).
+To create a new agent rather than configure an existing one, start with
+[`fullsend agent new`](../../cli/agent.md#agent-new).
 
 ## What you can configure
 
@@ -106,7 +108,9 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 
 Base chains support up to 5 levels. Circular references are detected and rejected. Resolution order: base chain, child overrides, overlay resolution.
 
-> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own.
+> **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
+
+> **Org-level fallback:** Separately from base-harness inheritance, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for all URL resolution. URLs trusted at the org level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the org-level list is set by organization administrators, not by base harness authors.
 
 ### Remote providers and profiles
 

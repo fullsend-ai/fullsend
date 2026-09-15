@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -194,6 +195,9 @@ func useFakeOpenshell(t *testing.T) {
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
 	neutralizeAgentsRepoFallback(t)
+	// ImportProfileVerified keeps a per-id content cache under os.TempDir()
+	// and the providers-stub records imported ids there; isolate both.
+	t.Setenv("TMPDIR", t.TempDir())
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "providers-stub"))
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
@@ -696,7 +700,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 func TestRunAgent_ProviderProfileOrchestration(t *testing.T) {
 	// Exercises the provider/profile orchestration block in runAgent
 	// (steps 2a-2c): CheckGateway, checkProviderProfileIntegrity,
-	// EnableProvidersV2, ImportProfile, EnsureProvider, CreateWithRetry.
+	// EnableProvidersV2, ImportProfileVerified, EnsureProvider, CreateWithRetry.
 	// Uses the providers-stub that passes all openshell commands.
 	useFakeOpenshellProviders(t)
 
@@ -4853,6 +4857,241 @@ func TestWriteMetricsJSON(t *testing.T) {
 	}
 }
 
+// TestAggregateRunMetrics_PartialCancelledRun verifies that partial token
+// metrics from a cancelled run (no ResultEvent, only TokensEvent) are folded
+// into the aggregate correctly. This is the core data-flow assertion for #6936:
+// the cancellation short-circuit writes metrics using the aggregate, so the
+// aggregate must contain the partial tokens.
+func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Simulate a cancelled run: metrics populated via TokensEvent (no
+	// ResultEvent, so NumTurns/TotalCostUSD stay zero).
+	m := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m.ToolCalls.Store(10)
+
+	aggregateRunMetrics(&agg, &m, 1)
+
+	if agg.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", agg.TokenUsage.CacheRead)
+	}
+	if agg.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", agg.ToolCalls)
+	}
+	if agg.Model != "claude-opus-4-6" {
+		t.Errorf("model = %q, want claude-opus-4-6", agg.Model)
+	}
+	if agg.NumTurns != 0 {
+		t.Errorf("num_turns = %d, want 0 (cancelled run has no ResultEvent)", agg.NumTurns)
+	}
+	if agg.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (cancelled run has no ResultEvent)", agg.TotalCostUSD)
+	}
+}
+
+// TestAggregateRunMetrics_MultiIterationCancel verifies that when a first
+// iteration completes normally and the second is cancelled (partial tokens,
+// no ResultEvent), the aggregate reflects both iterations' tokens and the
+// cost from the successful iteration. This exercises the real-world
+// cancellation scenario from #6936: the cleanup path writes the aggregate,
+// so it must combine all iterations faithfully.
+func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
+	var agg aggregateMetrics
+
+	// Iteration 1: normal completion with a ResultEvent.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled — TokensEvent only (no ResultEvent).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:              599,
+		OutputTokens:             119,
+		CacheCreationInputTokens: 148_943,
+		CacheReadInputTokens:     583_298,
+		Model:                    "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	// Token usage must reflect both iterations.
+	if agg.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", agg.TokenUsage.Input)
+	}
+	if agg.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", agg.TokenUsage.Output)
+	}
+	if agg.TokenUsage.CacheCreation != 198_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 198943", agg.TokenUsage.CacheCreation)
+	}
+	if agg.TokenUsage.CacheRead != 683_298 {
+		t.Errorf("token_usage.cache_read = %d, want 683298", agg.TokenUsage.CacheRead)
+	}
+
+	// Cost comes only from the successful iteration (cancelled run has zero cost).
+	if agg.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", agg.TotalCostUSD)
+	}
+	if agg.NumTurns != 5 {
+		t.Errorf("num_turns = %d, want 5 (cancelled iteration contributes zero turns)", agg.NumTurns)
+	}
+	if agg.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", agg.ToolCalls)
+	}
+	if agg.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", agg.Iterations)
+	}
+}
+
+// TestWriteMetricsJSON_CancelledRunPartialTokens verifies that partial
+// metrics from a cancelled run round-trip through writeMetricsJSON and
+// contain the expected token values but zero cost. This is the persistence
+// assertion for #6936: the artifact must contain non-zero token usage even
+// when TotalCostUSD is unavailable.
+func TestWriteMetricsJSON_CancelledRunPartialTokens(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build aggregate matching the cancelled-run evidence from #6936.
+	m := aggregateMetrics{
+		Iterations: 1,
+		ToolCalls:  10,
+		Model:      "claude-opus-4-6",
+	}
+	m.TokenUsage.Input = 599
+	m.TokenUsage.Output = 119
+	m.TokenUsage.CacheCreation = 148_943
+	m.TokenUsage.CacheRead = 583_298
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Token usage must be non-zero — the primary assertion for #6936.
+	if got.TokenUsage.Input == 0 {
+		t.Error("expected non-zero token_usage.input in cancelled-run metrics")
+	}
+	if got.TokenUsage.Output == 0 {
+		t.Error("expected non-zero token_usage.output in cancelled-run metrics")
+	}
+	if got.TokenUsage.Input != 599 {
+		t.Errorf("token_usage.input = %d, want 599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 119 {
+		t.Errorf("token_usage.output = %d, want 119", got.TokenUsage.Output)
+	}
+	if got.TokenUsage.CacheCreation != 148_943 {
+		t.Errorf("token_usage.cache_creation = %d, want 148943", got.TokenUsage.CacheCreation)
+	}
+	if got.TokenUsage.CacheRead != 583_298 {
+		t.Errorf("token_usage.cache_read = %d, want 583298", got.TokenUsage.CacheRead)
+	}
+	if got.TotalCostUSD != 0 {
+		t.Errorf("total_cost_usd = %f, want 0 (dollar cost unavailable on cancellation)", got.TotalCostUSD)
+	}
+	if got.ToolCalls != 10 {
+		t.Errorf("tool_calls = %d, want 10", got.ToolCalls)
+	}
+}
+
+// TestWriteMetricsJSON_MultiIterationCancelRoundTrip verifies the full
+// data path for #6936: aggregate two iterations (one complete, one
+// cancelled), write metrics.json, read it back, and verify the combined
+// values survive serialization. This is the integration assertion — the
+// cancellation short-circuit calls aggregateRunMetrics then writeMetricsJSON,
+// so the round-trip must preserve both iterations' data.
+func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	var agg aggregateMetrics
+
+	// Iteration 1: complete.
+	m1 := agentruntime.RunMetrics{
+		InputTokens:              10_000,
+		OutputTokens:             2_000,
+		CacheCreationInputTokens: 50_000,
+		CacheReadInputTokens:     100_000,
+		NumTurns:                 5,
+		TotalCostUSD:             0.42,
+		Model:                    "claude-opus-4-6",
+	}
+	m1.ToolCalls.Store(8)
+	aggregateRunMetrics(&agg, &m1, 1)
+
+	// Iteration 2: cancelled (partial tokens only).
+	m2 := agentruntime.RunMetrics{
+		InputTokens:  599,
+		OutputTokens: 119,
+		Model:        "claude-opus-4-6",
+	}
+	m2.ToolCalls.Store(3)
+	aggregateRunMetrics(&agg, &m2, 2)
+
+	if err := writeMetricsJSON(dir, agg); err != nil {
+		t.Fatalf("writeMetricsJSON: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	// Combined token usage from both iterations.
+	if got.TokenUsage.Input != 10_599 {
+		t.Errorf("token_usage.input = %d, want 10599", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 2_119 {
+		t.Errorf("token_usage.output = %d, want 2119", got.TokenUsage.Output)
+	}
+	// Cost from completed iteration only.
+	if got.TotalCostUSD != 0.42 {
+		t.Errorf("total_cost_usd = %f, want 0.42", got.TotalCostUSD)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 11 {
+		t.Errorf("tool_calls = %d, want 11", got.ToolCalls)
+	}
+}
+
 // --- mintAgentToken tests ---
 
 // useZeroMintTokenBackoff overrides mintTokenBackoff to skip real sleeps so
@@ -5399,6 +5638,304 @@ func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
 
 	cleanup()
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE")
+}
+
+// envLast returns the last-wins value of key in an exec env slice, matching
+// os/exec's duplicate-key rule used by postScriptEnv.
+func envLast(env []string, key string) string {
+	prefix := key + "="
+	val := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			val = e[len(prefix):]
+		}
+	}
+	return val
+}
+
+func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+
+	// Simulate runner_env expansion at the start of the run, which snapshots
+	// the first minted token into h.RunnerEnv (last-wins in postScriptEnv).
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"))
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+
+	// In runAgent, remintCleanup is deferred after the first mint's own
+	// cleanup, so under LIFO it runs first. At that point the first
+	// mint's cleanup has not fired yet, so remintCleanup must restore the
+	// process env to the first-mint token, not the pre-mint value.
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "remintCleanup must restore the first-mint token")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_TOKEN"), "remintCleanup must restore the first-mint token")
+
+	// cleanup (the first mint's own cleanup) runs next under LIFO and must
+	// restore the pre-mint value the test set with t.Setenv above.
+	cleanup()
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+}
+
+// TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx exercises the
+// context.WithoutCancel wrapping inside remintAgentTokenForPostScript: a
+// parent ctx cancelled before remint even starts (a CI job-level timeout
+// landing at exactly this moment is the failure mode #7231 fixes) must not
+// prevent the mint call. The wrapping now lives inside the helper itself
+// (rather than at the runAgent call site) specifically so a test can pass
+// an already-cancelled ctx directly, as done here.
+func TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_after_cancel", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": "",
+			"GH_TOKEN":   "",
+		},
+	}
+
+	printer := ui.New(io.Discard)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	remintCleanup := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls, "remint must still call mint despite an already-cancelled parent ctx")
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+	assert.Equal(t, "ghs_after_cancel", envLast(env, "GH_TOKEN"), "postScriptEnv must resolve the token minted after cancellation")
+}
+
+// TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning
+// proves a remint truncated by remintForPostScriptTimeout is reported
+// differently from a genuine mint rejection, so operators can tell a
+// timeout apart from a real failure.
+func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *testing.T) {
+	origTimeout := remintForPostScriptTimeout
+	remintForPostScriptTimeout = 10 * time.Millisecond
+	defer func() { remintForPostScriptTimeout = origTimeout }()
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(ctx context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{Role: "coder", RunnerEnv: map[string]string{"PUSH_TOKEN": "existing_token"}}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	cleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "timed out", "a context.DeadlineExceeded must produce a distinct message from a generic mint failure")
+	assert.NotContains(t, buf.String(), "Failed to refresh agent token for post-script:", "must not also emit the generic failure message")
+	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint times out")
+}
+
+func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	require.True(t, minted)
+
+	h := &harness.Harness{
+		Role: "coder",
+		RunnerEnv: map[string]string{
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_original_token", os.Getenv("PUSH_TOKEN"), "failed remint must leave the existing token")
+	assert.Contains(t, buf.String(), "Failed to refresh agent token for post-script")
+
+	// The post-script still runs with the existing token.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "post.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$PUSH_TOKEN\" > \""+marker+"\"\n"), 0o755))
+
+	cmd := exec.Command(script)
+	cmd.Env = postScriptEnv(h, "")
+	require.NoError(t, cmd.Run(), "post-script must still run after a remint error")
+	got, readErr := os.ReadFile(marker)
+	require.NoError(t, readErr)
+	assert.Equal(t, "ghs_original_token\n", string(got))
+}
+
+// TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL covers
+// the early-return branch in remintAgentTokenForPostScript: GitLab has no
+// App mint, and an empty mintURL means minting was never configured. Both
+// must skip mint entirely (and therefore skip syncRunnerEnvTokens too),
+// leaving RunnerEnv exactly as it was.
+func TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_should_not_be_minted", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	printer := ui.New(io.Discard)
+
+	for _, tc := range []struct {
+		name          string
+		mintURL       string
+		forgePlatform string
+	}{
+		{name: "gitlab", mintURL: "https://mint.example.com", forgePlatform: "gitlab"},
+		{name: "empty mint URL", mintURL: "", forgePlatform: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &harness.Harness{
+				Role: "coder",
+				RunnerEnv: map[string]string{
+					"PUSH_TOKEN": "unchanged_token",
+				},
+			}
+
+			cleanup := remintAgentTokenForPostScript(context.Background(), h, tc.mintURL, tc.forgePlatform, printer)
+			cleanup()
+
+			assert.Equal(t, 0, calls, "gitlab/empty mint URL must not call mint")
+			assert.Equal(t, "unchanged_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when mint is skipped")
+		})
+	}
+}
+
+// TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys covers the
+// !ok continue branch in syncRunnerEnvTokens: a harness whose RunnerEnv
+// never included the token keys at all (as opposed to including them with
+// a stale value). syncRunnerEnvTokens must not add keys RunnerEnv never
+// had, and postScriptEnv must still resolve the reminted token because
+// childScriptEnv appends os.Environ() before RunnerEnv and exec's
+// duplicate-key rule is last-wins — an absent RunnerEnv entry never
+// shadows the freshly reminted process-env value.
+func TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+
+	h := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"UNRELATED_VAR": "keep-me"},
+	}
+
+	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer remintCleanup()
+
+	assert.Equal(t, 1, calls)
+	_, hasPushToken := h.RunnerEnv["PUSH_TOKEN"]
+	assert.False(t, hasPushToken, "syncRunnerEnvTokens must not add keys RunnerEnv never had")
+	assert.Equal(t, "keep-me", h.RunnerEnv["UNRELATED_VAR"], "unrelated RunnerEnv entries must be left alone")
+
+	env := postScriptEnv(h, "")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "PUSH_TOKEN"), "postScriptEnv must resolve the reminted token from process env")
+	assert.Equal(t, "ghs_refreshed_token", envLast(env, "GH_TOKEN"))
+}
+
+// TestSyncRunnerEnvTokens_NilGuards exercises the h == nil and
+// h.RunnerEnv == nil guards directly: remintAgentTokenForPostScript always
+// calls syncRunnerEnvTokens with the harness it was given, but that
+// harness (or its RunnerEnv map, for a harness whose runner_env never set
+// any vars) can be nil, so the guards must not panic.
+func TestSyncRunnerEnvTokens_NilGuards(t *testing.T) {
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(nil) })
+
+	h := &harness.Harness{Role: "coder"}
+	assert.NotPanics(t, func() { syncRunnerEnvTokens(h) })
+	assert.Nil(t, h.RunnerEnv, "a nil RunnerEnv must be left nil, not initialized")
 }
 
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {

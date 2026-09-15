@@ -9,7 +9,9 @@
 # allowlisted FULLSEND_* override variables are exported too, so a repo can
 # switch a role's runtime/model/effort with a repository variable instead of
 # a pull request. A role-prefixed variable (TRIAGE_FULLSEND_MODEL) wins over
-# the plain one (FULLSEND_MODEL). Values must be single-line and limited to
+# the plain one (FULLSEND_MODEL). AGENT_PREFIX is the role identifier plus '_'
+# (uppercase, hyphens mapped to underscores: ci-check → CI_CHECK_). Values must
+# be single-line and limited to
 # the characters a model id / runtime name can contain; anything else is
 # skipped with a warning. fullsend validates the values themselves.
 # The whole variable map is passed (not individual keys) because the

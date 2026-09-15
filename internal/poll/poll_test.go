@@ -301,6 +301,50 @@ func TestRunLabelEventThreadsActorID(t *testing.T) {
 	}
 }
 
+func TestRunDispatchesBotAppliedLabel(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
+	}
+	mc.notes[1] = []Note{}
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 5}}
+	mc.labelEvents[1] = []ResourceLabelEvent{
+		{
+			ID:     100,
+			Action: "add",
+			Label: struct {
+				Name string `json:"name"`
+			}{Name: "ready-to-code"},
+			User: UserRef{ID: 200, Username: "project_1_bot_abc", Bot: true},
+		},
+	}
+	mc.memberLevel[200] = 40
+
+	router := &stubRouter{stages: []string{"code"}}
+	p := New(mc, router, "group/project", Options{BotUserID: 200})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline for bot-applied ready-to-code, got %d", mc.pipelineCounter)
+	}
+	if len(p.dispatches) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(p.dispatches))
+	}
+	if p.dispatches[0].Stage != "code" {
+		t.Errorf("stage = %q, want %q", p.dispatches[0].Stage, "code")
+	}
+	vars := mc.pipelineCalls[0].Variables
+	if vars["ACTOR_ID"] != "200" {
+		t.Errorf("ACTOR_ID: got %q, want 200 (bot label author)", vars["ACTOR_ID"])
+	}
+}
+
 func TestRunNoMatchingStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)

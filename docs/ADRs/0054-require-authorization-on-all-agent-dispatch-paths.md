@@ -33,6 +33,10 @@ consolidates the normative rules from this ADR and subsequent
 implementation changes into a single reference for dispatch
 implementations, forge adapters, and harness authors.
 
+[ADR 0098](0098-entity-first-harness-evaluation.md) extends this decision for
+Fullsend-originated entity discovery without a prompting event. Event-backed
+dispatch remains subject to this ADR's actor authorization gate.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)

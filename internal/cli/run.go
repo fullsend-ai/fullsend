@@ -99,6 +99,23 @@ const (
 // without waiting out the real duration.
 var preflightCheckTimeout = 30 * time.Second
 
+// remintForPostScriptTimeout bounds the post-script token remint (#7231).
+// It runs on a context derived from context.WithoutCancel so a parent-ctx
+// cancellation near the run's own budget (e.g. a CI job-level timeout)
+// cannot abort the remint before it gets a chance to complete — the same
+// problem this remint exists to work around. The bound keeps a mint-service
+// outage from hanging teardown indefinitely; remint failure is non-fatal.
+//
+// Set to mintclient.MaxMintDuration rather than an unrelated fixed number:
+// mintclient.MintToken has its own retry schedule (fetchOIDCJWT up to 3
+// attempts, callMint up to 5, both with exponential backoff — see that
+// const's doc for the full accounting), which can already take longer
+// than a shorter, arbitrarily-chosen bound. A bound shorter than the
+// client's own schedule would routinely cut retries short mid-backoff and
+// fall through to the expired token this remint exists to replace — the
+// exact failure this remint exists to fix (#7231).
+var remintForPostScriptTimeout = mintclient.MaxMintDuration
+
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
 var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
@@ -663,6 +680,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("loading harness: %w", err)
 	}
 
+	// Emit the harness-resolved role as a step output so the finalize step
+	// in action.yml can pass it to reconcile-status --role instead of using
+	// the raw agent name. Custom agents (e.g., "grillme") may declare a
+	// role different from their name (e.g., "role: review"), and the mint
+	// service rejects unrecognized role names. See #7000.
+	//
+	// Emitted immediately after the harness loads — h.Role is already
+	// validated non-empty at this point — rather than later in this
+	// function, so the output is still available if a subsequent
+	// validation step aborts the run before reaching the pre-script relay.
+	if h.Role != "" {
+		if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+			if wErr := writeGitHubOutput(ghOutput, "role", h.Role); wErr != nil {
+				printer.StepWarn("Could not relay harness role to GITHUB_OUTPUT: " + wErr.Error())
+			}
+		}
+	}
+
 	allDeps := append(fetchDeps, baseDeps...)
 	for _, dep := range allDeps {
 		if dep.CacheHit {
@@ -719,7 +754,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
-					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)
+					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
 					if lockResolveErr != nil {
 						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 						printer.StepWarn("Falling back to normal resolution")
@@ -747,6 +782,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				WorkspaceRoot: absFullsendDir,
 				FetchPolicy:   policy,
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+				OrgAllowlist:  orgAllowlist,
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
 				TreeFetcher:   rFlags.treeFetcher,
@@ -857,6 +893,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Mint agent token when a mint URL and harness role are both available.
 	// Runs before env expansion so minted tokens flow into RunnerEnv and
 	// host_files via os.Getenv automatically.
+	// A second mint happens in the post-script defer (#7231) so a
+	// full-budget run does not hand the post-script an expired token.
 	// Minting is GitHub-only — on GitLab the bot PAT (FULLSEND_FORGE_TOKEN)
 	// serves as the push/API token, provisioned via CI/CD variables. Skip
 	// minting entirely to avoid a spurious "skipping token minting" warning
@@ -1151,7 +1189,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 1b. Log token scope for debugging cross-org issues (see #1321).
 	// Non-fatal: if the check fails (e.g., non-installation token), log a
 	// warning and continue.
-	if ghToken := os.Getenv("GH_TOKEN"); ghToken != "" {
+	if ghToken := envGHToken(); ghToken != "" {
 		repos, err := fetchTokenScope(context.Background(), ghToken, "https://api.github.com")
 		if err != nil {
 			printer.StepWarn("Token scope check: " + err.Error())
@@ -1317,6 +1355,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// profile whose egress rules the run never uses.
 	skippedProviders := map[string]struct{}{}
 	var openAIHandles []openAIProviderHandle
+	// stopOpenAIRefreshers collects one stop func per run-scoped OpenAI
+	// credential refresher (context cancel + WaitGroup.Wait). Each is also
+	// registered as a normal defer below for teardown, but the post-script
+	// defer (registered later, so it runs first under LIFO) calls these
+	// explicitly first: os.Setenv in the post-script's token remint is not
+	// goroutine-safe against a still-running refresher's os.Getenv calls.
+	// Both stopRefresh and refreshWg.Wait are safe to call more than once.
+	var stopOpenAIRefreshers []func()
 	allProviderNames := append([]string{}, h.Providers...)
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
@@ -1328,11 +1374,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
 
-		// Import URL-resolved profiles to the gateway.
+		// Import URL-resolved profiles to the gateway. ImportProfileVerified
+		// drops the os.TempDir() content cache and confirms the gateway lists
+		// the profile: a hash match against a freshly-recreated (empty)
+		// gateway would otherwise skip the send (#7218).
 		for _, rp := range result.Profiles {
 			profileStart := time.Now()
 			printer.StepStart("Importing profile: " + rp.ID)
-			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
+			if err := sandbox.ImportProfileVerified(ctx, rp.ID, rp.LocalPath); err != nil {
 				printer.StepFail("Failed to import profile " + rp.ID)
 				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
 			}
@@ -1456,10 +1505,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer refreshWg.Done()
 				runOpenAIRefresh(refreshCtx, h, printer)
 			}(handle)
-			defer func() {
+			stopAndWait := func() {
 				stopRefresh()
 				refreshWg.Wait()
-			}()
+			}
+			stopOpenAIRefreshers = append(stopOpenAIRefreshers, stopAndWait)
+			defer stopAndWait()
 		}
 		allDefs = sharedDefs
 
@@ -1708,6 +1759,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			postStart := time.Now()
 			printer.StepStart("Running post-script: " + h.PostScript)
+			// Re-mint after sandbox teardown so the post-script does not
+			// authenticate with an installation token that expired during a
+			// full-budget run. GitHub App tokens live 60 minutes, matching the
+			// code agent's budget (#7231). A remint failure is non-fatal.
+			// os.Setenv is safe here: sandbox streaming and OIDC refresh
+			// goroutines have already been torn down (LIFO defers). The
+			// OpenAI credential refreshers are the exception — their own
+			// stop-defers are registered earlier in the function, so under
+			// LIFO they would not fire until after this defer completes —
+			// so stop them explicitly first to avoid racing this os.Setenv
+			// against their os.Getenv reads.
+			for _, stop := range stopOpenAIRefreshers {
+				stop()
+			}
+			// remintAgentTokenForPostScript wraps ctx itself (WithoutCancel
+			// + remintForPostScriptTimeout — see its doc), so the run's own
+			// ctx is passed through unwrapped here. That keeps the
+			// cancellation-survival behavior testable in isolation instead
+			// of only reachable through this closure.
+			remintCleanup := remintAgentTokenForPostScript(ctx, h, mintURL, forgePlatform, printer)
+			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
 			postCmd.Env = postScriptEnv(h, traceparent)
@@ -2251,6 +2323,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
+
+		if cancelled, cancelExitCode, cancelledErr := handleRunCancellation(
+			ctx, runErr, iteration, exitCode, rt.System(), rt.Name(),
+			&metrics, aggMetrics, runDir, agentSpan, attachIterationContent,
+			printer, lastIterElapsed,
+		); cancelled {
+			lastExitCode = cancelExitCode
+			return cancelledErr
+		}
 
 		if runErr != nil {
 			attachIterationContent("error")
@@ -3675,6 +3756,52 @@ func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 	return truncateStatusMsgTo(te.DisplayMessage(), maxSpanEventMsgLen)
 }
 
+// handleRunCancellation short-circuits the per-iteration loop in runAgent on
+// context cancellation: it persists partial metrics and finalizes the agent
+// span immediately, before extraction and validation that would be
+// pointless on a dead sandbox. GitHub Actions cancellation (SIGTERM)
+// terminates the process shortly after — writing metrics here ensures the
+// artifact upload step (if: always()) captures the partial usage data
+// (#6936).
+//
+// NOTE: TotalCostUSD will be zero in the persisted metrics because dollar
+// cost is only available from the terminal ResultEvent, which a cancelled
+// run never emits. Token counts (input, output, cache_read, cache_creation)
+// are captured via the deferred TokensEvent and will be non-zero. See #6936
+// for background.
+//
+// cancelled is false when ctx is still live, in which case the caller's
+// normal control flow continues unchanged; the other return values are
+// meaningless in that case.
+func handleRunCancellation(
+	ctx context.Context,
+	runErr error,
+	iteration, exitCode int,
+	system, runtimeName string,
+	metrics *agentruntime.RunMetrics,
+	aggMetrics aggregateMetrics,
+	runDir string,
+	agentSpan trace.Span,
+	attachIterationContent func(finishReason string),
+	printer *ui.Printer,
+	lastIterElapsed time.Duration,
+) (cancelled bool, lastExitCode int, err error) {
+	cancelErr := ctx.Err()
+	if cancelErr == nil {
+		return false, 0, nil
+	}
+	if runErr == nil {
+		runErr = cancelErr
+	}
+	attachIterationContent("error")
+	finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, system, runtimeName, metrics, "")
+	printer.StepWarn(fmt.Sprintf("Run cancelled (iteration %d, %.1fs elapsed)", iteration, lastIterElapsed.Seconds()))
+	if writeErr := writeMetricsJSON(runDir, aggMetrics); writeErr != nil {
+		printer.StepWarn("Failed to write metrics.json: " + writeErr.Error())
+	}
+	return true, exitCode, fmt.Errorf("run cancelled (iteration %d): %w", iteration, runErr)
+}
+
 // finalizeAgentSpan records the end-of-iteration attributes and status on an
 // agent span and ends it. transcriptErr is non-empty when the transcript
 // reported a failure the process exit code did not (#2786): exit_code keeps
@@ -5034,6 +5161,78 @@ type tokenVar struct {
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
 	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// remintAgentTokenForPostScript re-mints a GitHub App installation token
+// after the sandbox is torn down so the post-script authenticates with a
+// live token. Installation tokens expire after 60 minutes, matching the
+// code agent's budget, so a full-budget run's original token is already
+// expired by post-script time (#7231). GitLab is skipped (no App mint).
+//
+// A remint failure is non-fatal: the post-script still runs with the
+// existing token. The returned cleanup restores process env after the
+// post-script; it is a no-op when remint is skipped or fails.
+//
+// ctx is the caller's own run ctx, not yet bounded or decoupled from
+// cancellation — remintAgentTokenForPostScript does that itself (rather
+// than requiring the caller to pre-wrap it) so a cancelled or
+// soon-to-cancel parent ctx (e.g. a CI job-level timeout close to the
+// agent's budget) cannot abort the remint before it gets a chance to
+// complete, mirroring the completion-notification defer's
+// context.WithoutCancel pattern elsewhere in this file. Wrapping inside
+// the function, instead of at the call site, also means a test can pass
+// an already-cancelled ctx directly and still observe the remint run.
+func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mintURL, forgePlatform string, printer *ui.Printer) func() {
+	if forgePlatform == "gitlab" || mintURL == "" {
+		return func() {}
+	}
+	remintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
+	defer cancel()
+	role := ""
+	if h != nil {
+		role = h.Role
+	}
+	_, cleanup, err := mintAgentToken(remintCtx, role, mintURL, forgePlatform, printer)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Distinct from a genuine mint rejection: the client's own
+			// retry schedule (see mintclient.MaxMintDuration) did not get
+			// to run to completion within remintForPostScriptTimeout, so
+			// this is a truncated retry, not a confirmed failure.
+			printer.StepWarn(fmt.Sprintf("Refreshing agent token for post-script timed out after %s; continuing with existing token", remintForPostScriptTimeout))
+		} else {
+			printer.StepWarn("Failed to refresh agent token for post-script: " + err.Error() + "; continuing with existing token")
+		}
+		return func() {}
+	}
+	syncRunnerEnvTokens(h)
+	if cleanup == nil {
+		return func() {}
+	}
+	return cleanup
+}
+
+// syncRunnerEnvTokens copies the current process-env token vars into
+// h.RunnerEnv so childScriptEnv's last-wins merge does not restore the
+// values expanded at the start of the run. Without this, a remint would
+// update os.Environ() while postScriptEnv still appended the stale
+// PUSH_TOKEN snapshotted from the first mint (#7231).
+func syncRunnerEnvTokens(h *harness.Harness) {
+	if h == nil || h.RunnerEnv == nil {
+		return
+	}
+	names := []string{"GH_TOKEN"}
+	for _, tv := range roleTokenVars[resolveRole(h.Role)] {
+		names = append(names, tv.Name)
+	}
+	for _, name := range names {
+		if _, ok := h.RunnerEnv[name]; !ok {
+			continue
+		}
+		if v, found := os.LookupEnv(name); found {
+			h.RunnerEnv[name] = v
+		}
+	}
 }
 
 // mintAgentToken mints a GitHub App installation token for the agent's role

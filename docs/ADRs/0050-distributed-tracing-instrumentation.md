@@ -161,8 +161,10 @@ online scoring of wild-run traces writes `eval-measurements.jsonl`
 beside telemetry when at least one new score is produced (tool-agnostic). Distinct from functional eval fixtures
 ([ADR 0051](0051-agent-eval-harness-for-test-infrastructure.md)).
 
-> **Planned:** portable remote score export follows the same OTLP
-> configuration as this ADR — no vendor score adapters in core.
+> **Done ([#6459](https://github.com/fullsend-ai/fullsend/pull/6459) /
+> [ADR 0087](0087-eval-measurements-online-trace-scoring.md)):** portable
+> remote score export uses the same OTLP configuration as this ADR — no
+> vendor score adapters in core.
 
 **2026-08-18 — Remove duplicate token/cost from root span (3278b059):**
 `gen_ai.request.model` and `gen_ai.usage.*` token attributes moved to agent

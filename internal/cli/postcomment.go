@@ -1,13 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -45,11 +45,12 @@ The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 
-			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
+			client, err := newAuthenticatedGitHubClient(token, "")
+			if err != nil {
+				if errors.Is(err, errGitHubTokenMissing) {
+					return githubTokenFlagError("--token")
+				}
+				return err
 			}
 
 			if number <= 0 {
@@ -83,7 +84,6 @@ The --result flag accepts a file path or "-" for stdin.`,
 				resolvedKeepHistory = resolved
 			}
 
-			client := gh.New(token)
 			cfg := sticky.Config{
 				Marker:      marker,
 				DryRun:      dryRun,
@@ -98,7 +98,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().IntVar(&number, "number", 0, "issue or pull request number (required)")
 	cmd.Flags().StringVar(&marker, "marker", "", "hidden HTML marker to identify this agent's comments (required)")
 	cmd.Flags().StringVar(&result, "result", "-", "path to comment body file, or '-' for stdin")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")

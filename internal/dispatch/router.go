@@ -8,8 +8,8 @@ const changesRequestedMarker = "<!-- fullsend:changes-requested -->"
 
 // HarnessRouter implements EventRouter by applying the default routing
 // rules from ADR 0067's event routing table. Slash commands (/fs-X)
-// dispatch to any agent in the valid set; label and merge events use
-// hardcoded stage mappings.
+// dispatch to any agent in the valid set; label, merge, and MR-open
+// events use hardcoded stage mappings.
 //
 // This is an interim implementation using Go routing rules. ADR 0067
 // prescribes CEL trigger expressions (ADR 0061) for routing; this
@@ -43,6 +43,8 @@ func (r *HarnessRouter) Route(event *NormalizedEvent) ([]string, error) {
 		return r.routeLabel(event)
 	case "merged":
 		return r.routeMerge(event)
+	case "opened":
+		return r.routeOpened(event)
 	default:
 		return nil, nil
 	}
@@ -156,6 +158,21 @@ func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 		return nil, nil
 	}
 	return []string{"retro"}, nil
+}
+
+// routeOpened dispatches review when a change proposal is opened.
+// Authorization is enforced in the GitLab agent template (Developer+),
+// matching the previous native merge_request_event path. Review is
+// read-only, so fork MRs are allowed; the agent template skips write
+// stages on forks.
+func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
+	if event.Entity.Kind != "change_proposal" {
+		return nil, nil
+	}
+	if !r.validAgents["review"] {
+		return nil, nil
+	}
+	return []string{"review"}, nil
 }
 
 // isForkOrUnknown reports whether the event's change proposal state

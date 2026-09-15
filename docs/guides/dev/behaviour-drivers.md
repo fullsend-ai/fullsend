@@ -30,10 +30,11 @@ Set when starting the suite (not in feature files):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
+BEHAVIOUR_CONFIG_PRESET=          # optional local path or HTTPS URL forwarded as github setup --config
 ENVIRONMENT=dev                   # mint/infra target: dev (default) or stage
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls an `install.Factory` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown. The suite constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) calls `behaviourtest.RunSuite`, which acquires a pool org via `internal/e2etest`, runs pre-install cleanup, selects an `install.Factory` from `ENVIRONMENT` (e.g. `install.NewRepoPoolCFMintPreviews(...)`) to get a unified `install.Driver` that owns mint deploy, pool allocation, repo ensure, and teardown, constructs SCM and CI drivers from `BEHAVIOUR_SCM` / `BEHAVIOUR_CI`, and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `Driver.AllocateRepo` leases a unique repo name and ensures it is created and installed. `Driver.DeallocateRepo` returns the name in the After hook. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases. Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
 
 ### Install driver (unified)
 
@@ -51,7 +52,7 @@ Each concrete driver owns the full lifecycle:
 3. Lazily creates and installs numbered pool repos on demand via an internal ensurer (concurrent-safe via singleflight).
 4. Exposes `AllocateRepo` / `DeallocateRepo` / `Finalize` / `Capacity`.
 
-The Factory takes the allocated org name plus runtime dependencies (forge client, token, CLI binary, GCP project, logger). Driver-specific inputs (PEMs, allowlists, pool size, mint URL) come from env or are computed inside the driver. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
+The Factory takes the allocated org name plus runtime dependencies (forge client, token, CLI binary, GCP project, logger). Driver-specific inputs (PEMs, allowlists, pool size, mint URL, optional `BEHAVIOUR_CONFIG_PRESET`) come from env or are computed inside the driver. When `BEHAVIOUR_CONFIG_PRESET` is set, `github setup` receives `--config <value>` and omits `--runtime dummy` (the flags cannot be combined); the preset must supply `runtime: dummy`. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Default concurrency is `driver.Capacity()`; `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
@@ -60,7 +61,7 @@ Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and p
 ## Adding an SCM driver
 
 1. Implement `scm.Driver` in `pkg/behaviourtest/drivers/scm/<vendor>/`.
-2. Register the driver in the suite runner when `BEHAVIOUR_SCM=<vendor>`.
+2. Register the driver in `behaviourtest.RunSuite` when `BEHAVIOUR_SCM=<vendor>`.
 3. Document the env var value here.
 4. Add `@skip:<vendor>` tags on scenarios that cannot run until the driver is complete.
 
@@ -70,7 +71,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
 2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from `e2e/admin/admin_test.go`.
-3. Register in suite init for the matching `BEHAVIOUR_CI` value.
+3. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
 
@@ -100,8 +101,9 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    `repopool_external_mint.go`) behind the shared `install.Driver`
    interface. Place common helpers shared across drivers in
    `install/common/` (e.g., `RunGitHubSetup`, `ProvisionInference`).
-5. **Register the driver** in the suite init for the matching
-   `BEHAVIOUR_INSTALL_MODE` value (or a new mode selector).
+5. **Register the driver** in `behaviourtest.RunSuite` (`installFactoryFor`
+   in `pkg/behaviourtest/select.go`). Install driver selection is keyed by
+   `ENVIRONMENT`, not `BEHAVIOUR_INSTALL_MODE`.
 6. **Use `repopool_external_mint.go`** (~71 lines) as the minimal
    reference implementation. For a more complex example showing CLI arg
    construction, preview alias generation, and teardown semantics, see

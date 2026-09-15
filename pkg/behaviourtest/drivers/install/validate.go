@@ -49,28 +49,37 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 
 // validateShimAndConfig checks that a per-repo install left the expected
 // workflow shim and config with a "dummy" runtime. Shared by both
-// vendored and non-vendored validation.
+// vendored and non-vendored validation. When config.base.yaml is present
+// (a --config preset install), runtime is resolved through the overlay
+// → base → defaults chain so a preset that sets runtime: dummy passes.
 func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo string) error {
 	shimPath := ".github/workflows/fullsend.yaml"
 	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
 	}
 
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgPath := filepath.Join(".fullsend", config.OverlayConfigFile)
 	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
 	}
-	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
+	basePath := filepath.Join(".fullsend", config.BaseConfigFile)
+	baseData, baseErr := client.GetFileContent(ctx, org, repo, basePath)
+	if baseErr != nil {
+		if !forge.IsNotFound(baseErr) {
+			return fmt.Errorf("post-install: reading %s: %w", basePath, baseErr)
+		}
+		baseData = nil
+	}
+	cfgW, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
 	if err != nil {
 		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
 	}
 	if err := cfgW.Validate(); err != nil {
 		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
 	}
-	cfg := cfgW.(config.PerRepoConfigReader)
-	if cfg.ConfigRuntime() != "dummy" {
-		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
+	if cfgW.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfgW.ConfigRuntime())
 	}
 	return nil
 }

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"slices"
 	"sort"
@@ -73,36 +72,6 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(newDisableCmd())
 	cmd.AddCommand(newForeignCmd())
 	return cmd
-}
-
-// resolveToken finds a GitHub token by checking, in order:
-//  1. GH_TOKEN env var
-//  2. GITHUB_TOKEN env var
-//  3. gh auth token (subprocess call to the GitHub CLI)
-//
-// This chain allows users who are already authenticated with gh to use
-// fullsend without manually exporting tokens. The CLI runs a preflight
-// check before each operation and reports exactly which scopes are
-// missing, so callers do not need to request all scopes upfront.
-//
-// Note that gh auth scopes apply to every organization the account
-// belongs to. Users who want to limit the blast radius can create a
-// fine-grained PAT scoped to a single org and export it as GH_TOKEN.
-func resolveToken() (string, error) {
-	if token := os.Getenv("GH_TOKEN"); token != "" {
-		return token, nil
-	}
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return token, nil
-	}
-	out, err := exec.Command("gh", "auth", "token").Output()
-	if err == nil {
-		token := strings.TrimSpace(string(out))
-		if token != "" {
-			return token, nil
-		}
-	}
-	return "", fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login'")
 }
 
 // validateOrgName checks that org is a valid GitHub organization name.
@@ -201,7 +170,7 @@ func validateWIFProvider(raw string) error {
 }
 
 // IsHostedMintURL reports whether raw is the hosted community mint URL
-// (mint.fullsend.sh). This check is also used by pkg/e2etest to resolve
+// (mint.fullsend.sh). This check is also used by internal/e2etest to resolve
 // the GCP project for hosted-mint enrollment.
 func IsHostedMintURL(raw string) bool {
 	parsed, err := url.Parse(raw)
@@ -374,12 +343,11 @@ Inference authentication:
 				return err
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -705,11 +673,11 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		}
 		printer = c.testPrinter
 	} else {
-		token, tokenErr := resolveToken()
+		ghClient, tokenErr := newAuthenticatedGitHubClient("", "")
 		if tokenErr != nil {
 			return tokenErr
 		}
-		client = gh.New(token)
+		client = ghClient
 		printer = ui.New(os.Stdout)
 	}
 
@@ -1313,12 +1281,11 @@ func newUninstallCmd() *cobra.Command {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -1366,12 +1333,11 @@ func newAnalyzeCmd() *cobra.Command {
 				return err
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -1607,8 +1573,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		})
 	} else if mintURL == "" {
 		setup = setup.WithSecretExists(func(role string) (bool, error) {
-			secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
-			return client.RepoSecretExists(ctx, org, forge.ConfigRepoName, secretName)
+			return client.RepoSecretExists(ctx, org, forge.ConfigRepoName, roleAppPrivateKeySecret(role))
 		})
 	}
 
@@ -1622,8 +1587,7 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 		})
 	} else if mintURL == "" {
 		setup = setup.WithStoreSecret(func(sctx context.Context, role, pem string) error {
-			secretName := fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
-			return client.CreateRepoSecret(sctx, org, forge.ConfigRepoName, secretName, pem)
+			return client.CreateRepoSecret(sctx, org, forge.ConfigRepoName, roleAppPrivateKeySecret(role), pem)
 		})
 	}
 
@@ -1642,6 +1606,13 @@ func runAppSetup(ctx context.Context, client forge.Client, printer *ui.Printer, 
 
 	printer.Blank()
 	return creds, nil
+}
+
+// roleAppPrivateKeySecret is the .fullsend repo secret that stores a role's
+// GitHub App PEM. Hyphens in the role become underscores so the name is a
+// valid GitHub Actions secret identifier.
+func roleAppPrivateKeySecret(role string) string {
+	return fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", mintcore.RoleIdentifier(role))
 }
 
 // ensureConfigRepoExists creates the .fullsend config repo if it doesn't
@@ -2455,12 +2426,11 @@ func newReposSubcommand(use, short, long, allFlagHelp string, runFn reposRunFunc
 				repos = args[1:]
 			}
 
-			token, err := resolveToken()
+			client, err := newAuthenticatedGitHubClient("", "")
 			if err != nil {
 				return err
 			}
 
-			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 

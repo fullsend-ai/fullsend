@@ -190,6 +190,72 @@ func TestAddToManifest_GlobRepoAllowed(t *testing.T) {
 	}
 }
 
+func TestAddToManifest_GitLabNestedPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		forge     string
+		repoName  string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:     "gitlab 3-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "group/subgroup/project",
+		},
+		{
+			name:     "gitlab 4-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "a/b/c/d",
+		},
+		{
+			name:     "gitlab 2-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "owner/project",
+		},
+		{
+			name:      "single-segment rejected for gitlab",
+			forge:     ForgeGitLab,
+			repoName:  "project",
+			wantErr:   true,
+			errSubstr: "group[/subgroup]/project format",
+		},
+		{
+			name:      "github rejects 3-segment path",
+			forge:     ForgeGitHub,
+			repoName:  "a/b/c",
+			wantErr:   true,
+			errSubstr: "owner/repo format",
+		},
+		{
+			name:     "github 2-segment path accepted",
+			forge:    ForgeGitHub,
+			repoName: "owner/repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := &Manifest{Version: 1}
+			_, _, err := AddToManifest(context.Background(), ManifestEditConfig{
+				Manifest: manifest,
+			}, tt.forge, []RepoEntry{{Name: tt.repoName}}, nil, nil)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errSubstr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # GitLab Runner custom executor — prepare stage.
 # Pulls the job image and creates a container for the build.
+# Idempotent: safe to re-run (reaps leftovers from a killed prior job)
+# and must stay that way.
 set -euo pipefail
 
 IMAGE="${CUSTOM_ENV_CI_JOB_IMAGE:-}"
@@ -66,6 +68,17 @@ STATE_FILE="${STATE_DIR}/container-${JOB_ID}"
 
 echo "Pulling image: ${IMAGE}"
 podman pull -- "${IMAGE}"
+
+# Per-job OpenShell gateway: reap leftovers from a killed prior job, then
+# start a version-matched gateway with an empty profile registry. The image
+# pull above is required so we can read the job's OpenShell pin from it.
+# shellcheck source=gateway.sh
+source "$(dirname "${BASH_SOURCE[0]}")/gateway.sh"
+reap_orphaned_openshell
+ensure_job_openshell_gateway "${IMAGE}" || {
+  echo "ERROR: failed to start a per-job OpenShell gateway" >&2
+  exit 1
+}
 
 mkdir -p "${BUILDS_DIR}" "${CACHE_DIR}"
 

@@ -177,6 +177,39 @@ func TestDispatch_ActorID_MREvent(t *testing.T) {
 	}
 }
 
+func TestDispatch_OpenedMRIncludesActionInPayload(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_event",
+		Action:       "opened",
+		IID:          8,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID:   42,
+		NoteAuthorID: 42,
+		MRSource:     100,
+		MRTarget:     100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["action"] != "opened" {
+		t.Errorf("payload action: got %v, want opened", payload["action"])
+	}
+}
+
 func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})

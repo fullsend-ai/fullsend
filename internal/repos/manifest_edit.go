@@ -10,7 +10,14 @@ import (
 	"strings"
 )
 
-var repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+var (
+	// repoNamePattern matches the GitHub two-segment owner/repo format.
+	repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+
+	// gitlabRepoNamePattern matches GitLab project paths which may include
+	// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
+	gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$`)
+)
 
 // ManifestEditConfig holds inputs for manifest add/remove operations.
 type ManifestEditConfig struct {
@@ -62,8 +69,10 @@ func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string
 	}
 
 	for _, entry := range entries {
-		if !isGlob(entry.Name) && !repoNamePattern.MatchString(entry.Name) {
-			return nil, nil, fmt.Errorf("invalid repo name %q: expected owner/repo format", entry.Name)
+		if !isGlob(entry.Name) {
+			if err := validateRepoName(forgeName, entry.Name); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
@@ -288,6 +297,23 @@ func isGlob(s string) bool {
 	return strings.ContainsAny(s, "*?[")
 }
 
+// validateRepoName checks that a repo name matches the appropriate pattern
+// for the given forge, returning a forge-specific error if it does not.
+// GitHub requires exactly two segments (owner/repo), while GitLab allows
+// nested group paths (group/subgroup/project).
+func validateRepoName(forgeName, name string) error {
+	if forgeName == ForgeGitLab {
+		if !gitlabRepoNamePattern.MatchString(name) {
+			return fmt.Errorf("invalid repo name %q: expected group[/subgroup]/project format", name)
+		}
+		return nil
+	}
+	if !repoNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid repo name %q: expected owner/repo format", name)
+	}
+	return nil
+}
+
 func writeManifest(path string, m *Manifest) error {
 	data, err := MarshalWithHeader(m)
 	if err != nil {
@@ -438,7 +464,7 @@ func validateDefaultValue(key, value string) error {
 			return fmt.Errorf("%s must be a valid HTTPS URL, got %q", key, value)
 		}
 		if key == "github.url" || key == "gitlab.url" {
-			if err := rejectExtraneousURLParts(u, key); err != nil {
+			if err := RejectExtraneousURLParts(u, key); err != nil {
 				return err
 			}
 		}

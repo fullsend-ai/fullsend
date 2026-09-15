@@ -116,8 +116,12 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
 
 ### Defense considerations
 
-- **Agent actions are attributable** — every agent action traces back to the triggering event and the human who initiated it
-- **No self-approval** — an agent that implements a change cannot also approve it
+- **Agent actions are attributable** — every agent action traces back to the
+  triggering event and human, or, for state-only scheduled discovery, to the
+  verified platform invocation and human-reviewed policy and harness revisions
+  that authorized it (see
+  [ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md))
+- **No self-approval** — an agent that implements a change cannot also approve it. On GitHub this separation is real: the code and review stages run as distinct bot identities. On GitLab, [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) uses a single shared bot PAT for both stages, so GitLab's own self-approval block (`merge_requests_author_approval=false`) would always reject the review agent's approve call on its own MRs; since that rejection is certain rather than a rare failure to recover from, the review agent checks the authenticated identity against the MR author before calling `/approve` and, only on an affirmative match, skips the call outright and records the approve verdict as an MR note instead of a formal approval, with the sticky review comment remaining the authoritative record. A post-hoc check against a 401 remains as a safety net for cases the pre-call check can't resolve, using the same identity comparison. Credential-failure 401s, non-author 401s, and any error while performing the identity check itself all fail closed (a hard error, not a note) rather than falling back — the note is posted only when the bot identity is affirmatively confirmed as the MR author. This is a documented trade-off of ADR 0067's single-shared-PAT credential model, not an independently reviewed security exception or a per-role-token gap to close
 - **Rate limiting / anomaly detection** — unusual patterns of agent activity (sudden burst of cross-repo changes, changes to security-sensitive paths) trigger alerts
 - **CODEOWNERS for agent config** — changes to agent rules, permissions, and configuration always require human approval
 - **Separation of duties** — different agents for different concerns, with no single agent having end-to-end authority

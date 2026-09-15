@@ -92,6 +92,49 @@ Accepted
 > pipelines are fire-and-forget — the poll job reports success after creating
 > the pipeline, regardless of downstream agent outcome. Dispatched pipeline
 > URLs are logged for manual inspection.
+>
+> **Update (2026-09, #7293):** Native `merge_request_event` review is
+> incompatible with protected CI/CD variables. MR pipelines run on the
+> unprotected `refs/merge-requests/N/head` ref, so `FULLSEND_FORGE_TOKEN`
+> is empty and the review agent aborts. MR-open review now uses the cron
+> poller (`created_at` > watermark → `transition.kind: opened`) which
+> dispatches on the protected default branch. The native dispatch job
+> no-ops the review stage the same way it already no-ops merged retro.
+> This trades sub-second latency for up to one poll interval. Superseded
+> sections: the "MR opened/updated/reopened → native CI → review" row in
+> Event routing, the architecture diagram line routing MR open to
+> `fullsend-dispatch.yml`, and "MR review latency is unaffected" under
+> Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
+> by the poller; use `/fs-review`.
+>
+> **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
+> model" below) means GitLab's own `merge_requests_author_approval=false`
+> default always rejects `POST .../approve` with 401 whenever the
+> authenticated bot identity is also the MR author — which is always true
+> for fullsend-authored MRs on GitLab, since code and review share one
+> identity. That outcome is a certainty, not a possible failure to
+> recover from after the fact, so `CreatePullRequestReview` (APPROVE)
+> checks the authenticated identity against the MR author via
+> `GetAuthenticatedUser` / `GetPullRequestInfo` *before* calling
+> `/approve`, and only when they affirmatively match, skips the call
+> outright and posts an MR note recording the approve verdict instead. A
+> post-hoc check using the same identity comparison remains as a safety
+> net for a 401 that arrives despite the pre-call check (e.g., the
+> identity lookup itself errored, or a future per-role PAT is not the
+> author but project settings still block the approval). In both the
+> pre-call and post-hoc paths, a 401 whose body matches known
+> credential-failure phrasing (`isCredentialFailure` — invalid, expired,
+> or revoked token) is always a hard error, never a note, and any error
+> while performing the identity check itself (including an empty
+> username from either lookup) also fails closed as a hard error rather
+> than falling back. This is a documented trade-off of the single-shared-PAT
+> credential model's interaction with the "no self-approval"
+> defense-in-depth control in [Threat 2 of the security threat
+> model](../problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials):
+> GitHub keeps that separation via distinct bot identities; GitLab's
+> single-PAT model (chosen here for operational simplicity) does not, and
+> this fallback is an accepted consequence of that tradeoff rather than a
+> per-role-token gap to close.
 
 ## Context
 
@@ -341,7 +384,8 @@ configuration.
 | Issue label `ready-for-review` added | Cron poll (label state diff) | review |
 | Issue note starting with `/fs-{triage,code,review,fix,retro,prioritize}` | Cron poll (note body prefix) | corresponding stage |
 | ~~Issue note (non-command) on issue with `needs-info` label~~ | ~~Cron poll (label check); Reporter+ or issue author~~ | ~~triage~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use `/fs-triage` instead |
-| MR opened/updated/reopened | Native CI (`merge_request_event`) | review |
+| ~~MR opened/updated/reopened~~ | ~~Native CI (`merge_request_event`)~~ | ~~review~~ Moved to cron poll in [#7293](https://github.com/fullsend-ai/fullsend/issues/7293) — protected CI/CD variables are not exposed on unprotected MR refs |
+| MR opened | Cron poll (MR `created_at` > watermark) | review |
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
 

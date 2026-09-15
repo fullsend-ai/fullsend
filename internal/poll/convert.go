@@ -19,7 +19,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		Source: dispatch.Source{
 			System:    "gitlab",
 			RawType:   mapRawType(event.Type),
-			RawAction: mapRawAction(event.Type),
+			RawAction: mapRawAction(event),
 		},
 		Entity: dispatch.Entity{
 			Kind: entityKind(event.Type),
@@ -27,7 +27,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 			URL:  entityURL(p.gitlabURL, p.projectPath, event.Type, event.IID),
 		},
 		Transition: dispatch.Transition{
-			Kind: translateEventType(event.Type),
+			Kind: translateEventType(event),
 		},
 		State: dispatch.State{
 			Labels: event.Labels,
@@ -74,18 +74,30 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		}
 	case "mr_event":
 		authorID = event.NoteAuthorID
-		actorLogin = event.MergedByLogin
-		isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
+		if event.Action == "opened" {
+			actorLogin = event.NoteAuthorLogin
+			if actorLogin == "" {
+				actorLogin = event.MRAuthorLogin
+			}
+			if authorID == 0 {
+				authorID = event.MRAuthorID
+			}
+			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+		} else {
+			actorLogin = event.MergedByLogin
+			isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
+		}
 	}
 
 	if authorID == 0 || actorLogin == "" {
 		return dispatch.NormalizedEvent{}, 0, fmt.Errorf("unresolvable actor")
 	}
 
-	if isBot && event.Type == "issue_label" {
-		return dispatch.NormalizedEvent{}, 0, fmt.Errorf("bot-applied label event filtered")
-	}
-
+	// Bot-applied labels are the designed stage-handoff mechanism
+	// (triage → code, review → fix). ADR 0067 filters bot-authored
+	// comments to prevent re-trigger loops; it does not apply to
+	// labels. Loop prevention for labels is handled by persisted
+	// label-state diffing and dispatch-key dedup in poll.go.
 	actorKind := "human"
 	if isBot {
 		actorKind = "bot"
@@ -113,10 +125,10 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	return ne, authorID, nil
 }
 
-// translateEventType maps a RoutableEvent type to a NormalizedEvent
+// translateEventType maps a RoutableEvent to a NormalizedEvent
 // transition kind.
-func translateEventType(eventType string) string {
-	switch eventType {
+func translateEventType(event RoutableEvent) string {
+	switch event.Type {
 	case "issue_label":
 		return "label_changed"
 	case "issue_note":
@@ -124,9 +136,12 @@ func translateEventType(eventType string) string {
 	case "mr_note":
 		return "comment_added"
 	case "mr_event":
+		if event.Action == "opened" {
+			return "opened"
+		}
 		return "merged"
 	default:
-		return eventType
+		return event.Type
 	}
 }
 
@@ -216,13 +231,16 @@ func mapRawType(eventType string) string {
 	}
 }
 
-func mapRawAction(eventType string) string {
-	switch eventType {
+func mapRawAction(event RoutableEvent) string {
+	switch event.Type {
 	case "issue_label":
 		return "labeled"
 	case "issue_note", "mr_note":
 		return "commented"
 	case "mr_event":
+		if event.Action == "opened" {
+			return "opened"
+		}
 		return "merged"
 	default:
 		return ""
