@@ -95,12 +95,9 @@ dispatch:
       # no separate "reopened" state in the MR API response.
       # LIMITATION: GitLab fires merge_request_event on every push to an
       # open MR and state stays "opened", so every push emits
-      # transition.kind="opened" instead of "synchronized". GitLab CI
-      # pipelines do not expose the webhook action (open vs update) and
-      # distinguishing via timestamps or pipeline history is fragile.
-      # Routing is unaffected (both map to the review stage), but CEL
-      # triggers keyed on transition.kind=="opened" will need to account
-      # for this when fullsend dispatch --input-driver json lands.
+      # transition.kind="opened" instead of "synchronized". Both open
+      # and update no-op here; the cron-poller detects true opens via
+      # created_at and dispatches review on the protected default branch.
       case "${MR_STATE}" in
         opened) TRANSITION_KIND="opened" ;;
         merged) TRANSITION_KIND="merged" ;;
@@ -179,8 +176,14 @@ dispatch:
       TRANSITION=$(echo "${EVENT_JSON}" | jq -r '.transition.kind')
 
       # CEL: event.entity.kind == "change_proposal" && event.transition.kind == "opened"
+      # Native merge_request_event pipelines run on the unprotected MR ref,
+      # so protected CI/CD variables (FULLSEND_FORGE_TOKEN) are empty and
+      # review would abort. The cron-poller dispatches review on the
+      # protected default branch instead.
       if [ "${ENTITY_KIND}" = "change_proposal" ] && [ "${TRANSITION}" = "opened" ]; then
-        STAGE="review"
+        echo "MR opened — review handled by cron-poller"
+        echo 'no-op: { script: ["echo MR opened — review via cron-poller"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        exit 0
       fi
 
       # CEL: event.transition.kind == "merged"

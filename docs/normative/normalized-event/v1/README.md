@@ -301,7 +301,8 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 | Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
-| MR events | `merge_request_event` → `entity.kind: change_proposal` |
-| MR merge | `merge_request_event` (state=merged) → `transition.kind: merged` (primary path for retro-stage dispatch; GitLab merge and close are distinct events) |
+| MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` no-ops review; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) #7293) |
+| MR opened | Cron poll (`created_at` > watermark) → `transition.kind: opened` (review) |
+| MR merge | Cron poll (`merged_at` > watermark) → `transition.kind: merged` (retro; GitLab merge and close are distinct events) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |

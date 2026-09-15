@@ -92,6 +92,20 @@ Accepted
 > pipelines are fire-and-forget — the poll job reports success after creating
 > the pipeline, regardless of downstream agent outcome. Dispatched pipeline
 > URLs are logged for manual inspection.
+>
+> **Update (2026-09, #7293):** Native `merge_request_event` review is
+> incompatible with protected CI/CD variables. MR pipelines run on the
+> unprotected `refs/merge-requests/N/head` ref, so `FULLSEND_FORGE_TOKEN`
+> is empty and the review agent aborts. MR-open review now uses the cron
+> poller (`created_at` > watermark → `transition.kind: opened`) which
+> dispatches on the protected default branch. The native dispatch job
+> no-ops the review stage the same way it already no-ops merged retro.
+> This trades sub-second latency for up to one poll interval. Superseded
+> sections: the "MR opened/updated/reopened → native CI → review" row in
+> Event routing, the architecture diagram line routing MR open to
+> `fullsend-dispatch.yml`, and "MR review latency is unaffected" under
+> Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
+> by the poller; use `/fs-review`.
 
 ## Context
 
@@ -341,7 +355,8 @@ configuration.
 | Issue label `ready-for-review` added | Cron poll (label state diff) | review |
 | Issue note starting with `/fs-{triage,code,review,fix,retro,prioritize}` | Cron poll (note body prefix) | corresponding stage |
 | ~~Issue note (non-command) on issue with `needs-info` label~~ | ~~Cron poll (label check); Reporter+ or issue author~~ | ~~triage~~ Removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — use `/fs-triage` instead |
-| MR opened/updated/reopened | Native CI (`merge_request_event`) | review |
+| ~~MR opened/updated/reopened~~ | ~~Native CI (`merge_request_event`)~~ | ~~review~~ Moved to cron poll in [#7293](https://github.com/fullsend-ai/fullsend/issues/7293) — protected CI/CD variables are not exposed on unprotected MR refs |
+| MR opened | Cron poll (MR `created_at` > watermark) | review |
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
 

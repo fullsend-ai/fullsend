@@ -180,5 +180,8 @@ func buildEventPayload(event RoutableEvent) ([]byte, error) {
 	if event.IsBot {
 		m["is_bot"] = true
 	}
+	if event.Action != "" {
+		m["action"] = event.Action
+	}
 	return json.Marshal(m)
 }

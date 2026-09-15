@@ -133,6 +133,7 @@ func TestListMergeRequestsUpdatedSince(t *testing.T) {
 				"merge_user":        map[string]any{"id": 6, "username": "merger"},
 				"merged_by":         map[string]any{"id": 6, "username": "merger"},
 				"merged_at":         "2024-06-01T14:00:00Z",
+				"created_at":        "2024-06-01T10:00:00Z",
 				"updated_at":        "2024-06-01T14:00:00Z",
 			},
 		})
@@ -149,6 +150,7 @@ func TestListMergeRequestsUpdatedSince(t *testing.T) {
 	assert.Equal(t, "merger", mrs[0].MergeUser.Username)
 	assert.Equal(t, "feature", mrs[0].SourceBranch)
 	assert.Equal(t, "main", mrs[0].TargetBranch)
+	assert.Equal(t, time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC), mrs[0].CreatedAt)
 }
 
 // ---------------------------------------------------------------------------

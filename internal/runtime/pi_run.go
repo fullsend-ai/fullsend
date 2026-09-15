@@ -333,6 +333,10 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// (which cannot start pi itself) launch children of its own choosing.
 	agentEnabled := m.Agent != nil && m.Agent.Enabled
 	agentExt := r.ConfigDir() + "/" + piAgentExtensionFile
+	// Decided from the same tool list --tools is built from below, so the
+	// extension never registers edit for an agent that was not granted it.
+	editRepair := piEditRepairEnabled(m.Tools)
+	editRepairExt := r.ConfigDir() + "/" + piEditRepairExtensionFile
 
 	// The agent definition's model is the fallback when the runner resolved
 	// none; EffectiveModel is shared with NeedsOpenAIProvider so the launch
@@ -363,6 +367,10 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Same block: the Agent extension must be byte-identical to the
 		// embedded copy before .env can shadow the tools that check it.
 		parts = append(parts, "&& "+piAgentGuard(agentExt))
+	}
+	if editRepair {
+		// Same block, same reason as the Agent extension's guard.
+		parts = append(parts, "&& "+piEditRepairGuard(editRepairExt))
 	}
 	if manifestSum != "" {
 		// Same block, same reason. The hooks guard above only checks that
@@ -523,6 +531,14 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// (Claude Code runs the same hooks on its Agent tool). Children
 		// get their own -e list from the manifest, never this file.
 		parts = append(parts, "-e "+shellQuote(agentExt))
+	}
+	if editRepair {
+		// It registers tools and no tool_call handler, so its place among
+		// the runner-owned extensions does not affect the hook order. pi
+		// rejects two extensions that register the same tool name
+		// regardless of -e order, so a declared extension must not also
+		// register edit while this extension is loaded.
+		parts = append(parts, "-e "+shellQuote(editRepairExt))
 	}
 	// Declared extensions come after the hook adapter: pi runs tool_call
 	// handlers in -e order and the first block wins, so the adapter's
@@ -858,6 +874,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if exitCode == piAgentTamperedExit && m.Agent != nil && m.Agent.Enabled {
 		return exitCode, fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piEditRepairTamperedExit && piEditRepairEnabled(m.Tools) {
+		return exitCode, fmt.Errorf("pi edit-repair extension %s missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", piEditRepairExtensionFile, r.ConfigDir())
 	}
 	if exitCode == piManifestTamperedExit {
 		return exitCode, fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())

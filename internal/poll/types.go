@@ -20,6 +20,7 @@ type Options struct {
 // NormalizedEvent conversion and dispatch.
 type RoutableEvent struct {
 	Type            string
+	Action          string // MR lifecycle action for Type=="mr_event": "opened", or empty (merged)
 	IID             int
 	UpdatedAt       time.Time
 	Labels          []string // full label set at event time
@@ -41,13 +42,19 @@ type RoutableEvent struct {
 // Key returns a deduplication key for the event.
 // Note events use their globally unique NoteID. Label events include
 // UpdatedAt so that a remove-then-re-add of the same label produces a
-// distinct key. MR merge events use type+IID+timestamp.
+// distinct key. MR open events include Action so they do not collide
+// with a merge of the same IID in the same second. MR merge events
+// use type+IID+timestamp (Action empty) for stable dispatched-key
+// persistence.
 func (e RoutableEvent) Key() string {
 	if e.NoteID != 0 {
 		return fmt.Sprintf("note-%d", e.NoteID)
 	}
 	if e.ChangedLabel != "" {
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.ChangedLabel, e.UpdatedAt.Unix())
+	}
+	if e.Action != "" {
+		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.Action, e.UpdatedAt.Unix())
 	}
 	return fmt.Sprintf("%s-%d-%d", e.Type, e.IID, e.UpdatedAt.Unix())
 }

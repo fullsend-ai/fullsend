@@ -83,6 +83,7 @@ type MergeRequest struct {
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`
 	MergedAt        time.Time `json:"merged_at"`
+	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
