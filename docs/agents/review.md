@@ -29,9 +29,11 @@ merging. See
 
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
 
-When cancellation cleanup runs and status comments are enabled, the comment
-explicitly warns maintainers not to merge until `fullsend/review-completed`
-succeeds on the current PR head. Run `/fs-review` on the PR to retry it.
+When cancellation cleanup runs and status comments are enabled, a built-in
+review run with status publishing active explicitly warns maintainers not to
+merge until `fullsend/review-completed` succeeds on the current PR head. Custom
+review-role harnesses without status publishing receive a generic warning that
+the review did not complete. Run `/fs-review` on the PR to retry it.
 
 ## How it helps
 

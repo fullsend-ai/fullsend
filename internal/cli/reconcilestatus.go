@@ -35,18 +35,19 @@ var reconcileNewJiraTrackerClient = newJiraTrackerClientFromEnv
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
-		repo        string
-		number      int
-		runID       string
-		runURL      string
-		sha         string
-		reason      string
-		mintURL     string
-		role        string
-		forgeFlag   string
-		fullsendDir string
-		jobStatus   string
-		wasSkipped  bool
+		repo                string
+		number              int
+		runID               string
+		runURL              string
+		sha                 string
+		reason              string
+		mintURL             string
+		role                string
+		forgeFlag           string
+		fullsendDir         string
+		jobStatus           string
+		wasSkipped          bool
+		reviewStatusEnabled bool
 	)
 
 	cmd := &cobra.Command{
@@ -162,7 +163,7 @@ finalized, this is a no-op.`,
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
 
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, reviewStatusEnabled)
 		},
 	}
 
@@ -178,6 +179,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
+	cmd.Flags().BoolVar(&reviewStatusEnabled, "review-status-enabled", false, "whether this run published the built-in review completion status")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd

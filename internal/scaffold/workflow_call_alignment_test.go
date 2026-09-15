@@ -1091,6 +1091,13 @@ func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
 	assert.Contains(t, finalize, `--was-skipped`)
 	assert.Contains(t, finalize, "GITHUB_TOKEN: ${{ inputs.github_token }}")
 
+	reconcile := extractActionStepSection(t, s, "Finalize orphaned status comment")
+	assert.Contains(t, reconcile, "REVIEW_STATUS_ENABLED: ${{ inputs.review-status-enabled }}")
+	assert.Contains(t, reconcile, `[[ "${AGENT}" == "review" ]]`)
+	assert.Contains(t, reconcile, `[[ "${REVIEW_STATUS_ENABLED}" == "true" ]]`)
+	assert.Contains(t, reconcile, `[[ -n "${PR_HEAD_SHA_INPUT}" ]]`)
+	assert.Contains(t, reconcile, `RECONCILE_FLAGS+=(--review-status-enabled)`)
+
 	pendingIndex := strings.Index(s, "- name: Set review completion status pending")
 	installIndex := strings.Index(s, "- name: Install Podman")
 	finalizeIndex := strings.Index(s, "- name: Finalize review completion status")

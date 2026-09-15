@@ -586,6 +586,7 @@ runs:
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
+        REVIEW_STATUS_ENABLED: ${{ inputs.review-status-enabled }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
         set -euo pipefail
@@ -634,6 +635,11 @@ runs:
         fi
         if [[ "${JOB_STATUS}" == "cancelled" ]]; then
           RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        if [[ "${AGENT}" == "review" ]] \
+          && [[ "${REVIEW_STATUS_ENABLED}" == "true" ]] \
+          && [[ -n "${PR_HEAD_SHA_INPUT}" ]]; then
+          RECONCILE_FLAGS+=(--review-status-enabled)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"
