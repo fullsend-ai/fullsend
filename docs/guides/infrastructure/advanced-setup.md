@@ -148,6 +148,8 @@ fullsend github uninstall "$ORG_NAME" --app-set "$ORG_NAME"
 
 For most cases, `fullsend inference provision` auto-provisions the inference WIF pool and prints the provider resource name to pass to `github setup --inference-wif-provider`. Use manual configuration only when you need custom pool names, attribute conditions, or want to share an inference WIF provider across multiple tools:
 
+> **GitLab:** The recipe below is GitHub-specific — it uses GitHub's OIDC issuer and `assertion.repository`/`assertion.repository_owner` claims, which GitLab `id_token`s don't have. It cannot be copied as-is for GitLab. See [Configuring GitLab § Inference Setup](../getting-started/configuring-gitlab.md#inference-setup) for the GitLab-specific provider, claims, issuer, and audience configuration.
+
 **Create a Workload Identity Pool and OIDC Provider:**
 
 ```bash

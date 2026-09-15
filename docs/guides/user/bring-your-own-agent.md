@@ -76,7 +76,7 @@ Building and deploying a custom agent takes four steps:
 ## Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. Note that a per-repo install does **not** vendor `policies/`, `providers/` or `profiles/` into the repository; [`fullsend agent new`](#step-0-generate-the-skeleton) writes the ones your agent needs, and CI layers providers in at run time. If you are writing a harness by hand, create them yourself (see [Minimum viable agent](#minimum-viable-agent)).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. Note that a per-repo install does **not** vendor `policies/`, `providers/` or `profiles/` into the repository; [`fullsend agent new`](#step-0-generate-the-skeleton) writes the ones your agent needs, and CI layers providers in at run time. If you are writing a harness by hand, create them yourself (see [Minimum viable agent](#minimum-viable-agent)). GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use `FULLSEND_FORGE_TOKEN` rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
 - **GCP inference provisioned (CI only).** For agents running in GitHub Actions, run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 

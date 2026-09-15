@@ -5,8 +5,18 @@ Day-2 administration for fullsend per-repo installations: configuration updates,
 ## Prerequisites
 
 - **fullsend CLI** installed (see [Getting Started](../getting-started/))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — repository admin for the target repository
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
+
+**GitLab:** none of the GitHub-specific prerequisites above apply — GitLab
+does not use `gh`. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab access token and permissions needed for the day-2 tasks
+documented below.
 
 ## Updating configuration values
 
@@ -28,12 +38,14 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 
 ### GitLab
 
-For GitLab repos, re-run `repos install` with updated values to converge configuration:
+For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). Secrets are checked for presence only, so `repos install` cannot update the *value* of an existing `FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER` — once those CI/CD secrets exist, a new `--inference-project` is a silent no-op for them. To change either one, edit the CI/CD variable directly in GitLab (Settings → CI/CD → Variables), since converge cannot read secret values back to compare or overwrite them.
 
-```bash
-fullsend repos install -f repos.yaml "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>"
-```
+`FULLSEND_GCP_REGION` is also a variable (not a secret), but converge treats
+`--inference-project`, `--inference-project-number`, and `--inference-region`
+as an all-or-nothing set when `--inference-wif-provider` isn't set — passing
+`--inference-region` alone fails with `incomplete inference flags`. Edit
+`FULLSEND_GCP_REGION` directly in GitLab CI/CD variables (Settings → CI/CD →
+Variables) instead, the same as the secrets above.
 
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
@@ -73,13 +85,17 @@ To remove fullsend from a single repository:
 
 **GitLab repos:**
 
-1. Run `fullsend repos uninstall` to open a PR that removes fullsend entries from `.gitlab-ci.yml` and deletes `.gitlab/ci/fullsend-pipeline.yml` and `.fullsend/config.yaml` (pass `--direct` to push those file changes to the default branch). Variables and secrets are deleted immediately via the API. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml` and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`dispatch`, `poll`, `agent`), the fullsend workflow rules (`merge_request_event`, `schedule`, `api`), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration.
+1. Run `fullsend repos uninstall "$PROJECT_PATH"` (the full `group/subgroup/project` path) to open a PR that removes fullsend entries from `.gitlab-ci.yml` and deletes `.gitlab/ci/fullsend-pipeline.yml` and `.fullsend/config.yaml` (pass `--direct` to push those file changes to the default branch). Variables and secrets are deleted immediately via the API. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml` and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`dispatch`, `poll`, `agent`), the fullsend workflow rules (`merge_request_event`, `schedule`, `api`), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration.
 
 > **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when no existing value is present but does not overwrite an existing value. This only applies when the repo's `.gitlab-ci.yml` already contains a `workflow:` block — when no `workflow:` block exists, fullsend leaves it absent so push-triggered pipelines are not disrupted. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
 
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
-4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+4. If you installed using the Free-tier PAT fallback (`--gitlab-bot-token`/`FULLSEND_GITLAB_BOT_TOKEN` — see [Configuring GitLab § Free-tier bot token](configuring-gitlab.md#free-tier-bot-token)), also revoke that personal access token on the dedicated bot account (User Settings → Access Tokens, or Group Access Tokens if group-scoped). Deleting the `FULLSEND_FORGE_TOKEN` CI/CD variable in step 2 does not revoke the underlying PAT — it remains valid until revoked directly on the account that issued it.
+5. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+6. If you provisioned the shared `gitlab-oidc` WIF provider (see [Configuring GitLab § Inference Setup](configuring-gitlab.md#inference-setup)), revoke this repo's trust — `fullsend inference deprovision` does **not** cover `gitlab-oidc`; it only removes GitHub-style per-repo providers. Deleting the `FULLSEND_GCP_WIF_PROVIDER` CI/CD variable in step 2 does not revoke the underlying GCP IAM trust. What to do next depends on which install recipe you used:
+   * **Default single-repo, or [multiple specific projects](configuring-gitlab.md#authorizing-multiple-specific-projects-alternative)** (a per-repo `attribute.project_path` principalSet): remove this repo's IAM binding — `gcloud projects remove-iam-policy-binding "$GCP_PROJECT" --role="roles/aiplatform.user" --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.project_path/$PROJECT_PATH"`. This alone fully revokes `roles/aiplatform.user` for the repo. For hygiene, also drop this repo's `assertion.project_path == '...'` clause from the shared `--attribute-condition` (or narrow/delete the condition and provider entirely if no other GitLab repo shares them), so a stale CI job elsewhere can't even request a token against the provider.
+   * **[Group or group tree](configuring-gitlab.md#authorizing-a-group-or-group-tree-alternative)** (a shared `attribute.namespace_path` principalSet): there is no per-repo IAM member to remove. A single repo cannot be carved out of group-wide trust while sibling repos in the namespace still need it — removing the `attribute.namespace_path/$GROUP_PATH` principalSet or narrowing the `--attribute-condition` revokes Vertex AI access for every project in the namespace, not just the one being uninstalled. To retire trust for just this repo, first migrate the namespace to the [multiple specific projects recipe](configuring-gitlab.md#authorizing-multiple-specific-projects-alternative) (one principalSet per remaining repo), then remove this repo's binding as described above.
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
@@ -209,9 +225,12 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 `GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
 
+If you installed via [`fullsend repos install`](../../cli/repos.md#repos-install) (see [Configuring GitLab](configuring-gitlab.md)), you don't need to separately provision `GITLAB_TOKEN`: install already creates the protected `FULLSEND_FORGE_TOKEN` CI/CD variable (also requested as masked, though GitLab falls back to unmasked if the value fails its masking rules — see [Configuring GitLab](configuring-gitlab.md#verifying-the-installation)), and the generated `.gitlab/ci/fullsend-*.yml` scaffold exports `GITLAB_TOKEN` from it at runtime. The variable above only needs manual provisioning when wiring fullsend into GitLab CI outside of that scaffold.
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation
+- [Configuring GitLab](configuring-gitlab.md) — Initial GitLab per-repo setup
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Token mint, WIF, and secrets deployment details

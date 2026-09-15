@@ -96,7 +96,7 @@ The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` s
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/repos.md` |
-| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/getting-started/getting-inference.md`, `docs/guides/dev/cli-internals.md` |
+| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/getting-started/getting-inference.md`, `docs/guides/getting-started/configuring-gitlab.md`, `docs/guides/dev/cli-internals.md` |
 | ADRs | `docs/ADRs/0057-repos-management.md`, `docs/ADRs/0074-repos-command-consolidation.md` |
 | Go source | `internal/cli/repos.go`, `internal/cli/repos_gitlab.go` |
 
