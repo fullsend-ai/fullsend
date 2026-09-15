@@ -16,7 +16,10 @@ If the WIF finds the request valid, it provides a short-lived token.
 GPT models on the pi runtime use OpenAI Workload Identity Federation instead — no GCP involved and no stored key; see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
 
 For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
-rather than the steps below. See [Operations](operations.md#gitlab) for details.
+rather than the steps below. See [Operations](operations.md#gitlab) for details. If your GitLab
+instance is behind private DNS, see
+[Self-managed instances behind private DNS](#self-managed-instances-behind-private-dns) below —
+that procedure applies to GitLab regardless of the steps above.
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:
@@ -82,6 +85,52 @@ for, and `<gcp-project>` is your GCP project name. The output resembles:
 ```
 
 The important piece of information is the `WIF Provider` which you need to pass to the next step.
+
+## Self-managed instances behind private DNS
+
+If your GitLab (or GitHub Enterprise Server) instance is not resolvable in
+public DNS, the WIF provider's OIDC discovery will fail with
+`Error code invalid_grant: Error connecting to the given credential's issuer`.
+You can bypass discovery by uploading the instance's signing key set directly.
+
+These steps patch the WIF provider that `fullsend inference provision` created
+above (or that `repos install --inference-project` created for GitLab). They
+work for both GCP Vertex and OpenAI WIF paths.
+
+### 1. Fetch the key set from inside the network
+
+From a machine that can reach the instance:
+
+```bash
+curl -sSf https://<instance>/oauth/discovery/keys > keys.json
+```
+
+### 2. Upload the key set to the WIF provider
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc \
+  <provider-name> \
+  --workload-identity-pool=<pool-name> \
+  --location=global \
+  --project=<gcp-project> \
+  --jwk-json-path=keys.json \
+  --allowed-audiences=<audience>
+```
+
+Replace `<audience>` with the `aud` value declared in the job's `id_tokens`
+block (GitLab) or the audience the GitHub Actions workflow requests. The
+`--allowed-audiences` flag must match character for character.
+
+### 3. Verify the exchange
+
+Run an agent job or the `fullsend inference status` command from a pipeline
+on the instance. A successful exchange proves the uploaded keys match the
+instance's signing keys.
+
+**Key rotation.** Uploaded keys freeze trust to specific signing keys. When
+the instance rotates, every exchange fails until the JWKS is re-uploaded.
+See the [JWKS rotation runbook](../infrastructure/infrastructure-reference.md#jwks-rotation)
+for the overlap-window procedure that avoids downtime.
 
 ## Next steps
 

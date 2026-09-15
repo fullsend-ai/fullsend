@@ -35,6 +35,8 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
   --inference-project "<GCP_PROJECT>"
 ```
 
+If the GitLab instance is behind private DNS, the WIF provider needs an uploaded key set instead of OIDC discovery. See the [uploaded-JWKS procedure](getting-inference.md#self-managed-instances-behind-private-dns) for the steps.
+
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
