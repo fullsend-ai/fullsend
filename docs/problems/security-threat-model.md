@@ -387,7 +387,10 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
 
 - **Cost budgets** — set per-repo and per-org budgets for LLM API token consumption. When a budget threshold is reached, require human approval before further agent invocations.
 - **Loop circuit breakers** — enforce hard limits on code-review cycles. The entry point script should enforce these limits deterministically, not rely on the agent's self-restraint.
-- **Event debouncing and deduplication** — collapse rapid-fire events on the same issue/PR into a single agent invocation rather than spawning one per event.
+- **Event debouncing and deduplication** — preserve one active invocation and
+  coalesce rapid-fire events for the same harness and entity into at most one
+  newest pending invocation; this bounds queued work, not consecutive runs
+  ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
 - **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
@@ -408,7 +411,10 @@ DOS has elements that touch several existing threats:
 - How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
 - How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
 - Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
-- Should the event debouncing strategy from the March 31 concurrency discussion be treated as a DOS defense or purely a correctness concern? (It serves both purposes.)
+- ~~Should the event debouncing strategy from the March 31 concurrency
+  discussion be treated as a DOS defense or purely a correctness concern?~~ It
+  serves both purposes; the finish-and-coalesce policy is decided in
+  [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md).
 
 ## Cross-cutting concern: agent self-report unreliability
 
