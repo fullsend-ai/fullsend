@@ -27,7 +27,7 @@ npm run docs:preview
 
 - `docs/` contains all markdown content, organized by section (agents, guides, ADRs, etc.)
 - `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing. See [`site-deployment.md`](site-deployment.md).
-- `getMarkdownFiles()` auto-discovers markdown files and subdirectory READMEs for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans)
+- `getMarkdownFiles()` auto-discovers markdown files and walks nested directories for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans). Nested folders become nested sidebar groups; a subdirectory README supplies the group's title and link.
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
 - `multiVersionBuild` at `docs/.vitepress/config.ts` controls which versions are to be built. `sidebarEnder` sets up the version switcher with a few versions and the page `/v/index.md` contains a more comprehensive list of versions.

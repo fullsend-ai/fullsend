@@ -6,50 +6,17 @@ import {
   DOCS_URL_BASE,
   globalSeoHead,
   isIndexablePage,
-  isNonContentPath,
   isSitemapUrl,
   pageRobotsHead,
   pageSeoHead,
 } from "./seo";
+import { getMarkdownFiles } from "./sidebar";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const docsDir = path.resolve(__dirname, "..");
 
 const version =
   JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf-8"))
     .version ?? "dev";
-
-function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
-  const fullDir = path.resolve(docsDir, dir);
-  if (!fs.existsSync(fullDir)) return [];
-  const items: { text: string; link: string }[] = [];
-  for (const entry of fs.readdirSync(fullDir).sort()) {
-    const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContentPath(entry)) {
-      const slug = entry.replace(/\.md$/, "");
-      const content = fs.readFileSync(entryPath, "utf-8");
-      const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-      const titleMatch = content.match(/^#\s+(.+)$/m);
-      items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` });
-    } else if (
-      fs.statSync(entryPath).isDirectory() &&
-      !entry.startsWith(".") &&
-      !isNonContentPath(entry)
-    ) {
-      const readme = path.resolve(entryPath, "README.md");
-      if (fs.existsSync(readme)) {
-        const content = fs.readFileSync(readme, "utf-8");
-        const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-        const titleMatch = content.match(/^#\s+(.+)$/m);
-        items.push({
-          text: fmTitleMatch?.[1] || titleMatch?.[1] || entry,
-          link: `/${base}/${entry}/`,
-        });
-      }
-    }
-  }
-  return items;
-}
 
 // Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
 // before markdown-it processes it. Code fence tracking uses backtick-count
