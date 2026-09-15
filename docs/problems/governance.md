@@ -66,7 +66,7 @@ Every agent operation has a cost: triage costs tokens, implementation costs toke
 Cost governance intersects with several existing concerns:
 
 - **The [security threat model](security-threat-model.md)** identifies DoS via token exhaustion as a threat, with cost budgets as the defense. But who sets those budgets, who reviews them, and what happens when a legitimate surge looks like an attack?
-- **The salvage model** described in [code review](code-review.md) and [contribution volume](contribution-volume.md) trades tokens for community throughput. Without cost governance, a well-intentioned project could spend more on salvaging contributions than the contributions are worth.
+- **The salvage model** described in [code review](code-review.md) and [contribution volume](contribution-volume.md) trades tokens for community throughput. Without cost governance, a well-intentioned project could spend more on salvaging contributions than the contributions are worth. Salvage-for-throughput can also be gamed by [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 - **Agent testing** (see [testing-agents.md](testing-agents.md)) requires running LLM evaluations, which themselves cost tokens. Testing the agents that test the code that agents wrote — the cost multiplies at each layer.
 - **Production feedback loops** (see [production-feedback.md](production-feedback.md)) can generate runaway token spending if remediation loops don't have explicit cost budgets.
 
