@@ -54,18 +54,46 @@ func TestOpenCodeRuntimeResolvesFromRegistry(t *testing.T) {
 func TestTranslateOpenCodeModel(t *testing.T) {
 	t.Setenv(openCodeProviderEnv, "")
 
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("opus"))
-	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translateOpenCodeModel("sonnet"))
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("opus", nil))
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translateOpenCodeModel("sonnet", nil))
 	// Empty falls back to the default alias.
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel(""))
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("", nil))
 	// A bare (non-alias) id gets the provider prefix.
-	assert.Equal(t, "anthropic-vertex/claude-3-5", translateOpenCodeModel("claude-3-5"))
+	assert.Equal(t, "anthropic-vertex/claude-3-5", translateOpenCodeModel("claude-3-5", nil))
 	// A provider/model spec passes through unchanged.
-	assert.Equal(t, "openai/gpt-5", translateOpenCodeModel("openai/gpt-5"))
+	assert.Equal(t, "openai/gpt-5", translateOpenCodeModel("openai/gpt-5", nil))
 
 	// Provider override from the environment.
 	t.Setenv(openCodeProviderEnv, "myprov")
-	assert.Equal(t, "myprov/claude-opus-4-6", translateOpenCodeModel("opus"))
+	assert.Equal(t, "myprov/claude-opus-4-6", translateOpenCodeModel("opus", nil))
+}
+
+func TestTranslateOpenCodeModel_ConfigAliases(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+
+	// Per-repo alias overrides the built-in alias.
+	overrides := map[string]string{"sonnet": "claude-sonnet-5"}
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", translateOpenCodeModel("sonnet", overrides))
+	// An alias not overridden still uses the built-in.
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("opus", overrides))
+	// A per-repo alias that maps to a provider/id spec passes through.
+	overrides = map[string]string{"sonnet": "xai/grok-4.6"}
+	assert.Equal(t, "xai/grok-4.6", translateOpenCodeModel("sonnet", overrides))
+}
+
+func TestMergedOpenCodeModelAliases(t *testing.T) {
+	t.Parallel()
+	// nil configAliases returns a copy of the built-in aliases.
+	merged := mergedOpenCodeModelAliases(nil)
+	assert.Equal(t, openCodeModelAliases["opus"], merged["opus"])
+	// Mutating the merged map must not affect the package-level table.
+	merged["opus"] = "mutated"
+	assert.NotEqual(t, "mutated", openCodeModelAliases["opus"], "merged map must be a copy")
+	// Per-repo overrides win.
+	merged = mergedOpenCodeModelAliases(map[string]string{"sonnet": "claude-sonnet-5"})
+	assert.Equal(t, "claude-sonnet-5", merged["sonnet"])
+	assert.Equal(t, openCodeModelAliases["opus"], merged["opus"], "fleet default preserved")
+	assert.Equal(t, openCodeModelAliases["haiku"], merged["haiku"], "fleet default preserved")
 }
 
 func TestOpenCodeBareModelID(t *testing.T) {
@@ -85,6 +113,13 @@ func TestOpenCodePermissionRecord(t *testing.T) {
 
 	rec = openCodePermissionRecord([]string{"Bash", "Read", "Edit", "Glob", "LS", "Task"})
 	assert.Equal(t, []string{"bash", "edit", "glob", "read", "task"}, openCodeToolNamesSorted(rec))
+
+	// Agent (current name) and Task (legacy alias) both map to "task".
+	rec = openCodePermissionRecord([]string{"Agent", "Read"})
+	assert.Equal(t, []string{"read", "task"}, openCodeToolNamesSorted(rec))
+	// Both Agent and Task present → "task" appears once (map key dedup).
+	rec = openCodePermissionRecord([]string{"Agent", "Task", "Read"})
+	assert.Equal(t, []string{"read", "task"}, openCodeToolNamesSorted(rec))
 
 	// Skill is dropped (native discovery), unsupported names dropped, and an
 	// agent listing only those gets an explicit empty record (not nil, so
