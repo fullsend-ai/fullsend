@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 func init() {
@@ -774,5 +776,12 @@ func TestMintToken_SurvivesTransientFailuresWithinMaxMintDuration(t *testing.T) 
 	}
 	if elapsed >= MaxMintDuration {
 		t.Errorf("MintToken took %s, want comfortably under MaxMintDuration (%s)", elapsed, MaxMintDuration)
+	}
+}
+
+func TestDefaultAudienceMatchesMintconsts(t *testing.T) {
+	t.Parallel()
+	if defaultAudience != mintconsts.OIDCAudience {
+		t.Fatalf("defaultAudience = %q, want mintconsts.OIDCAudience %q", defaultAudience, mintconsts.OIDCAudience)
 	}
 }

@@ -11,8 +11,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
@@ -46,8 +44,10 @@ type HTTPDoer interface {
 }
 
 // defaultAudience is the canonical OIDC audience for the fullsend
-// token mint, sourced from the shared mintconsts package.
-const defaultAudience = mintconsts.OIDCAudience
+// token mint. Duplicated from mintconsts.OIDCAudience so this package
+// does not import the nested mintcore module (mintconsts lives inside
+// that module even though it has no mintcore imports of its own).
+const defaultAudience = "fullsend-mint"
 
 // MintRequest holds the parameters for minting a token via the fullsend mint service.
 type MintRequest struct {

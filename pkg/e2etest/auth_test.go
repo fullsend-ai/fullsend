@@ -5,9 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/cli"
 )
 
 func TestMintEnrollProjectID(t *testing.T) {
@@ -24,9 +25,9 @@ func TestMintEnrollProjectID(t *testing.T) {
 	cfg.MintURL = DefaultPoolOrgInstallMintURL + "/"
 	assert.Equal(t, DefaultHostedMintGCPProject, MintEnrollProjectID(cfg))
 
-	// Community mint (cli.DefaultMintURL / mint.fullsend.sh) → hosted project
-	// via IsHostedMintURL.
-	cfg.MintURL = cli.DefaultMintURL
+	// Community mint (defaultMintURL / mint.fullsend.sh) → hosted project
+	// via isHostedMintURL.
+	cfg.MintURL = defaultMintURL
 	assert.Equal(t, DefaultHostedMintGCPProject, MintEnrollProjectID(cfg))
 
 	// Env override takes precedence.
@@ -101,7 +102,24 @@ func TestResolveMintURL(t *testing.T) {
 	assert.Equal(t, "https://custom-mint.example.com", resolveMintURL())
 
 	t.Setenv("FULLSEND_MINT_URL", "")
-	assert.Equal(t, cli.DefaultMintURL, resolveMintURL())
+	assert.Equal(t, defaultMintURL, resolveMintURL())
+}
+
+func TestIsHostedMintURL(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isHostedMintURL(defaultMintURL))
+	assert.True(t, isHostedMintURL(defaultMintURL+"/v1/token"))
+	assert.True(t, isHostedMintURL("https://Mint.Fullsend.SH"))
+	assert.False(t, isHostedMintURL("https://evil.example.com"))
+	assert.False(t, isHostedMintURL("https://fullsend-mint-abc123.run.app"))
+	assert.False(t, isHostedMintURL(""))
+	assert.False(t, isHostedMintURL("://"))
+}
+
+func TestDefaultMintURLMatchesCLI(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, cli.DefaultMintURL, defaultMintURL)
+	assert.Equal(t, cli.IsHostedMintURL(defaultMintURL), isHostedMintURL(defaultMintURL))
 }
 
 func TestResolveLocalToken_FromGHToken(t *testing.T) {

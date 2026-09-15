@@ -101,7 +101,12 @@ var installedStubFiles = map[string][]byte{
 	".github/workflows/fullsend.yaml": []byte("# shim"),
 	".fullsend/config.yaml":           []byte(validPerRepoConfig),
 	scaffold.VendoredMarkerPath():     []byte("marker"),
-	layers.VendoredBinaryPathPerRepo:  []byte("binary"),
+	vendoredBinaryPathPerRepo:         []byte("binary"),
+}
+
+func TestVendoredBinaryPathMatchesLayers(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, layers.VendoredBinaryPathPerRepo, vendoredBinaryPathPerRepo)
 }
 
 // stubClient implements the forge.Client methods used by repoEnsurer.
