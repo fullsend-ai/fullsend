@@ -793,6 +793,12 @@ func writeTestManifest(t *testing.T, content string) string {
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Set a bot identity and write permissions so commitScaffoldViaPR
+	// takes the direct-push path. Without this, an empty
+	// AuthenticatedUser causes the fork path, where CreateFork returns
+	// "" as the owner and waitForFork hangs for the full timeout (#6501).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -800,6 +806,7 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 	}
 	return fc
 }

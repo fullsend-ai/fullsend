@@ -990,6 +990,46 @@ func TestFakeClient_CreateFork(t *testing.T) {
 		_, _, err := fc.CreateFork(ctx, "upstream", "repo")
 		require.Error(t, err)
 	})
+
+	t.Run("returns default owner when AuthenticatedUser is empty", func(t *testing.T) {
+		fc := &FakeClient{}
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner", forkOwner,
+			"should return a sane default when both ForkOwner and AuthenticatedUser are empty")
+		assert.Equal(t, "repo", forkRepo)
+	})
+
+	t.Run("auto-populates Repos so GetRepo finds the fork", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.AuthenticatedUser = "contributor"
+
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "api")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "api", forkRepo)
+
+		// GetRepo should find the auto-populated fork.
+		repo, err := fc.GetRepo(ctx, "contributor", "api")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor/api", repo.FullName)
+		assert.True(t, repo.Fork, "auto-populated repo should be marked as a fork")
+		assert.Equal(t, "main", repo.DefaultBranch)
+	})
+
+	t.Run("auto-populates Repos with default owner fallback", func(t *testing.T) {
+		fc := NewFakeClient()
+		// Both ForkOwner and AuthenticatedUser are empty.
+
+		forkOwner, _, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner", forkOwner)
+
+		// GetRepo should find it under the default owner.
+		repo, err := fc.GetRepo(ctx, "fake-fork-owner", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner/repo", repo.FullName)
+	})
 }
 
 func TestFakeClient_CreateBranchFromSHA(t *testing.T) {
