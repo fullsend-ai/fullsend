@@ -13,7 +13,7 @@ On this page:
 - [Security feature matrix](#security-feature-matrix) — what each runtime wires, and where
 - [Runtime interface contract](#runtime-interface-contract)
 - [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, the accepted shell dialect, Claude Code caveats
-- [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image)
+- [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image) — pin inventory and [vendored dependency checklist](#vendored-dependency-checklist)
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
 - [pi runtime internals (#6464)](#pi-runtime-internals-6464) — verification provenance for the pi backend
@@ -388,6 +388,20 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
 
 The image also creates each runtime's config directory when the binary refuses to start without one: `CODEX_HOME` (`sandbox.SandboxCodexConfig`) is created owned by the sandbox user and baked as an `ENV` default, so an ad-hoc `codex` invocation from Bash behaves like the runtime's own `EnvExports()`. `TestSandboxImageCodexDefaults` keeps the path in the image and the Go constant in step (the pi equivalent is `TestSandboxImagePiDefaults`).
+
+### Vendored dependency checklist
+
+Before adding or bumping a dependency that runs in the sandbox:
+
+1. Verify the selected version authenticates noninteractively in a fresh sandbox. Exercise credential refresh too when the provider uses renewable credentials.
+2. Independently download the exact release artifact and verify its SHA256 before recording the tag and digest pin.
+3. Review the selected release's notes, lockfile and transitive dependencies, installation scripts and pruning, relevant security advisories, and any runtime compatibility changes. Run the applicable dependency audit.
+4. Build the image and verify the dependency subtree and its containing directory are root-owned and unwritable to the sandbox user. The current pi extension subtrees are hardened with `chmod -R a+rX,a-w`; after the final extension install, the containing directory is hardened non-recursively with `chmod a+rX,a-w`. This produces mode `0555` for directories and executable files and `0444` for ordinary files. Preserve the effective root-owned, sandbox-user-unwritable boundary if the layout changes.
+5. Inventory the dependency's and runtime's provider environment variables. After the agent-writable `.env` is sourced, scrub only values that can redirect an endpoint, select another credential, or shadow the intended provider; re-export runner-owned values, and default project or region values only when the runner has not set them.
+6. Confirm the required egress hosts, methods, and connection-opening binary remain admitted by the sandbox policy.
+7. Run the intended provider end to end from the built image, then run a regression for each co-installed provider or extension that shares its runtime.
+
+Record every applicable item in the PR description as `verified`, `blocked`, or `not applicable`. A statement that this section exists is only a documentation tripwire; it does not replace the build and runtime evidence above.
 
 ## Egress binary identity per runtime
 
