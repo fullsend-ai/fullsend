@@ -258,7 +258,7 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
 
-When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>`. `--runtime dummy` is omitted in that case because the CLI rejects combining `--config` with `--runtime`; the preset must include `runtime: dummy` so post-install validation still passes. Unset (the default) leaves install behaviour unchanged.
+When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 

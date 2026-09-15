@@ -46,8 +46,11 @@ their per-agent settings, allowlists and hand-written comments stay as they are,
 and the setup PR reports the runtime the file already selects. Passing a flag that targets a
 config key — `--runtime`, `--agents`, `--mint-url`, `--inference-*` — changes that key on the
 existing file and keeps the rest (the file is re-serialized, so comments are not preserved in
-that case). `--config` rewrites `config.base.yaml` and keeps the existing overlay. A
-`config.yaml` that no longer parses fails the re-run rather than being regenerated.
+that case). `--config` rewrites `config.base.yaml` from the preset (byte-for-byte) and keeps
+the existing overlay unless a persistent setup flag is also passed, in which case that flag is
+written into the overlay. Persistent setup flags may be combined with `--config`; they override
+the corresponding preset values. A `config.yaml` that no longer parses fails the re-run rather
+than being regenerated.
 
 ### Flags
 
@@ -67,7 +70,7 @@ that case). `--config` rewrites `config.base.yaml` and keeps the existing overla
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
 | `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override (conflicts with `--vendor`; per-repo only) |
-| `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only) |
+| `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only). Persistent setup flags override matching preset values in `.fullsend/config.yaml` |
 | `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`) |
 
 ### Required OAuth scopes

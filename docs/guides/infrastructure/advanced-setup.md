@@ -25,7 +25,7 @@ Then follow [Getting Inference](../getting-started/getting-inference.md) and [Co
 
 If the platform operator also provides a pre-existing WIF provider, skip `inference provision` and pass `--inference-wif-provider` directly to `github setup`.
 
-If the platform operator distributes a vendor preset (a curated `config.base.yaml`), you can install it via `--config` instead of specifying individual flags:
+If the platform operator distributes a vendor preset (a curated `config.base.yaml`), you can install it via `--config`. Persistent setup flags may still be passed; they override matching preset values in the overlay without changing the committed preset:
 
 ```bash
 fullsend github setup <owner/repo> \

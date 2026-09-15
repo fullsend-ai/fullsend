@@ -232,7 +232,7 @@ func TestGitHubSetupCmd_ConfigHashWithoutConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "--config-hash requires --config")
 }
 
-func TestGitHubSetupCmd_ConfigWithRuntime_Rejected(t *testing.T) {
+func TestGitHubSetupCmd_ConfigWithRuntime_Accepted(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 
 	dir := t.TempDir()
@@ -242,13 +242,15 @@ func TestGitHubSetupCmd_ConfigWithRuntime_Rejected(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"github", "setup", "acme/widget",
 		"--config", presetPath,
-		"--runtime", "claude"})
+		"--runtime", "claude",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run"})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--runtime cannot be used with --config")
+	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_ConfigWithAgents_Rejected(t *testing.T) {
+func TestGitHubSetupCmd_ConfigWithAgents_Accepted(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 
 	dir := t.TempDir()
@@ -258,10 +260,12 @@ func TestGitHubSetupCmd_ConfigWithAgents_Rejected(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"github", "setup", "acme/widget",
 		"--config", presetPath,
-		"--agents", "triage,review"})
+		"--agents", "triage,review",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run"})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--agents cannot be used with --config")
+	require.NoError(t, err)
 }
 
 func TestGitHubSetupCmd_ConfigInPerOrgMode_Rejected(t *testing.T) {
@@ -511,4 +515,225 @@ func TestRunGitHubSetupPerRepo_WithPresetMissingFile_Errors(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading preset file")
+}
+
+const validWIFProvider = "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"
+
+func writeSetupPreset(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "preset.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
+
+func newSetupClient(t *testing.T) *forge.FakeClient {
+	t.Helper()
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	return client
+}
+
+func committedSetupFiles(client *forge.FakeClient) map[string][]byte {
+	out := make(map[string][]byte)
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			out[f.Path] = f.Content
+		}
+	}
+	return out
+}
+
+func TestRunGitHubSetupPerRepo_CLIOverridesBaseLayer(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetContent := "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: " + validWIFProvider + "\n  region: europe-west1\n"
+	presetPath := writeSetupPreset(t, presetContent)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:     presetPath,
+		inferenceProject: "cli-project",
+		inferenceRegion:  "us-west2",
+		changedFlags: map[string]bool{
+			"config":            true,
+			"inference-project": true,
+			"inference-region":  true,
+		},
+	})
+	require.NoError(t, err)
+
+	files := committedSetupFiles(client)
+	require.Equal(t, presetContent, string(files[".fullsend/config.base.yaml"]), "preset must be committed unchanged")
+	overlay, err := config.ParsePerRepoConfig(files[".fullsend/config.yaml"])
+	require.NoError(t, err)
+	assert.Equal(t, "cli-project", overlay.ConfigInferenceProject())
+	assert.Equal(t, "us-west2", overlay.ConfigInferenceRegion())
+	assert.Empty(t, overlay.ConfigInferenceWIFProvider(), "omitted CLI values stay inherited, not materialized")
+
+	composed, err := config.ParsePerRepoConfigWriterLayered(files[".fullsend/config.yaml"], files[".fullsend/config.base.yaml"])
+	require.NoError(t, err)
+	assert.Equal(t, "cli-project", composed.ConfigInferenceProject())
+	assert.Equal(t, validWIFProvider, composed.ConfigInferenceWIFProvider())
+	assert.Equal(t, "us-west2", composed.ConfigInferenceRegion())
+	assert.Equal(t, "claude", composed.ConfigRuntime())
+
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "cli-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, validWIFProvider, secretNames["FULLSEND_GCP_WIF_PROVIDER"])
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "us-west2", varNames["FULLSEND_GCP_REGION"])
+}
+
+func TestRunGitHubSetupPerRepo_BaseOnlyRequiredValuesPass(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetContent := "version: \"1\"\ninference:\n  project: preset-project\n  wif_provider: " + validWIFProvider + "\n"
+	presetPath := writeSetupPreset(t, presetContent)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+
+	files := committedSetupFiles(client)
+	assert.Equal(t, presetContent, string(files[".fullsend/config.base.yaml"]))
+	assert.Equal(t, stubConfigYAML, string(files[".fullsend/config.yaml"]))
+
+	secretNames := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secretNames[s.Name] = s.Value
+	}
+	assert.Equal(t, "preset-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, validWIFProvider, secretNames["FULLSEND_GCP_WIF_PROVIDER"])
+}
+
+func TestRunGitHubSetupPerRepo_CLIOnlyPersistentValues(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		agents:               "triage,review",
+		runtime:              "pi",
+		mintURL:              "https://custom-mint.example.com",
+		inferenceProject:     "cli-project",
+		inferenceWIFProvider: validWIFProvider,
+		configPreset:         presetPath,
+		changedFlags: map[string]bool{
+			"config":                 true,
+			"runtime":                true,
+			"agents":                 true,
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+		},
+	})
+	require.NoError(t, err)
+
+	files := committedSetupFiles(client)
+	overlay, err := config.ParsePerRepoConfig(files[".fullsend/config.yaml"])
+	require.NoError(t, err)
+	assert.Equal(t, "pi", overlay.ConfigRuntime())
+	assert.Equal(t, []string{"triage", "review"}, overlay.ConfigRoles())
+	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "cli-project", overlay.ConfigInferenceProject())
+	assert.Equal(t, validWIFProvider, overlay.ConfigInferenceWIFProvider())
+}
+
+func TestRunGitHubSetupPerRepo_MissingRequiredAfterComposeFails(t *testing.T) {
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-project is required")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_InvalidCLIValueFails(t *testing.T) {
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		runtime:      "not-a-runtime",
+		changedFlags: map[string]bool{"config": true, "runtime": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --runtime")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_InvalidPresetValueFails(t *testing.T) {
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: not-a-runtime\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid preset")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_InvalidPresetMintURLFails(t *testing.T) {
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\nmint_url: http://insecure.example.com\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: presetPath,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preset mint_url")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_InvalidCLIProviderFails(t *testing.T) {
+	client := newSetupClient(t)
+	printer := ui.New(&discardWriter{})
+	presetPath := writeSetupPreset(t, "version: \"1\"\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:            "acme/widget",
+		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:      presetPath,
+		inferenceProvider: "openai",
+		changedFlags:      map[string]bool{"config": true, "inference-provider": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --inference-provider")
+	assert.Empty(t, client.CommittedFilesToBranch)
 }

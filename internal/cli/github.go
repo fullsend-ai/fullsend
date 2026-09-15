@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -138,13 +139,6 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 					}
 				}
 			}
-			if cfg.configPreset != "" {
-				for _, name := range []string{"runtime", "agents"} {
-					if cmd.Flags().Changed(name) {
-						return fmt.Errorf("--%s cannot be used with --config (the preset provides its own configuration)", name)
-					}
-				}
-			}
 
 			// Validate only when a non-empty mint URL is provided; an
 			// empty value is resolved to the code default later.
@@ -228,46 +222,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
 	}
 
-	// On re-run, allow skipping --inference-project and --inference-wif-provider
-	// if the corresponding secrets already exist on the repo (matching per-org
-	// fallback behavior). Each flag is checked independently so the user can
-	// update one while keeping the other.
-	reuseProject := false
-	reuseWIF := false
-	if cfg.inferenceProject == "" {
-		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
-		if err != nil {
-			return fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
-		}
-		if !exists {
-			return fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found)")
-		}
-		reuseProject = true
-	}
-	if cfg.inferenceWIFProvider == "" {
-		exists, err := client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER")
-		if err != nil {
-			return fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
-		}
-		if !exists {
-			return fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found)")
-		}
-		reuseWIF = true
-	}
-
-	// Validate format only when a new value is provided; reused secrets were
-	// validated on first write.
-	if cfg.inferenceWIFProvider != "" {
-		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
-			return err
-		}
-	}
-	if err := validateOpenAISetupFlags(cfg); err != nil {
-		return err
-	}
-
+	// Validate CLI-supplied persistent values at their source before any
+	// layer is composed. Required-value checks wait until after composition
+	// so a preset or existing overlay can satisfy them.
 	roles, err := parseAgentRoles(cfg.agents)
 	if err != nil {
+		return err
+	}
+	if err := validateCLISetupValues(cfg); err != nil {
 		return err
 	}
 
@@ -276,40 +238,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	printer.Header("Setting up per-repo fullsend for " + cfg.target)
 	printer.Blank()
 
-	if reuseProject {
-		printer.StepInfo("Reusing existing FULLSEND_GCP_PROJECT_ID from " + cfg.target)
-	}
-	if reuseWIF {
-		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
-	}
-
-	// --- Preset handling (--config / --config-hash) ---
-	var presetData []byte
-	if cfg.configPreset != "" {
-		printer.StepStart("Fetching preset from " + cfg.configPreset)
-		var fetchErr error
-		presetData, fetchErr = fetchPreset(cfg.configPreset)
-		if fetchErr != nil {
-			printer.StepFail("Failed to fetch preset")
-			return fetchErr
-		}
-		printer.StepDone(fmt.Sprintf("Fetched preset (%d bytes)", len(presetData)))
-
-		if cfg.configHash != "" {
-			printer.StepStart("Validating preset hash")
-			if hashErr := validatePresetHash(presetData, cfg.configHash); hashErr != nil {
-				printer.StepFail("Preset hash validation failed")
-				return hashErr
-			}
-			printer.StepDone("Preset hash validated")
-		} else if isRemotePreset(cfg.configPreset) {
-			printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
-		}
-
-		if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
-			printer.StepFail("Preset YAML validation failed")
-			return yamlErr
-		}
+	presetData, err := fetchAndValidatePreset(cfg, printer)
+	if err != nil {
+		return err
 	}
 
 	// --- Existing per-repo config (re-run) ---
@@ -335,17 +266,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// terminal (Enter keeps claude) — but only on a first install. On a
 	// re-run the existing config's runtime stays unless --runtime is
 	// given, so an Enter cannot flip a pi repo back to claude. Presets
-	// carry their own value.
+	// carry their own value; an explicit --runtime is written to the overlay.
 	if cfg.runtime == "" && presetData == nil && !cfg.dryRun && existingCfg == nil {
 		choice, err := promptRuntime(printer, os.Stdin, stdinIsInteractive())
 		if err != nil {
 			return err
 		}
 		cfg.runtime = choice
-	}
-	effectiveRuntime := cfg.runtime
-	if effectiveRuntime == "" && existingCfg != nil {
-		effectiveRuntime = existingCfg.ConfigRuntime()
 	}
 	if cfg.runtime == "pi" {
 		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
@@ -358,9 +285,11 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// cfgYAML stays nil when the existing overlay is kept verbatim, and
 	// .fullsend/config.yaml is then left out of the scaffold files.
 	var cfgYAML []byte
+	var overlay config.PerRepoConfigWriter
 	switch {
 	case keepExistingConfig:
 		printer.StepInfo("Keeping existing .fullsend/config.yaml unchanged (pass --runtime, --agents, --mint-url or --inference-* to change a key)")
+		overlay = existingCfg
 	case existingCfg != nil:
 		// Re-run with config-targeting flags: change only those keys on
 		// the loaded config so everything else the repo set survives.
@@ -373,33 +302,17 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			return fmt.Errorf("marshaling per-repo config: %w", err)
 		}
 		printer.StepInfo("Updating existing .fullsend/config.yaml: " + strings.Join(changed, ", ") + " (other keys kept; comments are not preserved)")
+		overlay = existingCfg
 	case presetData == nil:
 		// No preset: generate a per-repo config.yaml. Only
 		// explicitly-set flags are written to the overlay; unset
 		// values fall through overlay → base → code defaults
 		// (ADR 0069 Decision 1, same pattern as buildPresetOverlay).
 		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
-		if cfg.runtime != "" {
+		if cfg.runtime != "" && !cfg.changedFlags["runtime"] {
 			perRepoCfg.SetRuntime(cfg.runtime)
 		}
-		if cfg.changedFlags["mint-url"] {
-			perRepoCfg.SetMintURL(cfg.mintURL)
-		}
-		if cfg.changedFlags["inference-provider"] {
-			perRepoCfg.SetInferenceProvider(cfg.inferenceProvider)
-		}
-		if cfg.changedFlags["inference-region"] {
-			perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
-		}
-		if cfg.changedFlags["inference-project"] {
-			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
-		}
-		if cfg.changedFlags["inference-wif-provider"] {
-			perRepoCfg.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
-		}
-		if openaiFlagsChanged(cfg) {
-			perRepoCfg.SetInferenceOpenAI(cfg.openaiIDs())
-		}
+		applySetupFlagsToConfig(cfg, perRepoCfg, roles)
 		if err := perRepoCfg.Validate(); err != nil {
 			return fmt.Errorf("invalid config: %w", err)
 		}
@@ -408,15 +321,17 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		if err != nil {
 			return fmt.Errorf("marshaling per-repo config: %w", err)
 		}
+		overlay = perRepoCfg
 	default:
 		// Preset provided: base layer carries the preset's values.
 		// Flag-specified values go into the overlay so the base
 		// layer remains identical to the fetched preset (ADR 0069).
-		if overlayCfg := buildPresetOverlay(cfg); overlayCfg != nil {
-			if err := overlayCfg.Validate(); err != nil {
+		overlay = buildPresetOverlay(cfg, roles)
+		if overlay != nil {
+			if err := overlay.Validate(); err != nil {
 				return fmt.Errorf("invalid overlay config: %w", err)
 			}
-			cfgYAML, err = overlayCfg.Marshal()
+			cfgYAML, err = overlay.Marshal()
 			if err != nil {
 				return fmt.Errorf("marshaling overlay config: %w", err)
 			}
@@ -426,6 +341,26 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			cfgYAML = []byte(stubConfigYAML)
 		}
 	}
+
+	effective, err := composeSetupLayers(cfgYAML, overlay, presetData)
+	if err != nil {
+		return err
+	}
+	if err := validateSetupValueFormats(effective, "composed config"); err != nil {
+		return err
+	}
+
+	reuseProject, reuseWIF, err := resolveInferenceReuse(ctx, client, owner, repo, cfg, effective)
+	if err != nil {
+		return err
+	}
+	if reuseProject {
+		printer.StepInfo("Reusing existing FULLSEND_GCP_PROJECT_ID from " + cfg.target)
+	}
+	if reuseWIF {
+		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
+	}
+	effectiveRuntime := effectiveSetupRuntime(cfg, effective)
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 	if cfg.fullsendRef != "" {
@@ -460,7 +395,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		})
 	}
 
-	// Mint/inference values are stored in config.yaml (ADR 0069
+	// Mint/inference values are stored in layered config (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
 	// compatibility — existing workflow templates still reference
 	// ${{ vars.FULLSEND_MINT_URL }}, ${{ vars.FULLSEND_GCP_REGION }},
@@ -468,18 +403,12 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}.
 	// See #5870 / #4977 for the migration to config-only reads.
 	//
-	// Resolve effective values: use the flag value when explicitly
-	// set, otherwise fall back to code defaults so first-time
-	// installs still get working vars/secrets without polluting
-	// the overlay (ADR 0069).
-	effectiveMintURL := cfg.mintURL
-	if effectiveMintURL == "" {
-		effectiveMintURL = config.DefaultPerRepoMintURL
-	}
-	effectiveRegion := cfg.inferenceRegion
-	if effectiveRegion == "" {
-		effectiveRegion = config.DefaultPerRepoInferenceRegion
-	}
+	// Resolve effective values from the composed configuration so a
+	// required value supplied only by the preset or existing overlay
+	// still reaches vars/secrets. CLI struct fields remain a fallback
+	// for callers that set them without recording changedFlags.
+	effectiveMintURL := effectiveSetupMintURL(cfg, effective)
+	effectiveRegion := effectiveInferenceRegion(cfg, effective)
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   effectiveMintURL,
 		"FULLSEND_GCP_REGION": effectiveRegion,
@@ -496,10 +425,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	repoSecrets := make(map[string]string)
 	if !reuseProject {
-		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
+		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = effectiveInferenceProject(cfg, effective)
 	}
 	if !reuseWIF {
-		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = cfg.inferenceWIFProvider
+		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = effectiveInferenceWIF(cfg, effective)
 	}
 
 	// Resolve Signed-off-by trailer when --signoff is set.
@@ -585,12 +514,6 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	return nil
 }
 
-// buildPresetOverlay constructs the per-repo config overlay when a
-// preset base layer is provided via --config. Only flag-specified
-// values are written to the overlay; omitted fields inherit from the
-// base layer via the layered accessor chain (ADR 0069 Decision 1).
-// Returns nil when no relevant flags were changed, signaling the
-// caller to use the stub overlay YAML with human-readable comments.
 // setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
 // Any of them being passed explicitly turns a re-run from "keep the file"
 // into "change that key on the existing file".
@@ -686,39 +609,238 @@ func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter
 	return changed
 }
 
-func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
-	flagNames := []string{"mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
-	anyChanged := false
-	for _, name := range flagNames {
-		if cfg.changedFlags[name] {
-			anyChanged = true
-			break
-		}
-	}
-	if !anyChanged {
+// buildPresetOverlay constructs the per-repo config overlay when a
+// preset base layer is provided via --config. Only flag-specified
+// values are written to the overlay; omitted fields inherit from the
+// base layer via the layered accessor chain (ADR 0069 Decision 1).
+// Returns nil when no relevant flags were changed, signaling the
+// caller to use the stub overlay YAML with human-readable comments.
+func buildPresetOverlay(cfg githubSetupConfig, roles []string) config.PerRepoConfigWriter {
+	if !setupConfigFlagsChanged(cfg) {
 		return nil
 	}
-
 	o := config.NewEmptyPerRepoOverlay()
-	if cfg.changedFlags["mint-url"] {
-		o.SetMintURL(cfg.mintURL)
-	}
-	if cfg.changedFlags["inference-provider"] {
-		o.SetInferenceProvider(cfg.inferenceProvider)
-	}
-	if cfg.changedFlags["inference-project"] {
-		o.SetInferenceProject(cfg.inferenceProject)
-	}
-	if cfg.changedFlags["inference-region"] {
-		o.SetInferenceRegion(cfg.inferenceRegion)
-	}
-	if cfg.changedFlags["inference-wif-provider"] {
-		o.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
-	}
-	if openaiFlagsChanged(cfg) {
-		o.SetInferenceOpenAI(cfg.openaiIDs())
-	}
+	applySetupFlagsToConfig(cfg, o, roles)
 	return o
+}
+
+// fetchAndValidatePreset loads the --config preset, verifies hash and
+// YAML, then parses and validates it as a per-repo config layer.
+// Returns nil data when --config was not set.
+func fetchAndValidatePreset(cfg githubSetupConfig, printer *ui.Printer) ([]byte, error) {
+	if cfg.configPreset == "" {
+		return nil, nil
+	}
+	printer.StepStart("Fetching preset from " + cfg.configPreset)
+	presetData, fetchErr := fetchPreset(cfg.configPreset)
+	if fetchErr != nil {
+		printer.StepFail("Failed to fetch preset")
+		return nil, fetchErr
+	}
+	printer.StepDone(fmt.Sprintf("Fetched preset (%d bytes)", len(presetData)))
+
+	if cfg.configHash != "" {
+		printer.StepStart("Validating preset hash")
+		if hashErr := validatePresetHash(presetData, cfg.configHash); hashErr != nil {
+			printer.StepFail("Preset hash validation failed")
+			return nil, hashErr
+		}
+		printer.StepDone("Preset hash validated")
+	} else if isRemotePreset(cfg.configPreset) {
+		printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
+	}
+
+	if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
+		printer.StepFail("Preset YAML validation failed")
+		return nil, yamlErr
+	}
+	if err := validatePresetLayer(presetData); err != nil {
+		printer.StepFail("Preset validation failed")
+		return nil, err
+	}
+	return presetData, nil
+}
+
+// validatePresetLayer parses the --config preset as a per-repo config
+// layer, runs its structural Validate, and checks its mint URL and
+// inference WIF provider formats. data is the raw preset YAML.
+func validatePresetLayer(data []byte) error {
+	if !config.IsPerRepoYAML(data) {
+		return fmt.Errorf("preset is not a per-repo configuration")
+	}
+	w, err := config.ParsePerRepoConfigWriter(data)
+	if err != nil {
+		return fmt.Errorf("parsing preset: %w", err)
+	}
+	if err := w.Validate(); err != nil {
+		return fmt.Errorf("invalid preset: %w", err)
+	}
+	pr, ok := w.(config.PerRepoConfigReader)
+	if !ok {
+		return fmt.Errorf("preset is not a per-repo configuration")
+	}
+	return validateSetupValueFormats(pr, "preset")
+}
+
+// validateCLISetupValues checks that explicitly passed CLI setup flags
+// (--runtime, --inference-provider, --inference-wif-provider, and the
+// --openai-* trio) hold valid values, independent of any preset layer.
+func validateCLISetupValues(cfg githubSetupConfig) error {
+	if cfg.runtime != "" && !slices.Contains(config.ValidRuntimes(), cfg.runtime) {
+		return fmt.Errorf("invalid --runtime %q: must be one of %s", cfg.runtime, strings.Join(config.ValidRuntimes(), ", "))
+	}
+	if cfg.inferenceProvider != "" && !slices.Contains(config.ValidProviders(), cfg.inferenceProvider) {
+		return fmt.Errorf("invalid --inference-provider %q: must be one of %s", cfg.inferenceProvider, strings.Join(config.ValidProviders(), ", "))
+	}
+	if cfg.inferenceWIFProvider != "" {
+		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
+			return err
+		}
+	}
+	return validateOpenAISetupFlags(cfg)
+}
+
+// validateSetupValueFormats checks the mint URL and inference WIF
+// provider values readable from r (a preset or the composed effective
+// config) against their required formats. source names the layer being
+// checked (e.g. "preset") for error messages; nil r is a no-op.
+func validateSetupValueFormats(r config.PerRepoConfigReader, source string) error {
+	if r == nil {
+		return nil
+	}
+	if u := r.ConfigMintURL(); u != "" {
+		if err := validateMintURLHTTPS(u); err != nil {
+			return fmt.Errorf("%s mint_url: %w", source, err)
+		}
+	}
+	if wif := r.ConfigInferenceWIFProvider(); wif != "" {
+		if err := validateWIFProvider(wif); err != nil {
+			return fmt.Errorf("%s inference.wif_provider: %w", source, err)
+		}
+	}
+	return nil
+}
+
+// composeSetupLayers returns the effective per-repo config used for
+// required-value checks and install-time variable/secret generation.
+// overlay is the writable top layer; baseData is the --config preset.
+func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, baseData []byte) (config.PerRepoConfigReader, error) {
+	if len(baseData) == 0 {
+		if overlay != nil {
+			return overlay, nil
+		}
+		return config.NewEmptyPerRepoOverlay(), nil
+	}
+	data := overlayYAML
+	if len(data) == 0 && overlay != nil {
+		var err error
+		data, err = overlay.Marshal()
+		if err != nil {
+			return nil, fmt.Errorf("marshaling overlay for composition: %w", err)
+		}
+	}
+	return config.ParsePerRepoConfigWriterLayered(data, baseData)
+}
+
+// resolveInferenceReuse determines, for each of the GCP project and WIF
+// provider inference values, whether setup should reuse the existing
+// repo secret because neither the CLI flag nor the composed effective
+// config supplied a value. It errors if a value is missing and no
+// existing secret is found, since one or the other is required.
+func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (reuseProject, reuseWIF bool, err error) {
+	if effectiveInferenceProject(cfg, effective) == "" {
+		var exists bool
+		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
+		if err != nil {
+			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_PROJECT_ID: %w (pass --inference-project to skip this check)", err)
+		}
+		if !exists {
+			return false, false, fmt.Errorf("--inference-project is required for per-repo setup (no existing secret found)")
+		}
+		reuseProject = true
+	}
+	if effectiveInferenceWIF(cfg, effective) == "" {
+		var exists bool
+		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_WIF_PROVIDER")
+		if err != nil {
+			return false, false, fmt.Errorf("checking existing secret FULLSEND_GCP_WIF_PROVIDER: %w (pass --inference-wif-provider to skip this check)", err)
+		}
+		if !exists {
+			return false, false, fmt.Errorf("--inference-wif-provider is required for per-repo setup (no existing secret found)")
+		}
+		reuseWIF = true
+	}
+	return reuseProject, reuseWIF, nil
+}
+
+// effectiveInferenceProject returns the GCP inference project to use:
+// the explicit --inference-project flag if set, otherwise the value
+// from the composed effective config, otherwise empty.
+func effectiveInferenceProject(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
+	if cfg.inferenceProject != "" {
+		return cfg.inferenceProject
+	}
+	if effective != nil {
+		return effective.ConfigInferenceProject()
+	}
+	return ""
+}
+
+// effectiveInferenceWIF returns the GCP inference WIF provider to use:
+// the explicit --inference-wif-provider flag if set, otherwise the
+// value from the composed effective config, otherwise empty.
+func effectiveInferenceWIF(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
+	if cfg.inferenceWIFProvider != "" {
+		return cfg.inferenceWIFProvider
+	}
+	if effective != nil {
+		return effective.ConfigInferenceWIFProvider()
+	}
+	return ""
+}
+
+// effectiveSetupMintURL returns the mint URL to use: the explicit
+// --mint-url flag if set, otherwise the value from the composed
+// effective config, otherwise config.DefaultPerRepoMintURL.
+func effectiveSetupMintURL(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
+	if cfg.mintURL != "" {
+		return cfg.mintURL
+	}
+	if effective != nil {
+		if u := effective.ConfigMintURL(); u != "" {
+			return u
+		}
+	}
+	return config.DefaultPerRepoMintURL
+}
+
+// effectiveInferenceRegion returns the inference region to use: the
+// explicit --inference-region flag if set, otherwise the value from
+// the composed effective config, otherwise
+// config.DefaultPerRepoInferenceRegion.
+func effectiveInferenceRegion(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
+	if cfg.inferenceRegion != "" {
+		return cfg.inferenceRegion
+	}
+	if effective != nil {
+		if r := effective.ConfigInferenceRegion(); r != "" {
+			return r
+		}
+	}
+	return config.DefaultPerRepoInferenceRegion
+}
+
+// effectiveSetupRuntime returns the runtime to use: the explicit
+// --runtime flag if set, otherwise the value from the composed
+// effective config, otherwise empty.
+func effectiveSetupRuntime(cfg githubSetupConfig, effective config.PerRepoConfigReader) string {
+	if cfg.runtime != "" {
+		return cfg.runtime
+	}
+	if effective != nil {
+		return effective.ConfigRuntime()
+	}
+	return ""
 }
 
 // openaiSetupFlags are the three flags that together set inference.openai.

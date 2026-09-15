@@ -102,15 +102,14 @@ fullsend github setup <org>/<repo> \
   --config-hash "<sha256-hex>"
 ```
 
-When `--config` is provided, the preset content is committed as
-`.fullsend/config.base.yaml` and a stub overlay is written to
-`.fullsend/config.yaml`. The `--config-hash` flag is optional but
-recommended for remote URLs — it verifies the SHA-256 digest of the
-fetched content before committing.
-
-> **Note:** `--config` cannot be combined with `--runtime` or `--agents`,
-> because the preset provides its own configuration. `--config` is only
-> valid for per-repo mode.
+When `--config` is provided, the preset content is committed unchanged as
+`.fullsend/config.base.yaml`. Explicit persistent setup flags (`--runtime`,
+`--agents`, `--mint-url`, `--inference-*`) are written to the
+`.fullsend/config.yaml` overlay and override the same values from the
+preset. Omitted flags inherit from the preset, then from compiled-in
+defaults. The `--config-hash` flag is optional but recommended for remote
+URLs — it verifies the SHA-256 digest of the fetched content before
+committing. `--config` is only valid for per-repo mode.
 
 This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` and `codex` are experimental and meant for opt-in pilots — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
 

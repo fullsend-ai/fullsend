@@ -34,6 +34,12 @@ code defaults (compiled into fullsend)
 Existing installations without `config.base.yaml` are unaffected — the
 overlay falls through directly to code defaults.
 
+`fullsend github setup --config` commits the preset as `config.base.yaml`
+and writes only explicitly passed persistent setup flags into
+`config.yaml`. Required values such as `inference.project` may come from
+the preset alone; CLI flags override the same keys without rewriting the
+preset file.
+
 ### Marshal behavior
 
 `Marshal` (and any serialization path) emits only values explicitly set on

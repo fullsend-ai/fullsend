@@ -24,9 +24,8 @@ type GitHubSetupOpts struct {
 
 	// ConfigPreset is passed as --config when non-empty (a local path
 	// or HTTPS URL to a config base layer preset). When set, --runtime
-	// dummy is omitted because github setup rejects combining --config
-	// with --runtime; the preset must supply runtime: dummy so
-	// post-install validation still passes.
+	// dummy is omitted so the preset's runtime: dummy is inherited
+	// rather than pinned in the overlay.
 	ConfigPreset string
 }
 
@@ -66,8 +65,8 @@ func RunGitHubSetupWithOpts(
 		"--skip-app-setup",
 		"--mint-url", mintURL,
 	}
-	// --config cannot be combined with --runtime: the preset supplies
-	// its own configuration (including runtime).
+	// Omit --runtime dummy when a preset is supplied so the preset's
+	// runtime is inherited rather than pinned in the overlay.
 	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
 		args = append(args, "--config", preset)
 	} else {
