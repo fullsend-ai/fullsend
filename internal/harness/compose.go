@@ -407,15 +407,46 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving containment root: %w", err)
 		}
 		absWorkspace = filepath.Clean(absWorkspace)
-		rel, err := filepath.Rel(absWorkspace, absBasePath)
+		unresolvedWorkspace := absWorkspace
+		absWorkspace, err = filepath.EvalSymlinks(absWorkspace)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving containment root symlinks: %w", err)
+		}
+		// Preserve the lexical base reference relative to the referencing harness
+		// directory. This distinguishes explicit traversal from an intermediate
+		// symlink escape without being confused by workspace-root aliases.
+		lexicalRel, lexicalRelErr := filepath.Rel(childDir, absBasePath)
+		lexicallyEscapes := lexicalRelErr != nil || strings.HasPrefix(lexicalRel, "..")
+		// Resolve existing paths before comparing so workspace aliases such as
+		// macOS's /var and /private/var forms compare consistently.
+		resolvedBasePath, resolveErr := filepath.EvalSymlinks(absBasePath)
+		if resolveErr != nil {
+			// The base file may not exist yet, but its parent should still be
+			// canonicalized so workspace aliases compare consistently.
+			resolvedBaseDir, dirErr := filepath.EvalSymlinks(filepath.Dir(absBasePath))
+			if dirErr != nil {
+				// Keep rejecting unresolved paths outside the workspace before
+				// returning a missing-path error for paths that remain inside it.
+				unresolvedRel, unresolvedRelErr := filepath.Rel(unresolvedWorkspace, absBasePath)
+				if unresolvedRelErr != nil || strings.HasPrefix(unresolvedRel, "..") {
+					return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+				}
+				return nil, nil, fmt.Errorf("resolving base path symlinks: %w", dirErr)
+			}
+			resolvedBasePath = filepath.Join(resolvedBaseDir, filepath.Base(absBasePath))
+		}
+		rel, err := filepath.Rel(absWorkspace, resolvedBasePath)
 		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			if lexicallyEscapes {
+				return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			}
+			return nil, nil, fmt.Errorf("base path %q escapes workspace root via symlink", baseRef)
 		}
 
-		if visited[absBasePath] {
-			return nil, nil, fmt.Errorf("circular base reference: %s", absBasePath)
+		if visited[resolvedBasePath] {
+			return nil, nil, fmt.Errorf("circular base reference: %s", resolvedBasePath)
 		}
-		visited[absBasePath] = true
+		visited[resolvedBasePath] = true
 
 		base, err = LoadRaw(basePath)
 		if err != nil {
