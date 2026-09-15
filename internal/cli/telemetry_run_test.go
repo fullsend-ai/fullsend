@@ -662,7 +662,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
-		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", "claude", m, transcriptErr)
+		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", "claude", m, transcriptErr, nil)
 		ended := rec.Ended()
 		require.Len(t, ended, 1, "span must be ended exactly once")
 		return tracetest.SpanStubFromReadOnlySpan(ended[0])
@@ -740,7 +740,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-\xff\xfeopus"}
-		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", "claude", m, "")
+		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", "claude", m, "", nil)
 		ended := rec.Ended()
 		require.Len(t, ended, 1)
 		s := tracetest.SpanStubFromReadOnlySpan(ended[0])
@@ -754,6 +754,42 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.Equal(t, codes.Error, s.Status.Code)
 		assert.Equal(t, "agent exited with code 1", s.Status.Description)
 	})
+	t.Run("finishes the tracker before ending the span", func(t *testing.T) {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		tracer := tp.Tracer("test")
+		agentCtx, agentSpan := tracer.Start(context.Background(), "agent")
+		tr := newToolSpanTracker(tracer, agentCtx)
+		for i := 0; i <= maxToolSpansPerIteration; i++ { // one past the cap: dropped == 1
+			tr.Handle(agentruntime.ToolUseEvent{ID: fmt.Sprintf("toolu_%05d", i), Name: "Bash"})
+		}
+
+		finalizeAgentSpan(agentSpan, nil, 1, 0, "anthropic", "claude", &agentruntime.RunMetrics{}, "", tr)
+
+		ended := rec.Ended()
+		require.Len(t, ended, maxToolSpansPerIteration+1, "every open tool span and the agent span end")
+		var agent sdktrace.ReadOnlySpan
+		for _, sp := range ended {
+			if sp.Name() == "agent" {
+				agent = sp
+			} else {
+				assert.False(t, sp.EndTime().After(agent0(ended).EndTime()), "tool spans end before their parent")
+				assert.Contains(t, sp.Attributes(), attribute.String("error.type", "unanswered"))
+			}
+		}
+		require.NotNil(t, agent)
+		assert.Contains(t, agent.Attributes(), attribute.Int("fullsend.tool_spans.dropped", 1), "overflow recorded on the agent span")
+	})
+}
+
+// agent0 returns the ended span named "agent" from rec.Ended().
+func agent0(spans []sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	for _, sp := range spans {
+		if sp.Name() == "agent" {
+			return sp
+		}
+	}
+	return nil
 }
 
 // TestHandleRunCancellation exercises the cancellation short-circuit
@@ -792,7 +828,7 @@ func TestHandleRunCancellation(t *testing.T) {
 
 		cancelled, lastExitCode, err := handleRunCancellation(
 			ctx, nil, 2, 0, "anthropic", "claude",
-			metrics, buildAgg(), runDir, span, attach, printer, 1500*time.Millisecond,
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 1500*time.Millisecond,
 		)
 
 		require.True(t, cancelled, "ctx.Err() is non-nil: the short-circuit must fire")
@@ -835,7 +871,7 @@ func TestHandleRunCancellation(t *testing.T) {
 
 		cancelled, _, err := handleRunCancellation(
 			ctx, runErr, 1, -1, "anthropic", "claude",
-			metrics, buildAgg(), runDir, span, attach, printer, 0,
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 0,
 		)
 
 		require.True(t, cancelled)
@@ -858,7 +894,7 @@ func TestHandleRunCancellation(t *testing.T) {
 
 		cancelled, _, err := handleRunCancellation(
 			ctx, nil, 1, 0, "anthropic", "claude",
-			metrics, buildAgg(), runDir, span, attach, printer, 0,
+			metrics, buildAgg(), runDir, span, nil, attach, printer, 0,
 		)
 
 		assert.False(t, cancelled, "a live context must not trigger the short-circuit")
@@ -867,6 +903,41 @@ func TestHandleRunCancellation(t *testing.T) {
 		assert.Empty(t, rec.Ended(), "the span must not be finalized when the run was not cancelled")
 		_, statErr := os.Stat(filepath.Join(runDir, metricsFile))
 		assert.True(t, os.IsNotExist(statErr), "metrics.json must not be written when the run was not cancelled")
+	})
+	t.Run("cancellation ends open tool spans as unanswered in the file sink", func(t *testing.T) {
+		// The stop path is the one where a call has no result by design;
+		// finalizeAgentSpan ends the tracker's open spans before the agent
+		// span, and the SimpleSpanProcessor file sink writes them on End,
+		// so they land even when SIGTERM kills the process before flush.
+		t.Setenv("OTEL_SDK_DISABLED", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+		dir := t.TempDir()
+		tracer, cleanup := telemetry.Setup(dir, "test")
+		agentCtx, agentSpan := tracer.Start(context.Background(), "agent")
+		tr := newToolSpanTracker(tracer, agentCtx)
+		tr.Handle(agentruntime.ToolUseEvent{ID: "toolu_open", Name: "Bash"})
+		tr.dropped = 3 // an overflow must land on the agent span before it ends
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cancelled, _, err := handleRunCancellation(
+			ctx, nil, 1, 0, "anthropic", "claude",
+			&agentruntime.RunMetrics{}, aggregateMetrics{}, t.TempDir(), agentSpan, tr, func(string) {}, ui.New(io.Discard), time.Second,
+		)
+		require.True(t, cancelled)
+		require.Error(t, err)
+		cleanup(context.Background())
+
+		raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+		require.NoError(t, err)
+		content := string(raw)
+		assert.Contains(t, content, `"execute_tool Bash"`, "the open call's span must be ended and written")
+		assert.Contains(t, content, `"unanswered"`, "a call with no result at cancellation closes as error.type=unanswered")
+		parent, err := json.Marshal(agentSpan.SpanContext().SpanID().String())
+		require.NoError(t, err)
+		assert.Contains(t, content, `"parentSpanId":`+string(parent))
+		assert.Contains(t, content, `"fullsend.tool_spans.dropped"`, "the overflow is recorded before the agent span ends; an ended span drops attributes silently")
 	})
 }
 
@@ -1191,15 +1262,10 @@ func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 	t.Fatal("gen_ai.request.model attribute not found")
 }
 
-func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
-	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
-		"gate off must leave OnEvent nil so the runtime's default renderer runs")
-}
-
-func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {
+func TestIterationEventHandler_TeesToRendererAndCollector(t *testing.T) {
 	var rendered []agentruntime.AgentEvent
 	c := newContentCollector(4096)
-	handler := contentEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c)
+	handler := iterationEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c, nil)
 	require.NotNil(t, handler)
 
 	handler(agentruntime.TextEvent{Text: "hello"})
@@ -1265,8 +1331,8 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 }
 
 // TestContentCapture_GateOffProducesNoContent is the negative control: with
-// the gate off the collector is nil, OnEvent stays nil (default renderer),
-// and nothing content-shaped reaches the file sink.
+// the gate off the collector is nil and nothing content-shaped reaches the
+// file sink (tool spans are metadata and are emitted regardless).
 func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")

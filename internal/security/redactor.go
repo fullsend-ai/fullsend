@@ -207,6 +207,10 @@ func defaultPrefixPatterns() []secretPattern {
 		{"github_refresh_token", `ghr_[a-zA-Z0-9_]{36,}`},
 		{"slack_token", `xox[baprs]-[a-zA-Z0-9-]{10,}`},
 		{"google_api_key", `AIza[a-zA-Z0-9_-]{35}`},
+		// Google OAuth access tokens: an optional one- or two-letter type
+		// segment (c. service account; dr. for the workforce STS response
+		// Google documents) would otherwise defeat the {20,} quantifier.
+		{"google_oauth_token", `ya29\.(?:[a-z]{1,2}\.)?[a-zA-Z0-9_\-]{20,}`},
 		{"aws_access_key", `AKIA[A-Z0-9]{16}`},
 		{"stripe_live", `sk_live_[a-zA-Z0-9]{24,}`},
 		{"stripe_test", `sk_test_[a-zA-Z0-9]{24,}`},
@@ -217,6 +221,9 @@ func defaultPrefixPatterns() []secretPattern {
 		{"gitlab_pat", `glpat-[a-zA-Z0-9_-]{20,}`},
 		{"vault_token", `hvs\.[a-zA-Z0-9_-]{24,}`},
 		{"age_secret_key", `AGE-SECRET-KEY-[A-Z0-9]{59}`},
+		// Bare three-segment JWTs (and OIDC/WIF STS tokens) carry no
+		// surrounding context for the structural patterns to anchor on.
+		{"jwt", `eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}`},
 	}
 
 	result := make([]secretPattern, len(patterns))
