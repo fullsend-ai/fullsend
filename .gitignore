@@ -26,3 +26,5 @@ docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
 coverage.out
+# QualityFlow working directory; nothing under it belongs in a commit.
+outputs/
