@@ -45,6 +45,7 @@ type callerJob struct {
 	Uses        string            `yaml:"uses"`
 	With        map[string]string `yaml:"with"`
 	Secrets     map[string]string `yaml:"secrets"`
+	Permissions map[string]string `yaml:"permissions"`
 	Concurrency *jobConcurrency   `yaml:"concurrency"`
 }
 
@@ -145,18 +146,29 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	},
 }
 
-// stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
+// stepDeclRe matches a workflow YAML step declaration line.
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
+
+// actionStepDeclRe matches a composite-action YAML step declaration line.
+var actionStepDeclRe = regexp.MustCompile(`(?m)^    - name: (.+)$`)
 
 // extractStepSection returns the YAML block for the step named marker in
 // content. It fails the test if the marker doesn't match exactly one step
 // declaration.
 func extractStepSection(t *testing.T, content, marker string) string {
+	return extractNamedYAMLBlock(t, content, marker, stepDeclRe)
+}
+
+func extractActionStepSection(t *testing.T, content, marker string) string {
+	return extractNamedYAMLBlock(t, content, marker, actionStepDeclRe)
+}
+
+func extractNamedYAMLBlock(t *testing.T, content, marker string, declRe *regexp.Regexp) string {
 	t.Helper()
 
 	var count int
 	var matchStart int
-	for _, loc := range stepDeclRe.FindAllStringSubmatchIndex(content, -1) {
+	for _, loc := range declRe.FindAllStringSubmatchIndex(content, -1) {
 		name := content[loc[2]:loc[3]]
 		if name == marker {
 			count++
@@ -166,8 +178,8 @@ func extractStepSection(t *testing.T, content, marker string) string {
 	require.Equal(t, 1, count, "expected exactly one step named %q, found %d", marker, count)
 
 	section := content[matchStart:]
-	if rest := content[matchStart+1:]; stepDeclRe.FindStringIndex(rest) != nil {
-		next := stepDeclRe.FindStringIndex(rest)
+	if rest := content[matchStart+1:]; declRe.FindStringIndex(rest) != nil {
+		next := declRe.FindStringIndex(rest)
 		section = content[matchStart : matchStart+1+next[0]]
 	}
 	return section
@@ -846,6 +858,34 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
+func TestPerRepoShimReviewEventFilter(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{name: "live", content: loadRepoFile(".github/workflows/fullsend.yaml")},
+		{name: "template", content: loadScaffoldFile("templates/shim-per-repo.yaml")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok)
+			assert.Contains(t, job.If, "github.event_name != 'pull_request_review'")
+			assert.Contains(t, job.If, "github.event.action == 'submitted'")
+			assert.Contains(t, job.If, "github.event.review.state != 'commented'")
+			assert.Contains(t, job.If, "github.event.review.body != ''")
+			assert.NotContains(t, job.If, "github.event.review.user.login",
+				"shim must preserve review events used by custom harness triggers")
+			assert.Equal(t, "write", job.Permissions["statuses"])
+			assert.Equal(t, "true", job.With["review_status_enabled"],
+				"managed shims must opt in only after granting statuses: write")
+		})
+	}
+}
+
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive
@@ -949,6 +989,76 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.NotContains(t, s, "  role:\n    description: Resolved harness role",
+		"the shared status must not be selected by a custom harness role")
+	assert.Contains(t, s, "review-status-enabled:",
+		"the shared status lifecycle must require an explicit action opt-in")
+	pending := extractActionStepSection(t, s, "Set review completion status pending")
+	assert.Contains(t, pending, "if: inputs.agent == 'review'")
+	assert.Contains(t, pending, "inputs.review-status-enabled == 'true'")
+	assert.NotContains(t, pending, "RESOLVED_ROLE")
+	assert.Contains(t, pending, `--sha "${PR_HEAD_SHA}"`)
+	assert.Contains(t, pending, "--state pending")
+	assert.Contains(t, pending, "GITHUB_TOKEN: ${{ inputs.github_token }}")
+
+	finalize := extractActionStepSection(t, s, "Finalize review completion status")
+	assert.Contains(t, finalize, "if: always()")
+	assert.Contains(t, finalize, "inputs.agent == 'review'")
+	assert.NotContains(t, finalize, "RESOLVED_ROLE")
+	assert.Contains(t, finalize, `fullsend review-status`)
+	assert.Contains(t, finalize, `--sha "${PR_HEAD_SHA}"`)
+	assert.Contains(t, finalize, `--job-status "${JOB_STATUS}"`)
+	assert.Contains(t, finalize, `--was-skipped`)
+	assert.Contains(t, finalize, "GITHUB_TOKEN: ${{ inputs.github_token }}")
+
+	reconcile := extractActionStepSection(t, s, "Finalize orphaned status comment")
+	assert.Contains(t, reconcile, "REVIEW_STATUS_ENABLED: ${{ inputs.review-status-enabled }}")
+	assert.Contains(t, reconcile, `[[ "${AGENT}" == "review" ]]`)
+	assert.Contains(t, reconcile, `[[ "${REVIEW_STATUS_ENABLED}" == "true" ]]`)
+	assert.Contains(t, reconcile, `[[ -n "${PR_HEAD_SHA_INPUT}" ]]`)
+	assert.Contains(t, reconcile, `RECONCILE_FLAGS+=(--review-status-enabled)`)
+
+	pendingIndex := strings.Index(s, "- name: Set review completion status pending")
+	installIndex := strings.Index(s, "- name: Install Podman")
+	finalizeIndex := strings.Index(s, "- name: Finalize review completion status")
+	commentIndex := strings.Index(s, "- name: Finalize orphaned status comment")
+	require.NotEqual(t, -1, pendingIndex)
+	require.NotEqual(t, -1, installIndex)
+	require.NotEqual(t, -1, finalizeIndex)
+	require.NotEqual(t, -1, commentIndex)
+	assert.Less(t, pendingIndex, installIndex, "pending status must precede sandbox setup")
+	assert.Less(t, finalizeIndex, commentIndex,
+		"blocking status must resolve before best-effort comment reconciliation")
+
+	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	var dispatch callerWorkflow
+	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
+	assert.Equal(t, "write", dispatch.Jobs["review"].Permissions["statuses"])
+	assert.NotContains(t, dispatch.Jobs["harness-run"].Permissions, "statuses",
+		"custom harness agents must not share the built-in review status")
+}
+
+func TestReusableDispatchReviewStatusOptIn(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	assert.Contains(t, content, "review_status_enabled:",
+		"reusable dispatch must offer a backwards-compatible status opt-in")
+	assert.Contains(t, content, "default: false",
+		"legacy callers without statuses: write must remain compatible")
+
+	review := extractStepSection(t, content, "Run review agent")
+	assert.Contains(t, review, "review-status-enabled: ${{ inputs.review_status_enabled }}",
+		"only opted-in callers may activate the review status lifecycle")
+
+	harness := extractStepSection(t, content, "Run harness agent")
+	assert.NotContains(t, harness, "review-status-enabled:",
+		"custom harness agents must never activate the shared status")
+}
+
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
 // reusable-dispatch.yml pass pr-head-sha to the action.
 func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
@@ -984,6 +1094,8 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 			"harness-run pr-head-sha must be populated from event_payload")
 		assert.Contains(t, section, "matrix.event_payload",
 			"harness-run must use matrix.event_payload, not needs.route.outputs")
+		assert.NotContains(t, section, "role: ${{ matrix.role }}",
+			"custom harness roles must not select the shared review status")
 	})
 }
 

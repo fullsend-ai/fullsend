@@ -35,6 +35,68 @@ func newTestClient(t *testing.T, srv *httptest.Server) *LiveClient {
 	return New("test-token").WithBaseURL(srv.URL).WithAfterFunc(noWaitAfter)
 }
 
+func TestSetCommitStatus(t *testing.T) {
+	handlerCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/acme/widget/statuses/0123456789abcdef0123456789abcdef01234567", r.URL.Path)
+
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]string{
+			"state":       "pending",
+			"context":     "fullsend/review-completed",
+			"description": "Automated review is running",
+			"target_url":  "https://github.com/acme/widget/actions/runs/42",
+		}, body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).SetCommitStatus(context.Background(), "acme", "widget", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+		State:       forge.CommitStatusPending,
+		Context:     "fullsend/review-completed",
+		Description: "Automated review is running",
+		TargetURL:   "https://github.com/acme/widget/actions/runs/42",
+	})
+	require.NoError(t, err)
+	assert.True(t, handlerCalled, "status handler was not called")
+}
+
+func TestSetCommitStatus_RejectsUnexpectedStatus(t *testing.T) {
+	handlerCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		http.Error(w, `{"message":"unprocessable"}`, http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).SetCommitStatus(context.Background(), "acme", "widget", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+		State:   forge.CommitStatusSuccess,
+		Context: "fullsend/review-completed",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "set commit status")
+	assert.True(t, handlerCalled, "status handler was not called")
+}
+
+func TestSetCommitStatus_PropagatesTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("request reached server with a cancelled context")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := newTestClient(t, srv).SetCommitStatus(ctx, "acme", "widget", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+		State:   forge.CommitStatusPending,
+		Context: "fullsend/review-completed",
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "set commit status")
+}
+
 func TestListOrgRepos(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
