@@ -1864,10 +1864,10 @@ func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	rc, _ = m.ResolveConfig("acme", "c")
 	assert.Equal(t, "", rc.Runtime, "none stops the chain: code default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "opencode"}}
+	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "nonexistent"}}
 	err := bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `defaults.runtime "opencode" is not a valid runtime`)
+	assert.Contains(t, err.Error(), `defaults.runtime "nonexistent" is not a valid runtime`)
 
 	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Runtime: "nope"}}}}
 	err = bad.Validate()

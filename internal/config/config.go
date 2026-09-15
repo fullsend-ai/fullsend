@@ -329,12 +329,18 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
-// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464)
-// and "codex" (#6920) are both opt-in per repo, per agent, or as a
-// repos.yaml default;
-// "dummy" and "dummy-playback" are for behaviour test orgs only.
+// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464),
+// "codex" (#6920), and "opencode" (#6035, unbound-force#510) are opt-in per
+// repo, per agent, or as a repos.yaml default; "dummy" and "dummy-playback"
+// are for behaviour tests only.
+//
+// NOTE: opencode does not yet support write-capable agents (code, fix).
+// The runtime-level hooks guard (openCodeHooksExtensionBytes → exit 97)
+// enforces this at run time. A config-level gate is deferred to
+// unbound-force#515 when the hook adapter lands and the gate can be
+// removed.
 func ValidRuntimes() []string {
-	return []string{"claude", "pi", "codex", "dummy", "dummy-playback"}
+	return []string{"claude", "pi", "codex", "opencode", "dummy", "dummy-playback"}
 }
 
 // validSubagentKey matches a sub-agent persona key: one or more segments

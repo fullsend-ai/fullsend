@@ -52,6 +52,16 @@ const (
 	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
 	// each one explicitly with -e.
 	SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"
+	// SandboxOpenCodeConfig is the OpenCode config directory inside the
+	// sandbox. Exported as OPENCODE_CONFIG_DIR (OpenCodeRuntime.EnvExports).
+	// Outside the cloned repo tree, like SandboxClaudeConfig and
+	// SandboxPiConfig, so the target repo cannot pre-seed it and a workspace
+	// reset does not clear it. Unlike pi's config dir, OpenCode takes an
+	// explicit env pointer to it, so the agent-writable workspace .opencode/
+	// is never on the config search path. Path convention pinned by #515
+	// (the hook plugin adapter lives under this dir at plugins/, integrity-
+	// gated before .env is sourced, mirroring pi's piHooksGuard).
+	SandboxOpenCodeConfig = "/sandbox/opencode-config" //nolint:gosec // not a credential
 
 	// KeepAliveCommand is the sandbox's canonical main process, started by
 	// createOnce so the sandbox stays Ready between `sandbox exec` calls
