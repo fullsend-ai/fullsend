@@ -70,9 +70,9 @@ Project-wide instructions for humans and agents (conventions, testing, architect
 
 ### Always-on Skill
 
-> **Planned:** Default activation for harness-listed skills via agent-definition `skills:` frontmatter injection is tracked in [#6681](https://github.com/fullsend-ai/fullsend/issues/6681) / [#6859](https://github.com/fullsend-ai/fullsend/pull/6859). Do not use abandoned `metadata.apply: always` / soft Skill-tool directive designs.
+Frontmatter injection for harness-listed skills is active for the Claude runtime. Whether the injected declaration causes activation without an explicit Skill tool call still requires empirical validation. Do not use abandoned `metadata.apply: always` / soft Skill-tool directive designs.
 
-A harness [skill](#skill) load mode that **will** activate every harness-listed skill on each run of that harness once [#6681](https://github.com/fullsend-ai/fullsend/issues/6681) lands: bootstrap will inject those skills into the agent definition's `skills:` frontmatter (harness-listed only; repo-discovered skills remain [#237](https://github.com/fullsend-ai/fullsend/issues/237)). Until then, today's harness-listed skills follow the upload-and-list path described under [on-demand skill](#on-demand-skill). Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill) (planned per-skill optional mode).
+A harness [skill](#skill) load mode based on declaring every harness-listed skill in the agent definition: Claude bootstrap injects those skills into the agent definition's `skills:` frontmatter (harness-listed only; repo-discovered skills remain [#237](https://github.com/fullsend-ai/fullsend/issues/237)). The pi and other runtimes retain their own skill-loading behavior. Adding such a skill via `skills:` on a thin `base:` wrapper keeps a [configured default](#configured-default-agent); replacing `agent:` just to name the skill would make it [derived](#derived-agent). Contrast with [on-demand skill](#on-demand-skill) (planned per-skill optional mode).
 See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Automerge
@@ -225,9 +225,9 @@ See [architecture.md](architecture.md).
 
 ### On-demand Skill
 
-> **Planned:** A per-skill optional / on-demand mode (syntax undecided) is tracked in [#6682](https://github.com/fullsend-ai/fullsend/issues/6682). Until then, harness-listed skills are intended to be [always-on](#always-on-skill) via frontmatter injection ([#6681](https://github.com/fullsend-ai/fullsend/issues/6681)).
+> **Planned:** A per-skill optional / on-demand mode (syntax undecided) is tracked in [#6682](https://github.com/fullsend-ai/fullsend/issues/6682). Harness-listed skills currently receive frontmatter injection on the Claude runtime; activation behavior still requires empirical runtime validation. See [#6681](https://github.com/fullsend-ai/fullsend/issues/6681).
 
-A [skill](#skill) load mode where the skill is available on the run but is not forced active by default. Today, harness-listed skills are uploaded and shown in the runtime skill list, and under the Claude Code runtime the model may open `SKILL.md` with the Skill tool when it chooses; that upload-and-list path is not the long-term always-on mechanism. Contrast with [always-on skill](#always-on-skill).
+A [skill](#skill) load mode where the skill is available on the run but is not forced active by default. Harness-listed skills are uploaded and shown in the runtime skill list; on the Claude runtime, fullsend also injects them into agent frontmatter, but actual activation without an explicit Skill tool call still requires empirical validation. Contrast with [always-on skill](#always-on-skill).
 
 ### OTEL Derived Products
 
