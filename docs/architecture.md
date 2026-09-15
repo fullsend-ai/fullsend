@@ -364,11 +364,26 @@ configuration — guardrails, autonomy levels, and escalation rules governed by
 the repo's CODEOWNERS and review process
 ([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
+**Decided:**
+
+- Autonomous merge is a separate `auto-merge` stage, opt-in per repository and
+  disabled by default. It consumes structured Review evidence, but a host-side
+  forge driver re-fetches current policy, review, check, human-intent, and
+  head-SHA state before requesting the normal merge or queue mechanism; it
+  never uses an administrator bypass ([ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md)).
+- The dedicated stage is the sole Fullsend-owned autonomous-merge path. The
+  legacy Code-agent `CODE_AUTO_MERGE*` environment variables and post-script
+  implementation will be removed rather than retained as a compatibility
+  fallback ([agents#1219](https://github.com/fullsend-ai/agents/pull/1219)).
+- The model sandbox has no merge-capable credential. The driver uses a
+  constrained host-side capability bound to the expected head, while repository
+  branch protection and merge queues remain the final enforcement boundary.
+
 **Open questions:**
 
 - How is policy versioned, and how do we ensure agents run under the correct policy version?
 - Who can change policy, and what approval process governs policy changes? (See [governance.md](problems/governance.md).)
-- How does policy interact with the autonomy spectrum — is the auto-merge vs. escalate decision a policy setting? (See [autonomy-spectrum.md](problems/autonomy-spectrum.md).)
+- ~~How does policy interact with the autonomy spectrum — is the auto-merge vs. escalate decision a policy setting?~~ Partially decided in [ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md): it is an opt-in policy-controlled stage with host-side final authorization. Cohort definitions and graduation evidence remain open; see [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## Intent Source
 
