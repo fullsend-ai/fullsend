@@ -89,6 +89,13 @@ of `codecov/patch` failures on first push.
      | sed 's|^|./|'
    ```
 
+   Before running coverage, check each affected package for `_test.go`
+   files; if none exist, add direct unit tests for the changed code
+   first, since missing or zero coverage cannot satisfy the patch
+   coverage threshold. See the
+   [check-patch-coverage skill](../../skills/check-patch-coverage/SKILL.md#3-check-for-packages-with-no-test-files)
+   for the detection script.
+
 3. **Run tests with a cover profile** for the affected packages:
 
    ```bash
