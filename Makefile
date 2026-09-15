@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
-       lint-md-links script-test test \
+       lint-md-links lint-docs-anchors script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests \
        wasm-build wasm-stage mint-cf-worker-test
 
@@ -25,7 +25,8 @@ help:
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
-	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
+	@echo "  lint-md-links        - Check markdown files for broken in-repo links and VitePress anchors"
+	@echo "  lint-docs-anchors    - Check docs/ fragment links against VitePress heading ids"
 	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, artifact redaction, kill_stray_processes)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
@@ -173,8 +174,12 @@ mint-cf-worker-test: wasm-stage
 	cd $(WORKERSRC_DIR) && npm test
 	@echo "==> Worker smoke tests passed"
 
-lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
+lint-md-links: lint-docs-anchors
+	lychee --offline --no-progress --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path '^docs/' '**/*.md'
+
+lint-docs-anchors:
+	./hack/lint-docs-anchors
 
 define run-timed
 	@start=$$(date +%s); \
@@ -203,6 +208,7 @@ script-test:
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
+	$(call run-timed,python3 -m pytest hack/lint-docs-anchors-test.py -v)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test lint-eval-cases

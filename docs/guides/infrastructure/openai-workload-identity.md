@@ -15,7 +15,7 @@ command per repository. No key is created, downloaded or rotated.
 
 ## What you end up with
 
-Three identifiers, which you hand to fullsend in [step 4](#4-tell-fullsend-the-three-identifiers).
+Three identifiers, which you hand to fullsend in [step 4](#_4-tell-fullsend-the-three-identifiers).
 They are not secrets: on their own they grant nothing.
 
 | Identifier | What it is | Where it comes from |
@@ -38,14 +38,14 @@ route A; if the page or the setting is not there, you are on route B and someone
 
 - **Route A — you can manage providers in your OpenAI organization.** Being an owner of a project
   is not enough; you need the organization-level permission. You create (or reuse) the provider and
-  add one mapping per repository yourself. Do [step 1](#1-see-what-your-repository-actually-claims-both-routes),
+  add one mapping per repository yourself. Do [step 1](#_1-see-what-your-repository-actually-claims-both-routes),
   then [A2](#a2-add-or-reuse-the-identity-provider-route-a) and [A3](#a3-map-the-repository-to-a-service-account-route-a).
 - **Route B — the provider is managed centrally.** This is the common shape in a company: an IT
   administrator owns Organization Settings and the GitHub Actions provider; you own (or request) a
   project. A service account is a non-human API principal inside a project; the administrator can
   create it while adding the mapping, so all you need to know is the project's name or ID
   (Organization → Projects). You send one request per repository and receive the three
-  identifiers back. Do [step 1](#1-see-what-your-repository-actually-claims-both-routes), then
+  identifiers back. Do [step 1](#_1-see-what-your-repository-actually-claims-both-routes), then
   [B2](#b2-send-the-request-route-b) and [B3](#b3-record-what-you-get-back-route-b).
 
 Either way, steps 4 and onwards are the same, and
@@ -243,7 +243,7 @@ The reply gives you the three identifiers from [What you end up with](#what-you-
 Record them with
 [`fullsend inference openai import`](../../cli/inference.md#inference-openai-import) — it takes the
 filled-in reply JSON (`fullsend inference openai import reply.json`) or the three values as flags,
-and writes the same `inference.openai` block [step 4](#4-tell-fullsend-the-three-identifiers)
+and writes the same `inference.openai` block [step 4](#_4-tell-fullsend-the-three-identifiers)
 describes. Unlike `fullsend github setup`, which opens a pull request, `import` only writes the file
 on your machine: commit it, or a CI run will not see the identifiers.
 

@@ -325,7 +325,7 @@ What tirith keys on is a variable it cannot resolve inside a **header, data or f
 
 `TestRealTirithBinary` in `internal/security/hooks/tirith_check_test.py` asserts the blocked forms above, their rewrites, and that applying each rewrite to an attacker shape still blocks. It skips unless the installed tirith matches `ARG TIRITH_VERSION` in `images/sandbox/Containerfile`.
 
-Run it after a bump and before rebuilding the image — **nothing runs it for you.** No CI job executes `internal/security/hooks/*_test.py`; the repo's only pytest invocation is `Makefile:204`, for `gitlint_rules_test.py`.
+Run it after a bump and before rebuilding the image — **nothing runs it for you.** No CI job executes `internal/security/hooks/*_test.py`; the repo's only other pytest invocations are `Makefile:210` (`gitlint_rules_test.py`) and `Makefile:211` (`hack/lint-docs-anchors-test.py`).
 
 Two traps when reproducing by hand:
 

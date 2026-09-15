@@ -391,7 +391,7 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
 - **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
-- **Rate limiting per actor and per repository** — cap the number of agent-triggering events a single user can generate within a time window, and limit concurrent agent runs per repository and per organization. Note: [Threat 2](#threat-2-insider-threat--compromised-credentials) discusses rate limiting for anomaly detection of compromised credentials via behavioral patterns. DOS rate limiting is distinct — it caps event volume from any actor regardless of intent, as a resource protection mechanism rather than a compromise detection signal.
+- **Rate limiting per actor and per repository** — cap the number of agent-triggering events a single user can generate within a time window, and limit concurrent agent runs per repository and per organization. Note: [Threat 2](#threat-2-insider-threat-compromised-credentials) discusses rate limiting for anomaly detection of compromised credentials via behavioral patterns. DOS rate limiting is distinct — it caps event volume from any actor regardless of intent, as a resource protection mechanism rather than a compromise detection signal.
 
 ### Intersection with other threats
 

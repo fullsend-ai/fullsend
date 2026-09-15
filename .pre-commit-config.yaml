@@ -162,11 +162,27 @@ repos:
 
       - id: lint-md-links
         name: lint markdown links
-        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md
+        entry: lychee --offline --no-progress --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md
         language: system
         files: '\.md$'
         exclude: '^\.'
         pass_filenames: true
+
+      - id: lint-md-link-fragments
+        name: lint markdown link fragments (non-docs)
+        entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments
+        language: system
+        files: '\.md$'
+        exclude: '^(\.|docs/)'
+        pass_filenames: true
+
+      - id: lint-docs-anchors
+        name: lint docs heading anchors
+        entry: ./hack/lint-docs-anchors
+        language: script
+        files: ^docs/.*\.md$
+        exclude: ^docs/archived-roadmaps/2026-07\.md$
+        pass_filenames: false
 
       - id: lint-workflow-size
         name: lint workflow file size

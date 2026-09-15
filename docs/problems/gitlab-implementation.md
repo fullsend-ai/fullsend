@@ -182,7 +182,7 @@ dispatch:
 - **Protects against insider threats**: If an insider with `.fullsend` write access creates a malicious branch, they cannot exfiltrate secrets even if the dispatch pipeline somehow runs on that branch
 - **Low-cost, high-value control**: Marking variables as protected has no operational overhead and provides strong guarantees
 
-See [Protected CI/CD Variables](#protected-cicd-variables-defense-in-depth) section for detailed threat model.
+See [Protected CI/CD Variables](#protected-ci-cd-variables-defense-in-depth) section for detailed threat model.
 
 ### Dispatch Workflow
 

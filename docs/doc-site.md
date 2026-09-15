@@ -48,5 +48,6 @@ The `docs:dev` and `docs:build` scripts in the root `package.json` handle submod
 
 - **`.github/workflows/site-build.yml`** — builds the VitePress site on PRs and pushes to `main`, uploads the artifact
 - **`.github/workflows/site-deploy.yml`** — deploys the built artifact to Cloudflare Workers on `main` pushes, uploads preview versions on PRs
+- **`lint-docs-anchors`** — checks `docs/` `#fragment` links against VitePress heading ids (not lychee's slug guess). See [Docs Anchors](contributing/docs-anchors.md).
 
 For Cloudflare Worker setup and troubleshooting, see [`site-deployment.md`](site-deployment.md).

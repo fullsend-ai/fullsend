@@ -15,7 +15,7 @@ The decisions that shape how the agentic system behaves across the org:
 - **Agent permissions** — what authority each agent role has (merge, approve, comment, label). What are the boundaries, and who draws them?
 - **Org-wide guardrails** — minimum standards that apply to all repos regardless of individual repo policy. Examples: all repos must have CODEOWNERS, all security-sensitive paths require human approval, all agent config changes require human approval.
 - **Model and tool egress policy** — which model providers and tool protocols (e.g. MCP servers) agent runtimes may use, how spend and quotas are enforced, and who may approve changes to those allowlists. Central **protocol gateways** are one enforcement point; they should fall under the same change-control rigor as other agent infrastructure (see [landscape.md](../landscape.md#agent-gateway)).
-- **Manual bypass policy** — whether and how humans can temporarily bypass failed agent or CI gates. [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) exposes `/forge skip-gate` for infrastructure-related CI failures, with PR confirmation and Jira audit comments. Fullsend needs the same UX category only if it is governed from day one: named checks, permission checks, expiry or revalidation, and immutable audit trails.
+- **Manual bypass policy** — whether and how humans can temporarily bypass failed agent or CI gates. [Forge-sdlc/forge](../landscape.md#forge-sdlc-forge) exposes `/forge skip-gate` for infrastructure-related CI failures, with PR confirmation and Jira audit comments. Fullsend needs the same UX category only if it is governed from day one: named checks, permission checks, expiry or revalidation, and immutable audit trails.
 
 ### 2. Configuration security
 

@@ -9,7 +9,7 @@ so you can pick the right one.
 
 | Goal | Approach | Effort |
 |------|----------|--------|
-| Teach agents your coding style, test commands, or architecture rules | [AGENTS.md](#agentsmd) | Low |
+| Teach agents your coding style, test commands, or architecture rules | [AGENTS.md](#agents-md) | Low |
 | Give an agent domain-specific knowledge or a new capability | [Skills](#skills) | Low |
 | Change model, timeout, image, or add env vars to an existing agent | [Harness configuration](#harness-configuration) | Medium |
 | Build a completely new agent with its own trigger, scripts, and schema | [Bring Your Own Agent](#bring-your-own-agent) | High |

@@ -57,3 +57,4 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |
 | [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/`, adding secrets to `pull_request_target` jobs, or reviewing refactors across inline-step, reusable-workflow, and composite-action boundaries for context-variable scoping |
 | [Documentation](docs/contributing/documentation.md) | Adding, removing, renaming, or changing CLI commands, flags, configuration variables, or environment variables — covers cross-reference of CLI command groups to all documentation touchpoints |
+| [Docs Anchors](docs/contributing/docs-anchors.md) | Adding or renaming markdown headings with in-page `#fragment` links under `docs/` — VitePress slugify is authoritative, not lychee |

@@ -125,3 +125,5 @@ The commands below have lighter documentation footprints. Apply the general `gre
 `dispatch`, `scan`, `lock`, `poll`, `fetch-skill`, `post-review`, `post-comment`, `reconcile-status`
 
 The most comprehensive single reference for all commands (including minor ones) is `docs/guides/dev/cli-internals.md`, which documents the full command tree with flags.
+
+In-page heading anchors in `docs/` are validated against VitePress ids, not lychee's slug guess. See [Docs Anchors](docs-anchors.md).

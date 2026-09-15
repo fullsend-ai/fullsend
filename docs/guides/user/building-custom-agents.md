@@ -362,7 +362,7 @@ fi
 Exit 78 and the output-file protocol can be combined — the output file is
 still parsed for `reason` and other outputs when exit 78 is used, but a parse
 error does not block the skip. See the
-[normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
+[normative spec](../../normative/prescript-output/v1/README.md#exit-code-78-—-neutral-skip)
 for full details.
 
 ### Post-script (action execution)

@@ -21,7 +21,7 @@ Two mechanisms partially address this:
 
 **Per-repo AGENTS.md / skills.** Humans, or accepted retro-agent proposals, encode repo-specific knowledge as skills or agent instructions. This is the right long-term solution for stable, generalizable patterns. But it requires human intervention to convert a run outcome into guidance, and it does not capture transient or tactical information such as "the last three runs on this repo all failed because the CI runner was misconfigured; do not retry lint failures until #142 is resolved."
 
-**Retro agent ([14 retro agent runtime](../architecture.md#14-retro-agent-runtime)).** The retro agent analyzes completed workflows and files improvement proposals as GitHub issues. This is valuable for systemic learning, but it intentionally enters a human review and triage path before changing future agent behavior. That is slower than the run-to-run feedback loop this problem points at.
+**Retro agent ([14 retro agent runtime](../architecture.md#_14-retro-agent-runtime)).** The retro agent analyzes completed workflows and files improvement proposals as GitHub issues. This is valuable for systemic learning, but it intentionally enters a human review and triage path before changing future agent behavior. That is slower than the run-to-run feedback loop this problem points at.
 
 Neither mechanism provides automatic, immediate feedback from one run's outcome to the next run's context. That gap is the problem space.
 

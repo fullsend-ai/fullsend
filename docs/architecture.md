@@ -455,57 +455,57 @@ The [Initial Fullsend Design](ADRs/0002-initial-fullsend-design.md) describes a 
 ### 1. Webhook + dispatch service
 
 Normalizes GitHub events (issue/PR/label/comment/check/merge), deduplicates flapping events, and dispatches work to agent runtimes.
-ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service).
+ADR 0002: [Building block 1](ADRs/0002-initial-fullsend-design.md#_1-webhook-dispatch-service).
 
 ### 2. Slash-command parser + ACL
 
 Parses `/fs-triage`, `/fs-code`, `/fs-review`, and related commands and enforces who is allowed to invoke each. Commands are restricted to the entity context where their agent's inputs exist — `/fs-code` dispatches only from issues (no associated PR), `/fs-fix` and `/fs-review` only from PRs ([ADR 0076](ADRs/0076-slash-command-entity-context-separation.md)). Conversation surfaces (GitHub Discussions and future chat systems) are a separate entity context: conversation-native agents may listen on conversations/threads there, but code-mutating slash commands do not ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
-ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#2-slash-command-parser--acl).
+ADR 0002: [Building block 2](ADRs/0002-initial-fullsend-design.md#_2-slash-command-parser-acl).
 
 ### 3. Label state machine guard
 
 Validates legal label transitions and enforces mutual exclusion and run-start reset semantics (triage start clears **`duplicate`** and downstream labels; **`blocked`** is cleared by the post-script when a non-blocked outcome is reached; PR/review strips per ADR).
-ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#3-label-state-machine-guard).
+ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#_3-label-state-machine-guard).
 
 ### 4. triage agent runtime
 
 Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by `create_issues.allow_targets` config).
-ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#4-triage-agent-runtime).
+ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#_4-triage-agent-runtime).
 
 ### 5. Duplicate / similarity search
 
 Provides candidate duplicate retrieval and confidence scoring for triage duplicate decisions.
-ADR 0002: [Building block 5](ADRs/0002-initial-fullsend-design.md#5-duplicate--similarity-search).
+ADR 0002: [Building block 5](ADRs/0002-initial-fullsend-design.md#_5-duplicate-similarity-search).
 
 ### 6. Repro sandbox template
 
 Isolated environment used by triage for reproducibility checks.
-ADR 0002: [Building block 6](ADRs/0002-initial-fullsend-design.md#6-repro-sandbox-template).
+ADR 0002: [Building block 6](ADRs/0002-initial-fullsend-design.md#_6-repro-sandbox-template).
 
 ### 7. Test artifact formatter
 
 Formats triage test artifacts in repo-native conventions for PR handoff.
-ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#7-test-artifact-formatter).
+ADR 0002: [Building block 7](ADRs/0002-initial-fullsend-design.md#_7-test-artifact-formatter).
 
 ### 8. code agent runtime
 
 Implements changes, runs local/CI-equivalent tests, handles check failures, and opens or updates a PR. Review dispatch is triggered automatically by `pull_request_target` events.
-ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#8-implementation-agent-runtime).
+ADR 0002: [Building block 8](ADRs/0002-initial-fullsend-design.md#_8-implementation-agent-runtime).
 
 ### 9. PR sandbox / CI mirror
 
 Execution environment for **Code** and test loops, aligned to contributor/CI toolchains.
-ADR 0002: [Building block 9](ADRs/0002-initial-fullsend-design.md#9-pr-sandbox--ci-mirror).
+ADR 0002: [Building block 9](ADRs/0002-initial-fullsend-design.md#_9-pr-sandbox-ci-mirror).
 
 ### 10. Check failure triage
 
 Fetches and classifies failing check logs to guide **code agent** remediation loops.
-ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#10-check-failure-triage).
+ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#_10-check-failure-triage).
 
 ### 11. review agent runtime
 
 Runs N parallel **review agent** invocations and produces structured review verdicts/comments.
-ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-agent-runtime).
+ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#_11-review-agent-runtime).
 
 **Decided:**
 
@@ -521,12 +521,12 @@ Aggregates review verdicts and applies labels:
 - unanimous rework → triggers [fix agent](agents/fix.md)
 - split/conflicting (including conflicting security severities) → `requires-manual-review`
 - each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
-ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).
+ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#_12-coordinator-merge-algorithm).
 
 ### 13. Observability
 
 Traceability layer across issue, **Triage**, **Code**, **Review**, checks, and merge for incident response and correlation across automation runs.
-ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observability).
+ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#_13-observability).
 
 ### 14. retro agent runtime
 

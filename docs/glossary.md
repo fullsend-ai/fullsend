@@ -106,7 +106,7 @@ See [Bring Your Own Agent](guides/user/bring-your-own-agent.md), [ADR 0058](ADRs
 
 ### Configured Default Agent
 
-A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields (`agent:`, [pre-script](#pre-script) / [post-script](#post-script), `role:`, `validation_loop`). Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override), [AGENTS.md](#agentsmd), env vars, plugins, host files, sandbox image layers, and policy composition. Changing install-time `slug:` alone stays a configured default (the mint never reads it). Replacing `role:` is normally [derived](#derived-agent), except when that agent's docs recommend a specific role override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
+A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields (`agent:`, [pre-script](#pre-script) / [post-script](#post-script), `role:`, `validation_loop`). Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override), [AGENTS.md](#agents-md), env vars, plugins, host files, sandbox image layers, and policy composition. Changing install-time `slug:` alone stays a configured default (the mint never reads it). Replacing `role:` is normally [derived](#derived-agent), except when that agent's docs recommend a specific role override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
@@ -127,7 +127,7 @@ See [ADR 0035](ADRs/0035-layered-content-resolution.md) (original mechanism) and
 
 ### Debouncing
 
-Collapsing rapid-fire events on the same issue or PR into a single agent invocation. Without debouncing, a burst of edits to an issue body could trigger multiple redundant triage runs. The [webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service) is responsible for deduplicating flapping events before dispatching work to agents. On GitHub this uses real-time webhooks; on GitLab the cron poller provides watermark-based deduplication at 5–60 minute intervals, which is functionally analogous but operates on a coarser time scale (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+Collapsing rapid-fire events on the same issue or PR into a single agent invocation. Without debouncing, a burst of edits to an issue body could trigger multiple redundant triage runs. The [webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#_1-webhook-dispatch-service) is responsible for deduplicating flapping events before dispatching work to agents. On GitHub this uses real-time webhooks; on GitLab the cron poller provides watermark-based deduplication at 5–60 minute intervals, which is functionally analogous but operates on a coarser time scale (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 See [architecture.md](architecture.md) (building block 1).
 
 ### Default Agent

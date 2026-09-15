@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""Validate docs/ markdown fragments against VitePress heading ids.
+
+lychee's ``--include-fragments`` slugifier and VitePress's
+``markdown-it-anchor`` slugify (``@mdit-vue/shared``, used by the pinned
+vitepress version) disagree on headings that contain punctuation. This
+hook is the source of truth for ``#fragment`` validity in ``docs/``.
+
+Slugify matches ``@mdit-vue/shared`` v0.12.1 as used by VitePress 1.6.4:
+https://github.com/mdit-vue/mdit-vue/blob/v0.12.1/packages/shared/src/slugify.ts
+"""
+
+from __future__ import annotations
+
+import html
+import re
+import sys
+import unicodedata
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# --- slugify (keep in lockstep with @mdit-vue/shared; see module docstring) ---
+
+_R_CONTROL = re.compile(r"[\x00-\x1f]")
+# Includes ASCII punctuation and the curly quotes @mdit-vue/shared strips.
+_R_SPECIAL = re.compile(r"[\s~`!@#$%^&*()\-_+=[\]{}|\\;:\"'“”‘’<>,.?/]+")
+_R_COMBINING = re.compile(r"[\u0300-\u036F]")
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})")
+_ATTRS_RE = re.compile(r"\s*\{([^}]*)\}\s*$")
+_ID_IN_ATTRS_RE = re.compile(r"#([A-Za-z][\w:.-]*)")
+_HTML_ID_RE = re.compile(r"""<(?:a|h[1-6])\b[^>]*\bid=["']([^"']+)["']""", re.IGNORECASE)
+_LINK_RE = re.compile(r"(?<!!)\[(?:[^\]]*)\]\(([^)]+)\)")
+_INLINE_CODE_RE = re.compile(r"`[^`]*`")
+_TRAILING_HASHES_RE = re.compile(r"\s+#+\s*$")
+
+# Same paths lychee already skips, plus VitePress srcExclude.
+_EXCLUDED_PARTS = {".vitepress", "testing", "experiments", "node_modules", "icons"}
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def slugify(text: str) -> str:
+    """VitePress / @mdit-vue/shared heading slugify."""
+    value = unicodedata.normalize("NFKD", text)
+    value = _R_COMBINING.sub("", value)
+    value = _R_CONTROL.sub("", value)
+    value = _R_SPECIAL.sub("-", value)
+    value = re.sub(r"-{2,}", "-", value)
+    value = re.sub(r"^-+|-+$", "", value)
+    value = re.sub(r"^(\d)", r"_\1", value)
+    return value.lower()
+
+
+def githubish_slug(text: str) -> str:
+    """Approximate lychee/GitHub fragment: drop punctuation, then spaces to hyphens.
+
+    Used only to hint at the VitePress id when a link used the other guess.
+    """
+    stripped = re.sub(r"[^a-z0-9\s-]", "", text.strip().lower())
+    return re.sub(r"[-\s]+", "-", stripped).strip("-")
+
+
+def heading_text_and_explicit_id(body: str) -> tuple[str, str | None]:
+    """Strip markdown-it-attrs ``{#id}`` and inline markup; return (text, explicit_id)."""
+    explicit: str | None = None
+    attrs = _ATTRS_RE.search(body)
+    if attrs:
+        found = _ID_IN_ATTRS_RE.search(attrs.group(1))
+        if found:
+            explicit = found.group(1)
+        body = body[: attrs.start()]
+    body = _TRAILING_HASHES_RE.sub("", body)
+    body = re.sub(r"!\[([^\]]*)\]\([^)]*\)", "", body)
+    body = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", body)
+    body = re.sub(r"`([^`]+)`", r"\1", body)
+    body = re.sub(r"\*\*([^*]+)\*\*", r"\1", body)
+    body = re.sub(r"__([^_]+)__", r"\1", body)
+    body = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", body)
+    body = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", body)
+    body = re.sub(r"~~([^~]+)~~", r"\1", body)
+    body = re.sub(r"</?[^>]+>", "", body)
+    return html.unescape(body).strip(), explicit
+
+
+@dataclass
+class Heading:
+    line: int
+    text: str
+    slug: str
+    source: str  # "heading", "explicit", "html"
+
+
+@dataclass
+class Page:
+    path: Path
+    headings: list[Heading] = field(default_factory=list)
+    ids: dict[str, Heading] = field(default_factory=dict)
+    links: list[tuple[int, str]] = field(default_factory=list)  # (line, href)
+
+
+def should_skip(path: Path, repo_root: Path | None = None) -> bool:
+    root = repo_root or REPO_ROOT
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return True
+    rel_posix = rel.as_posix()
+    if rel_posix.endswith("docs/archived-roadmaps/2026-07.md"):
+        return True
+    parts = set(rel.parts)
+    if parts & _EXCLUDED_PARTS:
+        return True
+    if rel.parts[:1] != ("docs",):
+        return True
+    return rel.suffix != ".md"
+
+
+def _iter_content_lines(text: str) -> Iterable[tuple[int, str, bool]]:
+    """Yield (1-based line, raw line, in_fence). Front matter is in_fence-like skip."""
+    lines = text.splitlines()
+    in_fence = False
+    fence_len = 0
+    fence_char = ""
+    in_fm = bool(lines) and lines[0].strip() == "---"
+    for i, raw in enumerate(lines, 1):
+        if in_fm:
+            if i > 1 and raw.strip() == "---":
+                in_fm = False
+            yield i, raw, True
+            continue
+        fence = _FENCE_OPEN_RE.match(raw)
+        if fence:
+            marker = fence.group(2)
+            ch = marker[0]
+            length = len(marker)
+            if not in_fence:
+                in_fence = True
+                fence_len = length
+                fence_char = ch
+            elif ch == fence_char and length >= fence_len and raw.strip() == ch * length:
+                in_fence = False
+                fence_len = 0
+                fence_char = ""
+            yield i, raw, True
+            continue
+        yield i, raw, in_fence
+
+
+def parse_page(path: Path) -> Page:
+    page = Page(path=path)
+    text = path.read_text(encoding="utf-8")
+    slugs_seen: dict[str, bool] = {}
+    for line_no, raw, skipped in _iter_content_lines(text):
+        if skipped:
+            continue
+        heading_match = _HEADING_RE.match(raw)
+        if heading_match:
+            body = heading_match.group(2)
+            text_content, explicit = heading_text_and_explicit_id(body)
+            base = explicit or slugify(text_content)
+            uniq = base
+            n = 1
+            while uniq in slugs_seen:
+                uniq = f"{base}-{n}"
+                n += 1
+            slugs_seen[uniq] = True
+            source = "explicit" if explicit else "heading"
+            heading = Heading(line=line_no, text=text_content, slug=uniq, source=source)
+            page.headings.append(heading)
+            page.ids.setdefault(uniq, heading)
+            if explicit and explicit not in page.ids:
+                page.ids[explicit] = heading
+        for html_id in _HTML_ID_RE.findall(raw):
+            heading = Heading(line=line_no, text=html_id, slug=html_id, source="html")
+            page.headings.append(heading)
+            page.ids.setdefault(html_id, heading)
+        # Mask inline code so examples like ``[text](#heading-id)`` are not links.
+        masked = _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), raw)
+        for href_match in _LINK_RE.finditer(masked):
+            href = raw[href_match.start(1) : href_match.end(1)].strip()
+            page.links.append((line_no, href))
+    return page
+
+
+def parse_href(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith("<"):
+        end = raw.find(">")
+        if end != -1:
+            return raw[1:end]
+    if not raw:
+        return raw
+    return raw.split()[0]
+
+
+def split_fragment(href: str) -> tuple[str, str | None]:
+    href = parse_href(href)
+    if href.startswith(("http://", "https://", "mailto:", "irc:")):
+        return href, None
+    path, sep, frag = href.partition("#")
+    if not sep:
+        return path, None
+    return path, frag
+
+
+def resolve_docs_target(source: Path, link_path: str, repo_root: Path) -> Path | None:
+    """Resolve a markdown link path to a docs/ file, or None to skip."""
+    if not link_path or link_path.startswith(("#", "?")):
+        return source
+    path = link_path.split("?")[0]
+    docs_root = repo_root / "docs"
+    if path.startswith("/"):
+        candidates = [
+            docs_root / path.lstrip("/"),
+            (docs_root / path.lstrip("/")).with_suffix(".md"),
+            docs_root / path.lstrip("/") / "README.md",
+            docs_root / path.lstrip("/") / "index.md",
+        ]
+        # /foo.md already has suffix
+        extra = docs_root / f"{path.lstrip('/')}.md"
+        candidates.append(extra)
+    else:
+        base = source.parent
+        joined = (base / path).resolve()
+        candidates = [
+            joined,
+            joined.with_suffix(".md") if joined.suffix != ".md" else joined,
+            joined / "README.md",
+            joined / "index.md",
+        ]
+        if not path.endswith(".md"):
+            candidates.append(Path(str(joined) + ".md"))
+    seen: set[Path] = set()
+    for cand in candidates:
+        try:
+            cand = cand.resolve()
+        except OSError:
+            continue
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if cand.is_file() and cand.suffix == ".md":
+            try:
+                cand.relative_to(docs_root.resolve())
+            except ValueError:
+                return None
+            return cand
+    return None
+
+
+@dataclass
+class Finding:
+    source: Path
+    line: int
+    href: str
+    fragment: str
+    target: Path
+    hint: str | None = None
+
+    def format(self, repo_root: Path) -> str:
+        src = self.source.resolve().relative_to(repo_root.resolve()).as_posix()
+        tgt = self.target.resolve().relative_to(repo_root.resolve()).as_posix()
+        msg = f"{src}:{self.line}: fragment #{self.fragment} is not a VitePress heading id in {tgt}"
+        if self.hint:
+            msg += f" ({self.hint})"
+        return msg
+
+
+class PageCache:
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+        self._pages: dict[Path, Page] = {}
+
+    def get(self, path: Path) -> Page:
+        resolved = path.resolve()
+        if resolved not in self._pages:
+            self._pages[resolved] = parse_page(resolved)
+        return self._pages[resolved]
+
+
+def _hint_for_fragment(page: Page, fragment: str) -> str | None:
+    matches = [h for h in page.headings if githubish_slug(h.text) == fragment]
+    if len(matches) == 1:
+        heading = matches[0]
+        return (
+            f"heading {heading.text!r} has VitePress id #{heading.slug}; "
+            "do not use lychee's punctuation-stripping guess"
+        )
+    # underscore-prefix / collapsed-hyphen near-miss
+    collapsed = fragment.replace("--", "-")
+    prefixed = f"_{fragment}" if fragment and fragment[0].isdigit() else None
+    near = [
+        h
+        for h in page.headings
+        if h.slug in {fragment, collapsed, prefixed, f"_{collapsed}"}
+        or h.slug.lstrip("_") == collapsed.lstrip("_")
+    ]
+    # unique near-miss on the VitePress id itself
+    exact_near = [h for h in page.headings if h.slug == collapsed or h.slug == prefixed]
+    if len(exact_near) == 1:
+        heading = exact_near[0]
+        return f"heading {heading.text!r} has VitePress id #{heading.slug}"
+    if len(near) == 1:
+        heading = near[0]
+        return f"heading {heading.text!r} has VitePress id #{heading.slug}"
+    return None
+
+
+def check_page(page: Page, cache: PageCache, repo_root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for line_no, raw_href in page.links:
+        link_path, fragment = split_fragment(raw_href)
+        if fragment is None or fragment == "":
+            continue
+        target = resolve_docs_target(page.path, link_path, repo_root)
+        if target is None:
+            continue
+        if should_skip(target, repo_root):
+            continue
+        target_page = cache.get(target)
+        if fragment in target_page.ids:
+            continue
+        findings.append(
+            Finding(
+                source=page.path,
+                line=line_no,
+                href=raw_href,
+                fragment=fragment,
+                target=target,
+                hint=_hint_for_fragment(target_page, fragment),
+            )
+        )
+    return findings
+
+
+def discover_docs(repo_root: Path) -> list[Path]:
+    docs = repo_root / "docs"
+    if not docs.is_dir():
+        return []
+    files = [p for p in docs.rglob("*.md") if not should_skip(p, repo_root)]
+    return sorted(files)
+
+
+def check_files(files: Iterable[Path], repo_root: Path) -> list[Finding]:
+    cache = PageCache(repo_root)
+    findings: list[Finding] = []
+    for path in files:
+        path = path.resolve()
+        if should_skip(path, repo_root):
+            continue
+        if not path.is_file():
+            continue
+        page = cache.get(path)
+        findings.extend(check_page(page, cache, repo_root))
+    return findings
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    repo_root = REPO_ROOT
+    if args:
+        files = [(Path(a) if Path(a).is_absolute() else repo_root / a) for a in args]
+    else:
+        files = discover_docs(repo_root)
+        print(f"INFO: Checking heading fragments in {len(files)} docs/ markdown files")
+
+    findings = check_files(files, repo_root)
+    if findings:
+        print("ERROR: docs/ fragment(s) do not match VitePress heading ids:")
+        for finding in findings:
+            print(f"  {finding.format(repo_root)}")
+        print()
+        print(
+            "  Heading ids follow VitePress (@mdit-vue/shared slugify), not lychee."
+            " See docs/contributing/docs-anchors.md."
+        )
+        return 1
+    print("OK: All docs/ fragment links match VitePress heading ids")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

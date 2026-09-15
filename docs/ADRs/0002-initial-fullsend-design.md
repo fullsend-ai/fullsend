@@ -201,55 +201,55 @@ These can be owned and shipped separately:
 
 ### 1. Webhook + dispatch service
 
-Normalize GitHub events, idempotency keys, dedupe label flapping. ([Architecture](../architecture.md#1-webhook--dispatch-service))
+Normalize GitHub events, idempotency keys, dedupe label flapping. ([Architecture](../architecture.md#_1-webhook-dispatch-service))
 
 ### 2. Slash-command parser + ACL
 
-Map comments to intents; audit log. ([Architecture](../architecture.md#2-slash-command-parser--acl))
+Map comments to intents; audit log. ([Architecture](../architecture.md#_2-slash-command-parser-acl))
 
 ### 3. Label state machine guard
 
-Validates legal transitions; prevents contradictory labels (including **`duplicate`** and **`not-reproducible`** vs **Implementation**/**Review** labels). Coordinates **atomic** **on-start** label strips for **Triage** (**triage agent**; **including `duplicate`**), **Implementation** (**implementation agent**), and **Review** (**review agent** + coordinator) runs so resets are race-safe. ([Architecture](../architecture.md#3-label-state-machine-guard))
+Validates legal transitions; prevents contradictory labels (including **`duplicate`** and **`not-reproducible`** vs **Implementation**/**Review** labels). Coordinates **atomic** **on-start** label strips for **Triage** (**triage agent**; **including `duplicate`**), **Implementation** (**implementation agent**), and **Review** (**review agent** + coordinator) runs so resets are race-safe. ([Architecture](../architecture.md#_3-label-state-machine-guard))
 
 ### 4. triage agent runtime
 
-Prompt, tools, repo context packaging, output schema (triage-output **comment** + labels + optional **close issue**). Context fetchers **must** supply issue **`title`**, **`body`**, and **attachments** only for intake—not the full comment thread. ([Architecture](../architecture.md#4-triage-agent-runtime))
+Prompt, tools, repo context packaging, output schema (triage-output **comment** + labels + optional **close issue**). Context fetchers **must** supply issue **`title`**, **`body`**, and **attachments** only for intake—not the full comment thread. ([Architecture](../architecture.md#_4-triage-agent-runtime))
 
 ### 5. Duplicate / similarity search
 
-Issue index, search API integration, or LLM-assisted candidate retrieval with **confidence thresholds** and audit logging; feeds triage **before** reproduction. ([Architecture](../architecture.md#5-duplicate--similarity-search))
+Issue index, search API integration, or LLM-assisted candidate retrieval with **confidence thresholds** and audit logging; feeds triage **before** reproduction. ([Architecture](../architecture.md#_5-duplicate-similarity-search))
 
 ### 6. Repro sandbox template
 
-Hermetic-ish environment for repro commands (language-specific images). ([Architecture](../architecture.md#6-repro-sandbox-template))
+Hermetic-ish environment for repro commands (language-specific images). ([Architecture](../architecture.md#_6-repro-sandbox-template))
 
 ### 7. Test artifact formatter
 
-Emits framework-native test snippets and attachment bundles. ([Architecture](../architecture.md#7-test-artifact-formatter))
+Emits framework-native test snippets and attachment bundles. ([Architecture](../architecture.md#_7-test-artifact-formatter))
 
 ### 8. implementation agent runtime
 
-Git operations (token-scoped), patch application, local test runner integration. ([Architecture](../architecture.md#8-code-agent-runtime))
+Git operations (token-scoped), patch application, local test runner integration. ([Architecture](../architecture.md#_8-code-agent-runtime))
 
 ### 9. PR sandbox / CI mirror
 
-Same toolchain as contributors; secrets policy. ([Architecture](../architecture.md#9-pr-sandbox--ci-mirror))
+Same toolchain as contributors; secrets policy. ([Architecture](../architecture.md#_9-pr-sandbox-ci-mirror))
 
 ### 10. Check failure triage
 
-Log fetch, classification, fix loop policies (max iterations, escalation). ([Architecture](../architecture.md#10-check-failure-triage))
+Log fetch, classification, fix loop policies (max iterations, escalation). ([Architecture](../architecture.md#_10-check-failure-triage))
 
 ### 11. review agent runtime
 
-Static/dynamic analysis hooks, policy packs, output schema. ([Architecture](../architecture.md#11-review-agent-runtime))
+Static/dynamic analysis hooks, policy packs, output schema. ([Architecture](../architecture.md#_11-review-agent-runtime))
 
 ### 12. Coordinator merge algorithm
 
-Random coordinator selection; **unanimous** approve-merge → **`ready-for-merge`** (scoped to **current** PR head for that round); **review run start** clears **`ready-for-merge`** with **`ready-for-review`** so pushes do not leave stale merge approval; **unanimous** rework → **`ready-to-implement`**; **split or conflicting severities** → **`requires-manual-review`**; consolidated comment schema. ([Architecture](../architecture.md#12-coordinator-merge-algorithm))
+Random coordinator selection; **unanimous** approve-merge → **`ready-for-merge`** (scoped to **current** PR head for that round); **review run start** clears **`ready-for-merge`** with **`ready-for-review`** so pushes do not leave stale merge approval; **unanimous** rework → **`ready-to-implement`**; **split or conflicting severities** → **`requires-manual-review`**; consolidated comment schema. ([Architecture](../architecture.md#_12-coordinator-merge-algorithm))
 
 ### 13. Observability
 
-Trace IDs spanning issue → PR → checks → review for incident response and correlation across automation runs. ([Architecture](../architecture.md#13-observability))
+Trace IDs spanning issue → PR → checks → review for incident response and correlation across automation runs. ([Architecture](../architecture.md#_13-observability))
 
 ---
 

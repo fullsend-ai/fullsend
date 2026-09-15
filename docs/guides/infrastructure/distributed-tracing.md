@@ -394,4 +394,4 @@ that is where the real quality signal lives. See
 - [How To Emit Traces](../user/how-to-emit-traces.md): step-by-step setup guide
 - [Tracing Development Guide](../dev/tracing.md): implementation details for contributors
 - [Eval Measurements](./eval-measurements.md): online scoring of wild-run traces
-- [fullsend run — metrics.json](../../cli/run.md#metricsjson-fields): CLI reference for `total_cost_usd` and other output fields
+- [fullsend run — metrics.json](../../cli/run.md#metrics-json-fields): CLI reference for `total_cost_usd` and other output fields
