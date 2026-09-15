@@ -308,7 +308,21 @@ load_default_branch() {
     return 1
   fi
 
-  DEFAULT_BRANCH_SHA=$(gh api "repos/$ORG/$repo/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha 2>/dev/null || true)
+  local ref_response ref_rc
+  ref_response=$(gh api "repos/$ORG/$repo/git/ref/heads/$DEFAULT_BRANCH" 2>/dev/null) && ref_rc=0 || ref_rc=$?
+  if [ "$ref_rc" -ne 0 ]; then
+    # GitHub returns HTTP 409 with "Git Repository is empty." for repos
+    # that have no commits. Surface an actionable message instead of
+    # the generic "Could not get default branch SHA" error.
+    if printf '%s' "$ref_response" | grep -q "Git Repository is empty"; then
+      echo "::error::$repo has no commits; push at least one commit before enrolling"
+      return 1
+    fi
+    echo "::error::Could not get default branch SHA for $repo"
+    return 1
+  fi
+
+  DEFAULT_BRANCH_SHA=$(printf '%s' "$ref_response" | jq -r '.object.sha // empty')
   if [ -z "$DEFAULT_BRANCH_SHA" ]; then
     echo "::error::Could not get default branch SHA for $repo"
     return 1
