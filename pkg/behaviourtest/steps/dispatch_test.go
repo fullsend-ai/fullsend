@@ -471,7 +471,7 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
 	err := commitLocalHarnessResources(context.Background(), w, "pi-override",
-		"agent: agents/pi-override.md\nrole: triage\nprofiles:\n  - profiles/fullsend-vertex-ai.yaml\nproviders:\n  - providers/vertex-ai.yaml\n")
+		"agent: agents/pi-override.md\nrole: triage\nopenshell:\n  profiles:\n    - profiles/fullsend-vertex-ai.yaml\nproviders:\n  - providers/vertex-ai.yaml\n")
 	require.NoError(t, err)
 
 	// The real scaffold files are committed, not placeholders: these grant
@@ -491,6 +491,6 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 	scm2 := &fakeURLSCM{files: map[string][]byte{}}
 	w2 := &world.World{Org: "org", RepoName: "repo", SCM: scm2}
 	require.NoError(t, commitLocalHarnessResources(context.Background(), w2, "url",
-		"agent: https://example.com/a.md\nrole: triage\nprofiles:\n  - https://example.com/p.yaml#sha256=abc\n"))
+		"agent: https://example.com/a.md\nrole: triage\nopenshell:\n  profiles:\n    - https://example.com/p.yaml#sha256=abc\n"))
 	assert.Empty(t, scm2.files)
 }

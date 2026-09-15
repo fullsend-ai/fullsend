@@ -142,6 +142,14 @@ profile types that were also URL-resolved. Local-path providers are excluded
 from this check (via the `FromURL` origin marker on `ResolvedProvider`) because
 their profile types may be gateway-resident.
 
+> **Note (#7095):** `checkProviderProfileIntegrity` now validates all providers
+> uniformly — it does not read `FromURL`, so local-path providers are not
+> excluded from this check as the paragraph above describes. Directory-only
+> profile satisfaction was removed; every provider (URL-resolved or
+> local-path) must reference a profile type that is listed in
+> `openshell.profiles` (or inherited via `base:` composition) to satisfy this
+> check.
+
 ## Security
 
 Same controls as ADR 0070 and ADR 0038. Local file paths are confined to the
