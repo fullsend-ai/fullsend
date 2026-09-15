@@ -81,6 +81,22 @@ func TestSetCommitStatus_RejectsUnexpectedStatus(t *testing.T) {
 	assert.True(t, handlerCalled, "status handler was not called")
 }
 
+func TestSetCommitStatus_PropagatesTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("request reached server with a cancelled context")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := newTestClient(t, srv).SetCommitStatus(ctx, "acme", "widget", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+		State:   forge.CommitStatusPending,
+		Context: "fullsend/review-completed",
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "set commit status")
+}
+
 func TestListOrgRepos(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

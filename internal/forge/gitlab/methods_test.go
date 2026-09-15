@@ -1182,6 +1182,19 @@ func TestSetCommitStatus(t *testing.T) {
 	}
 }
 
+func TestSetCommitStatus_PropagatesTransportError(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := client.SetCommitStatus(ctx, "myorg", "myrepo", "0123456789abcdef0123456789abcdef01234567", forge.CommitStatus{
+		State:   forge.CommitStatusPending,
+		Context: "fullsend/review-completed",
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "set commit status")
+}
+
 func TestCreatePipeline_NoVariables(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

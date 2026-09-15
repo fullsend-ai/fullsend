@@ -127,8 +127,11 @@ func TestReviewStatusCommand_Validation(t *testing.T) {
 		wantErr string
 	}{
 		{name: "repository", args: []string{"--repo", "widget", "--sha", testReviewSHA, "--state", "pending"}, wantErr: "owner/repo format"},
+		{name: "empty owner", args: []string{"--repo", "/widget", "--sha", testReviewSHA, "--state", "pending"}, wantErr: "owner/repo format"},
+		{name: "empty name", args: []string{"--repo", "acme/", "--sha", testReviewSHA, "--state", "pending"}, wantErr: "owner/repo format"},
 		{name: "sha", args: []string{"--repo", "acme/widget", "--sha", "abc123", "--state", "pending"}, wantErr: "40-character hexadecimal"},
 		{name: "state", args: []string{"--repo", "acme/widget", "--sha", testReviewSHA, "--state", "skipped"}, wantErr: "unsupported review status state"},
+		{name: "forge", args: []string{"--repo", "acme/widget", "--sha", testReviewSHA, "--state", "pending", "--forge", "forgejo"}, wantErr: "not a valid forge platform"},
 		{name: "missing outcome", args: []string{"--repo", "acme/widget", "--sha", testReviewSHA}, wantErr: "either --state or --job-status is required"},
 		{name: "conflicting outcomes", args: []string{"--repo", "acme/widget", "--sha", testReviewSHA, "--state", "pending", "--job-status", "success"}, wantErr: "cannot be used together"},
 	}
@@ -143,6 +146,56 @@ func TestReviewStatusCommand_Validation(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Empty(t, fc.CommitStatuses)
+		})
+	}
+}
+
+func TestReviewStatusCommand_PropagatesClientError(t *testing.T) {
+	tests := []struct {
+		name      string
+		forgeFlag string
+		stub      func()
+	}{
+		{
+			name:      "GitHub",
+			forgeFlag: "github",
+			stub: func() {
+				reviewStatusGitHubClientFn = func() (forge.Client, error) {
+					return nil, errors.New("GitHub authentication unavailable")
+				}
+			},
+		},
+		{
+			name:      "GitLab",
+			forgeFlag: "gitlab",
+			stub: func() {
+				reviewStatusGitLabClientFn = func(string) (forge.Client, error) {
+					return nil, errors.New("GitLab authentication unavailable")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origGitHub := reviewStatusGitHubClientFn
+			origGitLab := reviewStatusGitLabClientFn
+			tt.stub()
+			t.Cleanup(func() {
+				reviewStatusGitHubClientFn = origGitHub
+				reviewStatusGitLabClientFn = origGitLab
+			})
+
+			cmd := newReviewStatusCmd()
+			cmd.SetArgs([]string{
+				"--repo", "acme/widget",
+				"--sha", testReviewSHA,
+				"--state", "pending",
+				"--forge", tt.forgeFlag,
+			})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "authentication unavailable")
 		})
 	}
 }
