@@ -130,6 +130,14 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	}
 	defer cancel()
 
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
+	defer stall.stop()
+
 	var r io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -149,6 +157,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	// Always wrap handler to capture metrics regardless of custom/default path.
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case InitEvent:
 			if metrics.Model == "" {
@@ -177,16 +186,27 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 		innerHandler(evt)
 	}
 
-	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// `user` tool_result lines that map to no AgentEvent — resets the silence
+	// clock, so an actively streaming tool is never mistaken for a stall.
+	if parseErr := parseClaudeStreamLines(r, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, r)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return exitCode, stallErr
 	}
 
 	if waitErr != nil && execCmd.ProcessState == nil {
