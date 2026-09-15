@@ -10,7 +10,7 @@ For agent-specific configuration using skills, see
 
 ## What to put in AGENTS.md
 
-`AGENTS.md` is the [open standard](https://agentskills.io/) that any agent
+`AGENTS.md` is the [open standard](https://agents.md/) that any agent
 tool can discover. The recommended approach is to keep your `CLAUDE.md`
 lightweight and have it point at `AGENTS.md`:
 
