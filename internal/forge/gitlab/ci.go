@@ -1083,7 +1083,7 @@ type ProjectAccessToken struct {
 
 // CreateProjectAccessToken creates a project access token with the given name,
 // scopes, and access level. Returns the token (only available at creation time)
-// and the token ID. accessLevel 40 = Maintainer.
+// and the token ID. accessLevel 30 = Developer, 40 = Maintainer.
 func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string) (*ProjectAccessToken, error) {
 	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
 	body := map[string]any{

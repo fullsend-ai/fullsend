@@ -126,7 +126,9 @@ When repos are specified as positional arguments, only those repos are processed
 
 ### GitLab bot token
 
-For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable. Creating project access tokens requires GitLab Premium or Ultimate.
+For GitLab repos, `repos install` automatically creates a **Developer-level (access level 30)** project access token and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable. Creating project access tokens requires GitLab Premium or Ultimate. This is reduced from the previous Maintainer (40) requirement: Developer is sufficient because poller state now lives in the Generic Package Registry (writable by a Developer-level `api`-scoped token) rather than in Maintainer-only CI/CD variables. See #7313 and ADR 0067.
+
+Because poller state is a Generic Package Registry file rather than a Maintainer-only CI/CD variable, any Developer-level `api`-scoped token can write to it directly. To keep the state document tamper-resistant, `repos install` **and** `repos converge` auto-provision `FULLSEND_DISPATCH_SECRET` as a masked, protected CI/CD variable (if one is not already set) — including for already-enrolled repos, without revoking the live bot PAT — so the poller HMAC-signs the state document and rejects tampered writes. The poller **fails closed** if the secret is missing: it refuses to load or write unsigned poll state, so a broken/incomplete install surfaces as a poll error rather than silently trusting forgeable state. If this variable is ever removed, re-run `repos install`/`repos converge` to reprovision it; a pre-existing unsigned `state.json` is discarded at that time (it is Developer-writable, so it cannot be trusted), and state is reseeded from Maintainer-only legacy CI/CD variables when present.
 
 On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
 

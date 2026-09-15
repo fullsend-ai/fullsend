@@ -1522,6 +1522,41 @@ func TestFakeClient_CreatePipeline_Error(t *testing.T) {
 	assert.Empty(t, fc.CreatedPipelines)
 }
 
+func TestFakeClient_PackageFile_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	_, err := fc.DownloadPackageFile(ctx, "org", "repo", "pkg", "1.0", "state.json")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	payload := []byte(`{"k":"v"}`)
+	require.NoError(t, fc.UploadPackageFile(ctx, "org", "repo", "pkg", "1.0", "state.json", payload))
+
+	got, err := fc.DownloadPackageFile(ctx, "org", "repo", "pkg", "1.0", "state.json")
+	require.NoError(t, err)
+	assert.Equal(t, payload, got)
+
+	// Caller mutation must not affect stored bytes.
+	got[0] = 'x'
+	got2, err := fc.DownloadPackageFile(ctx, "org", "repo", "pkg", "1.0", "state.json")
+	require.NoError(t, err)
+	assert.Equal(t, payload, got2)
+}
+
+func TestFakeClient_PackageFile_ErrorInjection(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.Errors["DownloadPackageFile"] = fmt.Errorf("download boom")
+	fc.Errors["UploadPackageFile"] = fmt.Errorf("upload boom")
+
+	_, err := fc.DownloadPackageFile(ctx, "org", "repo", "pkg", "1.0", "f")
+	require.EqualError(t, err, "download boom")
+
+	err = fc.UploadPackageFile(ctx, "org", "repo", "pkg", "1.0", "f", []byte("{}"))
+	require.EqualError(t, err, "upload boom")
+}
+
 func TestFakeClient_UpdateCIVariable_RecordsProtected(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()

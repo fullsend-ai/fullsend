@@ -33,11 +33,18 @@ type GitLabClient interface {
 	// ListResourceLabelEvents MUST return events in ascending ID order
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
+	// DownloadPackageFile downloads a file from the Generic Package
+	// Registry. Returns forge.ErrNotFound when the file is missing.
+	DownloadPackageFile(ctx context.Context, owner, repo, packageName, version, fileName string) ([]byte, error)
+	// UploadPackageFile creates or overwrites a file in the Generic
+	// Package Registry. Developer-level access is sufficient.
+	UploadPackageFile(ctx context.Context, owner, repo, packageName, version, fileName string, data []byte) error
+	// GetCIVariable returns the value of a legacy pre-#7313 poller CI/CD
+	// variable. Only used to migrate existing watermarks/label
+	// state/dispatch history into the package-registry document on
+	// first read after upgrade; returns forge.ErrNotFound when the
+	// variable does not exist.
 	GetCIVariable(ctx context.Context, owner, repo, name string) (string, error)
-	// UpdateCIVariable upserts a CI variable: update if it exists,
-	// create if it does not. GitLab CI/CD variable values are capped
-	// at 10,000 characters.
-	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be

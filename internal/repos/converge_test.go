@@ -1863,11 +1863,16 @@ func TestConvergeBatchResult_Helpers(t *testing.T) {
 	}
 }
 
-func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
+func TestConverge_GitLab_DoesNotSeedPollVariables(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
 
 	m := &Manifest{
 		Version: 1,
@@ -1893,27 +1898,25 @@ func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	if len(result.Converged()) != 1 {
-		t.Fatalf("expected 1 converged repo, got %d", len(result.Converged()))
+	if len(result.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.Results))
 	}
 
-	seeded := map[string]bool{}
 	for _, a := range result.Results[0].Actions {
 		if a.Action == "add" && strings.HasPrefix(a.Component, "var:") {
-			seeded[DriftFieldName(a.Component)] = true
+			name := DriftFieldName(a.Component)
+			switch name {
+			case forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState,
+				forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
+				forge.VarFailedKeysFast, forge.VarFailedKeysFull:
+				t.Errorf("poller state variable %s should not be seeded as a CI/CD variable", name)
+			}
 		}
 	}
-	for _, v := range []string{"FULLSEND_LAST_POLL_AT_FAST", "FULLSEND_LAST_POLL_AT_FULL", "FULLSEND_LABEL_STATE"} {
-		if !seeded[v] {
-			t.Errorf("expected poll variable %s to be seeded, but it was not", v)
+	for _, v := range gitlabLegacyPollerVars {
+		if _, ok := fc.VariableValues["acme/api/"+v]; ok {
+			t.Errorf("%s should not be written to forge", v)
 		}
-	}
-
-	if val := fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"]; val == "" {
-		t.Error("FULLSEND_LAST_POLL_AT_FAST not written to forge")
-	}
-	if val := fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"]; val != "{}" {
-		t.Errorf("FULLSEND_LABEL_STATE = %q, want %q", val, "{}")
 	}
 }
 

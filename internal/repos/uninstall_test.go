@@ -526,6 +526,48 @@ func TestUninstall_GitLabRepo(t *testing.T) {
 	}
 }
 
+func TestUninstall_GitLabRepo_DeletesPollStatePackage(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.PackageFiles["acme/api/fullsend-poll-state/1.0/state.json"] = []byte(`{"last_poll_at_full":"2026-01-01T00:00:00Z"}`)
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !results[0].Success {
+		t.Errorf("Success = false, want true; Error = %v", results[0].Error)
+	}
+	if _, ok := client.PackageFiles["acme/api/fullsend-poll-state/1.0/state.json"]; ok {
+		t.Error("expected poller-state package to be deleted on uninstall")
+	}
+}
+
+func TestUninstall_GitLabRepo_PollStatePackageDeleteErrorIsBestEffort(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.PackageFiles["acme/api/fullsend-poll-state/1.0/state.json"] = []byte(`{}`)
+	client.Errors = map[string]error{"DeletePackage": fmt.Errorf("package registry unavailable")}
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !results[0].Success {
+		t.Errorf("Success = false, want true; a failed best-effort package delete must not fail uninstall. Error = %v", results[0].Error)
+	}
+}
+
 func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
 

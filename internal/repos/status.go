@@ -41,7 +41,9 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		case "var:" + forge.VarMintURL:
 			hasRequiredVar = true
 			state.MintURL = c.Actual
-		case "var:" + forge.VarLastPollAtFast, "var:" + forge.VarLastPollAtFull, "var:" + forge.VarLabelState:
+		case "secret:" + forge.SecretForgeToken:
+			// GitLab per-repo install marker after poller state moved
+			// out of CI/CD variables (#7313).
 			hasRequiredVar = true
 		case "workflow":
 			state.FullsendRef = c.Actual

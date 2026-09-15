@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -16,22 +17,16 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 
 var uninstallSecrets = requiredSecrets
 
-var gitlabUninstallVars = []string{
+var gitlabUninstallVars = slices.Concat([]string{
 	forge.PerRepoGuardVar,
 	forge.VarLegacyBotTokenSecret,
-	forge.VarDispatchedKeysFast,
-	forge.VarDispatchedKeysFull,
-	forge.VarFailedKeysFast,
-	forge.VarFailedKeysFull,
 	forge.VarLegacyForge,
 	forge.SecretForgeToken,
+	forge.SecretDispatch,
 	forge.VarGCPRegion,
-	forge.VarLabelState,
-	forge.VarLastPollAtFast,
-	forge.VarLastPollAtFull,
 	forge.VarLegacySA,
 	forge.VarLegacyWIFProvider,
-}
+}, gitlabLegacyPollerVars)
 
 var gitlabUninstallSecrets = []string{
 	forge.SecretGCPProjectID,
@@ -247,6 +242,17 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	}
 	result.WorkflowDeleted = true
 	progress(fullName, "workflow", "Scaffold files removed")
+
+	if cfg.Forge == ForgeGitLab {
+		// Remove the poller-state package so a later reinstall starts
+		// clean instead of resuming from stale watermarks/label
+		// state/dispatch history (#7313). Best-effort: GitLab package
+		// deletion is not part of the required cleanup set below, and a
+		// failure here shouldn't fail the whole uninstall.
+		if err := client.DeletePackage(ctx, owner, repo, poll.PollStatePackageName); err != nil {
+			progress(fullName, "cleanup", fmt.Sprintf("Warning: could not delete poller-state package: %v", err))
+		}
+	}
 
 	forgeVars := UninstallVarsForForge(cfg.Forge)
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)

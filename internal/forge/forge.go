@@ -32,7 +32,9 @@ const (
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 
-	// Managed variables — GitLab.
+	// Legacy GitLab poller-state CI/CD variables. Poller state moved to
+	// the Generic Package Registry (#7313). These names remain so uninstall
+	// can delete leftover variables from older installs.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
@@ -47,6 +49,12 @@ const (
 
 	// Secrets — GitLab only.
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
+
+	// SecretDispatch is the shared HMAC secret used to sign dispatch
+	// variables and, since #7317, poll state. GitLab install
+	// auto-provisions it as a masked, protected CI/CD variable so
+	// signing is on by default; see ensureGitLabDispatchSecret.
+	SecretDispatch = "FULLSEND_DISPATCH_SECRET"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
@@ -801,6 +809,22 @@ type Client interface {
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
 	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+
+	// Generic package registry (GitLab Generic Packages API).
+	// GitHub stubs return ErrNotSupported. Used by the GitLab cron-poller
+	// to persist watermarks and label state without Maintainer-level
+	// CI/CD variable access (#7313).
+	// DownloadPackageFile downloads a file from the project's package
+	// registry. Returns ErrNotFound if the package or file does not exist.
+	DownloadPackageFile(ctx context.Context, owner, repo, packageName, version, fileName string) ([]byte, error)
+	// UploadPackageFile creates or overwrites a file in the project's
+	// package registry. Developer-level access is sufficient on GitLab.
+	UploadPackageFile(ctx context.Context, owner, repo, packageName, version, fileName string, data []byte) error
+	// DeletePackage removes a named package (all versions) from the
+	// project's package registry. Returns nil if the package does not
+	// exist. Used by uninstall to remove the poller-state package so a
+	// later reinstall starts clean instead of resuming stale state.
+	DeletePackage(ctx context.Context, owner, repo, packageName string) error
 
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship

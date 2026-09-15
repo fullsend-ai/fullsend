@@ -171,15 +171,33 @@ func projectPath(owner, repo string) string {
 	return url.PathEscape(owner + "/" + repo)
 }
 
+// rawBody is sent as-is (not JSON-marshaled) with an optional content type.
+// Used by the Generic Package Registry upload API, which expects the file
+// bytes as the request body rather than a JSON envelope.
+type rawBody struct {
+	data        []byte
+	contentType string
+}
+
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	reqURL := c.apiURL(path)
 
 	var bodyData []byte
+	contentType := ""
 	if body != nil {
-		var err error
-		bodyData, err = json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("marshal request body: %w", err)
+		if raw, ok := body.(rawBody); ok {
+			bodyData = raw.data
+			contentType = raw.contentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+		} else {
+			var err error
+			bodyData, err = json.Marshal(body)
+			if err != nil {
+				return nil, fmt.Errorf("marshal request body: %w", err)
+			}
+			contentType = "application/json"
 		}
 	}
 
@@ -195,8 +213,8 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		}
 
 		req.Header.Set("PRIVATE-TOKEN", c.token)
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 
 		resp, err := c.http.Do(req)

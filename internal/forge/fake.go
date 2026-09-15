@@ -26,6 +26,7 @@ func NewFakeClient() *FakeClient {
 		Refs:              make(map[string]string),
 		ProtectedBranches: make(map[string]bool),
 		PipelineSchedules: make(map[string][]PipelineSchedule),
+		PackageFiles:      make(map[string][]byte),
 	}
 }
 
@@ -197,6 +198,9 @@ type FakeClient struct {
 
 	// Pipeline schedules for List/Create/DeletePipelineSchedule.
 	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
+
+	// Generic package registry files for Download/UploadPackageFile.
+	PackageFiles map[string][]byte // key: "owner/repo/package/version/file"
 
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
@@ -2165,6 +2169,63 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 		Value:     value,
 		Protected: true,
 	})
+	return nil
+}
+
+func packageFileKey(owner, repo, packageName, version, fileName string) string {
+	return owner + "/" + repo + "/" + packageName + "/" + version + "/" + fileName
+}
+
+func (f *FakeClient) DownloadPackageFile(_ context.Context, owner, repo, packageName, version, fileName string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DownloadPackageFile"); e != nil {
+		return nil, e
+	}
+
+	data, ok := f.PackageFiles[packageFileKey(owner, repo, packageName, version, fileName)]
+	if !ok {
+		return nil, fmt.Errorf("%w: package file %s/%s/%s", ErrNotFound, packageName, version, fileName)
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	return cp, nil
+}
+
+func (f *FakeClient) UploadPackageFile(_ context.Context, owner, repo, packageName, version, fileName string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UploadPackageFile"); e != nil {
+		return e
+	}
+
+	if f.PackageFiles == nil {
+		f.PackageFiles = make(map[string][]byte)
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.PackageFiles[packageFileKey(owner, repo, packageName, version, fileName)] = cp
+	return nil
+}
+
+// DeletePackage removes all versions/files of packageName for owner/repo.
+// It is a no-op (nil error) when no matching package file exists.
+func (f *FakeClient) DeletePackage(_ context.Context, owner, repo, packageName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeletePackage"); e != nil {
+		return e
+	}
+
+	prefix := owner + "/" + repo + "/" + packageName + "/"
+	for key := range f.PackageFiles {
+		if strings.HasPrefix(key, prefix) {
+			delete(f.PackageFiles, key)
+		}
+	}
 	return nil
 }
 

@@ -959,6 +959,33 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
+	// GitLab dispatch-secret provisioning for already-enrolled repos.
+	// Fresh installs are handled above via setupGitLabBotToken; converged
+	// and already-current repos still need FULLSEND_DISPATCH_SECRET
+	// provisioned (so poll state is signed by default), any pre-#7317
+	// unsigned state discarded, and any pre-#7313 legacy CI/CD poller
+	// variables migrated into a signed document. This runs with the
+	// operator's Maintainer-level client and never touches the bot PAT, so
+	// it is safe on live repos — unlike the full post-install setup above,
+	// which would revoke in-flight bot PATs.
+	if !opts.dryRun {
+		existing := make([]repos.ConvergeResult, 0, len(converged)+len(alreadyCurrent))
+		existing = append(existing, converged...)
+		existing = append(existing, alreadyCurrent...)
+		for _, r := range existing {
+			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] Could not get GitLab client for dispatch-secret provisioning: %v", r.Owner, r.Repo, fcErr))
+				continue
+			}
+			provisionGitLabDispatchSecret(ctx, fc.Client, printer, r.Owner, r.Repo)
+		}
+	}
+
 	printer.Blank()
 	installedCount := len(installed) - postInstallFailed
 	failedCount := len(failed) + postInstallFailed
