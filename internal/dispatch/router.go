@@ -41,7 +41,7 @@ func (r *HarnessRouter) Route(event *NormalizedEvent) ([]string, error) {
 		return r.routeComment(event)
 	case "label_changed":
 		return r.routeLabel(event)
-	case "merged":
+	case "merged", "closed":
 		return r.routeMerge(event)
 	case "opened":
 		return r.routeOpened(event)
@@ -151,8 +151,9 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 	return []string{stage}, nil
 }
 
-// routeMerge does not verify the merge actor's role — retro is a read-only
-// analysis stage, so dispatching it carries no mutation risk.
+// routeMerge does not verify the merge/close actor's role — retro is a
+// read-only analysis stage, so dispatching it carries no mutation risk.
+// Both merged and closed-unmerged transitions dispatch retro.
 func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 	if !r.validAgents["retro"] {
 		return nil, nil

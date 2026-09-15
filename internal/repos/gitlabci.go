@@ -31,8 +31,25 @@ var fullsendStages = []string{"dispatch", "poll", "agent"}
 // fullsendWorkflowRules are the workflow:rules entries that fullsend
 // requires in the root .gitlab-ci.yml. GitLab does not merge workflow:
 // definitions across includes, so these must be in the root file.
+// Native merge_request_event dispatch was removed in #7322; all events
+// route through the cron poller (schedule) and API-triggered agent jobs.
 var fullsendWorkflowRules = []workflowRule{
-	{If: `$CI_PIPELINE_SOURCE == "merge_request_event"`},
+	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
+	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
+}
+
+// unmergeWorkflowRules are the current fullsend rules removed on uninstall
+// unconditionally. This deliberately excludes the obsolete
+// native-MR-dispatch rule ($CI_PIPELINE_SOURCE == "merge_request_event")
+// that fullsend versions before #7322 installed: it's GitLab's standard,
+// widely-used MR-pipeline gate, not something unique to fullsend, and
+// MergeGitLabCI no longer installs it for any repo going forward. The
+// obsolete rule is only removed on uninstall when the workflow block
+// carries fullsend's provenance marker (see removeWorkflowRules); absent
+// that marker, unconditionally removing it would risk deleting a repo's
+// own independently-configured MR gate, so it is left in place — an
+// acceptable, one-shot leftover since uninstall is a single user action.
+var unmergeWorkflowRules = []workflowRule{
 	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
 	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
 }
@@ -43,6 +60,146 @@ type workflowRule struct {
 	If string
 }
 
+// obsoleteGitLabWorkflowRules are workflow:rules entries that previous
+// fullsend versions installed into the root .gitlab-ci.yml but that are
+// no longer part of the current contract. Native merge_request_event
+// dispatch was removed in #7322; on an already-enrolled repo, this rule
+// otherwise survives `repos upgrade`/`repos install` convergence forever
+// because the install merge path only runs on fresh installs and the
+// uninstall unmerge path only runs on teardown. StripObsoleteGitLabWorkflowRules
+// uses this list to migrate already-enrolled repos in place.
+var obsoleteGitLabWorkflowRules = []workflowRule{
+	{If: `$CI_PIPELINE_SOURCE == "merge_request_event"`},
+}
+
+// StripObsoleteGitLabWorkflowRules removes obsolete fullsend workflow:rules
+// entries (see obsoleteGitLabWorkflowRules) from an existing .gitlab-ci.yml,
+// leaving everything else — including fullsend's current rules, the
+// workflow name, auto_cancel settings, and any user configuration —
+// untouched. Unlike UnmergeGitLabCI (full teardown) this never removes
+// fullsend's current entries; it only migrates away rules that are
+// strictly obsolete.
+//
+// An obsolete rule is only stripped when gitlabCIWorkflowIsFullsendOwned
+// finds positive evidence that fullsend, not the repo owner, installed
+// the workflow block — the obsolete condition
+// ($CI_PIPELINE_SOURCE == "merge_request_event") is GitLab's standard
+// MR-pipeline gate and repos commonly set it themselves.
+//
+// Returns the original content and changed=false when there is nothing
+// to strip (no workflow: block, no rules:, no obsolete rule present, or
+// fullsend ownership of the block can't be established).
+func StripObsoleteGitLabWorkflowRules(existing []byte) (result []byte, changed bool, err error) {
+	if len(bytes.TrimSpace(existing)) == 0 {
+		return existing, false, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(existing, &doc); err != nil {
+		return nil, false, fmt.Errorf("parsing .gitlab-ci.yml: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return existing, false, nil
+	}
+
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return existing, false, nil
+	}
+
+	workflowVal := findMappingValue(root, "workflow")
+	if workflowVal == nil || workflowVal.Kind != yaml.MappingNode {
+		return existing, false, nil
+	}
+
+	rulesIdx := findMappingKeyIndex(workflowVal, "rules")
+	if rulesIdx < 0 {
+		return existing, false, nil
+	}
+	rulesVal := workflowVal.Content[rulesIdx+1]
+	if rulesVal.Kind != yaml.SequenceNode {
+		return existing, false, nil
+	}
+
+	obsolete := make(map[string]bool, len(obsoleteGitLabWorkflowRules))
+	for _, r := range obsoleteGitLabWorkflowRules {
+		obsolete[r.If] = true
+	}
+
+	hasObsolete := false
+	for _, item := range rulesVal.Content {
+		if item.Kind == yaml.MappingNode {
+			if v := findMappingValue(item, "if"); v != nil && obsolete[v.Value] {
+				hasObsolete = true
+				break
+			}
+		}
+	}
+	if !hasObsolete {
+		return existing, false, nil
+	}
+
+	// $CI_PIPELINE_SOURCE == "merge_request_event" is GitLab's standard
+	// MR-pipeline gate, not something unique to fullsend, and repos can
+	// (and do) set it themselves. Only strip it when there is positive
+	// evidence fullsend — not the repo owner — installed this workflow
+	// block; otherwise leave it untouched.
+	if !gitlabCIWorkflowIsFullsendOwned(workflowVal) {
+		return existing, false, nil
+	}
+
+	var kept []*yaml.Node
+	for _, item := range rulesVal.Content {
+		if item.Kind == yaml.MappingNode {
+			if v := findMappingValue(item, "if"); v != nil && obsolete[v.Value] {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == 0 {
+		// Remove the rules: key entirely rather than leaving behind
+		// workflow.rules: []. GitLab treats a present-but-empty rules:
+		// as "never run" (see https://docs.gitlab.com/ee/ci/yaml/#workflow),
+		// which would also block fullsend's own schedule- and
+		// API-triggered pipelines, not just MR pipelines. Mirrors
+		// removeWorkflowRules's teardown-path handling of the same case.
+		workflowVal.Content = append(
+			workflowVal.Content[:rulesIdx],
+			workflowVal.Content[rulesIdx+2:]...)
+	} else {
+		rulesVal.Content = kept
+	}
+
+	out, marshalErr := marshalNode(&doc)
+	if marshalErr != nil {
+		return nil, false, marshalErr
+	}
+	return out, true, nil
+}
+
+// gitlabCIWorkflowIsFullsendOwned reports whether a workflow: block shows
+// positive evidence that fullsend, rather than the repo owner, installed
+// it: the workflow carries the fullsend-generated name (set by
+// newGitLabCI on fresh installs).
+//
+// Co-presence of fullsend's current schedule/api rules is deliberately
+// NOT treated as a signal. mergeWorkflowRules appends fullsend's rules
+// into ANY pre-existing workflow block unconditionally, regardless of
+// what other rules that block already has, and never sets workflow.name
+// (see newGitLabCI's doc comment). So a repo that independently
+// configured its own merge_request_event gate and then enrolled fullsend
+// via the merge path ends up with a rules set that "matches" fullsend's
+// current required rules purely by coincidence of the merge having run —
+// that only proves fullsend added *some* rules to this block, not that
+// it added any particular other rule found alongside them. Absent the
+// name signal, the block cannot be distinguished from one the repo owner
+// configured independently.
+func gitlabCIWorkflowIsFullsendOwned(workflow *yaml.Node) bool {
+	nameVal := findMappingValue(workflow, "name")
+	return nameVal != nil && strings.HasPrefix(nameVal.Value, fullsendWorkflowNamePrefix)
+}
+
 // HasFullsendEntries reports whether existing .gitlab-ci.yml content
 // already contains all fullsend CI entries. It performs semantic drift
 // detection by checking:
@@ -51,7 +208,7 @@ type workflowRule struct {
 //  2. If stages: exists, it contains dispatch, poll, agent
 //     (if no stages: key, the included pipeline provides them)
 //  3. If workflow: exists, it must have a rules: sequence containing
-//     fullsend's three if: conditions. If workflow: exists without
+//     fullsend's if: conditions. If workflow: exists without
 //     rules:, that is drift — MergeGitLabCI would add them.
 //     (if no workflow: block at all, fullsend's jobs self-filter)
 //
@@ -237,7 +394,6 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `
@@ -524,8 +680,21 @@ func removeWorkflowRules(root *yaml.Node) {
 
 	// Build a set of fullsend rule conditions for matching.
 	fsRules := make(map[string]bool)
-	for _, r := range fullsendWorkflowRules {
+	for _, r := range unmergeWorkflowRules {
 		fsRules[r.If] = true
+	}
+	// When the block carries fullsend's provenance marker (workflow.name),
+	// fullsend also owns any obsolete rule it installed in an earlier
+	// version, so remove those too — otherwise a fresh-install uninstall
+	// leaves the orphaned merge_request_event rule behind, producing the
+	// empty MR pipelines #7322 set out to eliminate. Without the marker the
+	// obsolete rule is indistinguishable from a repo's own MR gate and is
+	// left in place (see unmergeWorkflowRules and StripObsoleteGitLabWorkflowRules,
+	// which gate on the same ownership check).
+	if gitlabCIWorkflowIsFullsendOwned(workflowVal) {
+		for _, r := range obsoleteGitLabWorkflowRules {
+			fsRules[r.If] = true
+		}
 	}
 
 	// Remove matching rules from workflow.rules.

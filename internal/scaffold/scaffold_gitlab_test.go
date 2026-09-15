@@ -110,82 +110,17 @@ func TestGitLabDispatchContent(t *testing.T) {
 	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-dispatch.yml")
 	require.NoError(t, err)
 	s := string(content)
+	// Native MR dispatch jobs were removed in #7322. The file is kept
+	// as the version-marker carrier and must not define CI jobs.
 	assert.Contains(t, s, "# fullsend-stage: dispatch")
-	assert.Contains(t, s, "merge_request_event")
-	assert.Contains(t, s, "MR_STATE")
-	assert.Contains(t, s, "mr-dispatch-pipeline.yml")
-	assert.Contains(t, s, "stages:")
-	assert.Contains(t, s, "- agent")
-	// Child pipeline passes IS_FORK for fork protection in agent template
-	assert.Contains(t, s, `IS_FORK: "${IS_FORK}"`)
-	// Merged MR fallback should no-op (retro via cron-poller)
-	assert.Contains(t, s, "retro via cron-poller")
-	// Opened MR fallback should no-op (review via cron-poller; protected
-	// variables are unavailable on the unprotected MR ref).
-	assert.Contains(t, s, "review via cron-poller")
-	// Closed MRs dispatch retro (best-effort on GitLab)
-	assert.Contains(t, s, "review|retro) ;;")
-	assert.Contains(t, s, "Best-effort on GitLab")
-	// SECURITY comment on heredoc interpolation
-	assert.Contains(t, s, "SECURITY")
-	// MR_AUTHOR_ID passed to child pipeline for stage-level authorization
-	assert.Contains(t, s, `MR_AUTHOR_ID`)
-	// STATUS_IID passed to child pipeline for --status-number resilience
-	assert.Contains(t, s, `STATUS_IID: "${CI_MERGE_REQUEST_IID}"`)
-
-	// Authorization gate moved to agent template (Members API requires bot PAT)
-	assert.NotContains(t, s, "PRIVATE-TOKEN")
-	assert.NotContains(t, s, "Developer access")
-
-	// MR API error handling distinguishes permanent from transient
-	assert.Contains(t, s, "job token")
-	assert.Contains(t, s, "MR API unavailable")
-	// Fork MR API failures are no-op (job-token scope), not hard failure
-	assert.Contains(t, s, "fork MR (expected: job-token scope)")
-	// Connection-level failures go to no-op
-	assert.Contains(t, s, "MR API unreachable")
-	// Fork status computed before API call from predefined variables
-	assert.Contains(t, s, "Detect fork before API call")
-	// Error message points at job token permissions, not a version number
-	assert.Contains(t, s, "job token permissions")
-	assert.NotContains(t, s, "15.3+")
-	assert.NotContains(t, s, "18.4+")
-
-	// ENTRYPOINT override for runner image
-	assert.Contains(t, s, `entrypoint: [""]`)
-	// NormalizedEvent v1 construction
-	assert.Contains(t, s, "NormalizedEvent")
-	assert.Contains(t, s, `"change_proposal"`)
-	assert.Contains(t, s, "transition_kind")
-	assert.Contains(t, s, "actor_role")
-	assert.Contains(t, s, `"gitlab"`)
-	// head_repo/base_repo use predefined CI_MERGE_REQUEST_* variables
-	assert.Contains(t, s, "CI_MERGE_REQUEST_SOURCE_PROJECT_PATH")
-	assert.Contains(t, s, "CI_MERGE_REQUEST_PROJECT_PATH")
-	assert.NotContains(t, s, `--arg head_repo "${CI_MERGE_REQUEST_SOURCE_PROJECT_ID}"`)
-	assert.NotContains(t, s, `--arg base_repo "${CI_MERGE_REQUEST_TARGET_PROJECT_ID}"`)
-	// Uses target project ID for API calls (correct in fork context)
-	assert.Contains(t, s, "CI_MERGE_REQUEST_PROJECT_ID")
-	// head_sha uses CI_MERGE_REQUEST_SOURCE_BRANCH_SHA for merged-results
-	assert.Contains(t, s, "CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
-	// Labels extracted from MR API response
-	assert.Contains(t, s, "MR_LABELS")
-	assert.Contains(t, s, "labels")
-	// Bot detection via username heuristic (covers GitLab project/group bot format)
-	assert.Contains(t, s, `_bot_`)
-	assert.Contains(t, s, `\\[bot\\]`)
-	// STAGE allowlist defense-in-depth
-	assert.Contains(t, s, "review|retro) ;;")
-	// CEL trigger equivalent comments for future fullsend dispatch migration
-	assert.Contains(t, s, "CEL:")
-	assert.Contains(t, s, "entity.kind")
-	assert.Contains(t, s, "transition.kind")
-	// [skip ci] / [ci skip] in MR title suppresses dispatch on merged-results pipelines
-	assert.Contains(t, s, `CI_MERGE_REQUEST_TITLE =~ /\[(skip ci|ci skip)\]/i`)
-	assert.Contains(t, s, "when: never")
-	// Child pipeline includes the generic agent template
-	assert.Contains(t, s, "fullsend-agent.yml")
-	assert.NotContains(t, s, "fullsend-${STAGE}.yml")
+	assert.Contains(t, s, "#7322")
+	assert.Contains(t, s, "cron poller")
+	assert.NotContains(t, s, "dispatch-mr-agents:")
+	assert.NotContains(t, s, "mr-dispatch-pipeline.yml")
+	assert.NotContains(t, s, "__RUNNER_TAGS__")
+	assert.NotRegexp(t, `(?m)^dispatch:`, s, "must not define a dispatch job")
+	assert.True(t, strings.HasPrefix(s, "---\n"),
+		"must start with YAML document start marker (---)")
 }
 
 func TestGitLabAgentTemplateContent(t *testing.T) {
@@ -558,6 +493,8 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	// API-triggered pipeline rule for cron-poller dispatched pipelines
 	// Requires API source + protected branch + STAGE variable
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`,
+		"native MR dispatch was removed in #7322")
 	assert.NotContains(t, s, `$STAGE != ""`)
 	// push pipelines intentionally excluded — documented in workflow comment
 	assert.Contains(t, s, "Push-triggered pipelines are intentionally excluded")
@@ -573,7 +510,9 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	// Pipeline wrapper contains includes and stages moved from root.
-	assert.Contains(t, s, "fullsend-dispatch.yml")
+	// Native MR dispatch was removed in #7322; the dispatch file is
+	// retained on disk as a version-marker carrier but is not included.
+	assert.NotContains(t, s, "local: '.gitlab/ci/fullsend-dispatch.yml'")
 	assert.Contains(t, s, "fullsend-poll.yml")
 	assert.Contains(t, s, "fullsend-agent.yml")
 	assert.Contains(t, s, "stages:")
@@ -594,7 +533,6 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
 	taggedFiles := []string{
 		".gitlab/ci/fullsend-poll.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-agent.yml",
 	}
 	for _, path := range taggedFiles {

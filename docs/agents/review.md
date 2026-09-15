@@ -38,8 +38,8 @@ write or higher.
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
-(up to one poll interval of delay). Protected CI/CD variables are not available on MR-ref pipelines, so native
-`merge_request_event` does not dispatch review. Push-to-open-MR (GitHub `synchronize`) is not auto-detected;
+(up to one poll interval of delay). Native `merge_request_event` dispatch was removed; all GitLab events route
+through the poller. Push-to-open-MR (GitHub `synchronize`) is not auto-detected;
 comment `/fs-review` to re-review after new commits.
 
 ## Control labels

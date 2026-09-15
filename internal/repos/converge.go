@@ -625,9 +625,33 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, refFiles...)
 
-	// Track paths already covered by ref upgrade to avoid duplicates.
-	refFileSet := make(map[string]bool, len(refFiles))
+	// 2d-i: Migrate obsolete GitLab root .gitlab-ci.yml workflow rules
+	// (e.g. the merge_request_event rule removed in #7322). This is
+	// independent of ref drift — it must run even when the workflow ref
+	// is already current, since the root file is only otherwise touched
+	// by the install (fresh install) and uninstall (teardown) paths.
+	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress)
+	cr.Actions = append(cr.Actions, rootCIActions...)
+
+	var rootCIErrors []string
+	for _, a := range rootCIActions {
+		if a.Action == "error" {
+			rootCIErrors = append(rootCIErrors, a.Detail)
+		}
+	}
+	if len(rootCIErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(rootCIErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
+
+	// Track paths already covered by ref upgrade and root CI migration
+	// to avoid duplicates.
+	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
 	for _, f := range refFiles {
+		refFileSet[f.Path] = true
+	}
+	for _, f := range rootCIFiles {
 		refFileSet[f.Path] = true
 	}
 
@@ -985,6 +1009,84 @@ func convergeSchedules(ctx context.Context,
 	}
 
 	return actions
+}
+
+// convergeGitLabRootCIFiles migrates already-enrolled GitLab repos whose
+// root .gitlab-ci.yml still carries workflow:rules entries that fullsend
+// no longer requires (e.g. the native merge_request_event dispatch rule
+// removed in #7322). The root file is user-owned and is otherwise only
+// touched by the install merge path (fresh installs) and the uninstall
+// unmerge path (teardown) — neither runs during upgrade/converge, so
+// without this step an obsolete rule would survive convergence forever
+// and GitLab would keep creating empty/config-error pipelines for every
+// MR event. StripObsoleteGitLabWorkflowRules only rewrites the file when
+// it can prove fullsend owns the workflow block (see
+// gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments without
+// the fullsend workflow.name are intentionally left for manual cleanup
+// rather than risking a user's own MR gate. It does not commit — the
+// caller batches all scaffold file changes into a single atomic commit.
+func convergeGitLabRootCIFiles(ctx context.Context,
+	resolved ResolvedConfig,
+	cfg ConvergeConfig,
+	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+
+	var actions []ComponentAction
+	if resolved.Forge != ForgeGitLab {
+		return nil, actions
+	}
+
+	owner, repo := resolved.Owner, resolved.Repo
+	client := resolved.ForgeConfig.Client
+	repoFullName := owner + "/" + repo
+
+	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return nil, actions
+		}
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error reading .gitlab-ci.yml: %v", err),
+		})
+		return nil, actions
+	}
+
+	stripped, changed, stripErr := StripObsoleteGitLabWorkflowRules(existing)
+	if stripErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for obsolete workflow rules: %v", stripErr),
+		})
+		return nil, actions
+	}
+	if !changed {
+		return nil, actions
+	}
+
+	if cfg.DryRun {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "update",
+			Detail:    "would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml",
+		})
+		progress(repoFullName, "dry-run", "Would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+		return nil, actions
+	}
+
+	actions = append(actions, ComponentAction{
+		Component: "gitlab-ci-rules",
+		Action:    "update",
+		Detail:    "removed obsolete merge_request_event workflow rule from .gitlab-ci.yml",
+	})
+	progress(repoFullName, "repair", "Removing obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+
+	return []forge.TreeFile{{
+		Path:    ".gitlab-ci.yml",
+		Content: stripped,
+		Mode:    "100644",
+	}}, actions
 }
 
 // convergeRefFiles checks for ref drift and returns the scaffold files

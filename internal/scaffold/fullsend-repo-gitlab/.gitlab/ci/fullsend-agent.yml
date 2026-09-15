@@ -6,8 +6,9 @@ spec:
 ---
 # Generic agent stage template — parameterized by $STAGE.
 # A single template handles all agent stages (triage, code, review, fix,
-# retro, prioritize). The dispatch and poll pipelines set STAGE as a
-# pipeline variable; this template reads it to select the agent.
+# retro, prioritize). The cron-poller's API-triggered pipeline sets
+# STAGE as a pipeline variable; this template reads it to select the
+# agent.
 
 stages:
   - agent

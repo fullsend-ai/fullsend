@@ -135,6 +135,37 @@ Accepted
 > single-PAT model (chosen here for operational simplicity) does not, and
 > this fallback is an accepted consequence of that tradeoff rather than a
 > per-role-token gap to close.
+>
+> **Update (2026-09, #7322):** Native `merge_request_event` dispatch is
+> removed. After #7293 moved MR-open review to the poller, the only
+> remaining native path was best-effort `closed` → retro (a
+> push-then-close race that generated no-op child pipelines for every
+> other MR event). All GitLab events now route through the cron poller,
+> including closed-unmerged MRs (`closed_at` > watermark and `merged_at`
+> empty → `transition.kind: closed` → retro). This is Option 4 (pure
+> cron-polling), originally rejected for sub-second MR review latency
+> that #7293 already gave up. `fullsend-dispatch.yml` is retained as a
+> version-marker carrier and is no longer included by the pipeline
+> wrapper. Superseded sections: the two-path Decision, the native-CI
+> architecture-diagram line, and the #5556 auto_cancel note's "MR
+> pipelines / MR dispatch jobs are fast (<30s)" claim above — no MR
+> pipelines or dispatch jobs exist anymore. ("MR review latency is
+> unaffected" under Consequences was already superseded by the #7293
+> note above.)
+>
+> **Transitional risk on already-enrolled repos:** the root
+> `.gitlab-ci.yml` is user-owned and, prior to this note, was only
+> touched by the install merge path (fresh installs) and the uninstall
+> unmerge path (teardown) — neither runs during `repos upgrade`/`repos
+> install` convergence. Without a migration, an already-enrolled repo
+> that converges after #7322 would keep the obsolete
+> `merge_request_event` workflow rule while the newly-synced pipeline
+> wrapper defines no job matching that source, so GitLab would create
+> an empty/config-error pipeline on every MR event. Converge now
+> strips this specific obsolete rule from the root file in place
+> (`StripObsoleteGitLabWorkflowRules`, `internal/repos/gitlabci.go`),
+> leaving fullsend's current rules and all user configuration
+> untouched. See risk item 6 under Consequences.
 
 ## Context
 
@@ -387,6 +418,7 @@ configuration.
 | ~~MR opened/updated/reopened~~ | ~~Native CI (`merge_request_event`)~~ | ~~review~~ Moved to cron poll in [#7293](https://github.com/fullsend-ai/fullsend/issues/7293) — protected CI/CD variables are not exposed on unprotected MR refs |
 | MR opened | Cron poll (MR `created_at` > watermark) | review |
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
+| MR closed (unmerged) | Cron poll (MR `closed_at` > watermark, `merged_at` empty) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
 
 Bot-authored comments are skipped to prevent re-triggering loops (exception:
@@ -398,9 +430,9 @@ Slash commands (`/fs-*`) are the only latency-sensitive operation. Mitigations:
 
 - **Labels as primary triggers.** Applying `ready-for-review` or
   `ready-to-code` labels is discoverable and visible. Labels on issues are
-  detected via cron-poll (5–60 minute latency); labels on MRs can also be
-  detected via native CI `merge_request_event` when applied alongside an
-  MR update.
+  detected via cron-poll (5–60 minute latency). Labels on MRs are also
+  detected via cron-poll; native CI `merge_request_event` label
+  detection was removed in #7322.
 - **Multi-frequency polling** keeps slash command latency to 5 minutes on
   Premium/Ultimate.
 - **Manual pipeline trigger** via the GitLab UI as a power-user escape hatch.
@@ -587,6 +619,22 @@ methods rather than adding forge-conditional logic.
 5. **Missed events from API quirks.** The Notes API lacks `created_after`; the
    Events API `after` parameter is date-only. Mitigated by 30-second watermark
    overlap and dual-frequency polling as reconciliation.
+6. **Stale root-file workflow rules surviving convergence (#7322).** The root
+   `.gitlab-ci.yml` is user-owned and historically was only migrated on
+   fresh install or full uninstall, not on `repos upgrade`/`repos install`
+   convergence. An obsolete rule (e.g. `merge_request_event`, removed in
+   #7322) could otherwise survive indefinitely on already-enrolled repos,
+   producing an empty/config-error pipeline on every matching event.
+   Mitigated by a converge-time migration step that strips only the
+   specific obsolete rule(s), leaving current fullsend rules and user
+   configuration untouched. The migration only fires when fullsend can
+   prove it owns the `workflow:` block (the fullsend-generated
+   `workflow.name`, set on fresh installs). Repos enrolled by merging
+   fullsend rules into a pre-existing `workflow:` block carry no such
+   marker, so `merge_request_event` cannot be safely distinguished from
+   a user's own MR gate there and is left in place — those repos need
+   manual removal (same as the uninstall path). This deliberately errs
+   toward preserving user configuration over full auto-migration.
 
 **Comparison with GitHub:**
 

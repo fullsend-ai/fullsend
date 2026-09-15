@@ -303,11 +303,12 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 
 | Concern | Mapping |
 |---------|---------|
-| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
-| MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` no-ops review; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) #7293) |
+| MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
 | MR opened | Cron poll (`created_at` > watermark) → `transition.kind: opened` (review) |
 | MR merge | Cron poll (`merged_at` > watermark) → `transition.kind: merged` (retro; GitLab merge and close are distinct events) |
+| MR closed (unmerged) | Cron poll (`closed_at` > watermark, `merged_at` empty) → `transition.kind: closed` (retro) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |

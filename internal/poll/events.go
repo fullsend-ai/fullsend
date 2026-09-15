@@ -99,11 +99,11 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 	}
 
 	for _, mr := range mrs {
-		// MR-open review cannot run on native merge_request_event
-		// pipelines: those use the unprotected MR ref, so protected
-		// CI/CD variables (FULLSEND_FORGE_TOKEN) are empty. Detect
-		// newly created MRs here so review dispatches from the
-		// poller on the protected default branch.
+		// MR lifecycle events dispatch from the poller on the
+		// protected default branch. Native merge_request_event
+		// pipelines use the unprotected MR ref, so protected
+		// CI/CD variables (FULLSEND_FORGE_TOKEN) are empty (#7293,
+		// #7322).
 		if !mr.CreatedAt.IsZero() && mr.CreatedAt.After(since) {
 			events = append(events, RoutableEvent{
 				Type:            "mr_event",
@@ -140,6 +140,48 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
 				MergedByLogin:   mergedBy.Username,
+			})
+		}
+
+		// Closed-unmerged: GitLab sets closed_at and state="closed"
+		// when an MR is closed without merge. Gate on the current state
+		// as well as the timestamps so a reopened MR — which may retain
+		// a stale closed_at inside the watermark window on some GitLab
+		// versions — does not re-dispatch retro while it is open again.
+		// Merged MRs may also populate closed_at; the merged_at guard
+		// skips those so the merge already handled above is not
+		// double-emitted as closed. Comments on already-closed MRs bump
+		// updated_at but not closed_at, so the watermark comparison
+		// avoids re-dispatching retro.
+		if mr.State == "closed" && mr.MergedAt.IsZero() &&
+			!mr.ClosedAt.IsZero() && mr.ClosedAt.After(since) {
+			// Attribute the close to closed_by only — never fall back to
+			// the MR author. The code agent opens MRs as the bot, so an
+			// author fallback would tag a human's close of a bot-authored
+			// MR as a bot event, and filterBotEvents would drop it and
+			// skip retro — exactly the human-rejects-the-agent's-work case
+			// #7322 promotes to reliable. When closed_by is absent the
+			// actor fields stay empty, so filterBotEvents treats the close
+			// as human (retro runs; retro is read-only, so erring toward
+			// running it is safe) and toNormalizedEvent falls back to the
+			// MR author to resolve the actor. A bot self-close
+			// (closeStaleScaffoldPRs) sets closed_by to the bot and is
+			// still filtered.
+			events = append(events, RoutableEvent{
+				Type:            "mr_event",
+				Action:          "closed",
+				IID:             mr.IID,
+				UpdatedAt:       mr.ClosedAt,
+				NoteAuthorID:    mr.ClosedBy.ID,
+				NoteAuthorLogin: mr.ClosedBy.Username,
+				IsBot:           mr.ClosedBy.Bot,
+				MRSource:        mr.SourceProjectID,
+				MRTarget:        mr.TargetProjectID,
+				Labels:          mr.Labels,
+				SourceBranch:    mr.SourceBranch,
+				TargetBranch:    mr.TargetBranch,
+				MRAuthorID:      mr.Author.ID,
+				MRAuthorLogin:   mr.Author.Username,
 			})
 		}
 
@@ -291,7 +333,13 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		}
 		// Bot-authored MR opens must dispatch review — the code agent
 		// opens MRs as the project access token bot, matching GitHub's
-		// [bot] exception on pull_request_target.opened.
+		// [bot] exception on pull_request_target.opened. Bot-authored
+		// closes and merges are both filtered: they are the enrolled
+		// bot's own lifecycle actions (e.g. closeStaleScaffoldPRs
+		// closing the bot's own stale scaffold MRs) and must not spawn
+		// retro pipelines for the bot's own cleanup. A human close is
+		// not a bot event, so genuine closed-unmerged MRs still reach
+		// retro.
 		if event.Type == "mr_event" && event.Action == "opened" {
 			filtered = append(filtered, event)
 			continue

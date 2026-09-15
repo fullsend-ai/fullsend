@@ -271,6 +271,312 @@ func TestDiscoverAllEvents_MROpenedAndMergedSameWindow(t *testing.T) {
 	}
 }
 
+func TestDiscoverAllEvents_MRClosedEvents(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             12,
+			State:           "closed",
+			ClosedAt:        now,
+			UpdatedAt:       now,
+			Author:          UserRef{ID: 42, Username: "alice"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob", Bot: false},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+			SourceBranch:    "feature",
+			TargetBranch:    "main",
+		},
+	}
+	mc.mrNotes[12] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var closed []RoutableEvent
+	for _, e := range events {
+		if e.Type == "mr_event" && e.Action == "closed" {
+			closed = append(closed, e)
+		}
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed mr_event, got %d", len(closed))
+	}
+	got := closed[0]
+	if got.IID != 12 {
+		t.Errorf("IID = %d, want 12", got.IID)
+	}
+	if got.NoteAuthorID != 10 {
+		t.Errorf("NoteAuthorID (closer) = %d, want 10", got.NoteAuthorID)
+	}
+	if got.NoteAuthorLogin != "bob" {
+		t.Errorf("NoteAuthorLogin = %q, want bob", got.NoteAuthorLogin)
+	}
+	if got.UpdatedAt != now {
+		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, now)
+	}
+}
+
+func TestDiscoverAllEvents_MRClosedIgnoresMerged(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             13,
+			State:           "merged",
+			MergedAt:        now,
+			ClosedAt:        now, // GitLab may also set closed_at on merge
+			UpdatedAt:       now,
+			Author:          UserRef{ID: 42, Username: "alice"},
+			MergedBy:        UserRef{ID: 10, Username: "bob"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[13] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var closed, merged int
+	for _, e := range events {
+		if e.Type != "mr_event" {
+			continue
+		}
+		switch e.Action {
+		case "closed":
+			closed++
+		case "":
+			merged++
+		}
+	}
+	if closed != 0 {
+		t.Errorf("closed events = %d, want 0 (merged MRs must not emit closed)", closed)
+	}
+	if merged != 1 {
+		t.Errorf("merged events = %d, want 1", merged)
+	}
+}
+
+func TestDiscoverAllEvents_MRClosedIgnoresOldClosedAt(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             14,
+			State:           "closed",
+			ClosedAt:        since.Add(-time.Hour),
+			UpdatedAt:       now, // listed because of a later comment
+			Author:          UserRef{ID: 42, Username: "alice"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[14] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, e := range events {
+		if e.Type == "mr_event" {
+			t.Fatalf("unexpected mr_event for old ClosedAt: %+v", e)
+		}
+	}
+}
+
+func TestDiscoverAllEvents_CommentOnOldClosedMRDoesNotReemitClosed(t *testing.T) {
+	// An MR closed before the watermark that receives a new comment after
+	// it: the comment bumps updated_at (so the MR is listed) but not
+	// closed_at, so the watermark comparison must emit only the comment
+	// event, never re-dispatch the already-processed closed event.
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             16,
+			State:           "closed",
+			ClosedAt:        since.Add(-time.Hour),
+			UpdatedAt:       now, // listed because of the later comment
+			Author:          UserRef{ID: 42, Username: "alice"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[16] = []Note{
+		{ID: 30, Body: "a late comment", Author: UserRef{ID: 42, Username: "alice"}, CreatedAt: now},
+	}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var noteEvents, closedEvents int
+	for _, e := range events {
+		if e.Type == "mr_event" && e.Action == "closed" {
+			closedEvents++
+		}
+		if e.Type == "mr_note" {
+			noteEvents++
+		}
+	}
+	if closedEvents != 0 {
+		t.Errorf("closed mr_event re-emitted for comment on old closed MR: got %d, want 0", closedEvents)
+	}
+	if noteEvents != 1 {
+		t.Errorf("mr_note events = %d, want 1", noteEvents)
+	}
+}
+
+func TestDiscoverAllEvents_MRReopenedStaleClosedAtIgnored(t *testing.T) {
+	// A reopened MR is back in the "opened" state but may still carry a
+	// closed_at within the watermark window on some GitLab versions.
+	// The state guard must prevent it from re-dispatching retro.
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             15,
+			State:           "opened",
+			ClosedAt:        now, // stale close timestamp, inside window
+			UpdatedAt:       now,
+			Author:          UserRef{ID: 42, Username: "alice"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[15] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, e := range events {
+		if e.Type == "mr_event" && e.Action == "closed" {
+			t.Fatalf("unexpected closed mr_event for reopened MR: %+v", e)
+		}
+	}
+}
+
+func TestDiscoverAllEvents_MRClosedAbsentClosedBy(t *testing.T) {
+	// When GitLab omits closed_by, the close is attributed to no actor
+	// (empty NoteAuthor*, IsBot false) rather than falling back to the MR
+	// author. This keeps a human's close of a bot-authored MR from being
+	// misread as a bot event downstream. The MR author is still carried in
+	// MRAuthor* so toNormalizedEvent can resolve the actor.
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             15,
+			State:           "closed",
+			ClosedAt:        now,
+			UpdatedAt:       now,
+			Author:          UserRef{ID: 42, Username: "alice"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[15] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var closed []RoutableEvent
+	for _, e := range events {
+		if e.Type == "mr_event" && e.Action == "closed" {
+			closed = append(closed, e)
+		}
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed mr_event, got %d", len(closed))
+	}
+	if closed[0].NoteAuthorID != 0 {
+		t.Errorf("NoteAuthorID = %d, want 0 (no closed_by, no author fallback)", closed[0].NoteAuthorID)
+	}
+	if closed[0].NoteAuthorLogin != "" {
+		t.Errorf("NoteAuthorLogin = %q, want empty (no closed_by, no author fallback)", closed[0].NoteAuthorLogin)
+	}
+	if closed[0].IsBot {
+		t.Error("IsBot = true, want false when closed_by is absent")
+	}
+	if closed[0].MRAuthorID != 42 || closed[0].MRAuthorLogin != "alice" {
+		t.Errorf("MRAuthor = (%d, %q), want (42, alice)", closed[0].MRAuthorID, closed[0].MRAuthorLogin)
+	}
+}
+
+func TestDiscoverAllEvents_MROpenedAndClosedSameWindow(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.mrs = []MergeRequest{
+		{
+			IID:             16,
+			State:           "closed",
+			CreatedAt:       now.Add(-30 * time.Second),
+			ClosedAt:        now,
+			UpdatedAt:       now,
+			Author:          UserRef{ID: 42, Username: "alice"},
+			ClosedBy:        UserRef{ID: 10, Username: "bob"},
+			SourceProjectID: 1,
+			TargetProjectID: 1,
+		},
+	}
+	mc.mrNotes[16] = []Note{}
+
+	p := newEventsPoller(mc)
+	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var opened, closed int
+	for _, e := range events {
+		if e.Type != "mr_event" {
+			continue
+		}
+		switch e.Action {
+		case "opened":
+			opened++
+		case "closed":
+			closed++
+		default:
+			t.Errorf("unexpected Action %q", e.Action)
+		}
+	}
+	if opened != 1 {
+		t.Errorf("opened events = %d, want 1", opened)
+	}
+	if closed != 1 {
+		t.Errorf("closed events = %d, want 1", closed)
+	}
+}
+
 func TestDiscoverAllEvents_MRNotes(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-time.Minute)
@@ -668,6 +974,56 @@ func TestFilterBotEvents_RetainsBotOpenedMR(t *testing.T) {
 	}
 }
 
+func TestFilterBotEvents_RemovesBotClosedMR(t *testing.T) {
+	// A close performed by the enrolled bot (e.g. closeStaleScaffoldPRs
+	// cleaning up the bot's own stale scaffold MRs) must not dispatch
+	// retro — mirroring bot-merged filtering. Human-performed closes are
+	// not bot events, so genuine closed-unmerged MRs still reach retro.
+	mc := newMockClient()
+	p := newEventsPoller(mc) // botUserID = 100
+
+	events := []RoutableEvent{
+		{
+			Type:         "mr_event",
+			Action:       "closed",
+			IID:          8,
+			IsBot:        true,
+			NoteAuthorID: 100,
+			MRAuthorID:   42,
+		},
+	}
+	filtered := p.filterBotEvents(events)
+	if len(filtered) != 0 {
+		t.Errorf("expected bot-closed MR to be removed, got %d events", len(filtered))
+	}
+}
+
+func TestFilterBotEvents_RetainsClosedMRWithAbsentCloser(t *testing.T) {
+	// A human closing a bot-authored MR when GitLab omits closed_by: the
+	// closed event carries no actor identity (NoteAuthor* empty), so it must
+	// not be treated as a bot event even though the bot authored the MR.
+	// Dropping it here would skip retro on a human's close of the agent's
+	// own work — the case #7322 makes reliable. MRAuthorID is the bot but
+	// must not drive bot filtering.
+	mc := newMockClient()
+	p := newEventsPoller(mc) // botUserID = 100
+
+	events := []RoutableEvent{
+		{
+			Type:         "mr_event",
+			Action:       "closed",
+			IID:          8,
+			IsBot:        false,
+			NoteAuthorID: 0,
+			MRAuthorID:   100, // bot authored the MR
+		},
+	}
+	filtered := p.filterBotEvents(events)
+	if len(filtered) != 1 {
+		t.Errorf("expected human-closed bot-authored MR to be retained, got %d events", len(filtered))
+	}
+}
+
 func TestFilterBotEvents_RemovesBotMergedMR(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc)
@@ -843,12 +1199,22 @@ func TestDiscoverAllEvents_DefaultModeKeepsSlashCommands(t *testing.T) {
 func TestRoutableEventKey_OpenedDistinctFromMerged(t *testing.T) {
 	ts := time.Unix(1_700_000_000, 0)
 	opened := RoutableEvent{Type: "mr_event", Action: "opened", IID: 5, UpdatedAt: ts}
+	closed := RoutableEvent{Type: "mr_event", Action: "closed", IID: 5, UpdatedAt: ts}
 	merged := RoutableEvent{Type: "mr_event", IID: 5, UpdatedAt: ts}
 	if opened.Key() == merged.Key() {
 		t.Fatalf("opened and merged keys collided: %s", opened.Key())
 	}
+	if opened.Key() == closed.Key() {
+		t.Fatalf("opened and closed keys collided: %s", opened.Key())
+	}
+	if closed.Key() == merged.Key() {
+		t.Fatalf("closed and merged keys collided: %s", closed.Key())
+	}
 	if want := "mr_event-5-opened-1700000000"; opened.Key() != want {
 		t.Errorf("opened key = %q, want %q", opened.Key(), want)
+	}
+	if want := "mr_event-5-closed-1700000000"; closed.Key() != want {
+		t.Errorf("closed key = %q, want %q", closed.Key(), want)
 	}
 	if want := "mr_event-5-1700000000"; merged.Key() != want {
 		t.Errorf("merged key = %q, want %q", merged.Key(), want)

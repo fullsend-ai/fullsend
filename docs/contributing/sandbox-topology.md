@@ -17,7 +17,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base   (upstream)
 
 Harness definitions that map agents to images live in
 the [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repo (the `image:` field in each harness YAML).
-The GitLab scaffold (`internal/scaffold/fullsend-repo-gitlab/`) uses the same execution model: a single generic agent template (`fullsend-agent.yml`) calls `fullsend run "${STAGE}"`, parameterized by the `$STAGE` pipeline variable set by the dispatch or poll templates. `fullsend run` resolves the harness and creates the sandbox container from the harness `image:` field.
+The GitLab scaffold (`internal/scaffold/fullsend-repo-gitlab/`) uses the same execution model: a single generic agent template (`fullsend-agent.yml`) calls `fullsend run "${STAGE}"`, parameterized by the `$STAGE` pipeline variable set by API-triggered pipelines dispatched by the cron poller. `fullsend run` resolves the harness and creates the sandbox container from the harness `image:` field.
 Image Containerfiles live in `images/sandbox/` and `images/code/`.
 The CI build pipeline is `.github/workflows/sandbox-images.yml`.
 

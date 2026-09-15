@@ -413,6 +413,97 @@ func TestToNormalizedEvent_MREventOpenedActorFallback(t *testing.T) {
 	}
 }
 
+func TestToNormalizedEvent_MREventClosed(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[10] = 40 // Maintainer -> "maintain"
+	mc.projectPaths[1] = "group/project"
+	p := newEventsPoller(mc)
+
+	event := RoutableEvent{
+		Type:            "mr_event",
+		Action:          "closed",
+		IID:             9,
+		NoteAuthorID:    10,
+		NoteAuthorLogin: "closer-user",
+		IsBot:           false,
+		MRSource:        1,
+		MRTarget:        1,
+		MRAuthorID:      42,
+		MRAuthorLogin:   "dev-user",
+		SourceBranch:    "feature",
+		TargetBranch:    "main",
+	}
+
+	ne, authorID, err := p.toNormalizedEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if authorID != 10 {
+		t.Errorf("authorID = %d, want 10", authorID)
+	}
+	if ne.Transition.Kind != "closed" {
+		t.Errorf("Transition.Kind = %q, want %q", ne.Transition.Kind, "closed")
+	}
+	if ne.Source.RawAction != "closed" {
+		t.Errorf("Source.RawAction = %q, want %q", ne.Source.RawAction, "closed")
+	}
+	if ne.Actor.ID != "closer-user" {
+		t.Errorf("Actor.ID = %q, want %q", ne.Actor.ID, "closer-user")
+	}
+	if ne.Actor.Role != "maintain" {
+		t.Errorf("Actor.Role = %q, want %q", ne.Actor.Role, "maintain")
+	}
+	if ne.State.ChangeProposal == nil {
+		t.Fatal("expected State.ChangeProposal to be set for closed mr_event")
+	}
+}
+
+func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
+	// A human closes a bot-authored MR and GitLab omits closed_by: the
+	// closed event carries empty NoteAuthor* (see discoverAllEvents), so
+	// toNormalizedEvent falls back to the MR author to resolve the actor.
+	// The MR author is the bot, so Actor.Kind is "bot", but routeMerge has
+	// no actor-kind gate — retro (read-only) still runs. This pins the
+	// closed-specific fallback so a future refactor splitting the shared
+	// "opened"/"closed" branch cannot silently regress #7322's
+	// human-rejects-the-agent's-work path.
+	mc := newMockClient()
+	mc.memberLevel[100] = 40 // Maintainer -> "maintain"
+	mc.projectPaths[1] = "group/project"
+	p := newEventsPoller(mc) // botUserID = 100
+
+	event := RoutableEvent{
+		Type:          "mr_event",
+		Action:        "closed",
+		IID:           11,
+		NoteAuthorID:  0, // closed_by absent
+		IsBot:         false,
+		MRSource:      1,
+		MRTarget:      1,
+		MRAuthorID:    100, // bot authored the MR
+		MRAuthorLogin: "fullsend-bot",
+		SourceBranch:  "feature",
+		TargetBranch:  "main",
+	}
+
+	ne, authorID, err := p.toNormalizedEvent(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if authorID != 100 {
+		t.Errorf("authorID = %d, want 100 (MR author fallback)", authorID)
+	}
+	if ne.Actor.ID != "fullsend-bot" {
+		t.Errorf("Actor.ID = %q, want %q (MR author fallback)", ne.Actor.ID, "fullsend-bot")
+	}
+	if ne.Actor.Kind != "bot" {
+		t.Errorf("Actor.Kind = %q, want %q (MR author is the bot)", ne.Actor.Kind, "bot")
+	}
+	if ne.Transition.Kind != "closed" {
+		t.Errorf("Transition.Kind = %q, want %q", ne.Transition.Kind, "closed")
+	}
+}
+
 func TestToNormalizedEvent_UnresolvableActorError(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc)
@@ -445,6 +536,7 @@ func TestTranslateEventType(t *testing.T) {
 		{name: "mr_note", event: RoutableEvent{Type: "mr_note"}, want: "comment_added"},
 		{name: "mr_event merged", event: RoutableEvent{Type: "mr_event"}, want: "merged"},
 		{name: "mr_event opened", event: RoutableEvent{Type: "mr_event", Action: "opened"}, want: "opened"},
+		{name: "mr_event closed", event: RoutableEvent{Type: "mr_event", Action: "closed"}, want: "closed"},
 		{name: "unknown", event: RoutableEvent{Type: "unknown"}, want: "unknown"},
 	}
 	for _, tt := range tests {
@@ -707,6 +799,7 @@ func TestMapRawAction(t *testing.T) {
 		{name: "mr_note", event: RoutableEvent{Type: "mr_note"}, want: "commented"},
 		{name: "mr_event merged", event: RoutableEvent{Type: "mr_event"}, want: "merged"},
 		{name: "mr_event opened", event: RoutableEvent{Type: "mr_event", Action: "opened"}, want: "opened"},
+		{name: "mr_event closed", event: RoutableEvent{Type: "mr_event", Action: "closed"}, want: "closed"},
 		{name: "unknown", event: RoutableEvent{Type: "unknown"}, want: ""},
 	}
 	for _, tt := range tests {
