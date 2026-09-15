@@ -532,6 +532,62 @@ func TestWalkFullsendRepo(t *testing.T) {
 	assert.True(t, len(paths) >= 10, "expected at least 10 installed files, got %d", len(paths))
 }
 
+// vestigialLayeredDirs are layeredDirs entries the embed has shipped nothing
+// under since 8b8c3bb1 (#5552) moved agent content to fullsend-ai/agents.
+// Workspace preparation's `[[ -d ]]` guard skips them on every run, which is
+// harmless only because nothing expects them to be populated. Anything a
+// harness or guide expects CI to layer must NOT be in this set — that is
+// the guard-vs-embed mismatch behind #6689 (providers/) and #6834
+// (policies/). Removing a directory from this set once it ships content is
+// the intended maintenance; adding one to hide a missing file is not.
+var vestigialLayeredDirs = map[string]bool{
+	"agents/":  true,
+	"skills/":  true,
+	"schemas/": true,
+	"harness/": true,
+	"plugins/": true,
+	"env/":     true,
+}
+
+// TestLayeredDirsShipContent pins the invariant #6689 and #6834 both broke:
+// every layered directory that consumers rely on must actually exist in the
+// embed, so workspace preparation's `[[ -d ]]` guard copies it rather than
+// silently skipping it. The vestigial set is pinned in the other direction so
+// it cannot quietly absorb a directory that is supposed to ship.
+func TestLayeredDirsShipContent(t *testing.T) {
+	counts := make(map[string]int, len(layeredDirs))
+	require.NoError(t, WalkLayeredContent(func(path string, _ []byte) error {
+		for _, dir := range layeredDirs {
+			if strings.HasPrefix(path, dir) {
+				counts[dir]++
+			}
+		}
+		return nil
+	}))
+
+	for _, dir := range layeredDirs {
+		if vestigialLayeredDirs[dir] {
+			assert.Zero(t, counts[dir],
+				"%s ships %d embedded file(s) but is listed as vestigial; remove it from vestigialLayeredDirs", dir, counts[dir])
+			continue
+		}
+		assert.NotZero(t, counts[dir],
+			"%s is in layeredDirs/LAYERED_DIRS but the embed has no files under it, so workspace preparation's [[ -d ]] guard skips it on every run (the #6689/#6834 failure mode); ship content or drop the entry", dir)
+	}
+	for dir := range vestigialLayeredDirs {
+		assert.Contains(t, layeredDirs, dir, "vestigialLayeredDirs entry %s is not in layeredDirs", dir)
+	}
+
+	// The scaffold does not ship a sandbox policy: fleet agents resolve
+	// theirs from fullsend-ai/agents by URL and `fullsend agent new` writes
+	// one for repo-local agents. A policies/ entry here with no file behind
+	// it is the #6834 bug; a file behind it would be a second copy of the
+	// fleet policy with no drift guard (#7268).
+	assert.NotContains(t, layeredDirs, "policies/")
+	_, err := FullsendRepoFile("policies/base.yaml")
+	assert.Error(t, err, "scaffold must not ship policies/base.yaml; see #7268")
+}
+
 func TestLayeredDirsNotInstalled(t *testing.T) {
 	skippedPrefixes := []string{
 		"agents/",
@@ -539,7 +595,6 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 		"schemas/",
 		"harness/",
 		"plugins/",
-		"policies/",
 		"profiles/",
 		"providers/",
 		"scripts/",

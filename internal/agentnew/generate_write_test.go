@@ -64,6 +64,44 @@ func TestGenerateWritesAndIsIdempotentlyRefused(t *testing.T) {
 	}
 }
 
+// TestGenerateDoesNotBackfillMissingSharedAssetOnCollision pins the #6834
+// scenario a review caught in an earlier revision of this fix: an agent
+// already exists (harness/agents/schema/post-script all committed) and only
+// a shared asset — the policy — is missing, whether it was deleted or never
+// existed for this agent. Re-running Generate for the same name must not be
+// mistaken for a way to "backfill" the missing policy: the owned files
+// collide first, so the call is refused before the write loop that would
+// have written the absent shared file ever runs. Getting an existing
+// harness a missing policy requires either --force (which also rewrites
+// the owned files) or writing/copying the policy some other way — not a
+// plain re-run.
+func TestGenerateDoesNotBackfillMissingSharedAssetOnCollision(t *testing.T) {
+	dir := newTargetDir(t)
+	opts := testOptions("lint-docs", "triage")
+
+	if _, err := Generate(opts, dir, false, false); err != nil {
+		t.Fatalf("first Generate: %v", err)
+	}
+	policy := filepath.Join(dir, "policies", "base.yaml")
+	if _, err := os.Stat(policy); err != nil {
+		t.Fatalf("policy should exist after the first generate: %v", err)
+	}
+	if err := os.Remove(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Generate(opts, dir, false, false)
+	if err == nil {
+		t.Fatal("re-running Generate for an existing agent should still be refused")
+	}
+	if !strings.Contains(err.Error(), "already exist") {
+		t.Errorf("expected the owned-file collision error, got: %v", err)
+	}
+	if _, statErr := os.Stat(policy); statErr == nil {
+		t.Fatal("Generate must not have backfilled the missing policy: the collision on owned files should stop it before the write loop")
+	}
+}
+
 func TestGenerateForceRewritesOwnedFilesOnly(t *testing.T) {
 	dir := newTargetDir(t)
 	opts := testOptions("lint-docs", "triage")
