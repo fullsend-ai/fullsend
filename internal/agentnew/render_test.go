@@ -327,6 +327,12 @@ func TestRoleImageReachesTheHarness(t *testing.T) {
 		if h.OpenShell == nil || !reflect.DeepEqual(h.OpenShell.Profiles, role.Profiles) {
 			t.Errorf("role %q: profiles = %v, want %v", name, h.OpenShell, role.Profiles)
 		}
+		// readonly_repo must survive into the emitted YAML, not only sit on
+		// the Role struct: a generated review harness that ships writable
+		// turns "do not edit files" back into a request.
+		if h.ReadonlyRepo != role.ReadonlyRepo || h.ReadonlyRepo != (name == "review") {
+			t.Errorf("role %q: readonly_repo = %v, want %v", name, h.ReadonlyRepo, name == "review")
+		}
 		seen[role.Image] = true
 	}
 	// Both image constants must be reachable, or one is dead configuration.

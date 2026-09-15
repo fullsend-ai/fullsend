@@ -236,7 +236,16 @@ comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' 
 
 case "${status}" in
   ok|findings|error) ;;
-  *) echo "post-lint-docs: status must be ok, findings or error (got '${status}')" >&2; exit 1 ;;
+  *)
+    # status is model output: never echo it raw. A value carrying CR/LF would
+    # split the runner's log line (a workflow-command injection vector), so
+    # flatten it and cap it before it reaches stderr.
+    shown="${status//[$'\r\n']/ }"
+    # printf '%s' never interprets backslash escapes; echo does under xpg_echo,
+    # so a literal "\n" in the value could still forge a log line through echo.
+    printf '%s\n' "post-lint-docs: status must be ok, findings or error (got '${shown:0:40}')" >&2
+    exit 1
+    ;;
 esac
 [[ -n "${summary}" ]] || { echo "post-lint-docs: summary is required" >&2; exit 1; }
 if [[ "${summary}" == *$'\n'* || "${summary}" == *$'\r'* ]]; then
@@ -257,11 +266,6 @@ if (( ${#comment} > MAX_COMMENT_CHARS )); then
   comment="${comment:0:${keep}}${TRUNCATION_MARKER}"
 fi
 
-if [[ "${status}" == "ok" ]]; then
-  echo "post-lint-docs: status=ok, nothing to post" >&2
-  exit 0
-fi
-
 # Derive the repo and number from the work item URL rather than trusting extra
 # environment. The pattern also rejects anything that is not a github.com URL.
 url_re='^https://github[.]com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(issues|pull)/([0-9]+)$'
@@ -271,6 +275,36 @@ if [[ ! "${ISSUE_URL}" =~ ${url_re} ]]; then
 fi
 REPO="${BASH_REMATCH[1]}"
 NUMBER="${BASH_REMATCH[3]}"
+
+# On ok, post nothing — unless an earlier run left a findings comment on
+# this work item. The harness trigger fires again on later pushes, so a
+# problem the author has since fixed would otherwise stay reported.
+# --only-if-exists makes fullsend replace that comment (same marker, found
+# through the forge client and the bot's own author) with the all-clear,
+# and post nothing when there is no earlier comment.
+if [[ "${status}" == "ok" ]]; then
+  if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+    echo "post-lint-docs: status=ok, nothing to post (dry run: an earlier findings comment would be replaced with the all-clear)" >&2
+    exit 0
+  fi
+  # The runner's fullsend may predate --only-if-exists (it is pinned by the
+  # repository's fullsend-ref, not by the CLI that generated this script).
+  # Detect the flag instead of assuming it: on an older CLI, keep the old
+  # behaviour — post nothing — rather than fail the common ok path.
+  if ! fullsend issues post-comment --help 2>&1 | grep -q -- '--only-if-exists'; then
+    echo "post-lint-docs: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
+    exit 0
+  fi
+  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+    | fullsend issues post-comment \
+        --tracker github \
+        --project "${REPO}" \
+        --number "${NUMBER}" \
+        --marker "${MARKER}" \
+        --only-if-exists \
+        --result -
+  exit 0
+fi
 
 if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
   printf '**%s**\n\n%s\n' "${summary}" "${comment}"

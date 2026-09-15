@@ -149,6 +149,7 @@ fullsend
 │       ├── --number <int>                   #     Issue number
 │       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
 │       ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│       ├── --only-if-exists                 #     Update an existing marked comment, never create one
 │       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 ├── post-review                              # Post PR/MR review comments to GitHub or GitLab
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
