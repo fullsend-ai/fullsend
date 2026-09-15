@@ -96,7 +96,7 @@ adding skills via harness, extending the sandbox image, disabling agents.
 
 **Guides:**
 - [Configuring Agent Behavior](customizing-agents.md) — harness
-  composition, status notifications, disabling agents
+  composition, status notifications, disabling agents, [GitHub Packages](customizing-agents.md#private-registries-and-github-packages)
 - [Harness Field Reference](../../reference/harness-reference.md) — complete field reference,
   merge rules, and advanced configuration
 

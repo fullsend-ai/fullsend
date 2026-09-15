@@ -173,6 +173,19 @@ func TestProfileExists(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestExpandProviderValue_AllowsWorkflowToken(t *testing.T) {
+	const token = "ghs_workflow_token_value_xx"
+	t.Setenv("FULLSEND_WORKFLOW_TOKEN", token)
+	got := expandProviderValue("${FULLSEND_WORKFLOW_TOKEN}")
+	assert.Equal(t, token, got, "provider credentials may expand FULLSEND_WORKFLOW_TOKEN (#6649)")
+
+	args, extraEnv, secrets := buildProviderArgs("github-packages", "fullsend-github-packages",
+		map[string]string{"GITHUB_TOKEN": "${FULLSEND_WORKFLOW_TOKEN}"}, nil, false)
+	assert.Contains(t, extraEnv, "GITHUB_TOKEN="+token)
+	assert.Contains(t, secrets, token)
+	assert.NotContains(t, strings.Join(args, " "), token, "the real token must not appear on the command line")
+}
+
 func TestProviderDefinitionsCannotExpandDeniedKeys(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-real-static-key")
 	t.Setenv("HARMLESS", "ok")
