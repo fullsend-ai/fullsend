@@ -137,6 +137,18 @@ func TestResolveOpenAICredential_Static(t *testing.T) {
 	assert.NotContains(t, cred.detail, "sk-local-dev")
 }
 
+func TestResolveOpenAICredential_TreatsWhitespaceOnlyStaticKeyAsUnset(t *testing.T) {
+	// resolveOpenAIStatusSources trims OPENAI_API_KEY before checking it is
+	// set; the runner must agree, or a whitespace-only value would report
+	// as "no credential configured" in status while the runner accepts it
+	// as a real (garbage) credential.
+	_, err := resolveOpenAICredential(context.Background(), openAITestEnv(map[string]string{
+		"OPENAI_API_KEY": "   ",
+	}), config.OpenAIWIFConfig{})
+	require.Error(t, err, "a whitespace-only static key must be treated the same as unset")
+	assert.Contains(t, err.Error(), "OPENAI_API_KEY")
+}
+
 func TestResolveOpenAICredential_NothingConfigured(t *testing.T) {
 	_, err := resolveOpenAICredential(context.Background(), openAITestEnv(nil), config.OpenAIWIFConfig{})
 	require.Error(t, err)

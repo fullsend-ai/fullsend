@@ -155,7 +155,7 @@ fullsend inference openai import \
 
 ### `inference openai status`
 
-Prints the resolved OpenAI WIF identifiers and their source (config layer or environment variables), and flags a partial trio. When run inside a GitHub Actions job with `id-token: write`, performs one exchange and reports the returned scope and expiry without ever printing the token.
+Prints the resolved OpenAI WIF identifiers and their source (config layer or environment variables), and flags a partial trio. When nothing is configured, reports that a run will refuse the openai provider and names both remedies: the WIF trio, or the `FULLSEND_OPENAI_API_KEY` repository secret (exported as `OPENAI_API_KEY`). A static `OPENAI_API_KEY` already in the environment is reported as the source; in CI the runner warns and WIF remains preferred. When run inside a GitHub Actions job with `id-token: write`, performs one exchange and reports the returned scope and expiry without ever printing the token.
 
 ```bash
 fullsend inference openai status <owner/repo> \

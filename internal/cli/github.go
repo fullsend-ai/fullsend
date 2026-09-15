@@ -1032,6 +1032,7 @@ var configKeyMapping = map[string]configKeyInfo{
 	forge.PerRepoGuardVar:       {storage: storageVariable},
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
+	openAIRepoSecretName:        {storage: storageSecret},
 }
 
 func newGitHubSetCmd() *cobra.Command {
@@ -1050,7 +1051,8 @@ Valid keys:
   FULLSEND_REVIEW_CLIENT_ID   repo variable   review app OAuth client ID
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
-  FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name`,
+  FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name
+  FULLSEND_OPENAI_API_KEY     repo secret     opt-in OpenAI API key when WIF is unset`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -1082,6 +1084,10 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 		sort.Strings(validKeys)
 		return fmt.Errorf("unknown config key %q; valid keys: %s", key, strings.Join(validKeys, ", "))
+	}
+
+	if key == openAIRepoSecretName && strings.TrimSpace(value) == "" {
+		return fmt.Errorf("value for %s must not be empty", key)
 	}
 
 	owner, repo, isRepo := parseTarget(target)

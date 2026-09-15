@@ -48,6 +48,20 @@ const (
 	// Secrets — GitLab only.
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
+	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
+	// of requiredSecrets/requiredSecretsForForge — a repository with no
+	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
+	// deletes it if present so a torn-down repo doesn't keep a long-lived
+	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
+	// `fullsend github set` or pasted directly into GitHub settings)
+	// fullsend can safely delete regardless of who created it — unlike
+	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
+	// variable, which fullsend never forwards and does not delete on
+	// uninstall — see gitlabUninstallSecrets
+	// in internal/repos/uninstall.go for why that one is deliberately not
+	// deleted.
+	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
+
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
 	VarLegacySA             = "FULLSEND_SA"

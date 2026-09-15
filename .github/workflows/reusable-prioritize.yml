@@ -51,6 +51,8 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      FULLSEND_OPENAI_API_KEY:
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
@@ -169,6 +171,8 @@ jobs:
           FULLSEND_OPENAI_AUDIENCE: ${{ vars.FULLSEND_OPENAI_AUDIENCE }}
           FULLSEND_OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.FULLSEND_OPENAI_IDENTITY_PROVIDER_ID }}
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
+          # Opt-in static key, used only when the three variables above are unset (ADR 0092).
+          OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: prioritize
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

@@ -10,8 +10,10 @@ ever holds a placeholder that the OpenShell gateway swaps for the real token on 
 Setting it up is one visit to the OpenAI console — yours, or your IT administrator's — and one
 command per repository. No key is created, downloaded or rotated.
 
-> **GitHub Actions only.** The exchange needs the job's OIDC endpoint. For GitLab CI and for runs
-> on your own machine, use an API key in the runner environment — see [Run it locally](#run-it-locally).
+> **GitHub Actions only** for Workload Identity Federation. The exchange needs the job's OIDC
+> endpoint. If you cannot enrol a WIF provider, [Route C](#c-static-key-as-a-repository-secret) uses
+> a repository secret. For GitLab CI and for runs on your own machine, use an API key in the runner
+> environment — see [Run it locally](#run-it-locally).
 
 ## What you end up with
 
@@ -47,8 +49,13 @@ route A; if the page or the setting is not there, you are on route B and someone
   (Organization → Projects). You send one request per repository and receive the three
   identifiers back. Do [step 1](#1-see-what-your-repository-actually-claims-both-routes), then
   [B2](#b2-send-the-request-route-b) and [B3](#b3-record-what-you-get-back-route-b).
+- **Route C — static key as a repository secret.** Use this when you cannot create or request an
+  OpenAI WIF identity provider (no admin route, no ETA). Skip steps 1–4 and follow
+  [C. Static key as a repository secret](#c-static-key-as-a-repository-secret), then
+  [step 5](#5-pick-a-gpt-model-for-an-agent). WIF stays the recommended route; this one stores a
+  long-lived key.
 
-Either way, steps 4 and onwards are the same, and
+On routes A and B, steps 4 and onwards are the same.
 [`fullsend inference openai`](../../cli/inference.md#inference-openai) does the paperwork on both:
 `request` computes the provider and mapping values from the repository name (route A: what to type
 into the console; route B: the ticket to send), and `import` records the identifiers you end up with.
@@ -256,6 +263,38 @@ first run's exchange still returns 4xx, the assertions and the claims differ som
 character for character with the administrator); a `repository` that is not in any mapping is the
 usual cause when a second repository is enrolled.
 
+## C. Static key as a repository secret
+
+Use this only when routes A and B are unavailable. It stores a long-lived OpenAI API key as a GitHub
+Actions secret named `FULLSEND_OPENAI_API_KEY` (not `OPENAI_API_KEY`, so an unrelated repository
+secret is never picked up by accident). Workflows export it to the runner as `OPENAI_API_KEY`; the
+runner uses it only when the three `FULLSEND_OPENAI_*` WIF identifiers are unset. A partial trio still
+errors — a typo cannot fall through to the key. When the trio and the secret are both set, WIF wins
+and the secret is unused.
+
+1. If the repository was installed or its workflow files were last synced before this feature shipped,
+   re-run `fullsend github setup <owner/repo>` (or `fullsend repos install` for a manifest-managed
+   repository) first — the reusable workflow's caller shim has to forward the secret before setting it
+   does anything.
+2. Create an API key in the OpenAI project the runs should be billed to.
+3. Set it on the repository:
+   ```bash
+   fullsend github set <owner/repo> FULLSEND_OPENAI_API_KEY <value>
+   ```
+   Or paste it in Settings → Secrets and variables → Actions → Secrets as `FULLSEND_OPENAI_API_KEY`.
+4. Pick `openai/<model>` for an agent ([step 5](#5-pick-a-gpt-model-for-an-agent)) and trigger a run.
+5. Expect the warning `static OPENAI_API_KEY in CI; prefer Workload Identity Federation` in the run
+   log. `fullsend inference openai status <owner/repo>` reports the same source and that WIF remains
+   preferred.
+
+What this trades away: a long-lived key stored as a GitHub secret, no per-repository trust boundary
+(any workflow in the repository with access to secrets can read it), and manual rotation. What does
+not change: the key never enters the sandbox, only the endpoint-bound placeholder does; egress stays
+`POST /v1/responses` on `api.openai.com`; the value is masked and reserved through `oidcDenyKeys`.
+
+**GitLab CI.** A masked `OPENAI_API_KEY` CI/CD variable already works on the same runner path — GitLab
+injects CI variables into the job environment, so no extra forwarding is required.
+
 ## 4. Tell fullsend the three identifiers
 
 > **Shortcut.** `fullsend inference openai import` writes the same block from a reply JSON file or
@@ -407,7 +446,7 @@ agent starts and names the rule.
 
 | What you see | What to do |
 |---|---|
-| `no OpenAI credential: set FULLSEND_OPENAI_AUDIENCE, …` | Run step 4 (or add the three variables), or bump the workflow pin to a release that includes this feature. |
+| `no OpenAI credential: set FULLSEND_OPENAI_AUDIENCE, …` | Run step 4 (or add the three variables), or set the `FULLSEND_OPENAI_API_KEY` repository secret ([Route C](#c-static-key-as-a-repository-secret)), or bump the workflow pin to a release that includes this feature. |
 | `OpenAI WIF is partially configured: missing …` / `inference.openai in config.yaml is partially configured` | One value is empty in the place you chose (variables, or `config.yaml`). Fill it in — fullsend will not silently fall back to an API key, and it does not mix the two sources. |
 | `… the job has no GitHub OIDC endpoint` | This is not a GitHub Actions job, or `permissions: id-token: write` is missing from the workflow. On GitLab CI or locally, use an API key. |
 | `OpenAI WIF exchange failed: … token endpoint returned 4xx` | The mapping does not match this run. Check the audience first (one character off is enough), then compare the claims from step 1 with the mapping's assertions (route B: with the administrator). Works in one repository but not another → that repository has no mapping yet. |

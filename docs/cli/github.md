@@ -106,6 +106,15 @@ Updates a single configuration value (secret or variable) on a GitHub org or rep
 fullsend github set <org|owner/repo> <key> <value>
 ```
 
+| Key | Storage | Description |
+|-----|---------|-------------|
+| `FULLSEND_GCP_REGION` | Repo variable | GCP region for inference |
+| `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | Review app OAuth client ID |
+| `FULLSEND_PER_REPO_INSTALL` | Repo variable | Per-repo install marker |
+| `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project for inference |
+| `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | WIF provider resource name |
+| `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. |
+
 ## `github status`
 
 Analyzes the GitHub-side installation state. Read-only.

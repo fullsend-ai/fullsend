@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -99,8 +100,12 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if r.VarsDeleted != 4 {
 		t.Errorf("VarsDeleted = %d, want 4", r.VarsDeleted)
 	}
-	if r.SecretsDeleted != 2 {
-		t.Errorf("SecretsDeleted = %d, want 2", r.SecretsDeleted)
+	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
+	// uninstall always attempts to delete (idempotent: a 404 for a repo
+	// that never set it is not an error) so a repo that did set it
+	// doesn't keep a long-lived key around after teardown.
+	if r.SecretsDeleted != 3 {
+		t.Errorf("SecretsDeleted = %d, want 3", r.SecretsDeleted)
 	}
 
 	deleted := collectDeletedPaths(client)
@@ -122,8 +127,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if len(client.DeletedVariables) != 4 {
 		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))
 	}
-	if len(client.DeletedSecrets) != 2 {
-		t.Errorf("deleted %d secrets, want 2", len(client.DeletedSecrets))
+	if len(client.DeletedSecrets) != 3 {
+		t.Errorf("deleted %d secrets, want 3", len(client.DeletedSecrets))
 	}
 }
 
@@ -770,5 +775,43 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 	}
 	if !hasDone {
 		t.Error("missing 'done' phase callback")
+	}
+}
+
+func TestUninstallSecretsForForge_GitHub_DeletesOptInOpenAIKey(t *testing.T) {
+	secrets := UninstallSecretsForForge(ForgeGitHub)
+	found := false
+	for _, s := range secrets {
+		if s == forge.SecretOpenAIAPIKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("UninstallSecretsForForge(GitHub) = %v, want it to include %s so a torn-down repo doesn't keep the opt-in key", secrets, forge.SecretOpenAIAPIKey)
+	}
+
+	// The opt-in key must never become a health requirement: a repo with
+	// no OpenAI WIF and no static key is not an unhealthy installation.
+	for _, s := range requiredSecretsForForge(ForgeGitHub) {
+		if s == forge.SecretOpenAIAPIKey {
+			t.Errorf("requiredSecretsForForge(GitHub) must not include the opt-in %s", forge.SecretOpenAIAPIKey)
+		}
+	}
+}
+
+func TestUninstallSecretsForForge_GitLab_DoesNotDeleteOpenAIKey(t *testing.T) {
+	// Unlike GitHub's FULLSEND_OPENAI_API_KEY — a dedicated,
+	// FULLSEND_-namespaced secret fullsend can safely delete regardless of
+	// how it was set — GitLab's unprefixed OPENAI_API_KEY CI/CD variable is
+	// never forwarded by fullsend and shares no such namespace (it "already
+	// works" as a plain variable the project owner manages). Deleting it on
+	// uninstall would risk destroying a credential unrelated jobs in the
+	// same project depend on. Assert the exact list, not just this one
+	// key's absence, so an unrelated future addition can't silently widen
+	// what GitLab uninstall deletes.
+	got := UninstallSecretsForForge(ForgeGitLab)
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
+	if !slices.Equal(got, want) {
+		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
 	}
 }

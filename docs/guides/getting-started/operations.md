@@ -25,6 +25,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
+| `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key when OpenAI WIF is unavailable (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
 
 ### GitLab
 
@@ -40,6 +41,7 @@ fullsend repos install -f repos.yaml "$OWNER/$REPO" \
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
+| `OPENAI_API_KEY` | CI/CD variable (masked) | Opt-in static OpenAI API key when OpenAI WIF is unavailable; unused when the WIF trio is set | `sk-...` |
 
 ## Syncing workflow templates
 
@@ -77,7 +79,7 @@ To remove fullsend from a single repository:
 
 > **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when no existing value is present but does not overwrite an existing value. This only applies when the repo's `.gitlab-ci.yml` already contains a `workflow:` block — when no `workflow:` block exists, fullsend leaves it absent so push-triggered pipelines are not disrupted. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
 
-2. Delete all CI/CD variables prefixed with `FULLSEND_`
+2. Delete all CI/CD variables prefixed with `FULLSEND_`. If you set `OPENAI_API_KEY` for the static-key route, delete it yourself too if you want it gone — fullsend never created it (it is a plain CI/CD variable, not `FULLSEND_`-prefixed) and does not delete it as part of uninstall
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
 

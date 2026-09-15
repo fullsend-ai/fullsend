@@ -361,6 +361,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	commonSecrets := []string{
 		"FULLSEND_GCP_WIF_PROVIDER",
 		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_OPENAI_API_KEY",
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 		"OTEL_EXPORTER_OTLP_HEADERS",
 	}
@@ -468,6 +469,80 @@ func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "instruction<<INSTRUCTION_fixed-delimiter\nChange A\nChange B\nINSTRUCTION_fixed-delimiter\n")
 	assert.NotContains(t, string(output), "\r")
+}
+
+// TestOpenAIAPIKeySecretThreading validates that the opt-in static OpenAI
+// key (#7295) is forwarded by every scaffold shim that already forwards
+// FULLSEND_GCP_PROJECT_ID, and that every reusable-*.yml callee it calls
+// declares the secret and exports it as OPENAI_API_KEY (#7295, 333ad967e).
+func TestOpenAIAPIKeySecretThreading(t *testing.T) {
+	forward := "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
+		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
+		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
+		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
+		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		// This repo's own installed shims (not just the scaffold templates
+		// new installs get) must forward the secret too, or fullsend's own
+		// runs could never use it.
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, string(tc.content(t)), forward,
+				"%s must forward %s", tc.name, "FULLSEND_OPENAI_API_KEY")
+		})
+	}
+
+	declaration := "FULLSEND_OPENAI_API_KEY:\n        required: false"
+	export := "OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+
+	// Standalone reusable-{stage}.yml files have exactly one job/one agent
+	// step each, so a whole-file substring check is unambiguous.
+	standaloneStages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range standaloneStages {
+		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
+			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
+			assert.Contains(t, content, declaration,
+				"reusable-%s.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets", stage)
+			assert.Contains(t, content, export,
+				"reusable-%s.yml must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", stage)
+		})
+	}
+
+	// reusable-dispatch.yml inlines seven jobs in one file (TestOpenAIVariableForwarding
+	// above uses the same step markers): a whole-file substring check would still pass
+	// if any single step's export were dropped or mistyped, since the other six would
+	// remain. Scope the export check to each step's own section.
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		assert.Contains(t, content, declaration,
+			"reusable-dispatch.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets")
+
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				assert.Contains(t, section, export,
+					"%q step must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", marker)
+			})
+		}
+	})
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers

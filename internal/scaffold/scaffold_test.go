@@ -165,6 +165,8 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "stop-fix:")
 	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
 	assert.Contains(t, s, "install_mode: per-repo")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
@@ -608,6 +610,7 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-triage-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -631,6 +634,7 @@ func TestCodeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.NotContains(t, s, "GCP_WIF_SA_EMAIL")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-code-")
@@ -657,6 +661,7 @@ func TestReviewWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-review-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -682,6 +687,7 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-fix-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -707,6 +713,7 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-retro-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -943,6 +950,7 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -951,6 +959,28 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
 	assert.Contains(t, s, "contents: read")
+}
+
+func TestScaffoldShimsForwardOpenAIAPIKey(t *testing.T) {
+	const gcpForward = "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}"
+	const openAIForward = "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	var checked int
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		if !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".yaml") {
+			return nil
+		}
+		s := string(content)
+		if !strings.Contains(s, gcpForward) {
+			return nil
+		}
+		checked++
+		assert.Contains(t, s, openAIForward,
+			"%s forwards FULLSEND_GCP_PROJECT_ID but not FULLSEND_OPENAI_API_KEY", path)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, checked, 7,
+		"expected at least the six agent shims plus the per-repo shim to forward GCP_PROJECT_ID")
 }
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
