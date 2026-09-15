@@ -16,6 +16,9 @@ topics:
 
 Date: 2026-09-09
 
+Detailed behavior and implementation requirements are defined in the
+[Auto-Merge Contract v1](../normative/auto-merge/v1/).
+
 ## Status
 
 Accepted
