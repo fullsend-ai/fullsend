@@ -87,6 +87,24 @@ func TestProbeRepoState_Installed(t *testing.T) {
 	}
 }
 
+func TestProbeRepoState_GitLab_InstalledViaForgeToken(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true when FULLSEND_FORGE_TOKEN is present")
+	}
+}
+
 func TestProbeRepoState_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 

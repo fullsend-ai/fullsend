@@ -4437,6 +4437,14 @@ func TestUnsupportedMethods(t *testing.T) {
 		err := client.CreateProtectedCIVariable(ctx, "o", "r", "KEY", "val")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("DownloadPackageFile", func(t *testing.T) {
+		_, err := client.DownloadPackageFile(ctx, "o", "r", "pkg", "1.0", "file.json")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("UploadPackageFile", func(t *testing.T) {
+		err := client.UploadPackageFile(ctx, "o", "r", "pkg", "1.0", "file.json", []byte("{}"))
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 }
 
 func TestDo_ObservesRateLimitHeaders(t *testing.T) {

@@ -11,8 +11,9 @@ import (
 // and convert tests (sets projectPath, gitlabURL, and botUserID).
 func newEventsPoller(client GitLabClient) *Poller {
 	return New(client, nil, "group/project", Options{
-		BotUserID: 100,
-		GitLabURL: "https://gitlab.com",
+		BotUserID:      100,
+		GitLabURL:      "https://gitlab.com",
+		DispatchSecret: testDispatchSecret,
 	})
 }
 
@@ -347,7 +348,7 @@ func TestDiscoverAllEvents_NoteFetchFailure(t *testing.T) {
 	mc := newMockClient()
 
 	// Set up existing label state so we can verify restoration.
-	mc.variables["FULLSEND_LABEL_STATE"] = `{"1":["ready-to-code"]}`
+	mc.setPollState(persistedPollState{LabelState: LabelState{1: {"ready-to-code"}}})
 
 	mc.issues = []Issue{
 		{IID: 1, UpdatedAt: now, Labels: []string{"ready-to-code", "ready-for-review"}},
@@ -740,9 +741,10 @@ func TestDiscoverAllEvents_EventsModeSkipsSlashCommands(t *testing.T) {
 
 	// Use events mode — slash commands should be skipped.
 	p := New(mc, nil, "group/project", Options{
-		BotUserID: 100,
-		GitLabURL: "https://gitlab.com",
-		Mode:      "events",
+		BotUserID:      100,
+		GitLabURL:      "https://gitlab.com",
+		Mode:           "events",
+		DispatchSecret: testDispatchSecret,
 	})
 	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
 	if err != nil {
@@ -787,9 +789,10 @@ func TestDiscoverAllEvents_EventsModeSkipsWhitespacePrefixedSlash(t *testing.T) 
 	}
 
 	p := New(mc, nil, "group/project", Options{
-		BotUserID: 100,
-		GitLabURL: "https://gitlab.com",
-		Mode:      "events",
+		BotUserID:      100,
+		GitLabURL:      "https://gitlab.com",
+		Mode:           "events",
+		DispatchSecret: testDispatchSecret,
 	})
 	events, _, _, err := p.discoverAllEvents(context.Background(), "group", "project", since)
 	if err != nil {

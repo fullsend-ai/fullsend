@@ -98,7 +98,7 @@ func newPollCmd() *cobra.Command {
 				GitLabURL:      gitlabURL,
 				PipelineRef:    pipelineRef,
 				PollJobURL:     os.Getenv("CI_JOB_URL"),
-				DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
+				DispatchSecret: os.Getenv(forge.SecretDispatch),
 				Mode:           mode,
 			}
 

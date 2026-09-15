@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -447,16 +446,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		}
 		return vars, nil
 	case ForgeGitLab:
-		now := time.Now().UTC().Format(time.RFC3339)
-		vars := []ManagedVar{
-			{Name: forge.VarLastPollAtFast, Value: now, Dynamic: true},
-			{Name: forge.VarLastPollAtFull, Value: now, Dynamic: true},
-			{Name: forge.VarLabelState, Value: "{}", Dynamic: true},
-			{Name: forge.VarDispatchedKeysFast, Value: "{}", Dynamic: true},
-			{Name: forge.VarDispatchedKeysFull, Value: "{}", Dynamic: true},
-			{Name: forge.VarFailedKeysFast, Value: "{}", Dynamic: true},
-			{Name: forge.VarFailedKeysFull, Value: "{}", Dynamic: true},
-		}
+		// Poller state lives in the Generic Package Registry (#7313),
+		// so GitLab installs no longer seed CI/CD watermark variables.
+		var vars []ManagedVar
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})
 		}
@@ -523,7 +515,15 @@ var requiredVariables = []string{forge.VarMintURL}
 // and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
-var gitlabRequiredVariables = []string{
+// gitlabRequiredVariables is empty: poller state is stored in the Generic
+// Package Registry, not as CI/CD variables (#7313). GitLab install
+// completeness is determined by secrets, schedules, and workflow files.
+var gitlabRequiredVariables []string
+
+// gitlabLegacyPollerVars are CI/CD variable names used by pre-#7313
+// poller state. Uninstall still deletes them; orphan detection treats
+// them as known leftovers rather than unknown FULLSEND_ variables.
+var gitlabLegacyPollerVars = []string{
 	forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState,
 	forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
 	forge.VarFailedKeysFast, forge.VarFailedKeysFull,

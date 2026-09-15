@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -47,9 +48,12 @@ type mockClient struct {
 	labelEvents    map[int][]ResourceLabelEvent // keyed by issue IID
 	labelEventsErr map[int]error
 
-	variables   map[string]string
-	variableErr map[string]error
-	updatedVars map[string]string // records UpdateCIVariable calls
+	packages           map[string][]byte
+	packageDownloadErr error
+	packageUploadErr   error
+
+	ciVariables map[string]string // legacy pre-#7313 poller CI/CD variables, keyed by name
+	ciVarErr    map[string]error  // per-name error override (e.g. transient failure)
 
 	issue    map[int]*Issue // keyed by IID
 	issueErr map[int]error
@@ -80,9 +84,9 @@ func newMockClient() *mockClient {
 		mrNoteErr:      make(map[int]error),
 		labelEvents:    make(map[int][]ResourceLabelEvent),
 		labelEventsErr: make(map[int]error),
-		variables:      make(map[string]string),
-		variableErr:    make(map[string]error),
-		updatedVars:    make(map[string]string),
+		packages:       make(map[string][]byte),
+		ciVariables:    make(map[string]string),
+		ciVarErr:       make(map[string]error),
 		issue:          make(map[int]*Issue),
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
@@ -126,22 +130,101 @@ func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, iss
 	return m.labelEvents[issueIID], nil
 }
 
-func (m *mockClient) GetCIVariable(_ context.Context, _, _, name string) (string, error) {
-	if err, ok := m.variableErr[name]; ok && err != nil {
+func pollStateKey() string {
+	return pollStatePackageName + "/" + pollStatePackageVersion + "/" + pollStateFileName
+}
+
+// testDispatchSecret is the shared HMAC secret used by test pollers
+// (see newTestPoller) and by setPollState when seeding state, so seeded
+// documents verify under the default test poller now that the poller
+// fails closed on unsigned state.
+const testDispatchSecret = "test-secret"
+
+// setPollState seeds a validly-signed state document (signed with
+// testDispatchSecret), mirroring what a real signing poller writes.
+func (m *mockClient) setPollState(s persistedPollState) {
+	sig, err := computeStateHMAC(testDispatchSecret, s)
+	if err != nil {
+		panic(err)
+	}
+	s.HMAC = sig
+	data, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	m.packages[pollStateKey()] = data
+}
+
+// setPollStateUnsigned seeds a state document without a signature (or
+// with whatever HMAC field s already carries), used to exercise the
+// fail-closed / signature-mismatch paths.
+func (m *mockClient) setPollStateUnsigned(s persistedPollState) {
+	data, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	m.packages[pollStateKey()] = data
+}
+
+func (m *mockClient) setPollStateRaw(raw string) {
+	m.packages[pollStateKey()] = []byte(raw)
+}
+
+func (m *mockClient) getPollState() (persistedPollState, bool) {
+	data, ok := m.packages[pollStateKey()]
+	if !ok {
+		return persistedPollState{}, false
+	}
+	var s persistedPollState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return persistedPollState{}, true
+	}
+	return s, true
+}
+
+func (m *mockClient) DownloadPackageFile(_ context.Context, _, _, packageName, version, fileName string) ([]byte, error) {
+	if m.packageDownloadErr != nil {
+		return nil, m.packageDownloadErr
+	}
+	key := packageName + "/" + version + "/" + fileName
+	data, ok := m.packages[key]
+	if !ok {
+		return nil, forge.ErrNotFound
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	return cp, nil
+}
+
+func (m *mockClient) UploadPackageFile(_ context.Context, _, _, packageName, version, fileName string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.packageUploadErr != nil {
+		return m.packageUploadErr
+	}
+	key := packageName + "/" + version + "/" + fileName
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	m.packages[key] = cp
+	return nil
+}
+
+// GetCIVariable simulates reading a legacy pre-#7313 poller CI/CD
+// variable. Returns forge.ErrNotFound when the variable is not set,
+// matching the real GitLab client's behavior for a Maintainer-capable
+// token. A Developer-level token instead gets forge.ErrForbidden for
+// every operation on this API, including reads of absent variables —
+// tests exercising that behavior set ciVarErr[name] = forge.ErrForbidden
+// explicitly rather than relying on this default.
+func (m *mockClient) GetCIVariable(_ context.Context, _, _ string, name string) (string, error) {
+	if err, ok := m.ciVarErr[name]; ok && err != nil {
 		return "", err
 	}
-	val, ok := m.variables[name]
+	val, ok := m.ciVariables[name]
 	if !ok {
 		return "", forge.ErrNotFound
 	}
 	return val, nil
-}
-
-func (m *mockClient) UpdateCIVariable(_ context.Context, _, _, name, value string, _ bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.updatedVars[name] = value
-	return nil
 }
 
 func (m *mockClient) GetAuthenticatedUser(_ context.Context) (string, error) {

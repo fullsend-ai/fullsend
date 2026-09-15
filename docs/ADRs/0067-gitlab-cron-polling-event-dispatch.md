@@ -135,6 +135,74 @@ Accepted
 > single-PAT model (chosen here for operational simplicity) does not, and
 > this fallback is an accepted consequence of that tradeoff rather than a
 > per-role-token gap to close.
+>
+> **Update (2026-09, #7313):** Poller state (watermarks, label state,
+> dispatched keys, and failed-event retry counts) moved from CI/CD
+> variables to the GitLab Generic Package Registry at
+> `fullsend-poll-state/1.0/state.json`. Developer role (access level 30)
+> is sufficient for the bot PAT at runtime. Maintainer (40) is no longer
+> required because the poller no longer writes CI/CD variables. Install-
+> time setup still requires a Maintainer-level human to create the
+> project access token and store `FULLSEND_FORGE_TOKEN`. Superseded:
+> "Credential model" Maintainer requirement, `UpdateCIVariable` under
+> Forge abstraction (poller state), and the CI/CD-variable watermark
+> names in "Cron poller".
+>
+> This changes the threat model for Risk 3 ("Watermark tampering") and
+> the "Security properties of the credential model" table below, both of
+> which still describe watermark tampering as Maintainer-only and fully
+> mitigated by protected-variable status. That mitigation does not apply
+> to a Generic Package Registry file: the new threat actor is anyone
+> with Developer-level `api`-scoped access (or, depending on job-token
+> settings, `CI_JOB_TOKEN` from an unprotected-branch job), and the new
+> asset is `fullsend-poll-state/1.0/state.json` rather than a protected
+> CI/CD variable. The mitigation is HMAC-SHA256 signing of the state
+> document with `FULLSEND_DISPATCH_SECRET` (`internal/poll/state.go`),
+> the same shared secret used for dispatch-variable signing. GitLab
+> `repos install` **and** `repos converge` auto-provision it as a
+> masked, protected CI/CD variable if one is not already set
+> (`ensureGitLabDispatchSecret`/`provisionGitLabDispatchSecret` in
+> `internal/cli/repos_gitlab.go`) — including for already-enrolled repos
+> and without revoking the live bot PAT — so signing is on by default on
+> every enrolled repo, and the secret is treated as a managed variable
+> (excluded from orphan detection). The poller **fails closed** when the
+> secret is unset: `loadPollState` (the first state read of every poll
+> cycle) and `savePollState` refuse to read or write unsigned poll
+> state, so Developer-level tampering can never be silently trusted — a
+> missing secret aborts the cycle *before* any event discovery or
+> dispatch, rather than dispatching and then failing to persist. On
+> upgrade, a pre-#7317 unsigned `state.json` is **discarded** during
+> install/converge (`DiscardUnsignedGitLabPollState`), not re-signed in
+> place: because any Developer-level (or unprotected-branch job) token
+> can write that file, an unsigned document has no trustworthy
+> provenance, and re-signing it would launder attacker-writable bytes
+> into a trusted document. The only trustworthy migration source is the
+> Maintainer-only legacy CI/CD variables (`SeedGitLabPollStateFromLegacyVars`,
+> run immediately after the discard while the operator's Maintainer-level
+> client is available). A repo with neither legacy variables nor a signed
+> document starts its next poll fresh — a one-time, at-least-once
+> re-dispatch that downstream idempotency tolerates. Superseded: Risk 3
+> and the credential-model table's characterization of watermark
+> tampering as a fully-mitigated, Maintainer-only risk.
+>
+> **Protected-branch pipeline-creation requirement (reconciliation).**
+> Lowering the bot PAT from Maintainer (40) to Developer (30) concerns
+> only the CI/CD Variables API, which required Maintainer for every
+> operation and which the poller no longer uses. It does **not** relax
+> the separate "New permission requirement" above: the bot PAT must be
+> allowed to merge or push to the protected default branch to create
+> dispatch pipelines via `POST /projects/:id/pipeline`. That requirement
+> is unchanged by #7313/#7317 and still applies to the Developer-level
+> PAT. GitLab evaluates pipeline-creation on a protected branch against
+> the branch's "Allowed to merge"/"Allowed to push" lists, independently
+> of the token's project role, so a Developer-level PAT that is not in
+> those lists is rejected regardless of this change. Operators must
+> ensure the bot identity is permitted to merge/push the protected
+> default branch (e.g. by adding it to the allowed lists). This is a
+> reliability precondition (dispatch fails closed if unmet, with no
+> security exposure), not automated by `repos install`/`converge` yet;
+> confirming it end-to-end against a live instance and, if needed,
+> automating the allowlist grant is tracked as follow-up.
 
 ## Context
 

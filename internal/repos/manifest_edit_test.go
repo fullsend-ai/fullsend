@@ -360,9 +360,7 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 
 func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
 		"# fullsend-ref: v3.2.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.2.0\n    file: .gitlab/ci/dispatch.yml\n")
 
@@ -389,7 +387,7 @@ func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 
 func TestAddToManifest_DiscoverGitLabFullsendRefMatchesDefault(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
 		"# fullsend-ref: v3.0.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.0.0\n    file: .gitlab/ci/dispatch.yml\n")
 

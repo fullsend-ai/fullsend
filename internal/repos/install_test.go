@@ -744,7 +744,8 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
 	}
-	requiredKeys := []string{
+	// Poller state is no longer stored as CI/CD variables (#7313).
+	for _, k := range []string{
 		forge.VarLastPollAtFast,
 		forge.VarLastPollAtFull,
 		forge.VarLabelState,
@@ -752,10 +753,9 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		forge.VarDispatchedKeysFull,
 		forge.VarFailedKeysFast,
 		forge.VarFailedKeysFull,
-	}
-	for _, k := range requiredKeys {
-		if _, ok := vars[k]; !ok {
-			t.Errorf("missing required GitLab variable %q", k)
+	} {
+		if _, ok := vars[k]; ok {
+			t.Errorf("GitLab vars should not include poller state variable %q", k)
 		}
 	}
 	// GitLab vars should NOT include GitHub-specific, dead marker, or guard vars.
@@ -885,11 +885,8 @@ func TestRequiredVarsForForge(t *testing.T) {
 		t.Fatal("expected non-empty required vars for GitHub")
 	}
 	glVars := requiredVarsForForge(ForgeGitLab)
-	if len(glVars) == 0 {
-		t.Fatal("expected non-empty required vars for GitLab")
-	}
-	if glVars[0] == ghVars[0] {
-		t.Error("GitLab and GitHub required vars should differ")
+	if len(glVars) != 0 {
+		t.Errorf("GitLab required CI/CD vars should be empty after #7313, got %v", glVars)
 	}
 }
 

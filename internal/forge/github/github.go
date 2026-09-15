@@ -4023,6 +4023,21 @@ func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ str
 	return forge.ErrNotSupported
 }
 
+// DownloadPackageFile is not supported on GitHub.
+func (c *LiveClient) DownloadPackageFile(_ context.Context, _, _, _, _, _ string) ([]byte, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// UploadPackageFile is not supported on GitHub.
+func (c *LiveClient) UploadPackageFile(_ context.Context, _, _, _, _, _ string, _ []byte) error {
+	return forge.ErrNotSupported
+}
+
+// DeletePackage is not supported on GitHub.
+func (c *LiveClient) DeletePackage(_ context.Context, _, _, _ string) error {
+	return forge.ErrNotSupported
+}
+
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {
 	var apiErr *APIError

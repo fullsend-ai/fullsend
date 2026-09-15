@@ -23,7 +23,12 @@ func TestSetupGitLabBotToken(t *testing.T) {
 
 	t.Run("creates project access token and stores it", func(t *testing.T) {
 		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, _ *http.Request) {
+		mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				var body map[string]any
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.Equal(t, float64(30), body["access_level"], "bot PAT must be Developer (30), not Maintainer (40)")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"id": 1, "name": "fullsend-bot", "token": "glpat-test-token", "active": true,
@@ -43,8 +48,12 @@ func TestSetupGitLabBotToken(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "glpat-test-token", token)
 
-		require.Len(t, fake.CreatedSecrets, 1)
+		// Bot PAT plus an auto-provisioned FULLSEND_DISPATCH_SECRET
+		// (see ensureGitLabDispatchSecret / PR #7317).
+		require.Len(t, fake.CreatedSecrets, 2)
 		assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
+		assert.Equal(t, forge.SecretDispatch, fake.CreatedSecrets[1].Name)
+		assert.NotEmpty(t, fake.CreatedSecrets[1].Value)
 	})
 
 	t.Run("falls back to provided token on API failure", func(t *testing.T) {
@@ -66,8 +75,9 @@ func TestSetupGitLabBotToken(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "glpat-fallback", token)
 
-		require.Len(t, fake.CreatedSecrets, 1)
+		require.Len(t, fake.CreatedSecrets, 2)
 		assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
+		assert.Equal(t, forge.SecretDispatch, fake.CreatedSecrets[1].Name)
 	})
 
 	t.Run("errors when API fails and no fallback token", func(t *testing.T) {
@@ -228,8 +238,9 @@ func TestSetupGitLabBotToken_NilClient_FallbackToken(t *testing.T) {
 	token, err := setupGitLabBotToken(ctx, fake, nil, printer, "group", "project", "glpat-manual")
 	require.NoError(t, err)
 	assert.Equal(t, "glpat-manual", token)
-	require.Len(t, fake.CreatedSecrets, 1)
+	require.Len(t, fake.CreatedSecrets, 2)
 	assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
+	assert.Equal(t, forge.SecretDispatch, fake.CreatedSecrets[1].Name)
 }
 
 func TestSetupGitLabBotToken_NilClient_NoFallback(t *testing.T) {
@@ -524,4 +535,192 @@ func TestCleanupGitLabBotToken(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, buf.String(), "Could not list project access tokens")
 	})
+}
+
+// --- ensureGitLabDispatchSecret / legacy poll-state migration tests ---
+//
+// See the permission-expansion and logic-error findings on PR #7317:
+// FULLSEND_DISPATCH_SECRET must be auto-provisioned so poll-state HMAC
+// signing is on by default, and pre-#7313 poller CI/CD variables must
+// be migrated to the package registry while a Maintainer-or-higher
+// client (the one used here, not the Developer-level bot PAT this
+// function creates) can still read them.
+
+func TestEnsureGitLabDispatchSecret_GeneratesWhenMissing(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	secret, err := ensureGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+	require.NoError(t, err)
+	assert.NotEmpty(t, secret)
+
+	require.Len(t, fake.CreatedSecrets, 1)
+	assert.Equal(t, forge.SecretDispatch, fake.CreatedSecrets[0].Name)
+	assert.Equal(t, secret, fake.CreatedSecrets[0].Value)
+}
+
+func TestEnsureGitLabDispatchSecret_ReusesExisting(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.VariableValues["group/project/"+forge.SecretDispatch] = "existing-secret"
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	secret, err := ensureGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, "existing-secret", secret)
+	assert.Empty(t, fake.CreatedSecrets, "should not generate a new secret when one already exists")
+}
+
+func TestEnsureGitLabDispatchSecret_ListError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err := ensureGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+	require.Error(t, err)
+}
+
+func TestSetupGitLabBotToken_MigratesLegacyPollState(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "fullsend-bot", "token": "glpat-test-token", "active": true,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	fake := forge.NewFakeClient()
+	fake.VariableValues["group/project/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fake.VariableValues["group/project/"+forge.VarLabelState] = `{"1":["bug"]}`
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	token, err := setupGitLabBotToken(ctx, fake, glClient, printer, "group", "project", "")
+	require.NoError(t, err)
+	assert.Equal(t, "glpat-test-token", token)
+
+	data, err := fake.DownloadPackageFile(ctx, "group", "project", "fullsend-poll-state", "1.0", "state.json")
+	require.NoError(t, err, "legacy poller state should have been seeded into the package registry")
+
+	var seeded struct {
+		LastPollAtFull string `json:"last_poll_at_full"`
+		HMAC           string `json:"hmac"`
+	}
+	require.NoError(t, json.Unmarshal(data, &seeded))
+	assert.Equal(t, "2026-01-01T00:00:00Z", seeded.LastPollAtFull)
+	assert.NotEmpty(t, seeded.HMAC, "seeded state should be signed with the auto-provisioned dispatch secret")
+	assert.Contains(t, buf.String(), "Migrated legacy poller state to package registry")
+}
+
+func TestSetupGitLabBotToken_NoLegacyState_NoSeed(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "fullsend-bot", "token": "glpat-test-token", "active": true,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	fake := forge.NewFakeClient()
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	_, err = setupGitLabBotToken(ctx, fake, glClient, printer, "group", "project", "")
+	require.NoError(t, err)
+
+	_, err = fake.DownloadPackageFile(ctx, "group", "project", "fullsend-poll-state", "1.0", "state.json")
+	assert.ErrorIs(t, err, forge.ErrNotFound, "a genuinely new install has no legacy state to seed")
+	assert.NotContains(t, buf.String(), "Migrated legacy poller state")
+}
+
+// --- provisionGitLabDispatchSecret tests ---
+//
+// provisionGitLabDispatchSecret is the shared entry point for both fresh
+// installs (via setupGitLabBotToken) and already-enrolled repos (the
+// converge / already-current loop in runReposInstall). It must be safe to
+// run on live repos: never touching the bot PAT, best-effort on failure.
+
+func TestProvisionGitLabDispatchSecret_DiscardsUnsignedStateWithoutLegacyVars(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	// An already-enrolled repo: dispatch secret already provisioned, no
+	// legacy CI/CD vars to migrate, but a pre-#7317 unsigned state.json.
+	// The unsigned document is untrusted (any Developer-level token can
+	// write it), so it must be discarded, not laundered into a signed one.
+	fake.VariableValues["group/project/"+forge.SecretDispatch] = "existing-secret"
+	require.NoError(t, fake.UploadPackageFile(ctx, "group", "project",
+		"fullsend-poll-state", "1.0", "state.json",
+		[]byte(`{"last_poll_at_full":"2026-01-01T00:00:00Z"}`)))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	provisionGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+
+	_, err := fake.DownloadPackageFile(ctx, "group", "project", "fullsend-poll-state", "1.0", "state.json")
+	assert.ErrorIs(t, err, forge.ErrNotFound, "untrusted unsigned state must be discarded, not re-signed")
+	assert.Contains(t, buf.String(), "Discarded untrusted unsigned poll state document")
+	assert.Empty(t, fake.CreatedSecrets, "must reuse the existing dispatch secret, not provision a new one")
+}
+
+func TestProvisionGitLabDispatchSecret_DiscardsThenReseedsFromLegacyVars(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	// An unsigned state.json plus Maintainer-only legacy CI/CD variables:
+	// discard the untrusted document, then reseed a signed one from the
+	// trustworthy legacy-variable provenance.
+	fake.VariableValues["group/project/"+forge.SecretDispatch] = "existing-secret"
+	fake.VariableValues["group/project/"+forge.VarLastPollAtFull] = "2026-02-02T00:00:00Z"
+	require.NoError(t, fake.UploadPackageFile(ctx, "group", "project",
+		"fullsend-poll-state", "1.0", "state.json",
+		[]byte(`{"last_poll_at_full":"2026-01-01T00:00:00Z"}`)))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	provisionGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+
+	data, err := fake.DownloadPackageFile(ctx, "group", "project", "fullsend-poll-state", "1.0", "state.json")
+	require.NoError(t, err)
+	var state struct {
+		LastPollAtFull string `json:"last_poll_at_full"`
+		HMAC           string `json:"hmac"`
+	}
+	require.NoError(t, json.Unmarshal(data, &state))
+	assert.Equal(t, "2026-02-02T00:00:00Z", state.LastPollAtFull, "reseeded watermark must come from the trusted legacy variables, not the discarded unsigned doc")
+	assert.NotEmpty(t, state.HMAC, "reseeded state must be signed")
+	assert.Contains(t, buf.String(), "Discarded untrusted unsigned poll state document")
+	assert.Contains(t, buf.String(), "Migrated legacy poller state to package registry")
+	assert.Empty(t, fake.CreatedSecrets, "must reuse the existing dispatch secret, not provision a new one")
+}
+
+func TestProvisionGitLabDispatchSecret_WarnsOnSecretError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// Best-effort: a failure to provision the secret warns and returns
+	// without panicking or attempting migration/re-signing.
+	provisionGitLabDispatchSecret(ctx, fake, printer, "group", "project")
+
+	assert.Contains(t, buf.String(), "Could not provision dispatch secret")
 }

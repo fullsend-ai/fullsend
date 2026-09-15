@@ -201,6 +201,18 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	for _, s := range requiredSecretsForForge(cfg.Forge) {
 		managedNames[s] = true
 	}
+	// Pre-#7313 poller-state CI/CD variables are leftover, not unknown.
+	// FULLSEND_DISPATCH_SECRET is auto-provisioned by install/converge
+	// (see provisionGitLabDispatchSecret) to sign poll state; it is
+	// managed, not an orphan. It is intentionally not in
+	// requiredSecretsForForge — that would mark existing installs
+	// incomplete and route them through the bot-PAT-revoking install path.
+	if cfg.Forge == ForgeGitLab {
+		for _, name := range gitlabLegacyPollerVars {
+			managedNames[name] = true
+		}
+		managedNames[forge.SecretDispatch] = true
+	}
 
 	forgeVars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {

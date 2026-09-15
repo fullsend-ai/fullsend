@@ -355,15 +355,12 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
-- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (stored as protected CI/CD variable)
-- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
-- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
+- `FULLSEND_FORGE_TOKEN` — Developer-level (access level 30) project access token for bot identity (stored as protected CI/CD variable). Reduced from Maintainer (40): Developer is sufficient because poller state now lives in the Generic Package Registry (Developer-writable via the `api` scope) instead of Maintainer-only CI/CD variables. See #7313 and ADR 0067.
+- `FULLSEND_DISPATCH_SECRET` — Shared HMAC-SHA256 secret (masked + protected). Auto-provisioned by `repos install` and `repos converge` if not already set — including for already-enrolled repos, without revoking the live bot PAT. Signs dispatch variables and, since #7317, the poll state package file — see below. The poller **fails closed** when it is missing: rather than trusting an unsigned (forgeable) state document, `poll` refuses to load or write poll state and the cycle aborts. Re-run `repos install`/`repos converge` to (re)provision it.
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
-- `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
-- `FULLSEND_DISPATCHED_KEYS_FAST` — JSON map of recently dispatched event keys (slash-command schedule)
-- `FULLSEND_DISPATCHED_KEYS_FULL` — JSON map of recently dispatched event keys (event-discovery schedule)
-- `FULLSEND_FAILED_KEYS_FAST` — JSON map of event keys to failure counts (slash-command schedule)
-- `FULLSEND_FAILED_KEYS_FULL` — JSON map of event keys to failure counts (event-discovery schedule)
+
+**Poller state (Generic Package Registry, not CI/CD variables):**
+- Package `fullsend-poll-state` version `1.0` file `state.json` — JSON document holding slash/event watermarks, label state, dispatched keys, and failed-event retry counts. Written by the poller at Developer access, so it is writable by any Developer-level `api`-scoped token — a wider writer set than the Maintainer-only CI/CD variables it replaced. Signed with `FULLSEND_DISPATCH_SECRET` (HMAC-SHA256). The poller **fails closed** both on a missing/invalid signature and when the secret itself is unset — an unsigned document is never trusted. Because the secret is auto-provisioned on install and converge, a legitimate install always has signing on; a pre-#7317 unsigned `state.json` is **discarded** during install/converge (it is Developer-writable and so has no trustworthy provenance — re-signing it would launder possibly-forged bytes), after which any Maintainer-only legacy CI/CD variables are migrated into a fresh signed document. A repo with neither is reset (a one-time, at-least-once re-dispatch) rather than trusting unsigned state. Leftover `FULLSEND_LAST_POLL_AT_*`, `FULLSEND_LABEL_STATE`, `FULLSEND_DISPATCHED_KEYS_*`, and `FULLSEND_FAILED_KEYS_*` CI/CD variables from older installs are deleted on uninstall; on install/converge, any such leftovers found while a Maintainer-level client is available are migrated into the initial `state.json` before the bot PAT is created at Developer access.
 
 **Inference variables (required when inference is configured):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
