@@ -5787,6 +5787,46 @@ func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *te
 	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint times out")
 }
 
+// remintHTTPTimeoutErr mimics net/http Client.Timeout (Unwrap to
+// DeadlineExceeded + Timeout() bool) wrapped the way mintclient.retryableError
+// does. errors.Is against DeadlineExceeded matches it even when the remint
+// context is still live — the #7240 misclassification.
+type remintHTTPTimeoutErr struct {
+	error
+}
+
+func (e *remintHTTPTimeoutErr) Timeout() bool { return true }
+func (e *remintHTTPTimeoutErr) Unwrap() error { return e.error }
+
+// TestRemintAgentTokenForPostScript_HTTPTimeoutIsNotDeadlineWarning proves a
+// transport timeout that unwraps to DeadlineExceeded is reported as a generic
+// remint failure, not as truncation by remintForPostScriptTimeout, when the
+// remint context itself is still live.
+func TestRemintAgentTokenForPostScript_HTTPTimeoutIsNotDeadlineWarning(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, &remintHTTPTimeoutErr{error: context.DeadlineExceeded}
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	h := &harness.Harness{Role: "coder", RunnerEnv: map[string]string{"PUSH_TOKEN": "existing_token"}}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	cleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "Failed to refresh agent token for post-script", "a nested HTTP timeout must use the generic failure message")
+	assert.NotContains(t, buf.String(), "timed out", "must not misreport a transport timeout as remint-context truncation")
+	assert.Equal(t, "existing_token", h.RunnerEnv["PUSH_TOKEN"], "RunnerEnv must be untouched when remint fails")
+}
+
 func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()

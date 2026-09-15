@@ -30,6 +30,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -5194,11 +5195,14 @@ func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mint
 	}
 	_, cleanup, err := mintAgentToken(remintCtx, role, mintURL, forgePlatform, printer)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if ctxerr.IsDeadlineExceededOrCanceled(remintCtx, err) {
 			// Distinct from a genuine mint rejection: the client's own
 			// retry schedule (see mintclient.MaxMintDuration) did not get
 			// to run to completion within remintForPostScriptTimeout, so
 			// this is a truncated retry, not a confirmed failure.
+			// Check remintCtx, not err, because net/http Client.Timeout
+			// and mintclient.retryableError unwrap to DeadlineExceeded
+			// even when this remint context is still live (#7240).
 			printer.StepWarn(fmt.Sprintf("Refreshing agent token for post-script timed out after %s; continuing with existing token", remintForPostScriptTimeout))
 		} else {
 			printer.StepWarn("Failed to refresh agent token for post-script: " + err.Error() + "; continuing with existing token")

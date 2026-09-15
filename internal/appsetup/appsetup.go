@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -25,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	ghTypes "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -989,7 +989,9 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 	if err := s.waitForAppReady(ctx, ghExt, slug); err != nil {
 		// waitForAppReady returns ctx.Err() for parent cancellation, so
 		// context errors propagate directly without a separate guard.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Use ctxerr rather than errors.Is: a transport timeout can
+		// unwrap to DeadlineExceeded while this ctx is still live.
+		if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 			return err
 		}
 		s.ui.StepWarn(fmt.Sprintf("App readiness check failed: %v", err))

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/ctxerr"
 	"github.com/fullsend-ai/fullsend/internal/netutil"
 )
 
@@ -329,12 +330,13 @@ func portAllowed(port string, allowed []string) bool {
 // and worth retrying. Context cancellation and deadline errors are never
 // transient — the caller chose to stop waiting.
 //
-// We check ctx.Err() rather than errors.Is(err, context.DeadlineExceeded)
-// because http.Client.Timeout wraps context.DeadlineExceeded from an
-// internal context even when the caller's context is still active. Such
-// per-request timeouts on slow servers are transient and worth retrying.
+// We use ctxerr.IsDeadlineExceededOrCanceled (ctx.Err()) rather than
+// inspecting err for the DeadlineExceeded sentinel because
+// http.Client.Timeout wraps DeadlineExceeded from an internal context
+// even when the caller's context is still active. Such per-request
+// timeouts on slow servers are transient and worth retrying.
 func isTransientRequestError(ctx context.Context, err error) bool {
-	if ctx.Err() != nil {
+	if ctxerr.IsDeadlineExceededOrCanceled(ctx, err) {
 		return false
 	}
 	// HTTP client timeout (e.g. net/http.Client.Timeout exceeded) and
