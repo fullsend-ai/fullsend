@@ -104,9 +104,9 @@ directory, so they are never overwritten — including with `--force`.
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
 | `--on` | `command:/fs-<name>` | Trigger preset; mutually exclusive with `--trigger` |
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
-| `--model` | `opus` | Model for the agent |
+| `--model` | `opus` | Model for the agent. `--runtime codex` has no Claude-alias default: pass an OpenAI id (`openai/<id>` or a bare id) or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`) |
+| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`). When omitted, the agent dispatches under the repo's `config.yaml` `runtime:` default (`claude` if that is also unset) — the harness is shaped for that resolved runtime, not left as if it were `claude`. Also shapes the generated harness: Vertex `host_files` and sandbox env for `claude`/`pi`; an OpenAI `--model` is required for `codex`, and an OpenAI `--model` on `pi` omits the Vertex `host_files`/env too. The `openai` provider is declared on every role — a run that does not call OpenAI skips it |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
@@ -128,11 +128,15 @@ command refuses an unknown one up front. The hosted mint serves these:
 
 | `--role` | Permissions | Providers |
 |----------|-------------|-----------|
-| `triage` (default) | `contents:read`, `issues:write`, `metadata:read` | vertex-ai, github-ro |
-| `review` | `contents:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github-ro |
-| `coder` | `contents:write`, `packages:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github |
-| `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts |
-| `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro |
+| `triage` (default) | `contents:read`, `issues:write`, `metadata:read` | vertex-ai, github-ro, openai |
+| `review` | `contents:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github-ro, openai |
+| `coder` | `contents:write`, `packages:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github, openai |
+| `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts, openai |
+| `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro, openai |
+
+`openai` is a bare name, not a file: the runner fills the definition in from
+the binary. Path-referenced providers (`vertex-ai`, `github-ro`, …) are copied
+into `.fullsend/providers/` when absent.
 
 Pick the role whose permissions fit what the agent does. An unknown role fails
 immediately with this table, rather than returning `403` from the mint the
@@ -345,9 +349,11 @@ Three things that stop a local run before it starts, all of them easy to hit:
 
 - `--forge github` is required. Without it no forge overlay applies, so the
   environment the harness expects is never assembled.
-- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file. The harness
-  copies it into the sandbox, so the run fails validation without it — even
-  under `dummy`, which does no inference.
+- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file for the default
+  (Vertex-shaped) harness. The harness copies it into the sandbox, so the run
+  fails validation without it — even under `dummy`, which does no inference.
+  `--runtime codex` omits that `host_files` entry; use `OPENAI_API_KEY` instead
+  (see [Running agents locally](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex)).
 - `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
   agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
 

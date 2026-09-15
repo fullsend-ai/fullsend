@@ -32,6 +32,8 @@ func TestOptionsValidateRejects(t *testing.T) {
 		{"uncompilable trigger", func(o *Options) { o.Trigger = "this is not CEL" }, "does not compile"},
 		{"non-boolean trigger", func(o *Options) { o.Trigger = `"a string"` }, "does not compile"},
 		{"bad model", func(o *Options) { o.Model = "opus!!" }, "model"},
+		{"codex without a model", func(o *Options) { o.Runtime = "codex"; o.Model = "" }, "no model was named"},
+		{"codex with a Claude alias", func(o *Options) { o.Runtime = "codex"; o.Model = "opus" }, "Claude model aliases"},
 		{"bad effort", func(o *Options) { o.Effort = "extreme" }, "effort"},
 		{"bad slug", func(o *Options) { o.Slug = "-leading-dash" }, "slug"},
 		{"negative timeout", func(o *Options) { o.TimeoutMinutes = -1 }, "non-negative"},
@@ -65,6 +67,51 @@ func TestOptionsValidateAccepts(t *testing.T) {
 	o.TimeoutMinutes = 0
 	if err := o.Validate(); err != nil {
 		t.Errorf("optional fields should be allowed to be empty: %v", err)
+	}
+
+	codex := validOptions()
+	codex.Runtime = "codex"
+	codex.Model = "openai/gpt-5.6-luna"
+	if err := codex.Validate(); err != nil {
+		t.Errorf("codex with an OpenAI model should be accepted: %v", err)
+	}
+}
+
+// TestUsesVertex covers every runtime value UsesVertex branches on,
+// including the empty string: Options.Runtime is expected to already carry
+// the resolved runtime, but UsesVertex still needs a defined answer if a
+// caller leaves it empty, and that answer is the same as claude's.
+func TestUsesVertex(t *testing.T) {
+	for runtime, want := range map[string]bool{
+		"": true, "claude": true, "pi": true, "dummy": true, "codex": false,
+	} {
+		if got := (Options{Runtime: runtime}).UsesVertex(); got != want {
+			t.Errorf("UsesVertex(%q) = %v, want %v", runtime, got, want)
+		}
+	}
+}
+
+// TestUsesVertexPiKeysOnModelToo: --runtime pi with an OpenAI model calls
+// OpenAI, not Vertex, so it must not carry the GOOGLE_APPLICATION_CREDENTIALS
+// host_files and Vertex sandbox env either — the same failure shape as
+// #7264, for pi instead of codex.
+func TestUsesVertexPiKeysOnModelToo(t *testing.T) {
+	if got := (Options{Runtime: "pi", Model: "openai/gpt-6-astra"}).UsesVertex(); got != false {
+		t.Errorf("UsesVertex(pi, openai model) = %v, want false", got)
+	}
+	if got := (Options{Runtime: "pi", Model: "claude-opus-4-8"}).UsesVertex(); got != true {
+		t.Errorf("UsesVertex(pi, vertex model) = %v, want true", got)
+	}
+}
+
+// TestUsesVertexPiIgnoresAmbientProvider: UsesVertex must not reproduce the
+// #7264 stranded-credentials shape by depending on the generator process's
+// ambient FULLSEND_PI_PROVIDER — only an explicit "openai/" prefix on
+// Options.Model may turn off Vertex for pi.
+func TestUsesVertexPiIgnoresAmbientProvider(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "openai")
+	if got := (Options{Runtime: "pi", Model: "opus"}).UsesVertex(); got != true {
+		t.Errorf("UsesVertex(pi, bare model) under FULLSEND_PI_PROVIDER=openai = %v, want true", got)
 	}
 }
 
