@@ -224,6 +224,7 @@ call `mintHTTP` include:
 
 - `github.go` — GitHub App installation token creation
 - `jwks_verifier.go` — JWKS key fetching
+- `status_cfaccess.go` — CF Access JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access
 
@@ -321,3 +322,26 @@ changes can cause large binary size increases. Avoid importing heavy
 packages (`net/http`, `crypto/x509`, cloud SDKs) in files that are
 WASM-compiled. Use build tags (`//go:build js` / `//go:build !js`) to
 isolate platform-specific implementations.
+
+### Status auth mode compilation patterns
+
+Optional status auth modes (`github`, `cfaccess`) are build-time
+selected via Go build tags. Each mode has a real implementation file
+(`//go:build <tag>`) and a stub file (`//go:build !<tag>`) that returns
+`errStatusAuthSkip`. Disabled code and its dependencies are absent
+from deployed binaries.
+
+- **Workers**: Build tags are passed directly to `go build -tags`.
+  The `buildWASM` function derives the tag list from enabled modes.
+- **GCF**: Cloud Functions compile source server-side without custom
+  build tags, so the bundler selects exactly one file (real or stub)
+  per driver at bundle time and strips its `//go:build` constraint.
+
+Empty configuration values (e.g. `StatusCFAccessAud=""`) are **not**
+used as a runtime feature toggle. When a mode is disabled, its stub is
+compiled in and the configuration variables are unused.
+
+New auth modes should follow the same build-tag pattern. Add a real
+implementation with `//go:build <tag>`, a stub with `//go:build !<tag>`,
+and update both the WASM builder and GCF bundler to select the correct
+file.
