@@ -50,7 +50,7 @@ tool-permission policy) merges last in OpenCode's config stack, so it wins over 
 |---|---|
 | Credentials | Same WIF `external_account` + refreshed OIDC token as Claude Code and pi |
 | Unattended | No approval prompts, stdin closed; a non-config-allowed tool request is auto-rejected |
-| Artifacts | `output.jsonl`, `transcripts/<agent>-output.jsonl`, `metrics.json` with `runtime: opencode`, plus `opencode-debug.log` with `--debug` |
+| Artifacts | `output.jsonl`, `transcripts/<agent>-output.jsonl`, `metrics.json` with `runtime: opencode`, plus `opencode-debug.log` (stderr with `--print-logs` structured logs) when `--debug` is set |
 | Extra knobs | `FULLSEND_OPENCODE_PROVIDER` (prefix for bare ids) |
 | Not supported | Fallback chains, `plugins:` (Claude marketplace layout), sandbox tool hooks (until #515) |
 

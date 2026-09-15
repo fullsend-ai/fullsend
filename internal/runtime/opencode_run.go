@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -41,7 +42,11 @@ var openCodeModelAliases = map[string]string{
 // translateOpenCodeModel resolves the harness/agent model into OpenCode's
 // --model value: aliases map to catalog ids, bare ids get the provider
 // prefix, provider/model passes through unchanged.
-func translateOpenCodeModel(model string) string {
+//
+// configAliases, when non-nil, overrides openCodeModelAliases per key — a
+// repo can remap "sonnet" to a different generation without restating "opus"
+// (#6882, models.aliases in .fullsend/config.yaml).
+func translateOpenCodeModel(model string, configAliases map[string]string) string {
 	provider := strings.TrimSpace(os.Getenv(openCodeProviderEnv))
 	if provider == "" {
 		provider = openCodeDefaultProvider
@@ -50,13 +55,25 @@ func translateOpenCodeModel(model string) string {
 	if model == "" {
 		model = openCodeDefaultModel
 	}
+	// Resolve the alias first, then check for provider/model passthrough:
+	// an alias may map to a provider/id spec (config.ValidateModelAliases
+	// accepts it), and checking "/" before alias resolution would miss it.
+	if id, ok := mergedOpenCodeModelAliases(configAliases)[model]; ok {
+		model = id
+	}
 	if strings.Contains(model, "/") {
 		return model
 	}
-	if id, ok := openCodeModelAliases[model]; ok {
-		model = id
-	}
 	return provider + "/" + model
+}
+
+// mergedOpenCodeModelAliases returns a copy of openCodeModelAliases with
+// per-key overrides from configAliases applied. Always a fresh map, so a
+// caller can never mutate the package-level table through it.
+func mergedOpenCodeModelAliases(configAliases map[string]string) map[string]string {
+	merged := maps.Clone(openCodeModelAliases)
+	maps.Copy(merged, configAliases)
+	return merged
 }
 
 // openCodeBareModelID strips the provider prefix from an OpenCode model spec,
@@ -110,7 +127,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
 
-	modelSpec := translateOpenCodeModel(params.Model)
+	modelSpec := translateOpenCodeModel(params.Model, params.ModelAliases)
 
 	// Prelude: the setup that must run in the top-level shell (not the pipe
 	// subshell) so its exit codes propagate directly. In particular the hook
@@ -310,7 +327,7 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		handler = renderer.Handle
 	}
 
-	modelSpec := translateOpenCodeModel(params.Model)
+	modelSpec := translateOpenCodeModel(params.Model, params.ModelAliases)
 	// Telemetry and the renderer get the bare model id, as they do for Claude
 	// Code and pi, so runs group by model across runtimes; the provider is
 	// gen_ai.system's job and stays visible on the command line.
