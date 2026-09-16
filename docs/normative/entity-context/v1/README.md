@@ -481,10 +481,16 @@ Generated collection, state-without-display-text, and order documents do not
 invent filter findings.
 
 Every emitted file other than the root `index.json` has a manifest `sha256`
-over its emitted bytes. A rejected non-entity source has a record but no content
-path or file entry and adds an `unsafe_content` gap for its scope. A rejected or
-missing entity-body record aborts snapshot assembly, and Fullsend must not
-launch scripts or an agent with that snapshot.
+over its emitted bytes. The assembler retains the exact root `index.json` bytes,
+or a digest of them, in host-private run state outside the context tree. After
+the host pre-script, Fullsend compares the on-disk root index with that retained
+assembly value and aborts on any difference; it never treats a rewritten
+on-disk index as the root of trust. Only the retained assembly index is used to
+verify child digests and the exact manifest path set. A rejected non-entity
+source has a record but no content path or file entry and adds an
+`unsafe_content` gap for its scope. A rejected or missing entity-body record
+aborts snapshot assembly, and Fullsend must not launch scripts or an agent with
+that snapshot.
 
 Findings contain codes and counts, not rejected source text. Filters and bounds
 are identified by `filter_version`; changing emitted bytes for the same input
@@ -515,10 +521,15 @@ complete tree has identical paths and bytes.
 
 The host tree is created outside both the repository and retained run-output
 tree with directory mode `0700` and file mode `0600`. The sandbox copy is
-read-only. Fullsend removes the sandbox copy after the runtime's last use and
-the host copy after the post-script on every controlled exit, including skip,
-failure, and cancellation. Fullsend also scavenges abandoned context trees on
-startup after an unclean termination.
+agent-immutable: Fullsend exposes it through a read-only bind mount, or, when
+that is unavailable, uses a root-owned tree with mode `0555` directories and
+`0444` files while the agent runs unprivileged with `CAP_FOWNER` and equivalent
+write-overriding capabilities removed. A plain mode-`0600` copy owned by the
+agent does not satisfy this contract; if neither mechanism can be enforced,
+Fullsend aborts before launching the agent. Fullsend removes the sandbox copy
+after the runtime's last use and the host copy after the post-script on every
+controlled exit, including skip, failure, and cancellation. Fullsend also
+scavenges abandoned context trees on startup after an unclean termination.
 
 Artifact collectors must exclude entity-context trees. Retained diagnostics
 may contain bounded record counts, content digests, filter codes/counts, and

@@ -83,11 +83,20 @@ without rewriting unchanged record files. Review-thread relationships, commit
 references, and immutable Fullsend agent-run receipts preserve enough provenance
 to relate a finding, the reviewed revision, a subsequent fix, and a re-review.
 
-The pre-script may inspect the host snapshot and skip the run. It cannot mutate
-the agent's view: Fullsend verifies the manifest digests before upload and
-restores or rejects changed files. The uploaded tree must contain exactly the
-paths listed by the manifest; Fullsend removes extra paths or aborts assembly
-before upload. The sandbox copy is read-only to the agent.
+The pre-script may inspect the host snapshot and skip the run. At assembly time,
+Fullsend retains the exact `index.json` bytes, or a digest of those bytes, in
+host-private run state outside `FULLSEND_CONTEXT_DIR`. After the pre-script,
+Fullsend compares the on-disk root index with that retained value and aborts on
+any difference; it does not accept a rewritten index or re-parse it as the root
+of trust. Only after that comparison does it verify child digests and the exact
+manifest path set against the assembly-time index. Fullsend removes extra paths
+or aborts assembly before upload. The sandbox copy is agent-immutable: it is
+exposed through a read-only bind mount, or, where that is unavailable, a
+root-owned tree with mode `0555` directories and `0444` files while the agent
+runs unprivileged with `CAP_FOWNER` and equivalent write-overriding
+capabilities removed. If neither mechanism can be enforced, Fullsend aborts
+before launching the agent.
+
 When a runtime injects staged context into a model request, it emits each
 ordered record as a distinct content block, followed by relationship and
 mutable-state blocks and then run-specific instructions. It must not collapse
@@ -108,8 +117,9 @@ extension result sandbox-visible requires a versioned schema that lists its
 path in the manifest and subjects it to the same filtering, digest,
 permissions, exact-path, and cleanup rules.
 
-The host snapshot uses a mode-`0700` directory and mode-`0600` files. Fullsend
-removes the sandbox copy after its last sandbox consumer and the host copy after
+The host snapshot uses a mode-`0700` directory and mode-`0600` files. Those
+host permissions do not make a sandbox copy read-only. Fullsend removes the
+sandbox copy after its last sandbox consumer and the host copy after
 the post-script, on success, failure, skip, or handled cancellation; startup
 also scavenges orphaned context directories after abnormal termination. Context
 is excluded from retained run artifacts by construction. Diagnostics may retain
