@@ -174,6 +174,15 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 		// Pool tests are API/mint driven; no webhook events required.
 		base.Events = []string{}
 
+	case "ci-watch":
+		base.Description = fmt.Sprintf("Fullsend ci-watch role for %s", org)
+		base.Permissions = AppPermissions{
+			Actions:      "write",
+			PullRequests: "write",
+			Checks:       "read",
+		}
+		base.Events = []string{"issue_comment"}
+
 	default:
 		base.Description = fmt.Sprintf("Fullsend %s agent for %s", role, org)
 		base.Permissions = AppPermissions{
