@@ -734,6 +734,10 @@ type Client interface {
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
+	// ListIssueCommentsSince returns comments updated at or after since.
+	// The filter saves bandwidth; callers that want comments created after
+	// since still check CreatedAt.
+	ListIssueCommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
@@ -801,6 +805,9 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns runs of one workflow file created at or
+	// after since, with the provenance fields populated.
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 

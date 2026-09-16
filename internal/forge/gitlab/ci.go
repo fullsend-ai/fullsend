@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -528,6 +529,12 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 // with variables instead (already implemented above).
 func (c *LiveClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ map[string]string) error {
 	return forge.ErrNotSupported
+}
+
+// ListWorkflowRunsSince is not yet implemented for GitLab: its only caller,
+// the steer watcher, runs on GitHub only (ADR 0101).
+func (c *LiveClient) ListWorkflowRunsSince(_ context.Context, _, _, _ string, _ time.Time, _ int) ([]forge.WorkflowRun, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // ListWorkflowRuns lists recent pipelines, optionally filtered by ref

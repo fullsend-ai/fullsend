@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
@@ -1463,6 +1464,36 @@ func (f *FakeClient) ListIssueComments(_ context.Context, owner, repo string, nu
 	return nil, nil
 }
 
+// ListIssueCommentsSince returns the ListIssueComments fixtures updated (or,
+// when UpdatedAt is empty, created) at or after since. A timestamp that does
+// not parse is kept, as a server would not have filtered what it cannot
+// order.
+func (f *FakeClient) ListIssueCommentsSince(_ context.Context, owner, repo string, number int, since time.Time) ([]IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueCommentsSince"); e != nil {
+		return nil, e
+	}
+	var out []IssueComment
+	for _, c := range f.IssueComments[fmt.Sprintf("%s/%s/%d", owner, repo, number)] {
+		stamp := c.UpdatedAt
+		if stamp == "" {
+			stamp = c.CreatedAt
+		}
+		if atOrAfter(stamp, since) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// atOrAfter reports whether an RFC 3339 stamp is at or after since. An
+// unparseable stamp counts as after.
+func atOrAfter(stamp string, since time.Time) bool {
+	t, err := time.Parse(time.RFC3339, stamp)
+	return err != nil || !t.Before(since)
+}
+
 func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, number int, body string) (*IssueComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1775,6 +1806,30 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+// ListWorkflowRunsSince returns the ListWorkflowRuns fixtures created at or
+// after since. perPage is ignored: the fake does not paginate.
+func (f *FakeClient) ListWorkflowRunsSince(_ context.Context, owner, repo, workflowFile string, since time.Time, _ int) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunsSince"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo + "/" + workflowFile
+	runs := f.WorkflowRunsList[key]
+	if runs == nil {
+		if run, ok := f.WorkflowRuns[key]; ok {
+			runs = []WorkflowRun{*run}
+		}
+	}
+	var out []WorkflowRun
+	for _, r := range runs {
+		if atOrAfter(r.CreatedAt, since) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {

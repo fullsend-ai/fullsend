@@ -27,16 +27,11 @@ import (
 const listPerPage = 100
 
 // ActionsReader is the execution-platform read surface the provenance checks
-// need. The GitHub client in internal/forge/github satisfies it; the watcher
-// takes the interface so the forge API calls stay behind the adapter and the
-// tests can point a real client at an httptest server.
-//
-// These methods live on *github.LiveClient rather than on forge.Client, and
-// deliberately so: they are Actions-shaped, and a forge with no workflow
-// runs to read has no answer to give. Depending on this narrow interface
-// keeps that cost off every other forge, where widening forge.Client would
-// make each one implement methods it cannot honour. The runner gates
-// steering to GitHub as well, for its own reason (ADR 0101).
+// need: a subset of forge.Client, so any forge client satisfies it. The
+// narrow interface is a test seam, letting tests point a real client at an
+// httptest server or pass a small stub. Only the GitHub client implements
+// these reads; GitLab returns forge.ErrNotSupported, and the runner gates
+// steering to GitHub (ADR 0101).
 type ActionsReader interface {
 	// GetWorkflowRun returns one run record, including its provenance
 	// fields (path, referenced workflows, actors, item association).

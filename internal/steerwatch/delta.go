@@ -17,13 +17,8 @@ import (
 // changed, not a substitute for the agent reading the item itself.
 const maxDeltaBytes = 16 * 1024
 
-// ItemReader is the forge read surface the delta builder needs.
-//
-// No forge.Client satisfies it: ListIssueCommentsSince is on
-// *github.LiveClient only and is absent from the forge.Client interface.
-// That is deliberate — the interface stays the shape this package needs
-// rather than being widened to make a sentence true — so the watcher takes
-// a concrete GitHub client and every other caller passes a stub.
+// ItemReader is the forge read surface the delta builder needs: a subset of
+// forge.Client, narrowed so tests can pass a small stub.
 type ItemReader interface {
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	// ListIssueCommentsSince returns comments updated at or after since. It
