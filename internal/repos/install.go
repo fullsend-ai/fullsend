@@ -517,9 +517,13 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 // requiredVariables lists the per-repo variables that must exist for a
 // complete installation. FULLSEND_GCP_REGION is excluded because it is
 // conditionally set (only when --inference-region is provided) and may
-// not be present when secrets are reused. Shared by install,
-// checkInstallComponents, and uninstall.
-var requiredVariables = []string{forge.VarMintURL}
+// not be present when secrets are reused. FULLSEND_PER_REPO_INSTALL is
+// included so ProbeComponents (and therefore repos status/converge)
+// treats its absence as drift — a repo installed/migrated before this
+// guard existed must be repaired, not silently skipped as an optional
+// extra variable. Shared by install, checkInstallComponents, and
+// uninstall.
+var requiredVariables = []string{forge.VarMintURL, forge.PerRepoGuardVar}
 
 // requiredSecrets lists the per-repo secrets that must exist for a
 // complete installation. Shared by install, checkInstallComponents,

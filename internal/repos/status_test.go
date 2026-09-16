@@ -37,6 +37,7 @@ func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref,
 	t.Helper()
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
+	fc.VariableValues[owner+"/"+repo+"/"+forge.PerRepoGuardVar] = "true"
 
 	if fc.Secrets == nil {
 		fc.Secrets = make(map[string]bool)
@@ -147,6 +148,50 @@ func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 		}
 		if len(s.Drifts) != 0 {
 			t.Errorf("%s/%s: want no drifts, got %v", s.Owner, s.Repo, s.Drifts)
+		}
+	}
+}
+
+// TestStatus_MissingGuardVar_ReportedAsDrift reproduces the konflux-ci
+// production incident from #7378: a repo installed/migrated before
+// FULLSEND_PER_REPO_INSTALL existed has FULLSEND_MINT_URL present but
+// the guard absent. Since the guard is now a required GitHub variable,
+// `repos status` must report its absence as drift instead of silently
+// treating it as an optional, absent-is-fine extra variable.
+func TestStatus_MissingGuardVar_ReportedAsDrift(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	// Simulate a pre-existing install/migrate that predates the guard.
+	delete(fc.VariableValues, "acme-corp/web-frontend/"+forge.PerRepoGuardVar)
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1", result.Summary.Drifted)
+	}
+
+	for _, s := range result.Repos {
+		if s.Repo == "web-frontend" {
+			if len(s.Drifts) != 1 {
+				t.Fatalf("web-frontend: want 1 drift, got %d: %v", len(s.Drifts), s.Drifts)
+			}
+			if s.Drifts[0].Field != forge.PerRepoGuardVar {
+				t.Errorf("drift field = %q, want %q", s.Drifts[0].Field, forge.PerRepoGuardVar)
+			}
+			if s.Drifts[0].Actual != "missing" {
+				t.Errorf("drift actual = %q, want %q", s.Drifts[0].Actual, "missing")
+			}
+		}
+		if s.Repo == "api-server" && len(s.Drifts) != 0 {
+			t.Errorf("api-server: want no drifts, got %v", s.Drifts)
 		}
 	}
 }

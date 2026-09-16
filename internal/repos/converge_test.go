@@ -157,6 +157,54 @@ func TestConvergeRepo_RepairsSingleComponent(t *testing.T) {
 	}
 }
 
+// TestConverge_MissingGuardVar_Repaired reproduces the konflux-ci
+// production incident from #7378: a repo installed before the guard
+// existed has FULLSEND_MINT_URL present but FULLSEND_PER_REPO_INSTALL
+// absent. Because the guard is now in the GitHub requiredVariables list
+// (not just an optional expected value), ProbeComponents must report it
+// as drift and converge must add it back.
+func TestConverge_MissingGuardVar_Repaired(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	// Simulate a repo migrated/installed before FULLSEND_PER_REPO_INSTALL
+	// existed: the guard is absent even though everything else matches.
+	delete(fc.VariableValues, "acme/api/"+forge.PerRepoGuardVar)
+
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo (guard repair), got %d", len(convergedRepos))
+	}
+
+	found := false
+	for _, a := range convergedRepos[0].Actions {
+		if a.Component == "var:"+forge.PerRepoGuardVar {
+			found = true
+			if a.Action != "add" {
+				t.Errorf("expected add action for %s, got %s", forge.PerRepoGuardVar, a.Action)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an action for var:%s, got none: %+v", forge.PerRepoGuardVar, convergedRepos[0].Actions)
+	}
+
+	if got, exists := fc.VariableValues["acme/api/"+forge.PerRepoGuardVar]; !exists || got != "true" {
+		t.Errorf("%s = %q (exists=%v), want %q", forge.PerRepoGuardVar, got, exists, "true")
+	}
+}
+
 func TestConverge_MixedFreshAndInstalled(t *testing.T) {
 	repoNames := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repoNames...)

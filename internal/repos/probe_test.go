@@ -14,6 +14,7 @@ func TestProbeComponents_FullyInstalled(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -322,6 +323,7 @@ func TestProbeComponents_NilExpectedVars_PresenceOnly(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old.example.com"
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 

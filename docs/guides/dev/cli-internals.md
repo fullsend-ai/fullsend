@@ -313,7 +313,6 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
-│  │              FULLSEND_PER_REPO_INSTALL=true (GitHub)       │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  secrets → .fullsend config repo│              │ │
@@ -323,7 +322,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  │           + client IDs as repo variables │              │ │
 │  │  │                                          │              │ │
 │  │  │ Per-repo: secrets → target repo          │              │ │
-│  │  │           + FULLSEND_PER_REPO_GUARD=true │              │ │
+│  │  │          + FULLSEND_PER_REPO_INSTALL=true│              │ │
 │  │  │                                          │              │ │
 │  │  │ NOTE: Per-repo runs Phase 6 before       │              │ │
 │  │  │ Phase 5 (vars/secrets before scaffold    │              │ │

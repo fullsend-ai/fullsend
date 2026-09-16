@@ -12,7 +12,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
+// PerRepoGuardVar is included via requiredVariables (see install.go);
+// it is no longer listed separately here to avoid double-deleting it.
+var uninstallVariables = slices.Concat(requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
 
 var uninstallSecrets = requiredSecrets
 

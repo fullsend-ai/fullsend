@@ -190,6 +190,7 @@ func markFullyInstalled(fc *forge.FakeClient, owner, repo string) {
 	fullName := owner + "/" + repo
 	fc.VariableValues[fullName+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues[fullName+"/FULLSEND_GCP_REGION"] = "us-central1"
+	fc.VariableValues[fullName+"/"+forge.PerRepoGuardVar] = "true"
 	fc.FileContents[fullName+"/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, owner, repo)
 	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
@@ -711,6 +712,7 @@ func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
