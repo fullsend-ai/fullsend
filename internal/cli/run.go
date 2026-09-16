@@ -1290,6 +1290,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
+	// The receipt for whatever this run absorbs. Registered here, before the
+	// status notifier and long before the post-script, so it runs LAST: both
+	// of those are defers too, and the post-script can still turn a
+	// successful run into a failed one. A receipt claims the work is done,
+	// so it must see the same final state the status comment reports, not an
+	// earlier guess at it.
+	defer func() {
+		if !shouldPostSteerReceipt(runErr, ctx.Err(), runSkipped) {
+			return
+		}
+		postSteerReceipt(ctx, baseSteerOpts, steerMarker)
+	}()
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and

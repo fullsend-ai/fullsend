@@ -12,9 +12,10 @@ import (
 
 // The steer marker records what a settled run absorbed, so the follow-up
 // run that is still queued behind it can tell whether its own event was
-// already handled (ADR 0113). It rides on the terminal status comment
-// because that comment is already App-authored, already the last thing a
-// run writes, and already the thing the queued run can find by marker.
+// already handled (ADR 0113). The runner posts it as its own comment under
+// the job token; a copy also rides on the terminal status comment, for a
+// reader, but the skip check does not honour that one — see
+// LatestSteerMarker.
 //
 // Shape: `<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->`.
 // `consumed` lists the follow-up workflow run ids the settled run took as
@@ -101,44 +102,32 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 	return m, true
 }
 
-// LatestSteerMarker returns the steer marker on the last terminal status
-// comment that carries one and was written by author. comments must be in
-// timeline order, oldest first.
+// LatestSteerMarker returns the steer marker on the last comment written by
+// author that carries one. comments must be in timeline order, oldest first.
 //
-// author is the login the runner's own status comments are posted under (the
-// App), resolved by the caller from a status comment it can already identify.
+// author is the login of the JOB TOKEN the runner holds — on GitHub Actions,
+// the identity `GITHUB_TOKEN` posts under. It is resolved by the caller from
+// the token itself rather than hardcoded, since the login differs between
+// github.com and GHES.
 //
-// Authorship alone is not enough, which is why the body must also look like
-// a terminal status comment. An agent can be induced to write anything into
-// its own output — an injection asking it to include a steer marker naming a
-// specific run id is enough — and that output is posted by the App, so it is
-// genuinely App-authored. A stronger identity check (performed_via_github_app,
-// the App's client id) does not help for the same reason.
+// Authorship is the whole of the check, and that is a change. The receipt
+// used to ride on the App-authored terminal status comment, so this function
+// also required the body to look like one — a proxy for authenticity, because
+// App authorship proves nothing: an agent can be induced to write a marker
+// into its own output, and that output is posted by the App. Two public
+// strings are not a credential.
 //
-// KNOWN GAP, tracked before this ships: this check is necessary but NOT
-// sufficient. It authenticates two public strings, not the code path that
-// wrote them. An agent holding the same App installation token can post a
-// top-level comment carrying both status tags and a marker — via a
-// post-script shelling out to `gh`, which reaches neither NeutralizeMarkers
-// nor this package — and that comment passes. Closing it needs authenticity
-// the agent cannot mint: a status-only credential withheld from the sandbox,
-// or a receipt signed by the runner.
+// The runner now posts the receipt as its own comment under the job token,
+// which minting swaps out of the environment before the sandbox is created.
+// Nothing inside the sandbox ever holds it — not the agent, not a post-script
+// shelling out to `gh`, both of which hold the role token and post as the App.
+// So an App-authored marker no longer passes this check at all, whatever its
+// body looks like, and the body-shape test is gone with the reason for it.
 //
-// Until then a forged receipt can still suppress a queued run, and nothing
-// downstream softens that: checkSteerAlreadyHandled trusts this outright,
-// and internal/cli/run.go returns before the start comment or the
-// pre-script on the strength of it. Calling the check "advisory" would
-// describe an implementation that does not exist. It is trusted — which is
-// why ADR 0113 makes authenticated receipts a precondition for ENABLING
-// steering in a repository, rather than something to tighten later. The
-// gate is the ADR's; fullsend#7006 carries the work, and the ADR states
-// the policy without citing the issue by number.
-//
-// The gate is on enabling, not on merging: steering ships off by default,
-// so nothing here blocks this change landing. Reading it as a merge gate,
-// or as optional hardening, both get it wrong in the dangerous direction —
-// the second reads as permission to turn steering on without the receipt
-// work.
+// What remains, and is the real boundary: a job token that leaked out of the
+// runner's process could post a receipt this function would honour. That is a
+// compromise of the runner rather than of the agent sandbox, and it is the
+// same credential that already reads the Actions API to accept steers.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {
 	if author == "" {
 		return SteerMarker{}, false
@@ -147,22 +136,11 @@ func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, 
 		if comments[i].Author != author {
 			continue
 		}
-		body := string(comments[i].Body)
-		if !isTerminalStatusBody(body) {
-			continue
-		}
-		if m, ok := ParseSteerMarker(body); ok {
+		if m, ok := ParseSteerMarker(string(comments[i].Body)); ok {
 			return m, true
 		}
 	}
 	return SteerMarker{}, false
-}
-
-// isTerminalStatusBody reports whether a body is one of the runner's own
-// terminal status comments: it carries both the per-run status marker and
-// the terminal tag, which only buildCompletionBody writes together.
-func isTerminalStatusBody(body string) bool {
-	return strings.Contains(body, statusMarkerPrefix) && strings.Contains(body, terminalTag)
 }
 
 // fullsendMarkerOpen matches any HTML comment opening the fullsend marker
@@ -174,13 +152,13 @@ var fullsendMarkerOpen = regexp.MustCompile(`(?is)<!--\s*fullsend\s*:`)
 
 // NeutralizeMarkers defangs fullsend marker syntax in text an agent wrote.
 //
-// The steer marker is a receipt the queued run trusts, and an agent can be
-// induced to write one into its own output — an injection in a PR body
-// asking it to include a marker naming a specific run id is enough. That
-// output is then posted by the App, so it is genuinely App-authored and no
-// identity check can tell it apart. LatestSteerMarker's scoping is the
-// control that makes such a marker inert; this is the second layer, so the
-// forged text never reaches the timeline at all.
+// The steer marker is a receipt, and an agent can be induced to write one
+// into its own output — an injection in a PR body asking it to include a
+// marker naming a specific run id is enough. Such a marker is now inert on
+// its own: the skip check honours only the job token's login, which nothing
+// in the sandbox holds, so App-authored text cannot be a receipt however it
+// is shaped. This stays as the layer that keeps the forged text off the
+// timeline in the first place, where it would otherwise mislead a reader.
 //
 // Only the "<" of the comment opener is escaped, which leaves the marker
 // visible as text rather than silently deleting content: a reader can see

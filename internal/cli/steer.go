@@ -42,11 +42,22 @@ var (
 	// JOB token — the GH_TOKEN the action passed in, which is the token
 	// every stage job already grants `actions: write`.
 	steerActionsReader = func(token string) steerwatch.ActionsReader { return newGitHubLiveClient(token, "") }
-	// steerItemReader and steerMarkerClient read the work item with the
-	// minted role token.
-	steerItemReader   = func(token string) steerwatch.ItemReader { return newGitHubLiveClient(token, "") }
-	steerMarkerClient = func(token string) steerMarkerReader { return newGitHubLiveClient(token, "") }
+	// steerItemReader reads the work item with the minted role token.
+	steerItemReader = func(token string) steerwatch.ItemReader { return newGitHubLiveClient(token, "") }
+	// steerMarkerClient reads the timeline for the skip check, and
+	// steerReceiptClient writes the receipt. Both take the JOB token: the
+	// receipt is authenticated by its author, and the job token's identity
+	// is the one nothing inside the sandbox can post as.
+	steerMarkerClient  = func(token string) steerMarkerReader { return newGitHubLiveClient(token, "") }
+	steerReceiptClient = func(token string) steerReceiptWriter { return newGitHubLiveClient(token, "") }
 )
+
+// steerReceiptWriter posts the receipt comment. It is the narrow surface of
+// the forge client the writer needs, so a test can capture what was posted
+// and under which token.
+type steerReceiptWriter interface {
+	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
+}
 
 // steerSession is the watcher wiring for one agent iteration: the watcher
 // itself, the channel the runtime's turn ends arrive on, and the goroutine
@@ -461,11 +472,14 @@ func steerAlreadyHandled(ctx context.Context, c steerMarkerReader, repo string, 
 		return false, fmt.Errorf("status repo %q is not in owner/repo form", repo)
 	}
 
-	// The marker means nothing unless the App wrote it: any user can paste
-	// the HTML into a comment of their own.
-	appLogin, err := c.GetAuthenticatedUser(ctx)
+	// The marker means nothing unless the runner's own job token wrote it.
+	// Any user can paste the HTML into a comment of their own, and so can an
+	// agent — whose output posts under the App, an identity this check no
+	// longer honours. The login is resolved from the token rather than
+	// hardcoded: it differs between github.com and GHES.
+	receiptLogin, err := c.GetAuthenticatedUser(ctx)
 	if err != nil {
-		return false, fmt.Errorf("resolving the app login: %w", err)
+		return false, fmt.Errorf("resolving the job token's login: %w", err)
 	}
 
 	comments, err := c.ListIssueComments(ctx, owner, name, number)
@@ -483,7 +497,7 @@ func steerAlreadyHandled(ctx context.Context, c steerMarkerReader, repo string, 
 		})
 	}
 
-	marker, found := statuscomment.LatestSteerMarker(tcomments, appLogin)
+	marker, found := statuscomment.LatestSteerMarker(tcomments, receiptLogin)
 	if !found {
 		return false, nil
 	}
@@ -497,10 +511,13 @@ func checkSteerAlreadyHandled(ctx context.Context, o steerOpts) bool {
 	if !o.harness.SteerEnabled() || os.Getenv("GITHUB_ACTIONS") != "true" {
 		return false
 	}
-	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.roleToken == "" {
+	// GitLab has no equivalent: its job token cannot post or read notes, so
+	// there is no receipt to authenticate and the check stays fail-open —
+	// the queued pipeline does the work, exactly as it does today.
+	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.jobToken == "" {
 		return false
 	}
-	handled, err := steerAlreadyHandled(ctx, steerMarkerClient(o.roleToken), o.statusRepo, o.statusNum, steerRunID())
+	handled, err := steerAlreadyHandled(ctx, steerMarkerClient(o.jobToken), o.statusRepo, o.statusNum, steerRunID())
 	if err != nil {
 		o.printer.StepWarn("Could not check whether this update was already handled: " + err.Error())
 		return false
@@ -522,6 +539,84 @@ func steerMarkerForStatus(status string, m statuscomment.SteerMarker) statuscomm
 		return statuscomment.SteerMarker{}
 	}
 	return m
+}
+
+// shouldPostSteerReceipt reports whether a finished run may claim a receipt.
+//
+// Only an outright success may. A receipt tells the run queued behind this
+// one that the work is done, so claiming it for a run that failed, was
+// cancelled, or was skipped would silently drop the update rather than
+// merely waste it — the one direction the skip check must never fail in.
+// The conditions mirror the terminal status comment's exactly, so the
+// receipt and the status a person reads cannot disagree.
+func shouldPostSteerReceipt(runErr, ctxErr error, runSkipped bool) bool {
+	return runErr == nil && ctxErr == nil && !runSkipped
+}
+
+// postSteerReceipt writes the run's receipt as its own comment on the work
+// item, under the JOB token.
+//
+// It is a separate comment rather than the status comment's marker because
+// the receipt is a credential-backed claim and the status comment is not.
+// The status comment is posted by the App, which is also the identity the
+// agent's own output goes out under — so a marker there authenticates two
+// public strings, not the code path that wrote them. Minting swaps the job
+// token out of the environment before the sandbox exists, so nothing the
+// agent can reach holds it: not the agent, not a post-script shelling out
+// to `gh`.
+//
+// Best-effort by design. A failure here costs one queued run that redoes
+// work already done — the fallback ADR 0113 already names — where failing
+// the run would throw away work that succeeded.
+//
+// Called only for a successful run, and once per run rather than once per
+// steer: the marker is the union across every validation-loop iteration.
+func postSteerReceipt(ctx context.Context, o steerOpts, m statuscomment.SteerMarker) {
+	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.jobToken == "" {
+		return
+	}
+	marker := statuscomment.BuildSteerMarker(m)
+	if marker == "" {
+		return
+	}
+	owner, name, ok := strings.Cut(o.statusRepo, "/")
+	if !ok || owner == "" || name == "" {
+		o.printer.StepWarn(fmt.Sprintf("Not posting the steer receipt: status repo %q is not in owner/repo form", o.statusRepo))
+		return
+	}
+
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), steerReceiptTimeout)
+	defer cancel()
+	created, err := steerReceiptClient(o.jobToken).CreateIssueComment(
+		postCtx, owner, name, o.statusNum, marker+"\n"+steerReceiptLine(m))
+	if err != nil {
+		o.printer.StepWarn("Failed to post the steer receipt; the queued run will redo this work: " + err.Error())
+		return
+	}
+	// The author is logged because it is the string the next run's skip
+	// check has to match: that check resolves the same token's login through
+	// the API, and if the two ever disagree every receipt is silently
+	// ignored — safe, but useless, and invisible without this line.
+	o.printer.StepDone(fmt.Sprintf("Posted the steer receipt as %s", created.Author))
+}
+
+// steerReceiptTimeout bounds the receipt post. It runs after the agent is
+// done, on a context detached from the run's, so it needs its own bound.
+const steerReceiptTimeout = 15 * time.Second
+
+// steerReceiptLine is the human half of the receipt. The marker above it is
+// what the queued run reads; this is what a person scrolling the item sees.
+func steerReceiptLine(m statuscomment.SteerMarker) string {
+	ids := make([]string, 0, len(m.ConsumedRunIDs))
+	for _, id := range m.ConsumedRunIDs {
+		ids = append(ids, strconv.FormatInt(id, 10))
+	}
+	if len(ids) == 0 {
+		return "_The run already working on this item absorbed no follow-up runs._"
+	}
+	return fmt.Sprintf(
+		"_The run already working on this item absorbed follow-up run(s) %s, so a run queued for those events exits without repeating the work._",
+		strings.Join(ids, ", "))
 }
 
 // shippedSteerMarker returns the receipts of the iteration whose output the

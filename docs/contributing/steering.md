@@ -232,23 +232,65 @@ otherwise `Run` would hold a session open for a watcher that has stopped watchin
 
 ## The skip check
 
-After the run, the terminal status comment carries
-`<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->`. It is a **processing
-receipt** in the sense of the entity-first evaluation ADR
-([fullsend#6956](https://github.com/fullsend-ai/fullsend/pull/6956)): a durable,
-App-authored record on the subject of what a run actually handled, which is what
-lets a later run decide whether its own trigger is already covered. In `fullsend run`'s pre-flight — before
-the start comment and before the pre-script, whose side effects are not free — a queued run reads
-the latest **App-authored** marker on the work item and exits 0 without starting the agent when
-its own `GITHUB_RUN_ID` is listed.
+After a successful run that absorbed at least one steer, the runner posts a **receipt** as its
+own comment on the work item:
 
-The check fails open in every direction: no marker, an unreadable timeline, an unresolvable App
+```text
+<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->
+_The run already working on this item absorbed follow-up run(s) 101, 102, so a run queued for
+those events exits without repeating the work._
+```
+
+It is a **processing receipt** in the sense of the entity-first evaluation ADR
+([fullsend#6956](https://github.com/fullsend-ai/fullsend/pull/6956)): a durable record on the
+subject of what a run actually handled, which is what lets a later run decide whether its own
+trigger is already covered. In `fullsend run`'s pre-flight — before the start comment and before
+the pre-script, whose side effects are not free — a queued run reads the latest receipt on the
+work item and exits 0 without starting the agent when its own `GITHUB_RUN_ID` is listed.
+
+### Who may write a receipt
+
+**The author is the whole of the authentication, and it must be the job token's.**
+
+The runner captures the GitHub Actions job token — `GH_TOKEN` as the action passed it in —
+before minting swaps in the role token, and posts the receipt under that identity. The sandbox
+only ever receives the role token, so the job token's login is one that nothing inside the
+sandbox can post as: not the agent, and not a post-script shelling out to `gh`. The reader
+resolves that same login from the token itself rather than hardcoding it, because it differs
+between github.com and GitHub Enterprise Server.
+
+This is why the receipt is a **separate comment** rather than the marker on the terminal status
+comment. That comment is posted by the App — the same identity the agent's own output goes out
+under. A marker there authenticates two public strings, not the code path that wrote them: an
+injection in the work item can induce the agent to write a perfectly formed marker into its
+review body, and the App then posts it. The runner still writes a copy of the marker into the
+status comment so a reader can see what a run absorbed, but **the skip check does not honour
+it**, and no App-authored marker of any shape is a receipt.
+
+The boundary this leaves: a job token that leaked out of the runner's own process could post a
+receipt the check would honour. That is a compromise of the runner rather than of the agent
+sandbox, and it is the same credential that already reads the Actions API to accept steers in
+the first place.
+
+### Failure directions
+
+The check fails open in every direction: no receipt, an unreadable timeline, an unresolvable
 login, a malformed run id. A false "already handled" silently drops the work; a false "not
-handled" costs one short run. The marker is only honoured from the App login the runner resolved,
-since any user can paste the HTML into a comment of their own.
+handled" costs one short run. Writing the receipt is best-effort for the same reason — a failed
+post costs one queued run that redoes finished work, where failing the run would throw away work
+that succeeded.
+
+Only an outright success leaves a receipt. A failed, cancelled or skipped run writes none, and a
+run whose validation never passed writes none, because a receipt claims the work is done. One
+receipt per run, not per steer: the validation loop merges every iteration's consumed run ids
+into one marker.
 
 Worst case is one short redundant run — the same window Actions has today, minus the wasted
 in-flight tokens.
+
+**On GitLab there is no receipt.** Its job token cannot post or read notes, and `fullsend steer`
+refuses GitLab already, so the skip check stays fail-open exactly as it is today: the queued
+pipeline does the work.
 
 ## The fleet-agent backstop
 
@@ -331,15 +373,19 @@ the run budget remains, and the update falls to the queued run.
 
 ## Rollout order
 
-**Precondition: steering may not be enabled anywhere until receipts are authenticated by a channel
-that agents and post-scripts cannot mint.** Scoping the receipt to a body carrying the status
-markers is not that channel: it authenticates two public strings rather than the writer, and the
-runner's status comments and the agent's own output are posted under the same App identity, so an
-agent induced to emit those strings — through a post-script shelling out to `gh`, which reaches
-none of the runner's sanitizing paths — produces a receipt that passes. A forged receipt makes the
-queued run exit without doing its work, so the failure is a silently dropped update rather than a
-wasted one. Closing it needs authenticity the agent cannot produce: a status-only credential
-withheld from the sandbox, or a receipt the runner signs.
+**Precondition, now satisfied: steering may not be enabled anywhere until receipts are
+authenticated by a channel that agents and post-scripts cannot mint.** Scoping the receipt to a
+body carrying the status markers was not that channel: it authenticated two public strings rather
+than the writer, and the runner's status comments and the agent's own output are posted under the
+same App identity, so an agent induced to emit those strings — through a post-script shelling out
+to `gh`, which reaches none of the runner's sanitizing paths — produced a receipt that passed. A
+forged receipt makes the queued run exit without doing its work, so the failure is a silently
+dropped update rather than a wasted one.
+
+The channel is the GitHub Actions job token, described under
+[Who may write a receipt](#who-may-write-a-receipt): the runner holds it, minting removes it from
+the environment before the sandbox exists, and both writing and reading the receipt happen under
+its identity.
 
 This precondition, like the rest of the rollout order, is judged by the people who enable
 steering; nothing in the binary enforces it.

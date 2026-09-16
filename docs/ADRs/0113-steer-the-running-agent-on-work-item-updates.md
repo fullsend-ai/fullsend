@@ -66,9 +66,11 @@ it consumed, and a queued run that finds its own id listed exits without startin
 receipt is what makes the queued run short rather than a full re-run, and it is load-bearing
 rather than an optimization: without one, steering costs *more* than cancelling does today, since
 the run in flight absorbs the push and reviews the new head, and the queued run then reviews that
-same head again. **Steering may not be enabled anywhere until receipts are authenticated by a channel that
-agents and post-scripts cannot mint** — a forged receipt makes the queued run exit without doing
-its work, so the failure is a silently dropped update rather than a wasted one.
+same head again. **Steering may not be enabled anywhere until receipts are authenticated by a
+channel that agents and post-scripts cannot mint** — a forged receipt makes the queued run exit
+without doing its work, so the failure is a silently dropped update rather than a wasted one.
+That channel is the GitHub Actions job token: the runner holds it, the sandbox never receives it,
+and the receipt is posted and read under its identity, so this precondition is satisfied.
 
 This precondition, like the rest of the rollout order, is guidance a human judges before enabling
 steering; the binary does not enforce it.
