@@ -61,16 +61,16 @@ itself: a follow-up run is accepted only because its own `Route` job already ran
 [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)'s authorization path. A
 steer is content, never capability — it cannot widen tools, role, model, scope or network policy.
 
-After the run, its terminal status comment carries a processing receipt naming the follow-up runs
-it consumed, and a queued run that finds its own id listed exits without starting the agent. That
-receipt is what makes the queued run short rather than a full re-run, and it is load-bearing
-rather than an optimization: without one, steering costs *more* than cancelling does today, since
-the run in flight absorbs the push and reviews the new head, and the queued run then reviews that
-same head again. **Steering may not be enabled anywhere until receipts are authenticated by a
-channel that agents and post-scripts cannot mint** — a forged receipt makes the queued run exit
-without doing its work, so the failure is a silently dropped update rather than a wasted one.
-That channel is the GitHub Actions job token: the runner holds it, the sandbox never receives it,
-and the receipt is posted and read under its identity, so this precondition is satisfied.
+After the run, the runner posts a processing receipt as its own comment naming the follow-up runs
+it consumed, and a queued run that finds its own id in one exits without starting the agent. The
+terminal status comment keeps an informational copy of the marker, which the skip check does not
+honour. The receipt is load-bearing rather than an optimization: without one, steering costs
+*more* than cancelling does today, since the run in flight absorbs the push and reviews the new
+head, and the queued run then reviews that same head again. **Steering may not be enabled
+anywhere until receipts are authenticated by a channel that agents and post-scripts cannot
+mint** — a forged receipt drops the update silently rather than merely wasting it. That channel
+is the GitHub Actions job token: minting swaps it out of the environment before the sandbox
+exists, so the runner alone holds it, and both writing and reading happen under its identity.
 
 This precondition, like the rest of the rollout order, is guidance a human judges before enabling
 steering; the binary does not enforce it.
