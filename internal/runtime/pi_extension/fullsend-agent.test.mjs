@@ -1181,3 +1181,88 @@ test("childArgs: non-persona dispatch names session dir with agent prefix", () =
   assert.ok(sessionDirIdx >= 0);
   assert.ok(args[sessionDirIdx + 1].endsWith("/agent-2"), `session dir should use agent prefix: ${args[sessionDirIdx + 1]}`);
 });
+
+function personaLines(logs) {
+  return logs.filter((l) => l.includes("fullsend:persona:"));
+}
+
+test("persona lifecycle logs invoke then complete", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:invoke name=correctness seq=1 model=anthropic-vertex\/claude-opus-4-6/.test(l)), logs.join("\n"));
+  assert.ok(markers.some((l) => /fullsend:persona:complete name=correctness seq=1 stop=stop/.test(l)), logs.join("\n"));
+  assert.equal(markers.filter((l) => l.includes("fullsend:persona:error")).length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("persona lifecycle logs error on child failure", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "crash", subagent_type: "style" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:invoke name=style/.test(l)), logs.join("\n"));
+  assert.ok(markers.some((l) => /fullsend:persona:error name=style/.test(l) && /error=true/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown persona logs reject", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "nonexistent" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:reject name=nonexistent/.test(l)), logs.join("\n"));
+  assert.equal(markers.filter((l) => l.includes("fullsend:persona:invoke")).length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("skipped persona logs reject", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.skippedPersonas = { locked: "declares an empty tool set" };
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run({ prompt: "ok", subagent_type: "locked" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(res.isError, true);
+  assert.ok(personaLines(logs).some((l) => /fullsend:persona:reject name=locked/.test(l) && /empty tool set/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("anonymous child does not emit persona lifecycle lines", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run({ prompt: "ok" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(personaLines(logs).length, 0, logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("shutdown logs skip for never-dispatched personas", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  tool.shutdown();
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.ok(skips.some((l) => /name=style reason=never-dispatched/.test(l)), logs.join("\n"));
+  assert.equal(skips.filter((l) => /name=correctness/.test(l)).length, 0, "dispatched persona must not also skip");
+  rmSync(dir, { recursive: true, force: true });
+});

@@ -15,7 +15,7 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 1. **Pre-script** validates inputs and fetches PR metadata.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** posts the review on the PR.
+4. **Post-script** posts the review on the PR. When `REVIEW_RISK_ASSESSMENT_ENABLED` is on (the default) and the result JSON omits `risk_assessment`, `fullsend post-review` posts a sticky diagnostic (`Risk assessment unavailable this run`) so a missed risk-assessment pre-pass is never silent. Workflow logs also carry `fullsend:persona:` invoke/complete/error/reject/skip markers for each named persona.
 
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
 

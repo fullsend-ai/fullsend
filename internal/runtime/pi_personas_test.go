@@ -310,6 +310,32 @@ func TestResolvePersonaModels_BashAllowlistRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "not supported yet")
 }
 
+func TestResolvePersonaModels_SkipEmitsPersonaMarker(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	personas := []piPersona{{Name: "locked", Model: "opus", Tools: []string{}}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		result, _, skippedOut, err := resolvePersonaModels(personas, nil, nil, testModels, trusted)
+		require.NoError(t, err)
+		assert.NotContains(t, result, "locked")
+		assert.Contains(t, skippedOut, "locked")
+	})
+	assert.Contains(t, stderr, "fullsend:persona:skip name=locked")
+}
+
+func TestResolvePersonaModels_DiscoverySkipEmitsPersonaMarker(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	skipped := []piSkippedPersona{{Name: "bad", Path: "/tmp/bad.md", Reason: "frontmatter name: is required"}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, stderr, "fullsend:persona:skip name=bad")
+}
+
 // A persona-style "@suffix" resolves instead of failing the closed-set
 // check naming the wrong cause.
 func TestResolvePersonaModels_AtSuffixStripped(t *testing.T) {

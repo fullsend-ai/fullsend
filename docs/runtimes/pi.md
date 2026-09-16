@@ -486,6 +486,23 @@ Every discovered persona is listed, named or not. Each child then logs the perso
 [fullsend-agent] #4 [security-triage] anthropic-vertex/claude-haiku-4-5 start "probe triage"
 ```
 
+Every named persona also emits a grep-stable lifecycle line so a workflow log
+can tell invoke / complete / error / reject / skip apart without reconstructing
+it from comment counts ([#7387](https://github.com/fullsend-ai/fullsend/issues/7387)):
+
+```console
+[fullsend-agent] fullsend:persona:invoke name=risk-assessment seq=3 model=anthropic-vertex/claude-sonnet-4-6
+[fullsend-agent] fullsend:persona:complete name=risk-assessment seq=3 stop=stop duration_ms=81204
+[fullsend-agent] fullsend:persona:error name=risk-assessment seq=3 stop=timeout duration_ms=900012 error=true
+[fullsend-agent] fullsend:persona:reject name=risk-assessment seq=3 reason="not a registered persona"
+[fullsend-agent] fullsend:persona:skip name=risk-assessment reason=never-dispatched
+```
+
+`skip` with `reason=never-dispatched` is emitted at session shutdown for any
+registered persona the orchestrator never called. When `REVIEW_RISK_ASSESSMENT_ENABLED`
+is on (the default) and the review result omits `risk_assessment`, `fullsend post-review`
+posts a sticky diagnostic (`Risk assessment unavailable this run`) instead of staying silent.
+
 Afterwards `metrics.json` breaks the cost down by model in `per_model_usage` — one entry per
 model the run actually used, the parent included, which is what makes the split visible:
 

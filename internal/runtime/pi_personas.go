@@ -289,6 +289,7 @@ func resolvePersonaModels(
 			return nil, "", nil, fmt.Errorf("persona %s was not registered (%s) and subagents.default would have applied to it", sk.Path, sk.Reason)
 		}
 		fmt.Fprintf(os.Stderr, "Warning: persona %s skipped: %s\n", sk.Path, sk.Reason)
+		fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", sk.Name, sk.Reason)
 	}
 
 	for _, p := range personas {
@@ -300,6 +301,7 @@ func resolvePersonaModels(
 				return fmt.Errorf("persona %q: %s", p.Name, reason)
 			}
 			fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", p.Name, reason)
+			fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", p.Name, reason)
 			skippedOut[p.Name] = reason
 			return nil
 		}
