@@ -146,141 +146,146 @@ Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_re
 
 ### Private registries and GitHub Packages
 
-A minted GitHub App token can read packages owned by the organization the App
-is installed in. It cannot read a public npm package on GitHub Packages that
-another organization owns — `npm.pkg.github.com` returns 403 for installation
-tokens across orgs. The Actions workflow token (`packages: read`) can, and
-fullsend preserves it as `GH_WORKFLOW_TOKEN` for **provider credentials
-only**.
+Use this when a code or fix agent must install a **public** npm package on
+GitHub Packages that **another organization** owns. The minted App token
+cannot read it: GitHub scopes installation tokens to the packages of the org
+the App is installed in, and `npm.pkg.github.com` answers 403 across orgs.
+Same-org packages already work with `${GH_TOKEN}`, and the shipped code and
+fix workflows grant `packages: read`. Nothing in this section ships by
+default.
 
-`${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
-`env.sandbox`, `host_files`, and `validation_loop.schema`. Pre/post/validation
-scripts never see it. `gh` keeps using the minted App token in `GH_TOKEN`.
-Outside GitHub Actions the variable is left alone: a local PAT is never copied
-into it. Set `GH_WORKFLOW_TOKEN` yourself only if you intend a local run
-to hit GitHub Packages.
+**What fullsend provides.** On GitHub Actions the runner keeps the job's own
+workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
 
-Same-org packages also work with `${GH_TOKEN}` (the App token) and need no
-workflow token. The shipped code and fix workflows already grant
-`packages: read`. The workflow token is the repository's own, and `.fullsend`
-is read from the trusted ref, so a pull request cannot redirect the provider at
-a different credential.
+- Only provider credential expansion can read it. `${GH_WORKFLOW_TOKEN}` is
+  refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
+  `validation_loop.schema`, and pre/post/validation scripts never see it.
+- `gh` and the post-script keep using the minted token (`GH_TOKEN`,
+  `PUSH_TOKEN`).
+- Outside GitHub Actions the variable is left alone; a local PAT is never
+  copied into it. Set it yourself only for a local run against GitHub Packages.
+- Any provider definition in `.fullsend` may reference it, the same way one
+  can already reference `${GH_TOKEN}` or `${PUSH_TOKEN}`. `.fullsend` is read
+  from the trusted ref, so a pull request cannot point a provider at it; if
+  your repository ships other providers, review their `${}` uses with that in
+  mind.
 
-`GH_WORKFLOW_TOKEN` is scoped to *provider credential* expansion as a
-class, not to the `fullsend-github-packages` provider specifically: any
-provider definition's `${}` credential can reference it, the same way any
-provider can already reference `${GH_TOKEN}` or `${PUSH_TOKEN}`. This is not
-a new exposure — `.fullsend` provider definitions are read from the trusted
-ref, so the set of credentials a pull request could redirect a provider to
-read is unchanged; the workflow token just adds one more entry with the
-job's full permission set to that existing, already-trusted surface. If your
-repository ships other providers, keep that in mind when reviewing what
-`${}` references they use.
+**Setup.** Add four files to your repository (or config repo) and overlay them
+onto `code` and `fix`.
 
-This provider is **not** shipped by default. Add the files below to your
-repository (or config repo) and overlay them onto `code` and `fix`.
+1. **`.fullsend/providers/github-packages.yaml`**
 
-**`.fullsend/providers/github-packages.yaml`:**
+   ```yaml
+   ---
+   name: github-packages
+   type: fullsend-github-packages
+   credentials:
+     GITHUB_TOKEN: "${GH_WORKFLOW_TOKEN}"
+   ```
 
-```yaml
----
-name: github-packages
-type: fullsend-github-packages
-credentials:
-  GITHUB_TOKEN: "${GH_WORKFLOW_TOKEN}"
-```
+2. **`.fullsend/profiles/fullsend-github-packages.yaml`**
 
-**`.fullsend/profiles/fullsend-github-packages.yaml`:**
+   ```yaml
+   ---
+   id: fullsend-github-packages
+   display_name: Fullsend GitHub Packages
+   description: GitHub Packages npm registry for cross-org public packages
+   category: data
+   credentials:
+     - name: github_token
+       description: Actions workflow token with packages:read
+       env_vars: [GITHUB_TOKEN]
+       required: true
+       auth_style: bearer
+       header_name: authorization
+   endpoints:
+     - host: npm.pkg.github.com
+       port: 443
+       protocol: rest
+       access: read-only
+       enforcement: enforce
+       allow_encoded_slash: true
+     - host: pkg-npm.githubusercontent.com
+       port: 443
+       protocol: rest
+       access: read-only
+       enforcement: enforce
+   binaries:
+     - "**/node"
+     - "**/npm"
+     - "**/pnpm"
+     - "**/corepack"
+     - "**/yarn"
+   ```
 
-```yaml
----
-id: fullsend-github-packages
-display_name: Fullsend GitHub Packages
-description: GitHub Packages npm registry for cross-org public packages
-category: data
-credentials:
-  - name: github_token
-    description: Actions workflow token with packages:read
-    env_vars: [GITHUB_TOKEN]
-    required: true
-    auth_style: bearer
-    header_name: authorization
-endpoints:
-  - host: npm.pkg.github.com
-    port: 443
-    protocol: rest
-    access: read-only
-    enforcement: enforce
-    allow_encoded_slash: true
-  - host: pkg-npm.githubusercontent.com
-    port: 443
-    protocol: rest
-    access: read-only
-    enforcement: enforce
-binaries:
-  - "**/node"
-  - "**/npm"
-  - "**/pnpm"
-  - "**/corepack"
-  - "**/yarn"
-```
+3. **`.fullsend/env/npmrc-github-packages`**
 
-Both hosts are credential-bound, because OpenShell binds every static
-credential in a profile to all of the profile's endpoints; the tarball redirect
-carries a pre-signed URL, so the CDN simply ignores it. Scoped package names
-(`@org/pkg`) put a `%2F`-encoded slash in the `npm.pkg.github.com` metadata
-request; `allow_encoded_slash: true` is required for that request to pass L7
-parsing (without it the proxy closes the connection; verified on OpenShell
-0.0.116, whose policy schema documents the field for npm scoped packages).
+   ```
+   //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+   ```
 
-**`.fullsend/env/npmrc-github-packages`:**
+4. **`.fullsend/harness/code.yaml`** (and the same overlay for `fix.yaml`)
 
-```
-//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
-```
+   ```yaml
+   base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
-Keep `expand: false` on the `host_files` entry. The file holds no secret;
-pnpm still expands `${GITHUB_TOKEN}` when it reads this file as the user
-config (via `NPM_CONFIG_USERCONFIG` below). Inside the sandbox that value is
-the provider placeholder; the proxy resolves it only on the two registry
-hosts and answers `credential_endpoint_mismatch` anywhere else. Treat the
-value itself as readable by the agent all the same: OpenShell resolves a
-static placeholder wherever it appears in a request to a bound host, and the
-registry echoes unknown package names in its 404 body. That is the standard
-exposure of any static OpenShell credential
-([ADR 0025](../../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md));
-the token stays read-only through the proxy and is revoked when the job ends.
-Project `.npmrc` files are not expanded by pnpm ≥ 10.34.2
-([GHSA-3qhv-2rgh-x77r](https://github.com/advisories/GHSA-3qhv-2rgh-x77r)).
-
-**`.fullsend/harness/code.yaml`** (and the same overlay for `fix.yaml`):
-
-```yaml
-base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
-
-providers:
-  - providers/github-packages.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-github-packages.yaml
-host_files:
-  - src: env/npmrc-github-packages
-    dest: /sandbox/workspace/.npmrc
-    expand: false
-env:
-  sandbox:
-    NPM_CONFIG_USERCONFIG: /sandbox/workspace/.npmrc
-```
+   providers:
+     - providers/github-packages.yaml
+   openshell:
+     profiles:
+       - profiles/fullsend-github-packages.yaml
+   host_files:
+     - src: env/npmrc-github-packages
+       dest: /sandbox/workspace/.npmrc
+       expand: false
+   env:
+     sandbox:
+       NPM_CONFIG_USERCONFIG: /sandbox/workspace/.npmrc
+   ```
 
 Register the overlay in `.fullsend/config.yaml` as usual (`name: code` /
 `name: fix` with `source: harness/code.yaml` / `harness/fix.yaml`). Pin the
 `base:` URL to a SHA as shown in [Configuration with `base:` composition](#configuration-with-base-composition).
 
-`/home` is not in the sandbox filesystem policy's `read_write` allowlist —
-`internal/agentnew/templates/policies/base.yaml` only allows `/sandbox`,
-`/tmp`, and `/dev/null` — so the file is mapped under `/sandbox/workspace`
-instead, and `NPM_CONFIG_USERCONFIG` points pnpm/npm at it explicitly rather
-than relying on the sandbox user's `$HOME`.
+**How the credential is scoped.**
+
+- *Host-bound.* OpenShell binds every static credential in a profile to all
+  of the profile's endpoints, so the token resolves at `npm.pkg.github.com`
+  and at the tarball CDN `pkg-npm.githubusercontent.com` (which serves
+  pre-signed URLs and ignores it). Anywhere else the proxy answers
+  `credential_endpoint_mismatch`.
+- *Separate from the forge credential.* OpenShell matches hosts label by
+  label: a plain `github.com` endpoint matches only `github.com`, never
+  `npm.pkg.github.com`, unless a profile writes an explicit wildcard label.
+  The code and fix GitHub profile uses exact hosts, so `GH_TOKEN` never
+  resolves at the registry and this profile's token never resolves at
+  `api.github.com` or `github.com`. The two providers also use different
+  sandbox keys (`GITHUB_TOKEN` here, `GH_TOKEN` for the forge), so both attach
+  to one sandbox without a duplicate-key rejection.
+- *Read-only.* Both registry hosts are `access: read-only`.
+- *Readable by the agent.* This is the standard exposure of any static
+  OpenShell credential
+  ([ADR 0025](../../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)):
+  a placeholder resolves wherever it appears in a request to a bound host,
+  and the registry echoes unknown package names in its 404 body. A value read
+  back that way is the job's own workflow token until the job ends, and
+  through the proxy it can only reach the hosts the role's profiles allow; see
+  [ADR 0114](../../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+
+**Notes.**
+
+- `allow_encoded_slash: true` is required: scoped package names (`@org/pkg`)
+  put a `%2F`-encoded slash in the metadata request, and without the field the
+  proxy closes the connection (verified on OpenShell 0.0.116, whose policy
+  schema documents the field for npm scoped packages).
+- The npmrc lives at `/sandbox/workspace/.npmrc` with `NPM_CONFIG_USERCONFIG`
+  pointing at it, because `/home` is outside the base filesystem policy's
+  `read_write` set (`/sandbox`, `/tmp`, `/dev/null`). Keep `expand: false`:
+  the file holds no secret, pnpm expands `${GITHUB_TOKEN}` when it reads the
+  file as user config, and inside the sandbox that value is the placeholder.
+- pnpm ≥ 10.34.2 no longer expands `${VAR}` in project `.npmrc` files
+  ([GHSA-3qhv-2rgh-x77r](https://github.com/advisories/GHSA-3qhv-2rgh-x77r));
+  the user-config route above is unaffected.
 
 ### Tuning agents with augmentation skills
 
