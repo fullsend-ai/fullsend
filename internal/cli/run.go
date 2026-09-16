@@ -3012,9 +3012,8 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, el
 
 // runFacts is what the work item looked like when this run started. It is
 // exported into the sandbox so an agent can tell, before it writes its
-// result, whether the item moved under it — which it must do once a
-// repository sets FULLSEND_PRESERVE_RUNS, because the run in flight is then
-// no longer cancelled when a newer event arrives.
+// result, whether the item moved under it — which it must do because the run
+// in flight is no longer cancelled when a newer event arrives.
 type runFacts struct {
 	// headSHA is the work item's head at run start; empty for issues.
 	headSHA string
