@@ -454,4 +454,7 @@ envelope to code, fix, review and triage only, so prioritize, retro and scribe m
 the contract or set `steer: {enabled: false}` before the default reaches them — an eligible run
 on a definition that ignores the envelope still acks the delivery and still posts a receipt, so
 the queued run skips and the update is dropped silently, which is the one failure mode this
-design may not have. All four belong before the default reaches a release.
+design may not have. All four belong before the default reaches a release. Agents that
+`fullsend agent new` scaffolds from here on carry the contract in their generated body; ones
+scaffolded earlier must be regenerated to gain it, and neither changes the fleet definitions
+above.
