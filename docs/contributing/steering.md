@@ -39,7 +39,8 @@ concurrency:
   cancel-in-progress: false
 ```
 
-so the active run always finishes while one run waits behind it as the single pending run
+so the active run always finishes while one run waits behind it as the pending run — normally but
+not necessarily the newest event — and works from the item's current state
 ([ADR 0101](../ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)). Whether that
 surviving run is *steered* is decided here, by the harness `steer:` block. Preserving is useful on
 its own and is the base change's whole subject; steering builds on it.
@@ -351,18 +352,25 @@ is the change to make.
 
 ## Configuration
 
-Per-agent, default off, because enabling it changes how long a run holds its VM:
+Per-agent, on by default. A harness that says nothing about `steer:` steers; so does one that
+sets only a cap or a cadence. Turning it off takes the key by name:
 
 ```yaml
 steer:
-  enabled: true          # default: false
+  enabled: false         # default: true — this is the opt-out
   max_steers: 2          # default: 2
   poll_interval_seconds: 30   # default: 30
 ```
 
-The runner sets `RunParams.Steerable` only when all of: the harness opted in, the runtime
+`enabled` is a pointer internally for exactly this reason: absent and `false` have to mean
+different things, so `steer: {max_steers: 3}` cannot silently opt a harness out while it is
+trying to raise the cap.
+
+The runner sets `RunParams.Steerable` only when all of: the harness has not opted out, the runtime
 implements `Steerer`, and the job is a GitHub Actions run. Otherwise `Steerable` stays false and
-`Run` is single-turn exactly as today.
+`Run` is single-turn exactly as before. The runner announces a declined watch only when the
+harness named steering itself — with the default on, most declines are ordinary conditions rather
+than misconfiguration.
 
 ## What changes for each stage
 
@@ -427,12 +435,18 @@ cancelling does today: the active run absorbs the push and reviews head B, then 
 reviews head B again — two reviews where cancel-and-restart produces one. So the skip check and
 the authenticity it depends on ship together, or neither ships.
 
-Once that holds, the harness `steer:` block is the only switch. With it off, a repository sits in
-exactly the base change's state, where the run in flight finishes and the queued run does the
-work from the item's current state. Nothing is half-enabled, so a repository can sit there
-indefinitely, which is where every repository starts.
+Once that holds, the harness `steer:` block is the only switch, and it is now on by default:
+steering arrives with the release that carries it rather than one harness at a time. A harness
+that opts out with `enabled: false` sits in exactly the base change's state, where the run in
+flight finishes and the queued run does the work from the item's current state. Nothing is
+half-enabled, so a harness can sit there indefinitely.
 
-Steering is the second step and needs its own preconditions met: the fleet agent definitions
-([fullsend-ai/agents#1163](https://github.com/fullsend-ai/agents/issues/1163)) merged, since the
-envelope's shape changed; one real steer of each runtime observed on OpenShell; and the
-authenticated receipt above. Then `steer:` goes on one harness at a time.
+The preconditions this ordering existed to impose are not waived by moving the switch; they are
+what the people cutting the release check by hand, since nothing in the binary enforces them.
+The authenticated receipt ships in the change below this one. Still open at the time of
+writing: the fleet agent definitions
+([fullsend-ai/agents#1163](https://github.com/fullsend-ai/agents/pull/1163)) are unmerged, so
+the agents have not yet been taught the envelope; each runtime's transport has been driven in
+isolation, but no end-to-end steer inside OpenShell from a real workflow run has been observed;
+and the receipt's identity match has not been seen on a live run. All three belong before the
+default reaches a release.

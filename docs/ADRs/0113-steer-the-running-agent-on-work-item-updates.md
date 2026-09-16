@@ -22,9 +22,9 @@ Accepted
 ## Context
 
 [ADR 0101](0101-preserve-the-agent-run-in-flight-on-work-item-updates.md) stops the
-cancellation: the stage job already working on a work item is left to finish, and the newer
-event waits as the single pending run the platform keeps per concurrency group. This ADR builds
-on that decision and addresses what preserving alone leaves standing.
+cancellation: the stage job already working on a work item is left to finish, and one run waits
+behind it as the pending run — normally but not necessarily the newest event — working from the
+item's current state. This ADR addresses what preserving alone leaves standing.
 
 Three costs survive it. The run in flight finishes on the state it started with and posts output
 that is already stale — a review of a commit that no longer exists, which is
@@ -47,12 +47,11 @@ to be written down.
 
 ## Decision
 
-Steering is an **opt-in** extension of preserving, enabled per harness by the `steer:` block.
-While the run in flight holds the work item it absorbs updates to that item itself — the queued
-follow-up run becomes the *notification*, not the worker — so that when the queued run finally
-starts it finds a receipt saying the work is done and exits. With the block absent, which is the
-default everywhere, the behaviour is ADR 0101 alone and nothing more. Steering requires
-preserving; the reverse is not true.
+Steering is an extension of preserving that is **on by default**, with a per-harness opt-out:
+`steer: {enabled: false}` gets ADR 0101 alone and nothing more, and an absent block is the
+default, which is on. While the run in flight holds the work item it absorbs updates to that item
+itself — the queued follow-up run becomes the *notification*, not the worker — so the queued run
+finds a receipt saying the work is done and exits. Steering requires preserving, not the reverse.
 
 The runner learns about an update by listing the execution platform's own run records for its
 shim, verifies each candidate's **provenance** against server-side fields the sender cannot
@@ -69,8 +68,9 @@ honour. The receipt is load-bearing rather than an optimization: without one, st
 head, and the queued run then reviews that same head again. **Steering may not be enabled
 anywhere until receipts are authenticated by a channel that agents and post-scripts cannot
 mint** — a forged receipt drops the update silently rather than merely wasting it. That channel
-is the GitHub Actions job token: minting swaps it out of the environment before the sandbox
-exists, so the runner alone holds it, and both writing and reading happen under its identity.
+is the GitHub Actions job token: minting swaps it out before the sandbox exists, so the runner
+alone holds it and reads and writes receipts under its identity — which satisfies the
+precondition and is why the default is on rather than a switch each harness must find.
 
 This precondition, like the rest of the rollout order, is guidance a human judges before enabling
 steering; the binary does not enforce it.
@@ -98,16 +98,16 @@ contract with the fleet agent definitions, versioned in
 ## Consequences
 
 - A burst of events on one work item produces one agent run that absorbs them plus at most one
-  short follow-up, instead of a full re-run per event — but only once the receipt is
-  authenticated, since the follow-up is only short if it can trust a receipt to skip on.
+  short follow-up, instead of a full re-run per event.
 - Agents stop posting output computed from state the subject has already moved past, which is the
   complaint in [#1207](https://github.com/fullsend-ai/fullsend/issues/1207).
 - The runner gains a dependency on the execution platform's run records and its per-stage
   `actions: write` grant, and steering is unavailable on any platform that exposes neither.
 - A run now holds its sandbox until it settles rather than ending at its first result, so a
   steered run occupies a VM longer and can cost as much again per absorbed update.
-- Nothing changes for a repository that does not opt in, and the fallback in every failure path —
-  no ack, no time left, cap reached, runtime cannot steer — is ADR 0101 on its own.
+- Every repository steers on the release that carries this unless a harness opts out; an opt-out,
+  and every failure path — no ack, no time left, cap reached, runtime cannot steer — is ADR 0101
+  on its own.
 
 Related: [#5445](https://github.com/fullsend-ai/fullsend/issues/5445) and
 [#2388](https://github.com/fullsend-ai/fullsend/issues/2388) — `/fs-cancel` gains a second

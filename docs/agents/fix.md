@@ -96,10 +96,11 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   not cancel it: that run finishes, and the new dispatch waits as the single
   pending run (normally but not necessarily the newest event), then works from
   the PR's current state ([ADR 0101](../ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
-  With steering enabled
-  ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md))
-  the in-flight run also absorbs the comment, and the run the comment queued
-  exits rather than repeating the work. Steering is off by default.
+  That run also absorbs the comment
+  ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md)),
+  and the run the comment queued exits rather than repeating the work. A
+  harness that opts out with `steer: {enabled: false}` skips the absorb only —
+  everything above still holds, and the queued run does the work.
 
 ## How it helps
 

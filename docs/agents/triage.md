@@ -31,10 +31,10 @@ maintain, or admin). Mutation stages such as `/fs-code` still require
 write or higher.
 
 The `/fs-triage` command does not accept arguments when it starts a run — it re-evaluates
-the issue using current content, comments, and any prior triage analysis. Where the agent has
-steering enabled (`steer.enabled` in its harness), a `/fs-triage` comment posted while triage
-is already in flight is different: the run absorbs it and the text after the command reaches
-the running agent as an amendment to its task.
+the issue using current content, comments, and any prior triage analysis. A `/fs-triage`
+comment posted while triage is already in flight is different: the run absorbs it and the
+text after the command reaches the running agent as an amendment to its task. That is the
+default; a harness that sets `steer: {enabled: false}` queues a fresh run instead.
 
 Triage also runs automatically when a new issue is opened or edited by a
 user with triage-level permission or higher, and when the `ready-for-triage`
