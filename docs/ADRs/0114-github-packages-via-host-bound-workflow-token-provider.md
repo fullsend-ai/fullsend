@@ -48,6 +48,12 @@ already follow the run-scoped provider pattern
   allowlisted host and lands in transcripts. Rejected.
 - **A user-supplied PAT.** No secret passthrough exists, and it would add a
   long-lived credential where the job already holds a short-lived one. Rejected.
+- **Apply `env.runner` to the runner process before provider creation.** Mint
+  runs before harness expansion, so `${GH_TOKEN}` there is already the App
+  token and the pre-mint value still needs its own name; harness YAML would
+  also gain the power to replace the runner's own credentials, which #5832
+  deliberately prevents; and it presumes a user secret the reusable workflows
+  do not pass. Rejected.
 
 ## Decision
 
