@@ -19,7 +19,7 @@
     "repository_path": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*//)(?!.*[/]$)(?!.*(^|/)[.]{1,2}(/|$))(?!.*%(?:2[EeFf]|5[Cc]))(?!.*[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff\ufe00-\ufe0f\ufff9-\ufffb])[A-Za-z0-9._/~!$&()+,;=:@%#\\[\\]{} -]+$"
+      "pattern": "^(?!/)(?!.*//)(?!.*[/]$)(?!.*(^|/)[.]{1,2}(/|$))(?!.*%)(?!.*[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff\ufe00-\ufe0f\ufff9-\ufffb])[A-Za-z0-9._/~!$&()+,;=:@#\\[\\]{} -]+$"
     },
     "actor_role": {
       "enum": ["admin", "maintain", "write", "triage", "read", "none", "external"]

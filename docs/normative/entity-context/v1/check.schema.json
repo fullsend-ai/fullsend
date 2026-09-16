@@ -10,29 +10,34 @@
     "status": { "enum": ["queued", "in_progress", "completed"] },
     "conclusion": { "enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"] },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
-    "started_at": {
-      "$ref": "common.schema.json#/$defs/timestamp",
-      "description": "Required for in-progress checks and completed checks that the forge reports as having started. A completed failure may omit it only when the native forge outcome explicitly says the job never started, such as GitHub startup_failure."
+    "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "never_started": {
+      "type": "boolean",
+      "description": "Required for completed checks. True only when the forge explicitly reports that the job never started; false requires started_at."
     },
     "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
   },
   "allOf": [
     {
       "if": { "properties": { "status": { "const": "queued" } }, "required": ["status"] },
-      "then": { "not": { "anyOf": [{ "required": ["started_at"] }, { "required": ["completed_at"] }, { "required": ["conclusion"] }] } }
+      "then": { "not": { "anyOf": [{ "required": ["started_at"] }, { "required": ["completed_at"] }, { "required": ["conclusion"] }, { "required": ["never_started"] }] } }
     },
     {
       "if": { "properties": { "status": { "const": "in_progress" } }, "required": ["status"] },
       "then": {
         "required": ["started_at"],
-        "not": { "anyOf": [{ "required": ["completed_at"] }, { "required": ["conclusion"] }] }
+        "not": { "anyOf": [{ "required": ["completed_at"] }, { "required": ["conclusion"] }, { "required": ["never_started"] }] }
       }
     },
     {
       "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
       "then": {
-        "required": ["completed_at", "conclusion"],
-        "if": { "properties": { "conclusion": { "enum": ["cancelled", "skipped", "failure"] } }, "required": ["conclusion"] },
+        "required": ["completed_at", "conclusion", "never_started"],
+        "if": { "properties": { "never_started": { "const": true } }, "required": ["never_started"] },
+        "then": {
+          "properties": { "conclusion": { "enum": ["cancelled", "skipped", "failure"] } },
+          "not": { "required": ["started_at"] }
+        },
         "else": { "required": ["started_at"] }
       }
     }

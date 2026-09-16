@@ -196,14 +196,13 @@ normalized to `queued`, `in_progress`, or `completed`; conclusions are
 `action_required`, or `stale`.
 Queued checks have no start, completion, or conclusion fields. In-progress
 checks require `started_at` and have no completion or conclusion. Completed
-checks require `completed_at` and `conclusion`; they also require
-`started_at` except when the forge explicitly reports that the job never
-started. This includes `skipped` and `cancelled` checks known never to have
-run, and GitHub `startup_failure` (which maps to the v1 `failure` conclusion).
-Because the normalized schema cannot retain the native cause of a `failure`, it
-permits a completed failure without `started_at`; adapters must use that form
-only for a forge-reported never-started outcome and must not omit
-`started_at` from an ordinary failure.
+checks require `completed_at`, `conclusion`, and `never_started`.
+`never_started: true` is emitted only when the forge explicitly reports that
+the job never started; it forbids `started_at` and is limited to `failure`,
+`skipped`, or `cancelled`. This includes GitHub `startup_failure`, which maps
+to the v1 `failure` conclusion. `never_started: false` requires `started_at`.
+Consumers must use the explicit flag and must not infer never-started state from
+an omitted timestamp.
 Check manifest records carry `created_at` but no `author_id` or `author`.
 
 Adapters use these exhaustive v1 native-status mappings:
@@ -211,7 +210,7 @@ Adapters use these exhaustive v1 native-status mappings:
 - GitHub `queued`, `waiting`, `requested`, and `pending` map to `queued`;
   `in_progress` maps to `in_progress`; `completed` maps to `completed` and its
   native conclusion maps identically to the v1 conclusion vocabulary, except
-  `startup_failure`, which maps to `failure`.
+  `startup_failure`, which maps to `failure` with `never_started: true`.
 - GitLab `created`, `waiting_for_resource`, `waiting_for_callback`, `preparing`, `pending`, `scheduled`,
   and `manual` map to `queued`; `running` and `canceling` map to `in_progress`;
   `success`, `failed`, `canceled`, and `skipped` map to `completed` with
@@ -225,10 +224,9 @@ Adapters use these exhaustive v1 native-status mappings:
 Any native status or conclusion not listed above is `invalid_metadata`; an
 adapter must not invent another mapping. Any mapped check whose forge data
 cannot satisfy `check.schema.json`'s status-specific timestamp requirements is
-also `invalid_metadata`. Completed `skipped` and `cancelled` checks, and
-GitHub `startup_failure` mapped to `failure`, require `completed_at` and may
-omit `started_at` when the forge says the job never ran; all other completed
-checks require both timestamps. Native timestamp fields
+also `invalid_metadata`. Completed checks with `never_started: true` require
+`completed_at` and omit `started_at`; all other completed checks require both
+timestamps. Native timestamp fields
 forbidden for the mapped status are omitted rather than copied.
 
 ## Relationships, history, and collection profiles
@@ -352,7 +350,12 @@ records but must not claim the scope is complete. `unsupported`,
 `authorization_failed`, `fetch_failed`, `source_too_large`,
 `invalid_metadata`, and `unsafe_content` have `usability: unusable`; consumers
 must not make an authority or completeness decision from that scope. Any
-`actors` gap makes authorization unusable and therefore fails closed. Runtimes
+unusable `entity`-scope gap for the required entity body or metadata aborts
+snapshot assembly, including `authorization_failed`, `fetch_failed`,
+`source_too_large`, `invalid_metadata`, and `unsafe_content`; Fullsend must not
+launch scripts or an agent with that snapshot. The same gap codes remain
+non-aborting unusable gaps for optional scopes. Any `actors` gap makes
+authorization unusable and therefore fails closed. Runtimes
 and host scripts
 must inspect relevant gaps before consuming records or state.
 
@@ -471,8 +474,11 @@ explicit punctuation set and excluding non-ASCII letters and apostrophes); this
 is an explicit compatibility and security boundary, not an implicit Unicode
 normalization. Non-ASCII or other out-of-alphabet values are structurally
 invalid. Repository file paths are relative,
-slash-separated, contain no `.` or `..` segment, percent-encoded dot, slash, or
-backslash, control character, or non-rendering class named above. Source URLs
+slash-separated, contain no `.` or `..` segment, percent sign or percent-encoded
+dot, slash, or backslash, control character, or non-rendering class named above.
+These values are untrusted forge data and must never be interpolated into shell
+commands; generated order-file paths have a separate shell-safe contract.
+Source URLs
 are intentionally not part of the agent-visible v1 tree; forge, host,
 repository, and immutable record IDs provide provenance without copying
 navigation URLs into staged metadata. An unsafe structural value, whether its
