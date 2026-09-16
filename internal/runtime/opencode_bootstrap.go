@@ -191,12 +191,22 @@ func openCodeAgentMarkdown(agentName string, def *piAgentDef) ([]byte, error) {
 }
 
 // openCodePermissionRecord translates the Claude tool-name allowlist into
-// OpenCode's {toolID: "allow"|"deny"} permission record. nil claudeTools (no
-// restriction) yields an empty map (serialised as `"permission": {}`) so
-// OpenCode's default set applies. A non-nil list allows only the mapped tools;
-// Claude names without an OpenCode counterpart are dropped with a warning.
-// Per-argument Bash restrictions (e.g. Bash(gh,jq)) cannot be represented in
-// OpenCode's permission model and collapse to a bare bash: "allow".
+// OpenCode's {toolID: "allow"|"deny"} permission record. A non-nil list
+// allows only the mapped tools; Claude names without an OpenCode counterpart
+// are dropped with a warning. Per-argument Bash restrictions (e.g.
+// Bash(gh,jq)) cannot be represented in OpenCode's permission model and
+// collapse to a bare bash: "allow".
+//
+// Both nil claudeTools (no restriction in the agent frontmatter) and a
+// non-nil list whose entries all map to unsupported/Skill produce the same
+// empty map (serialised as `"permission": {}`). OpenCode treats an empty
+// permission record as "use defaults" — every tool is available. This is
+// correct for the nil case (the agent did not restrict tools) but means an
+// agent that listed ONLY unsupported tools also gets the full default set
+// rather than an empty allowlist. In practice this is acceptable: the
+// harness's OPENCODE_CONFIG_CONTENT permission policy merges last and
+// provides the authoritative gate; the per-agent record is a documentation
+// aid, not the sole enforcement point.
 func openCodePermissionRecord(claudeTools []string) map[string]string {
 	if claudeTools == nil {
 		return map[string]string{}
@@ -215,9 +225,9 @@ func openCodePermissionRecord(claudeTools []string) map[string]string {
 		}
 		rec[ot] = "allow"
 	}
-	// An agent that listed only unsupported/Skill tools gets an explicit
-	// empty record (serialised as `"permission": {}`), so OpenCode does not
-	// silently fall back to its full default tool set.
+	// An agent that listed only unsupported/Skill tools gets the same empty
+	// record as an unrestricted agent — see the doc comment above for why
+	// this is acceptable (the harness policy is the authoritative gate).
 	return rec
 }
 
