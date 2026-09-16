@@ -1266,3 +1266,32 @@ test("shutdown logs skip for never-dispatched personas", async () => {
   assert.equal(skips.filter((l) => /name=correctness/.test(l)).length, 0, "dispatched persona must not also skip");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// A persona queued behind maxConcurrent has already entered run() — it must
+// not be mislabeled never-dispatched by shutdown's registered-persona sweep,
+// and its own eventual skip must carry a reason that says it was aborted,
+// not that it was never attempted (#7387).
+test("shutdown does not mislabel a persona queued behind maxConcurrent as never-dispatched", async () => {
+  const { manifest } = personaFixture();
+  manifest.agent.maxConcurrent = 1;
+  const { spawn, children } = fakeSpawn();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const running = tool.run({ prompt: "ok", subagent_type: "correctness" }, {});
+  const queued = tool.run({ prompt: "ok", subagent_type: "style" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the second persona call is queued, not spawned");
+
+  tool.shutdown();
+  const queuedRes = await queued;
+  assert.equal(queuedRes.isError, true);
+  assert.equal(queuedRes.stopReason, "aborted");
+
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.equal(skips.filter((l) => /name=style/.test(l)).length, 1, "queued persona logs exactly one skip");
+  assert.ok(!skips.some((l) => /name=style\b.*reason=never-dispatched/.test(l)), logs.join("\n"));
+  assert.ok(skips.some((l) => /name=style\b.*reason=aborted/.test(l)), logs.join("\n"));
+
+  children[0].child.finish(okStream("done"));
+  await running;
+});

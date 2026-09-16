@@ -333,7 +333,23 @@ func TestResolvePersonaModels_DiscoverySkipEmitsPersonaMarker(t *testing.T) {
 		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
 		require.NoError(t, err)
 	})
-	assert.Contains(t, stderr, "fullsend:persona:skip name=bad")
+	assert.Contains(t, stderr, `fullsend:persona:skip name="bad"`)
+}
+
+// The discovery-skip name comes from a filename and has not passed
+// ValidSubagentKey — often exactly why it was skipped — so it must be
+// %q-escaped like reason to keep the grep-stable marker on one line.
+func TestResolvePersonaModels_DiscoverySkipEscapesName(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	skipped := []piSkippedPersona{{Name: "bad\nname", Path: "/tmp/bad.md", Reason: "frontmatter name: is required"}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, stderr, `fullsend:persona:skip name="bad\nname"`)
+	assert.NotContains(t, stderr, "fullsend:persona:skip name=bad\nname")
 }
 
 // A persona-style "@suffix" resolves instead of failing the closed-set

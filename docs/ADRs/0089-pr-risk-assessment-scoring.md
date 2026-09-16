@@ -160,9 +160,9 @@ The protected-path check remains the sole blocking mechanism.
 the pi Agent tool logs `fullsend:persona:{invoke,complete,error,reject,skip}`
 markers for every named persona (including `risk-assessment`). When the flag is
 on and the result JSON omits `risk_assessment`, `fullsend post-review` posts a
-sticky diagnostic (`Risk assessment unavailable this run`) instead of omitting
-the comment. Risk level remains informational and does not gate the review
-outcome.
+sticky diagnostic (`Risk assessment unavailable this run`) instead of staying
+silent about the missing assessment. Risk level remains informational and
+does not gate the review outcome.
 
 ## Consequences
 

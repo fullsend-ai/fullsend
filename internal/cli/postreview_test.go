@@ -91,6 +91,35 @@ func TestParseReviewResult_RiskAssessmentAbsent(t *testing.T) {
 	assert.Nil(t, result.RiskAssessment)
 }
 
+func TestParseReviewResult_MalformedRiskAssessmentDoesNotDiscardResult(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":"oops"}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Equal(t, "approve", result.Action)
+	assert.Equal(t, "ok", result.Body)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestSanitizeRiskLevel(t *testing.T) {
+	tests := []struct {
+		level string
+		want  string
+	}{
+		{"low", "low"},
+		{"moderate", "moderate"},
+		{"elevated", "elevated"},
+		{"high", "high"},
+		{"critical", "critical"},
+		{"critical\n::add-mask::oops", "unknown"},
+		{"", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level, func(t *testing.T) {
+			assert.Equal(t, tt.want, sanitizeRiskLevel(tt.level))
+		})
+	}
+}
+
 func TestReviewActionToEvent(t *testing.T) {
 	tests := []struct {
 		action    string

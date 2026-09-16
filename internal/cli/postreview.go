@@ -308,6 +308,20 @@ func riskAssessmentEnabled() bool {
 	return v != "false" && v != "0" && v != "no" && v != "off"
 }
 
+// sanitizeRiskLevel allowlists a risk-assessment level against the ADR 0089
+// enum before it is interpolated into any printer output. Level comes from
+// agent-authored JSON and, unlike Rationale, is not run through the output
+// security pipeline, so an unrecognized value is replaced with a fixed
+// placeholder rather than passed through.
+func sanitizeRiskLevel(level string) string {
+	switch level {
+	case "low", "moderate", "elevated", "high", "critical":
+		return level
+	default:
+		return "unknown"
+	}
+}
+
 // postMissingRiskAssessment posts a sticky diagnostic when the feature
 // flag is on and the result omitted risk_assessment. Failures are logged
 // rather than returned so they cannot block the review itself.
@@ -317,7 +331,7 @@ func postMissingRiskAssessment(ctx context.Context, client forge.Client, owner, 
 		return
 	}
 	if parsed.RiskAssessment != nil {
-		printer.StepInfo(fmt.Sprintf("Risk assessment present: %s (%d/5)", parsed.RiskAssessment.Level, parsed.RiskAssessment.Score))
+		printer.StepInfo(fmt.Sprintf("Risk assessment present: %s (%d/5)", sanitizeRiskLevel(parsed.RiskAssessment.Level), parsed.RiskAssessment.Score))
 		return
 	}
 
@@ -876,14 +890,43 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 	return r
 }
 
+// reviewResultRaw mirrors ReviewResult but decodes risk_assessment as raw
+// JSON. That keeps a malformed risk_assessment value (the field itself, or
+// one of its nested fields, having the wrong type) from failing the parse
+// for the whole result — a review with a valid action/body/findings should
+// still post even if risk_assessment alone is garbled.
+type reviewResultRaw struct {
+	Body           string          `json:"body"`
+	Action         string          `json:"action"`
+	HeadSHA        string          `json:"head_sha"`
+	Reason         string          `json:"reason"`
+	Findings       []ReviewFinding `json:"findings"`
+	RiskAssessment json.RawMessage `json:"risk_assessment,omitempty"`
+}
+
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.
 // If parsing fails, treats the entire input as a plain-text body.
 // Returns an error if the JSON is valid but the body field is empty
 // (unless the action is "failure", which may omit the body).
 func parseReviewResult(input string) (ReviewResult, error) {
-	var result ReviewResult
-	if err := json.Unmarshal([]byte(input), &result); err != nil {
+	var raw reviewResultRaw
+	if err := json.Unmarshal([]byte(input), &raw); err != nil {
 		return ReviewResult{Body: input, Action: "comment"}, nil
+	}
+	result := ReviewResult{
+		Body:     raw.Body,
+		Action:   raw.Action,
+		HeadSHA:  raw.HeadSHA,
+		Reason:   raw.Reason,
+		Findings: raw.Findings,
+	}
+	if len(raw.RiskAssessment) > 0 && string(raw.RiskAssessment) != "null" {
+		var ra RiskAssessment
+		if err := json.Unmarshal(raw.RiskAssessment, &ra); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is malformed, ignoring: %v\n", err)
+		} else {
+			result.RiskAssessment = &ra
+		}
 	}
 	if result.Body == "" && strings.ToLower(result.Action) != "failure" {
 		return ReviewResult{}, fmt.Errorf("review result JSON has empty body field")

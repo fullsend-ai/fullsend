@@ -85,6 +85,7 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_RISK_ASSESSMENT_ENABLED` | Gates the ADR 0089 risk-assessment pre-pass and the missing-assessment diagnostic. When on and the result JSON omits `risk_assessment`, `fullsend post-review` posts a sticky "Risk assessment unavailable this run" comment. | `true` | `true`/`false` (also accepts `0`/`no`/`off` as false) |
 
 Set this in the harness's `env.sandbox` (the upstream default lives in
 `harness/review.yaml`). To override per repo or org, use `base:`

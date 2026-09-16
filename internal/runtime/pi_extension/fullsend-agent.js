@@ -503,6 +503,13 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
   // dispatchedPersonas records registered personas this session actually
   // attempted (invoke or reject). Shutdown then logs skip for the rest.
   const dispatchedPersonas = new Set();
+  // startedPersonas records registered personas whose run() has been entered
+  // (lookupPersona matched), including ones still queued behind
+  // maxConcurrent. Shutdown consults this — not dispatchedPersonas — to
+  // decide "never-dispatched": a queued call has started but has not yet
+  // invoked, rejected, or been skipped, so it must not be double-counted as
+  // never attempted (#7387).
+  const startedPersonas = new Set();
   // waiters are dispatches queued behind maxConcurrent. Each is an object
   // so shutdown (and an abort while queued) can take a specific one out of
   // the queue instead of only ever releasing the head.
@@ -717,6 +724,10 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     // use its resolved model and log if the caller also supplied a model arg.
     const persona = lookupPersona(agent, subagentType);
     const personaName = subagentType.toLowerCase();
+    // Mark the persona as started as soon as it's matched, before the
+    // dispatch is queued (await acquire() below): a shutdown while queued
+    // must not mislabel this call "never-dispatched" (#7387).
+    if (persona) startedPersonas.add(personaName);
     // rejectNamed logs a grep-stable reject marker for named personas
     // (registered, skipped, or unknown) so a miss is never silent (#7387).
     const rejectNamed = (error, model = "") => {
@@ -885,7 +896,10 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     shuttingDown = true;
     for (const name of registeredPersonaNames(agent)) {
       const key = name.toLowerCase();
-      if (dispatchedPersonas.has(key)) continue;
+      // A persona whose run() already started (e.g. still queued behind
+      // maxConcurrent) is not "never-dispatched" — it logs its own skip
+      // reason via skipNamed once cancelled() observes shuttingDown.
+      if (startedPersonas.has(key)) continue;
       dispatchedPersonas.add(key);
       logPersona(log, "skip", { name: key, reason: "never-dispatched" });
     }

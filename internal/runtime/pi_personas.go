@@ -289,7 +289,12 @@ func resolvePersonaModels(
 			return nil, "", nil, fmt.Errorf("persona %s was not registered (%s) and subagents.default would have applied to it", sk.Path, sk.Reason)
 		}
 		fmt.Fprintf(os.Stderr, "Warning: persona %s skipped: %s\n", sk.Path, sk.Reason)
-		fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", sk.Name, sk.Reason)
+		// sk.Name comes from the discovered file's basename and has not
+		// passed ValidSubagentKey (that's often exactly why it was
+		// skipped), so it is %q-escaped like reason rather than %s, to
+		// keep an unusual filename from breaking the grep-stable marker
+		// across lines.
+		fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%q reason=%q\n", sk.Name, sk.Reason)
 	}
 
 	for _, p := range personas {
