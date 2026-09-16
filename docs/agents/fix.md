@@ -92,8 +92,10 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   across bot and human triggers.
 - When a bot-triggered run is approaching the bot cap, the agent applies the
   `needs-human` label.
-- Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
-  starts a new one.
+- A `/fs-fix` comment while a fix run is already in flight for the same PR does
+  not cancel it: that run finishes, and the new dispatch waits as the single
+  pending run (normally but not necessarily the newest event), then works from
+  the PR's current state ([ADR 0113](../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 
 ## How it helps
 

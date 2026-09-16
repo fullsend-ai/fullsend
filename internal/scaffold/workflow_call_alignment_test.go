@@ -50,17 +50,11 @@ type callerJob struct {
 
 type jobConcurrency struct {
 	Group string `yaml:"group"`
-	// CancelInProgress is a Node, not a bool: reusable-dispatch.yml stage
-	// jobs gate it on a repository variable, so the value is an expression
-	// string on those jobs and a literal boolean everywhere else.
+	// CancelInProgress is a Node, not a bool, so the assertions below can
+	// check the YAML tag: Node.Value cannot tell a literal boolean from the
+	// quoted string that would silently make the value an expression.
 	CancelInProgress yaml.Node `yaml:"cancel-in-progress"`
 }
-
-// preserveGatedCancel is the cancel-in-progress value every
-// reusable-dispatch stage job must carry: today's cancelling behaviour
-// unless the consumer repository sets FULLSEND_PRESERVE_RUNS=true, in which
-// case the run in flight is left to finish.
-const preserveGatedCancel = "${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}"
 
 // reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
 type reusableStageWorkflow struct {
@@ -623,6 +617,21 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 	var caller callerWorkflow
 	require.NoError(t, yaml.Unmarshal(content, &caller))
 
+	// Every job is either a stage job pinned in the expectations or a job
+	// named here as not running an agent. A job that is neither fails, so an
+	// eighth stage job cannot ship with its concurrency unchecked: the loop
+	// below only visits the stages the map already knows.
+	nonStageJobs := map[string]bool{"route": true, "harness-dispatch": true}
+	for name := range caller.Jobs {
+		if nonStageJobs[name] {
+			continue
+		}
+		_, pinned := dispatchStageConcurrencyExpectations[name]
+		assert.True(t, pinned, "job %q is in reusable-dispatch.yml but not in "+
+			"dispatchStageConcurrencyExpectations: pin its concurrency there, or list "+
+			"it in nonStageJobs if it does not run an agent", name)
+	}
+
 	for stage, expect := range dispatchStageConcurrencyExpectations {
 		t.Run(stage, func(t *testing.T) {
 			job, ok := caller.Jobs[stage]
@@ -633,13 +642,14 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 				assert.Contains(t, job.Concurrency.Group, fragment,
 					"job %q concurrency group should reference %q", stage, fragment)
 			}
-			assert.Equal(t, preserveGatedCancel, job.Concurrency.CancelInProgress.Value,
-				"job %q must cancel in-progress runs by default and stop cancelling "+
-					"only when the consumer sets FULLSEND_PRESERVE_RUNS=true. A new stage "+
-					"job must be added to dispatchStageConcurrencyExpectations, or its "+
+			assert.Equal(t, "false", job.Concurrency.CancelInProgress.Value,
+				"job %q must never cancel the run in flight when a newer event "+
+					"arrives on the same work item (ADR 0113). A new stage job must "+
+					"be added to dispatchStageConcurrencyExpectations, or its "+
 					"concurrency is unpinned", stage)
-			assert.Equal(t, "!!str", job.Concurrency.CancelInProgress.Tag,
-				"job %q must carry the gate as an expression, not a literal", stage)
+			assert.Equal(t, "!!bool", job.Concurrency.CancelInProgress.Tag,
+				"job %q cancel-in-progress must stay a literal boolean — a quoted "+
+					"string or an expression would reintroduce a conditional", stage)
 		})
 	}
 }

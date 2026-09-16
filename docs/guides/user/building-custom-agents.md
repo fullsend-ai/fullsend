@@ -484,7 +484,7 @@ on:
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -561,12 +561,14 @@ jobs:
           path: ${{ github.workspace }}/output
 ```
 
-This example reflects the currently deployed cancellation policy. Under
-[ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
-the platform will change subject-scoped agent workflows to
-`cancel-in-progress: false` once preserve-and-coalesce scheduling is
-implemented. Until that migration lands, keep the setting aligned with the
-reusable workflow that invokes the agent.
+This example matches the platform's scheduling: subject-scoped agent workflows
+run with `cancel-in-progress: false`, so a newer event on the same work item
+waits as the single pending run and works from current state instead of
+cancelling the run in flight
+([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
+decided it; [ADR 0113](../../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)
+implements it in the reusable dispatch workflow). Keep the setting aligned with
+the reusable workflow that invokes the agent.
 
 ### Critical workflow steps
 
