@@ -1118,6 +1118,88 @@ func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
 		"custom harness agents must not share the built-in review status")
 }
 
+func TestActionReviewCompletionStatusRuntime(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+
+	var action struct {
+		Runs struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
+
+	stepScript := func(t *testing.T, name string) string {
+		t.Helper()
+		for _, step := range action.Runs.Steps {
+			if step.Name == name {
+				require.NotEmpty(t, step.Run)
+				return step.Run
+			}
+		}
+		t.Fatalf("action step %q not found", name)
+		return ""
+	}
+
+	runWithStub := func(t *testing.T, script, jobStatus string, stubExit int) ([]byte, string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "fullsend.log")
+		stub := fmt.Sprintf("#!/usr/bin/env bash\nprintf '%%s\\n' \"$*\" >> \"$FULLSEND_STUB_LOG\"\nexit %d\n", stubExit)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend"), []byte(stub), 0o755))
+
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"FULLSEND_STUB_LOG="+logPath,
+			"STATUS_REPO=acme/widget",
+			"RUN_URL=https://github.com/acme/widget/actions/runs/42",
+			"PR_HEAD_SHA=0123456789abcdef0123456789abcdef01234567",
+			"JOB_STATUS="+jobStatus,
+			"WAS_SKIPPED=false",
+			"GITHUB_TOKEN=stub-token",
+		)
+		output, runErr := cmd.CombinedOutput()
+		log, readErr := os.ReadFile(logPath)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			require.NoError(t, readErr)
+		}
+		return output, string(log), runErr
+	}
+
+	t.Run("pending publication failure does not suppress review", func(t *testing.T) {
+		output, log, err := runWithStub(t,
+			stepScript(t, "Set review completion status pending"), "", 1)
+		require.NoError(t, err, "%s", output)
+		assert.Contains(t, log, "review-status")
+		assert.Contains(t, string(output), "warning")
+	})
+
+	t.Run("cancelled run leaves pending status for replacement", func(t *testing.T) {
+		output, log, err := runWithStub(t,
+			stepScript(t, "Finalize review completion status"), "cancelled", 0)
+		require.NoError(t, err, "%s", output)
+		assert.Empty(t, log, "cancelled cleanup must not overwrite a replacement run's status")
+
+		output, log, err = runWithStub(t,
+			stepScript(t, "Finalize review completion status"), "success", 0)
+		require.NoError(t, err, "%s", output)
+		assert.Contains(t, log, "--job-status success",
+			"the replacement run must still resolve the shared status")
+	})
+
+	t.Run("non-cancelled terminal publication remains blocking", func(t *testing.T) {
+		output, log, err := runWithStub(t,
+			stepScript(t, "Finalize review completion status"), "failure", 1)
+		require.Error(t, err, "%s", output)
+		assert.Contains(t, log, "review-status")
+		assert.Contains(t, log, "--job-status failure")
+	})
+}
+
 func TestReusableDispatchReviewStatusOptIn(t *testing.T) {
 	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 	assert.Contains(t, content, "review_status_enabled:",

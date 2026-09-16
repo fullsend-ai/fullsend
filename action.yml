@@ -391,7 +391,9 @@ runs:
         if [[ -n "${RUN_URL}" ]]; then
           STATUS_FLAGS+=(--run-url "${RUN_URL}")
         fi
-        fullsend review-status "${STATUS_FLAGS[@]}"
+        if ! fullsend review-status "${STATUS_FLAGS[@]}"; then
+          echo "::warning::Unable to publish pending review completion status; continuing with automated review"
+        fi
 
     - name: Install Podman
       shell: bash
@@ -556,6 +558,10 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
+        if [[ "${JOB_STATUS}" == "cancelled" ]]; then
+          echo "::notice::Leaving review completion status pending for a replacement run"
+          exit 0
+        fi
         STATUS_FLAGS=(
           --repo "${STATUS_REPO}"
           --sha "${PR_HEAD_SHA}"

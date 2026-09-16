@@ -79,8 +79,11 @@ The status is tied to the exact pull request head SHA:
 - `pending` means an automated review started for that commit.
 - `success` means the review completed without being skipped.
 - A failure, timeout, cancellation, or skip never produces success.
-- If cancellation prevents final cleanup, the status stays pending and the
-  required check continues to block the merge.
+- Cancellation intentionally leaves the status pending so cleanup from the
+  cancelled run cannot overwrite a replacement run's success on the same SHA.
+- A status API failure does not suppress the automated review. The required
+  check remains absent or pending and continues to block the merge until a
+  later review resolves it.
 
 The status links to its workflow run. When cancellation cleanup runs and status
 comments are enabled, it also produces a PR comment warning that the current
