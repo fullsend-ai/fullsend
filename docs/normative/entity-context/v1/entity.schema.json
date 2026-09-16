@@ -3,7 +3,7 @@
   "$id": "https://fullsend.ai/normative/entity-context/v1/entity.schema.json",
   "title": "EntityMetadata",
   "type": "object",
-  "required": ["kind", "id", "number", "title", "state", "source_url", "author_id", "author", "created_at", "updated_at", "labels"],
+  "required": ["kind", "id", "number", "title", "state", "author_id", "author", "created_at", "updated_at", "labels"],
   "properties": {
     "kind": { "enum": ["work_item", "change_proposal"] },
     "id": {
@@ -18,7 +18,6 @@
     },
     "title": { "type": "string", "minLength": 1 },
     "state": { "enum": ["open", "closed", "merged"] },
-    "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
     "author_id": { "type": ["string", "null"], "minLength": 1 },
     "author": { "type": ["string", "null"], "minLength": 1 },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },

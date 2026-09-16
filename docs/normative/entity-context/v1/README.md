@@ -128,10 +128,13 @@ Filtered Markdown body.
 `Fullsend-Record` is `"comment"` or `"review"`. The header order and blank
 line are fixed. `Author-ID` may be `null` when the forge withholds or has
 deleted the actor. The immutable actor ID is included because attribution is
-part of the source record. The current login and navigation URL stay in
-`index.json` and `state/actors.json`: either may change after an account or
-repository rename without the record changing. Effective repository role is
-also excluded because permissions can change without the comment changing.
+part of the source record. The current login stays in `index.json` and
+`state/actors.json`: it may change after an account rename without the record
+changing. Navigation URLs are intentionally omitted from the staged tree;
+forge, host, repository, and immutable record IDs provide provenance, while a
+host-side adapter can construct a link when a human needs one. Effective
+repository role is also excluded because permissions can change without the
+comment changing.
 The file contains no update time, ordering, thread membership, review location,
 resolution, outdated, or minimized state; those properties belong in
 `index.json`, `relations/`, or `state/`. Consequently, resolving a thread,
@@ -152,15 +155,19 @@ second digits and no punctuation other than `T` and `Z`. The entity-body record
 uses the reserved key `00000000T000000000000000Z`, so it always sorts first.
 Creation time is immutable forge data; edits do not rename a record.
 
-`views/timeline.order` lists the entity record and all comment and review
+Every order/view file lists only records that have an emitted `content_path`;
+rejected comments and reviews never create dangling order lines. The entity
+record is always present because an entity-body rejection aborts assembly.
+`views/timeline.order` lists that entity record and retained comment/review
 records in canonical chronology. Each `threads/<thread-key>.order` lists that
-thread's records in forge order. `views/unresolved-review.order` lists records
-in unresolved, non-outdated review threads, ordered by thread creation time and
-key and then forge thread order. Each `views/reviews/<record-key>.order` lists
-one formal review followed by records in threads associated with it. A record
-path appears at most once in any one order file. Paths contain no whitespace or
-shell metacharacters, so a host consumer may materialize a projection with
-`xargs cat`, but runtimes use the segmented contract below.
+thread's retained records in forge order. `views/unresolved-review.order`
+lists retained records in unresolved, non-outdated review threads, ordered by
+thread creation time and key and then forge thread order. A
+`views/reviews/<record-key>.order` file is emitted only for a retained formal
+review; it lists that review followed by retained records in threads associated
+with it. A record path appears at most once in any one order file. Paths contain
+no whitespace or shell metacharacters, so a host consumer may materialize a
+projection with `xargs cat`, but runtimes use the segmented contract below.
 
 A runtime that injects a projection into a model request emits each referenced
 record as a distinct, ordered content block. Relationship, history, mutable
@@ -451,17 +458,20 @@ configured provider trust boundary, not by this cleanup guarantee.
 
 Structural strings are not rewritten because doing so could change identity or
 target a different resource. Canonical IDs use the mappings above. Repository
-paths, review file paths, and source URLs first undergo the Unicode-safety scan
-and then strict structural validation. Repository file paths are relative,
+paths and review file paths first undergo the Unicode-safety scan and then strict
+structural validation. Repository file paths are relative,
 slash-separated, contain no `.` or `..` segment, percent-encoded dot, slash, or
 backslash, control character, or non-rendering class named above. Source URLs
-use HTTPS, contain no userinfo or credentials, and have a lowercase authority
-exactly equal to `source.host`; schemes such as `javascript`, `data`, and
-`file` are invalid. The shared `source_url` schema definition enforces the
-closed URI shape, while producers and consumers enforce the cross-document
-host equality. An unsafe structural value, whether its property is required or
-optional, causes the selected source and its files to be omitted and produces
-an unusable `invalid_metadata` or `unsafe_content` gap. Structural values are
+are intentionally not part of the agent-visible v1 tree; forge, host,
+repository, and immutable record IDs provide provenance without copying
+navigation URLs into staged metadata. An unsafe structural value, whether its
+property is required or optional, produces an unusable `invalid_metadata` or
+`unsafe_content` gap. For optional records and their related files, that gap
+omits the selected source as described above. Required singleton structural
+values cannot be omitted: an unsafe, missing, or schema-invalid entity `id`, or
+index `source` field
+(`host`, `repository_id`, or `repository`), aborts snapshot assembly rather
+than emitting an invalid singleton or dangling manifest. Structural values are
 never emitted after filtering or truncation.
 
 `index.json.filter` records filtering of source-derived values in the index.

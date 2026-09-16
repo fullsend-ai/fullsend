@@ -9,7 +9,6 @@
     "name": { "type": "string", "minLength": 1 },
     "status": { "enum": ["queued", "in_progress", "completed"] },
     "conclusion": { "enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"] },
-    "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }

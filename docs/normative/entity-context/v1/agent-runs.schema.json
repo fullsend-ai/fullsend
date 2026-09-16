@@ -9,7 +9,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "agent", "status", "input_revision", "result_record_keys", "source_url", "completed_at"],
+        "required": ["id", "agent", "status", "input_revision", "result_record_keys", "completed_at"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "agent": { "type": "string", "minLength": 1 },
@@ -26,7 +26,6 @@
             "description": "Result record keys sorted by ASCII byte order."
           },
           "resulting_commit_sha": { "$ref": "common.schema.json#/$defs/git_oid" },
-          "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
           "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
           "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
         },

@@ -155,7 +155,6 @@
         "content_path": { "type": "string", "pattern": "^records/[0-9]{8}T[0-9]{15}Z-[0-9a-f]{64}[.]md$" },
         "metadata_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/metadata[.]json$" },
         "log_path": { "type": "string", "pattern": "^checks/[0-9a-f]{64}/log[.]txt$" },
-        "source_url": { "$ref": "common.schema.json#/$defs/source_url" },
         "author_id": { "type": ["string", "null"], "minLength": 1 },
         "author": { "type": ["string", "null"], "minLength": 1 },
         "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
