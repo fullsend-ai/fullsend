@@ -1273,6 +1273,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		statusRepo:    sOpts.statusRepo,
 		statusNum:     sOpts.statusNum,
 		jobToken:      steerJobToken,
+		receiptToken:  steerReceiptToken(steerJobToken, envGHToken(), minted),
 		roleToken:     envGHToken(),
 		runStart:      runStartedAt,
 		headSHA:       runStartHeadSHA,
@@ -1290,6 +1291,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
+	// Declared up here rather than beside lastExitCode because the receipt
+	// defer below closes over it: an agent that exits 0 with an error in its
+	// transcript has its post-script withheld, and the receipt must not
+	// claim work the post-script never published.
+	var transcriptErrorOverride bool
+
 	// The receipt for whatever this run absorbs. Registered here, before the
 	// status notifier and long before the post-script, so it runs LAST: both
 	// of those are defers too, and the post-script can still turn a
@@ -1297,7 +1304,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// so it must see the same final state the status comment reports, not an
 	// earlier guess at it.
 	defer func() {
-		if !shouldPostSteerReceipt(runErr, ctx.Err(), runSkipped) {
+		if !shouldPostSteerReceipt(runErr, ctx.Err(), runSkipped, transcriptErrorOverride) {
 			return
 		}
 		postSteerReceipt(ctx, baseSteerOpts, steerMarker)
@@ -1634,7 +1641,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// An inbound TRACEPARENT is adopted via the W3C propagator so the root
 	// span continues the parent trace.
 	var lastExitCode int
-	var transcriptErrorOverride bool
 	var runCount int
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{

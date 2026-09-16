@@ -202,6 +202,14 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 		// after it, which the steer watcher authenticates its GitHub
 		// clients with: the watcher needs those two specific tokens, not
 		// whatever the resolution chain would pick.
+		//
+		// The steer receipt and its skip check turn that from a preference
+		// into a requirement: the receipt is trusted because its author is
+		// an identity the sandbox cannot post as, which holds only while
+		// the two tokens stay distinct. A fallback to GITHUB_TOKEN would
+		// return the Actions workflow token for both, collapse them into
+		// one identity, and switch the check off. envGHToken() is chosen
+		// here precisely because it never falls back.
 		"run.go": {
 			`os.LookupEnv("GH_TOKEN")`: true,
 			`envGHToken(`:              true,

@@ -253,11 +253,35 @@ work item and exits 0 without starting the agent when its own `GITHUB_RUN_ID` is
 **The author is the whole of the authentication, and it must be the job token's.**
 
 The runner captures the GitHub Actions job token — `GH_TOKEN` as the action passed it in —
-before minting swaps in the role token, and posts the receipt under that identity. The sandbox
-only ever receives the role token, so the job token's login is one that nothing inside the
-sandbox can post as: not the agent, and not a post-script shelling out to `gh`. The reader
-resolves that same login from the token itself rather than hardcoding it, because it differs
-between github.com and GitHub Enterprise Server.
+before minting swaps in the role token, and posts the receipt under that identity. The reader
+resolves that login from the token itself rather than hardcoding it, because it differs between
+github.com and GitHub Enterprise Server.
+
+Two conditions have to hold for that identity to mean anything, and both are enforced in code
+rather than assumed:
+
+- **Minting must actually have happened.** The swap is what puts the job token out of reach:
+  it replaces `GH_TOKEN` before the sandbox exists, leaving the captured credential to the
+  runner's process alone. With no mint URL or no role there is no swap, the same credential
+  stays in the environment a post-script inherits, and a post-script shelling out to `gh` could
+  sign a receipt. The receipt credential is therefore the job token *only when a role token was
+  minted*; otherwise it is empty and both the writer and the skip check turn off.
+- **The two identities must differ.** The action's `github_token` input defaults to
+  `${{ github.token }}` but is an input, so a caller can pass an App installation token — and if
+  that resolves to the same login the role token posts under, the agent's own comments carry the
+  trusted author and the check is inverted. The reader resolves both logins and refuses to skip
+  when they match, warning as it goes.
+
+With both holding, the receipt's author is one nothing inside the sandbox can post as: not the
+agent, and not a post-script.
+
+**What the author check proves, exactly:** that the comment came from a workflow job token of
+*this repository* — not that it came from this run, or even from fullsend. Every job's default
+`GITHUB_TOKEN` in a repository posts under the same login, so any other workflow in the same
+repository could write a comment carrying the marker syntax and it would be honoured. That is a
+maintainer-controlled boundary, since a repository's own workflows can already do anything to
+it, and it is deliberately not narrowed further: checking the named run id against the Actions
+API would add nothing, because that id is public.
 
 This is why the receipt is a **separate comment** rather than the marker on the terminal status
 comment. That comment is posted by the App — the same identity the agent's own output goes out
@@ -267,10 +291,14 @@ review body, and the App then posts it. The runner still writes a copy of the ma
 status comment so a reader can see what a run absorbed, but **the skip check does not honour
 it**, and no App-authored marker of any shape is a receipt.
 
-The boundary this leaves: a job token that leaked out of the runner's own process could post a
+The boundary this leaves: a credential that leaked out of the runner's own process could post a
 receipt the check would honour. That is a compromise of the runner rather than of the agent
 sandbox, and it is the same credential that already reads the Actions API to accept steers in
 the first place.
+
+Reading the Actions API is deliberately *not* held to the same bar. Those reads prove no
+authorship, so the watcher keeps using the job token whether or not minting swapped it; only
+the receipt's identity has to be unreachable.
 
 ### Failure directions
 
@@ -280,10 +308,14 @@ handled" costs one short run. Writing the receipt is best-effort for the same re
 post costs one queued run that redoes finished work, where failing the run would throw away work
 that succeeded.
 
-Only an outright success leaves a receipt. A failed, cancelled or skipped run writes none, and a
-run whose validation never passed writes none, because a receipt claims the work is done. One
-receipt per run, not per steer: the validation loop merges every iteration's consumed run ids
-into one marker.
+Only an outright success leaves a receipt, and only one that absorbed something. A failed,
+cancelled or skipped run writes none, and a run whose validation never passed writes none,
+because a receipt claims the work is done. A run that absorbed nothing writes none either: the
+marker on the status comment still records the head such a run settled on, but a standalone
+receipt asserting that a queued run may skip has nothing to assert. One receipt per run, not per
+steer, and it names only what the iteration whose output shipped absorbed — an update absorbed by
+an iteration that then failed validation never reached that output, so receipting it would tell
+the queued run to skip work nobody published.
 
 Worst case is one short redundant run — the same window Actions has today, minus the wasted
 in-flight tokens.

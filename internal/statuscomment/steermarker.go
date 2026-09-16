@@ -44,14 +44,14 @@ func (m SteerMarker) Consumed(runID int64) bool {
 	return false
 }
 
-// BuildSteerMarker renders the marker line. It returns "" when there is
-// nothing to record, so a run that absorbed no steers adds no marker and
-// the status comment is byte-for-byte what it is today.
+// ConsumedRuns returns the run ids this marker actually records: sorted,
+// deduplicated, and with the unusable ones dropped.
 //
-// Run ids are sorted and deduplicated so the same set always renders the
-// same string; a non-hex head is dropped rather than emitted, because the
-// marker is HTML in a comment body and must not carry arbitrary text.
-func BuildSteerMarker(m SteerMarker) string {
+// It is the single answer to "did this run absorb anything", which both the
+// rendered marker and the receipt decision depend on. Reading
+// ConsumedRunIDs directly gets that wrong, because a slice of nothing but
+// zeroes is non-empty and records nothing.
+func (m SteerMarker) ConsumedRuns() []int64 {
 	ids := make([]int64, 0, len(m.ConsumedRunIDs))
 	seen := make(map[int64]bool, len(m.ConsumedRunIDs))
 	for _, id := range m.ConsumedRunIDs {
@@ -62,6 +62,22 @@ func BuildSteerMarker(m SteerMarker) string {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// BuildSteerMarker renders the marker line. It returns "" when there is
+// nothing to record, so a run that absorbed no steers adds no marker and
+// the status comment is byte-for-byte what it is today.
+//
+// A head-only marker IS rendered: on the status comment the head a run
+// settled on is worth recording even when nothing was absorbed. The
+// standalone receipt does not follow that rule — see postSteerReceipt.
+//
+// Run ids are sorted and deduplicated so the same set always renders the
+// same string; a non-hex head is dropped rather than emitted, because the
+// marker is HTML in a comment body and must not carry arbitrary text.
+func BuildSteerMarker(m SteerMarker) string {
+	ids := m.ConsumedRuns()
 
 	head := m.HeadSHA
 	if !isHexOnly(head) {
@@ -124,8 +140,18 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // So an App-authored marker no longer passes this check at all, whatever its
 // body looks like, and the body-shape test is gone with the reason for it.
 //
-// What remains, and is the real boundary: a job token that leaked out of the
-// runner's process could post a receipt this function would honour. That is a
+// What this proves, stated exactly: the comment came from a workflow job
+// token OF THIS REPOSITORY — not that it came from this run, or even from
+// fullsend. Every job's default GITHUB_TOKEN in a repository posts under the
+// same login, so any other workflow there could write a comment carrying
+// this syntax and it would be honoured. That is a maintainer-controlled
+// boundary — a repository's own workflows can already do anything to it —
+// and it is deliberately not narrowed further: corroborating the marker
+// against the Actions API would not help, because the run id it names is
+// public.
+//
+// The boundary that would matter: a job token leaked out of the runner's
+// process could post a receipt this function would honour. That is a
 // compromise of the runner rather than of the agent sandbox, and it is the
 // same credential that already reads the Actions API to accept steers.
 func LatestSteerMarker(comments []tracker.Comment, author string) (SteerMarker, bool) {

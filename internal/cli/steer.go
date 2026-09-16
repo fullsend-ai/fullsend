@@ -24,6 +24,10 @@ import (
 // holding a token it can no longer post with.
 const steerTokenMargin = 10 * time.Minute
 
+// steerReceiptTimeout bounds the receipt post. It runs after the agent is
+// done, on a context detached from the run's, so it needs its own bound.
+const steerReceiptTimeout = 15 * time.Second
+
 // steerTokenLife is the life of the App installation token the stage minted.
 const steerTokenLife = time.Hour
 
@@ -83,6 +87,18 @@ type steerOpts struct {
 	// jobToken is the GH_TOKEN the action passed in, captured before the
 	// runner swapped in the minted role token. It reads the Actions API.
 	jobToken string
+	// receiptToken is the credential the receipt is written and read under.
+	// It is jobToken, but ONLY when minting actually swapped GH_TOKEN for a
+	// role token — that swap is the whole reason the sandbox cannot reach
+	// it. With no mint URL or no role, nothing is swapped, the captured
+	// credential stays in the environment the post-script inherits, and it
+	// is no longer an identity the sandbox lacks. Empty then, and the
+	// receipt paths fail open exactly as they do on GitLab.
+	//
+	// Separate from jobToken because reading the Actions API with a
+	// credential the post-script also holds costs nothing: those reads
+	// prove no authorship. Only the receipt's identity has to be unreachable.
+	receiptToken string
 	// roleToken is the minted role token; it reads the work item.
 	roleToken string
 	runStart  time.Time
@@ -463,8 +479,8 @@ type steerMarkerReader interface {
 // It fails open in every direction — no marker, an unreadable timeline, an
 // unresolvable App login — because a false "already handled" silently drops
 // the work, while a false "not handled" costs one run.
-func steerAlreadyHandled(ctx context.Context, c steerMarkerReader, repo string, number int, myRunID int64) (bool, error) {
-	if c == nil || myRunID == 0 || number <= 0 {
+func steerAlreadyHandled(ctx context.Context, c, roleC steerMarkerReader, repo string, number int, myRunID int64) (bool, error) {
+	if c == nil || roleC == nil || myRunID == 0 || number <= 0 {
 		return false, nil
 	}
 	owner, name, ok := strings.Cut(repo, "/")
@@ -472,14 +488,31 @@ func steerAlreadyHandled(ctx context.Context, c steerMarkerReader, repo string, 
 		return false, fmt.Errorf("status repo %q is not in owner/repo form", repo)
 	}
 
-	// The marker means nothing unless the runner's own job token wrote it.
-	// Any user can paste the HTML into a comment of their own, and so can an
-	// agent — whose output posts under the App, an identity this check no
-	// longer honours. The login is resolved from the token rather than
-	// hardcoded: it differs between github.com and GHES.
+	// The marker means nothing unless the runner's own receipt credential
+	// wrote it. Any user can paste the HTML into a comment of their own, and
+	// so can an agent — whose output posts under the role token's identity.
+	// Both logins are resolved from their tokens rather than hardcoded: they
+	// differ between github.com and GHES.
 	receiptLogin, err := c.GetAuthenticatedUser(ctx)
 	if err != nil {
-		return false, fmt.Errorf("resolving the job token's login: %w", err)
+		return false, fmt.Errorf("resolving the receipt login: %w", err)
+	}
+	roleLogin, err := roleC.GetAuthenticatedUser(ctx)
+	if err != nil {
+		return false, fmt.Errorf("resolving the role login: %w", err)
+	}
+	// The whole control is that the agent cannot post as the receipt author.
+	// If the two credentials resolve to the SAME login that is simply untrue
+	// — the agent's own comments would pass — and no amount of checking the
+	// author can tell them apart. It is not hypothetical: the action's
+	// github_token input is a caller-supplied default, so a consumer can
+	// hand the runner the same App installation token the role resolves to.
+	// Refuse to skip, which costs one redundant run; honouring it would drop
+	// the update instead.
+	if strings.EqualFold(receiptLogin, roleLogin) {
+		return false, fmt.Errorf(
+			"the receipt credential and the agent's own credential are the same identity (%s), "+
+				"so a receipt proves nothing about who wrote it", receiptLogin)
 	}
 
 	comments, err := c.ListIssueComments(ctx, owner, name, number)
@@ -514,10 +547,11 @@ func checkSteerAlreadyHandled(ctx context.Context, o steerOpts) bool {
 	// GitLab has no equivalent: its job token cannot post or read notes, so
 	// there is no receipt to authenticate and the check stays fail-open —
 	// the queued pipeline does the work, exactly as it does today.
-	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.jobToken == "" {
+	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.receiptToken == "" || o.roleToken == "" {
 		return false
 	}
-	handled, err := steerAlreadyHandled(ctx, steerMarkerClient(o.jobToken), o.statusRepo, o.statusNum, steerRunID())
+	handled, err := steerAlreadyHandled(ctx, steerMarkerClient(o.receiptToken), steerMarkerClient(o.roleToken),
+		o.statusRepo, o.statusNum, steerRunID())
 	if err != nil {
 		o.printer.StepWarn("Could not check whether this update was already handled: " + err.Error())
 		return false
@@ -541,38 +575,87 @@ func steerMarkerForStatus(status string, m statuscomment.SteerMarker) statuscomm
 	return m
 }
 
+// steerReceiptToken returns the credential the receipt may be written and
+// read under: the job token, but only when minting both happened and
+// actually changed the credential.
+//
+// The receipt's whole claim is that the sandbox could not have written it,
+// and what makes that true is the swap: minting replaces GH_TOKEN with the
+// role token before the sandbox exists, so the captured job token is held by
+// the runner's process alone. With no mint URL or no role there is no swap.
+// The same credential stays in os.Environ(), which childScriptEnv hands to
+// the post-script — and a post-script shelling out to `gh` is exactly the
+// forgery path the receipt exists to close.
+//
+// The second test is the same fact stated where it cannot be argued with:
+// roleToken is read from GH_TOKEN after minting, so if no swap occurred it
+// is the captured job token byte for byte. Comparing them catches the case
+// directly, without depending on `minted` being reported correctly.
+//
+// Empty otherwise, which turns the writer and the skip check off and leaves
+// the queued run to do the work — the same fail-open GitLab has today.
+func steerReceiptToken(jobToken, roleToken string, minted bool) string {
+	if !minted || jobToken == "" || jobToken == roleToken {
+		return ""
+	}
+	return jobToken
+}
+
 // shouldPostSteerReceipt reports whether a finished run may claim a receipt.
 //
 // Only an outright success may. A receipt tells the run queued behind this
 // one that the work is done, so claiming it for a run that failed, was
 // cancelled, or was skipped would silently drop the update rather than
 // merely waste it — the one direction the skip check must never fail in.
-// The conditions mirror the terminal status comment's exactly, so the
-// receipt and the status a person reads cannot disagree.
-func shouldPostSteerReceipt(runErr, ctxErr error, runSkipped bool) bool {
-	return runErr == nil && ctxErr == nil && !runSkipped
+//
+// agentReportedError is deliberately stricter than the terminal status
+// comment, which is the one place these two disagree. A run whose agent
+// exited 0 while its transcript reported an error has lastExitCode forced
+// to 1 and its post-script skipped — and the post-script is what publishes
+// the work. Without a validation loop nothing turns that into a non-nil
+// runErr, so the status comment says "success" and always has. That is
+// survivable for a status comment, which only reports; it is not survivable
+// for a receipt, which instructs another run to do nothing. The receipt has
+// to mean "the output was published", and when the post-script was withheld
+// it was not.
+func shouldPostSteerReceipt(runErr, ctxErr error, runSkipped, agentReportedError bool) bool {
+	return runErr == nil && ctxErr == nil && !runSkipped && !agentReportedError
 }
 
 // postSteerReceipt writes the run's receipt as its own comment on the work
-// item, under the JOB token.
+// item, under the receipt credential.
 //
 // It is a separate comment rather than the status comment's marker because
 // the receipt is a credential-backed claim and the status comment is not.
 // The status comment is posted by the App, which is also the identity the
 // agent's own output goes out under — so a marker there authenticates two
-// public strings, not the code path that wrote them. Minting swaps the job
-// token out of the environment before the sandbox exists, so nothing the
-// agent can reach holds it: not the agent, not a post-script shelling out
-// to `gh`.
+// public strings, not the code path that wrote them.
+//
+// The credential is the one minting swapped out of the environment, and
+// whose identity differs from the role's. Both halves matter, and neither is
+// assumed: without the swap the same token is still in the environment the
+// post-script inherits (steerReceiptToken), and without the difference the
+// agent's own comments carry the trusted author (steerAlreadyHandled).
 //
 // Best-effort by design. A failure here costs one queued run that redoes
 // work already done — the fallback ADR 0113 already names — where failing
 // the run would throw away work that succeeded.
 //
 // Called only for a successful run, and once per run rather than once per
-// steer: the marker is the union across every validation-loop iteration.
+// steer: the marker is the shipped iteration's, never a union across them
+// (see shippedSteerMarker).
 func postSteerReceipt(ctx context.Context, o steerOpts, m statuscomment.SteerMarker) {
-	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.jobToken == "" {
+	if o.forgePlatform == "gitlab" || o.statusRepo == "" || o.statusNum <= 0 || o.receiptToken == "" {
+		return
+	}
+	// At least one absorbed run, not merely a renderable marker. The marker
+	// is non-empty for a head-only run too — the head is worth recording on
+	// the status comment — but a receipt asserts that a queued run's work is
+	// already done, and a run that absorbed nothing has nothing to assert.
+	// Without this every successful run on a steering-enabled repository
+	// posts a comment saying so.
+	ids := m.ConsumedRuns()
+	if len(ids) == 0 {
 		return
 	}
 	marker := statuscomment.BuildSteerMarker(m)
@@ -587,8 +670,8 @@ func postSteerReceipt(ctx context.Context, o steerOpts, m statuscomment.SteerMar
 
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), steerReceiptTimeout)
 	defer cancel()
-	created, err := steerReceiptClient(o.jobToken).CreateIssueComment(
-		postCtx, owner, name, o.statusNum, marker+"\n"+steerReceiptLine(m))
+	created, err := steerReceiptClient(o.receiptToken).CreateIssueComment(
+		postCtx, owner, name, o.statusNum, marker+"\n"+steerReceiptLine(ids))
 	if err != nil {
 		o.printer.StepWarn("Failed to post the steer receipt; the queued run will redo this work: " + err.Error())
 		return
@@ -597,22 +680,25 @@ func postSteerReceipt(ctx context.Context, o steerOpts, m statuscomment.SteerMar
 	// check has to match: that check resolves the same token's login through
 	// the API, and if the two ever disagree every receipt is silently
 	// ignored — safe, but useless, and invisible without this line.
+	// created is non-nil from the live client whenever err is nil, but the
+	// interface does not promise it and this path is documented
+	// best-effort: a nil dereference here would panic out of a defer and
+	// take down a run that had already succeeded.
+	if created == nil {
+		o.printer.StepDone("Posted the steer receipt")
+		return
+	}
 	o.printer.StepDone(fmt.Sprintf("Posted the steer receipt as %s", created.Author))
 }
 
-// steerReceiptTimeout bounds the receipt post. It runs after the agent is
-// done, on a context detached from the run's, so it needs its own bound.
-const steerReceiptTimeout = 15 * time.Second
-
 // steerReceiptLine is the human half of the receipt. The marker above it is
 // what the queued run reads; this is what a person scrolling the item sees.
-func steerReceiptLine(m statuscomment.SteerMarker) string {
-	ids := make([]string, 0, len(m.ConsumedRunIDs))
-	for _, id := range m.ConsumedRunIDs {
+// Never called with an empty list: a run that absorbed nothing posts no
+// receipt at all.
+func steerReceiptLine(consumed []int64) string {
+	ids := make([]string, 0, len(consumed))
+	for _, id := range consumed {
 		ids = append(ids, strconv.FormatInt(id, 10))
-	}
-	if len(ids) == 0 {
-		return "_The run already working on this item absorbed no follow-up runs._"
 	}
 	return fmt.Sprintf(
 		"_The run already working on this item absorbed follow-up run(s) %s, so a run queued for those events exits without repeating the work._",
