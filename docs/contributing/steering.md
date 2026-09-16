@@ -36,16 +36,13 @@ carries
 ```yaml
 concurrency:
   group: fullsend-<stage>-${{ github.repository }}-<item>
-  cancel-in-progress: ${{ vars.FULLSEND_PRESERVE_RUNS != 'true' }}
+  cancel-in-progress: false
 ```
 
-so a repository that leaves `FULLSEND_PRESERVE_RUNS` unset keeps today's behaviour, and one that
-sets it to `"true"` lets the active run finish while the newer event waits as the single pending
-run. Whether that surviving run is *steered* is decided here, by the harness `steer:` block.
-
-The dependency runs one way: steering a run that is about to be cancelled is pointless, so a
-repository that wants steering must set `FULLSEND_PRESERVE_RUNS` as well. The reverse is not
-true — preserving runs is useful on its own, and is the base change's whole subject.
+so the active run always finishes while one run waits behind it as the single pending run
+([ADR 0113](../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)). Whether that
+surviving run is *steered* is decided here, by the harness `steer:` block. Preserving is useful on
+its own and is the base change's whole subject; steering builds on it.
 
 `queue: max` is deliberately unused: it is incompatible with
 `cancel-in-progress: true`, and N pending full runs is the failure mode preserving the active run
@@ -352,9 +349,8 @@ cancelling does today: the active run absorbs the push and reviews head B, then 
 reviews head B again — two reviews where cancel-and-restart produces one. So the skip check and
 the authenticity it depends on ship together, or neither ships.
 
-Once that holds, the two switches go in order: `FULLSEND_PRESERVE_RUNS` first, then the harness
-`steer:` block. That order is the safe one because the intermediate state is not a mixed state at
-all — it is exactly the base change, where the run in flight finishes and the queued run does the
+Once that holds, the harness `steer:` block is the only switch. With it off, a repository sits in
+exactly the base change's state, where the run in flight finishes and the queued run does the
 work from the item's current state. Nothing is half-enabled, so a repository can sit there
 indefinitely, which is where every repository starts.
 
