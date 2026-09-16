@@ -121,7 +121,7 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "role": { "enum": ["entity_metadata", "reviews", "agent_runs", "check_metadata", "actor_state"] } }, "required": ["role"] },
+          "if": { "properties": { "role": { "enum": ["entity_metadata", "reviews", "agent_runs", "check_metadata", "check_log", "actor_state"] } }, "required": ["role"] },
           "then": { "required": ["filter"] }
         }
       ],

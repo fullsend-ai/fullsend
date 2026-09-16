@@ -197,8 +197,13 @@ normalized to `queued`, `in_progress`, or `completed`; conclusions are
 Queued checks have no start, completion, or conclusion fields. In-progress
 checks require `started_at` and have no completion or conclusion. Completed
 checks require `completed_at` and `conclusion`; they also require
-`started_at` except when a `skipped` or `cancelled` check is explicitly known
-to have never run.
+`started_at` except when the forge explicitly reports that the job never
+started. This includes `skipped` and `cancelled` checks known never to have
+run, and GitHub `startup_failure` (which maps to the v1 `failure` conclusion).
+Because the normalized schema cannot retain the native cause of a `failure`, it
+permits a completed failure without `started_at`; adapters must use that form
+only for a forge-reported never-started outcome and must not omit
+`started_at` from an ordinary failure.
 Check manifest records carry `created_at` but no `author_id` or `author`.
 
 Adapters use these exhaustive v1 native-status mappings:
@@ -220,9 +225,10 @@ Adapters use these exhaustive v1 native-status mappings:
 Any native status or conclusion not listed above is `invalid_metadata`; an
 adapter must not invent another mapping. Any mapped check whose forge data
 cannot satisfy `check.schema.json`'s status-specific timestamp requirements is
-also `invalid_metadata`. Completed `skipped` and `cancelled` checks require
-`completed_at` and may omit `started_at` when the forge says the job never ran;
-all other completed checks require both timestamps. Native timestamp fields
+also `invalid_metadata`. Completed `skipped` and `cancelled` checks, and
+GitHub `startup_failure` mapped to `failure`, require `completed_at` and may
+omit `started_at` when the forge says the job never ran; all other completed
+checks require both timestamps. Native timestamp fields
 forbidden for the mapped status are omitted rather than copied.
 
 ## Relationships, history, and collection profiles
@@ -459,7 +465,12 @@ configured provider trust boundary, not by this cleanup guarantee.
 Structural strings are not rewritten because doing so could change identity or
 target a different resource. Canonical IDs use the mappings above. Repository
 paths and review file paths first undergo the Unicode-safety scan and then strict
-structural validation. Repository file paths are relative,
+structural validation. v1 deliberately restricts `repository_path` to the
+printable-ASCII allow-list encoded by `common.schema.json` (including its
+explicit punctuation set and excluding non-ASCII letters and apostrophes); this
+is an explicit compatibility and security boundary, not an implicit Unicode
+normalization. Non-ASCII or other out-of-alphabet values are structurally
+invalid. Repository file paths are relative,
 slash-separated, contain no `.` or `..` segment, percent-encoded dot, slash, or
 backslash, control character, or non-rendering class named above. Source URLs
 are intentionally not part of the agent-visible v1 tree; forge, host,
@@ -475,8 +486,11 @@ than emitting an invalid singleton or dangling manifest. Structural values are
 never emitted after filtering or truncation.
 
 `index.json.filter` records filtering of source-derived values in the index.
-Manifest file entries require `filter` for entity, review, agent-run, check, and
-actor JSON documents; each value summarizes that document's filtered metadata.
+Manifest file entries require `filter` for entity, review, agent-run, check
+metadata, check logs, and actor JSON documents. A `check_log` entry's filter
+describes the emitted log bytes only; the parent check record's filter remains
+the separate summary of filtered check metadata. Each manifest value summarizes
+the filtered bytes for its own document or file.
 Generated collection, state-without-display-text, and order documents do not
 invent filter findings.
 

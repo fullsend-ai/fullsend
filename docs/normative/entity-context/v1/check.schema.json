@@ -10,7 +10,10 @@
     "status": { "enum": ["queued", "in_progress", "completed"] },
     "conclusion": { "enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"] },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
-    "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "started_at": {
+      "$ref": "common.schema.json#/$defs/timestamp",
+      "description": "Required for in-progress checks and completed checks that the forge reports as having started. A completed failure may omit it only when the native forge outcome explicitly says the job never started, such as GitHub startup_failure."
+    },
     "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
   },
   "allOf": [
@@ -29,7 +32,7 @@
       "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
       "then": {
         "required": ["completed_at", "conclusion"],
-        "if": { "properties": { "conclusion": { "enum": ["cancelled", "skipped"] } }, "required": ["conclusion"] },
+        "if": { "properties": { "conclusion": { "enum": ["cancelled", "skipped", "failure"] } }, "required": ["conclusion"] },
         "else": { "required": ["started_at"] }
       }
     }
