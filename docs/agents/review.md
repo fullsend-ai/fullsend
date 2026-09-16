@@ -19,9 +19,11 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 
 On GitHub, the built-in review workflow also publishes
 `fullsend/review-completed` on the exact PR head commit. It is pending while the
-review runs and succeeds only after a non-skipped review completes. A failed or
-cancelled run leaves a non-successful status; if final cleanup cannot publish
-an outcome, the pending status remains.
+review runs and succeeds only after a non-skipped review completes. A failed
+run publishes a non-successful status. A cancelled run intentionally leaves the
+status pending so its cleanup cannot overwrite a replacement run on the same
+commit. If status publication fails, the required check remains absent or
+pending and continues to block merging without suppressing the review itself.
 Repositories that do not use GitHub's merge queue can require this status in
 branch protection or a ruleset to prevent an unreviewed head commit from
 merging. See
