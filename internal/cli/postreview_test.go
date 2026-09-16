@@ -1988,6 +1988,34 @@ func TestPostMissingRiskAssessment_SilentWhenPresent(t *testing.T) {
 	assert.Empty(t, fc.IssueComments["o/r/1"])
 }
 
+func TestPostMissingRiskAssessment_SupersedesStaleDiagnosticWhenPresent(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	// A prior run posted the "unavailable this run" diagnostic. keepHistory
+	// is false here so the assertions below can check the resulting body
+	// directly, without needing to account for collapsed history blocks.
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, false, false, printer)
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	require.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Risk assessment unavailable this run")
+
+	// A later run on the same PR does produce a risk_assessment.
+	parsed := ReviewResult{
+		Action:         "approve",
+		Body:           "ok",
+		RiskAssessment: &RiskAssessment{Score: 2, Level: "moderate", Rationale: "small"},
+	}
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, parsed, false, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1, "the stale diagnostic should be updated in-place, not duplicated")
+	assert.Contains(t, comments[0].Body, riskAssessmentMarker)
+	assert.Contains(t, comments[0].Body, "Risk assessment now present")
+	assert.NotContains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
 func TestPostMissingRiskAssessment_SilentWhenDisabled(t *testing.T) {
 	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "false")
 	fc := forge.NewFakeClient()

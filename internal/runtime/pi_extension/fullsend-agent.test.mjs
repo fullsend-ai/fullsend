@@ -1267,6 +1267,30 @@ test("shutdown logs skip for never-dispatched personas", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// personaSkipNameRe is the shared grep pattern for the name= field of a
+// fullsend:persona:skip marker line: either a bare token or a double-quoted
+// string. The Go runtime's test suite (pi_personas_test.go,
+// TestResolvePersonaModels_SkipMarkerNameMatchesSharedRegex) applies the
+// identical pattern to both of its fullsend:persona:skip emission sites,
+// so this one regex is proven to match every emission site — the two in
+// Go and this JS emitter — rather than each site needing its own scraper
+// rule (#7387 follow-up).
+const personaSkipNameRe = /fullsend:persona:skip name=("(?:[^"\\]|\\.)*"|\S+)/;
+
+test("logPersona name field matches the shared skip-name regex", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  tool.shutdown();
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.ok(skips.some((l) => personaSkipNameRe.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // A persona queued behind maxConcurrent has already entered run() — it must
 // not be mislabeled never-dispatched by shutdown's registered-persona sweep,
 // and its own eventual skip must carry a reason that says it was aborted,

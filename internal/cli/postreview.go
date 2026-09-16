@@ -33,6 +33,13 @@ const missingRiskAssessmentBody = "**Risk assessment unavailable this run**\n\n"
 	"The review agent was expected to produce a risk assessment but the result JSON did not include one. This is informational only and does not change the review verdict.\n\n" +
 	"Check the workflow log for `fullsend:persona:` markers on `name=risk-assessment` to distinguish never-dispatched from dispatched-but-lost from errored."
 
+// clearedRiskAssessmentBody supersedes a previously-posted
+// missingRiskAssessmentBody diagnostic once a later run on the same PR
+// does produce a risk_assessment, so the sticky comment stops describing
+// a run that in fact succeeded.
+const clearedRiskAssessmentBody = "**Risk assessment now present**\n\n" +
+	"A previous run on this PR was missing a risk assessment and posted a diagnostic here. The current run includes one; see the review comment for details."
+
 // StaleHeadExitCode is the process exit code used when a review is
 // discarded because the PR HEAD moved after the agent reviewed it.
 // post-review.sh uses this to detect stale-head outcomes and
@@ -332,6 +339,7 @@ func postMissingRiskAssessment(ctx context.Context, client forge.Client, owner, 
 	}
 	if parsed.RiskAssessment != nil {
 		printer.StepInfo(fmt.Sprintf("Risk assessment present: %s (%d/5)", sanitizeRiskLevel(parsed.RiskAssessment.Level), parsed.RiskAssessment.Score))
+		clearMissingRiskAssessmentDiagnostic(ctx, client, owner, repo, pr, keepHistory, dryRun, printer)
 		return
 	}
 
@@ -353,6 +361,46 @@ func postMissingRiskAssessment(ctx context.Context, client forge.Client, owner, 
 		return
 	}
 	printer.StepDone("Risk-assessment diagnostic posted")
+}
+
+// clearMissingRiskAssessmentDiagnostic supersedes a previously-posted
+// missing-risk-assessment diagnostic once a later run on the same PR does
+// produce a risk_assessment. It only updates an existing diagnostic
+// sticky and never creates one, since a present risk assessment is the
+// success path and does not warrant a new comment on its own. Failures
+// are logged rather than returned so they cannot block the review.
+func clearMissingRiskAssessmentDiagnostic(ctx context.Context, client forge.Client, owner, repo string, pr int, keepHistory, dryRun bool, printer *ui.Printer) {
+	if dryRun {
+		printer.StepInfo("Dry run — would check for a stale risk-assessment diagnostic to supersede")
+		return
+	}
+
+	botUser, err := client.GetAuthenticatedUser(ctx)
+	if err != nil {
+		printer.StepInfo("Could not determine bot user, skipping stale risk-assessment diagnostic check")
+		return
+	}
+
+	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
+	if err != nil {
+		printer.StepInfo(fmt.Sprintf("Could not list comments (%v), skipping stale risk-assessment diagnostic check", err))
+		return
+	}
+
+	if sticky.FindMarkedComment(comments, riskAssessmentMarker, botUser) == nil {
+		return
+	}
+
+	cfg := sticky.Config{
+		Marker:      riskAssessmentMarker,
+		DryRun:      dryRun,
+		KeepHistory: keepHistory,
+	}
+	if _, err := sticky.Post(ctx, client, owner, repo, pr, clearedRiskAssessmentBody, cfg, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to supersede stale risk-assessment diagnostic: %v", err))
+		return
+	}
+	printer.StepDone("Stale risk-assessment diagnostic superseded")
 }
 
 // postFailureNotice posts a failure comment as a sticky comment.

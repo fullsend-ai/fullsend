@@ -87,13 +87,19 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 | `REVIEW_RISK_ASSESSMENT_ENABLED` | Gates the ADR 0089 risk-assessment pre-pass and the missing-assessment diagnostic. When on and the result JSON omits `risk_assessment`, `fullsend post-review` posts a sticky "Risk assessment unavailable this run" comment. | `true` | `true`/`false` (also accepts `0`/`no`/`off` as false) |
 
-Set this in the harness's `env.sandbox` (the upstream default lives in
-`harness/review.yaml`). To override per repo or org, use `base:`
-composition rather than the CI workflow `env:` block — workflow `env:`
-is reserved for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
+`REVIEW_FINDING_SEVERITY_THRESHOLD` is read inside the review agent's
+sandbox, so set it in the harness's `env.sandbox` (the upstream default
+lives in `harness/review.yaml`).
+
+`REVIEW_RISK_ASSESSMENT_ENABLED` is different: `fullsend post-review`
+reads it directly from the runner process's own environment, not the
+sandbox. Set it in the harness's `env.runner` instead — setting it only
+in `env.sandbox` will not change the post-script's diagnostic behavior.
+
+To override either variable per repo or org, use `base:` composition
+rather than the CI workflow `env:` block — workflow `env:` is reserved
+for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
 for details on harness composition and workflow-env conventions).
-The post-script reads the value from the runner environment directly —
-no separate configuration is needed.
 
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -167,6 +168,28 @@ func discoverPersonas(skillDirs []string, agentName string) ([]piPersona, []piSk
 // issue's "repo's own layers" rule); keys from inherited/preset
 // layers should warn instead, but layer provenance is not available
 // here. Until it is, an ADR 0103 preset must not ship a subagents block.
+
+// personaLogControlCharsRe matches the run of control characters
+// formatPersonaLogName collapses before quoting, mirroring the JS
+// runtime's logPersona (fullsend-agent.js).
+var personaLogControlCharsRe = regexp.MustCompile(`[\r\n\t]+`)
+
+// formatPersonaLogName formats a persona name for a grep-stable
+// fullsend:persona:<action> marker line. Embedded control characters are
+// collapsed to a single space (so an unusual name can't inject extra
+// lines into the marker), and the result is double-quoted only when
+// whitespace remains — the same convention the JS runtime's logPersona
+// helper uses for its fields, so both fullsend:persona:skip emission
+// sites in this file and the JS emitter produce name= values a single
+// regex can match (#7387 follow-up).
+func formatPersonaLogName(name string) string {
+	safe := strings.TrimSpace(personaLogControlCharsRe.ReplaceAllString(name, " "))
+	if strings.ContainsAny(safe, " \t") {
+		return fmt.Sprintf("%q", safe)
+	}
+	return safe
+}
+
 func resolvePersonaModels(
 	personas []piPersona,
 	skipped []piSkippedPersona,
@@ -291,10 +314,12 @@ func resolvePersonaModels(
 		fmt.Fprintf(os.Stderr, "Warning: persona %s skipped: %s\n", sk.Path, sk.Reason)
 		// sk.Name comes from the discovered file's basename and has not
 		// passed ValidSubagentKey (that's often exactly why it was
-		// skipped), so it is %q-escaped like reason rather than %s, to
-		// keep an unusual filename from breaking the grep-stable marker
-		// across lines.
-		fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%q reason=%q\n", sk.Name, sk.Reason)
+		// skipped). formatPersonaLogName strips embedded newlines so an
+		// unusual filename can't break the grep-stable marker across
+		// lines, using the same quoting convention as the other two
+		// fullsend:persona:<action> emission sites (the registered-persona
+		// skip below and the JS runtime's logPersona).
+		fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", formatPersonaLogName(sk.Name), sk.Reason)
 	}
 
 	for _, p := range personas {
@@ -306,7 +331,7 @@ func resolvePersonaModels(
 				return fmt.Errorf("persona %q: %s", p.Name, reason)
 			}
 			fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", p.Name, reason)
-			fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", p.Name, reason)
+			fmt.Fprintf(os.Stderr, "[fullsend-agent] fullsend:persona:skip name=%s reason=%q\n", formatPersonaLogName(p.Name), reason)
 			skippedOut[p.Name] = reason
 			return nil
 		}
