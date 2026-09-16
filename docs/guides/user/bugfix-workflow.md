@@ -66,7 +66,7 @@ You can control the pipeline from issue or PR comments:
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
 If the stage you name is already running on that item, your comment reaches
-the agent mid-run instead of cancelling it: an authorized `/fs-review` or
+the agent mid-run rather than waiting behind it: an authorized `/fs-review` or
 `/fs-fix` while that stage is in flight is delivered to the running agent,
 and the run your comment queued then exits rather than repeating the work
 ([ADR 0113](../../ADRs/0113-steer-the-running-agent-on-work-item-updates.md)).

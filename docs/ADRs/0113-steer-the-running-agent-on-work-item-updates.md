@@ -64,8 +64,8 @@ After the run, the runner posts a processing receipt as its own comment naming t
 it consumed, and a queued run that finds its own id in one exits without starting the agent. The
 terminal status comment keeps an informational copy of the marker, which the skip check does not
 honour. The receipt is load-bearing rather than an optimization: without one, steering costs
-*more* than cancelling does today, since the run in flight absorbs the push and reviews the new
-head, and the queued run then reviews that same head again. **Steering may not be enabled
+*more* than preserving alone — the run in flight absorbs the push and reviews the new head,
+and the queued run then reviews that same head again. **Steering may not be enabled
 anywhere until receipts are authenticated by a channel that agents and post-scripts cannot
 mint** — a forged receipt drops the update silently rather than merely wasting it. That channel
 is the GitHub Actions job token: minting swaps it out before the sandbox exists, so the runner

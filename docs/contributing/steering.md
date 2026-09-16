@@ -1,8 +1,8 @@
 # Steering a run in flight
 
 How a fullsend run already working on a work item absorbs an update to that
-item — a push, a comment, a stage command — instead of being cancelled and
-restarted, and how the run queued behind it learns the work is done.
+item — a push, a comment, a stage command — rather than leaving it for the run
+queued behind it, and how that queued run learns the work is done.
 
 This page is the contributor reference for the mechanics.
 [ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md) is the
@@ -431,9 +431,9 @@ This precondition, like the rest of the rollout order, is judged by the people w
 steering; nothing in the binary enforces it.
 
 The receipt is load-bearing rather than an optimization. Without one, steering costs *more* than
-cancelling does today: the active run absorbs the push and reviews head B, then the queued run
-reviews head B again — two reviews where cancel-and-restart produces one. So the skip check and
-the authenticity it depends on ship together, or neither ships.
+preserving alone: the active run absorbs the push and reviews head B, then the queued run reviews
+head B again — two reviews of the same head where preserving alone produces one. So the skip
+check and the authenticity it depends on ship together, or neither ships.
 
 Once that holds, the harness `steer:` block is the only switch, and it is now on by default:
 steering arrives with the release that carries it rather than one harness at a time. A harness
@@ -448,5 +448,9 @@ writing: the fleet agent definitions
 ([fullsend-ai/agents#1163](https://github.com/fullsend-ai/agents/pull/1163)) are unmerged, so
 the agents have not yet been taught the envelope; each runtime's transport has been driven in
 isolation, but no end-to-end steer inside OpenShell from a real workflow run has been observed;
-and the receipt's identity match has not been seen on a live run. All three belong before the
-default reaches a release.
+the receipt's identity match has not been seen on a live run; and that same PR teaches the
+envelope to code, fix, review and triage only, so prioritize, retro and scribe must either learn
+the contract or set `steer: {enabled: false}` before the default reaches them — an eligible run
+on a definition that ignores the envelope still acks the delivery and still posts a receipt, so
+the queued run skips and the update is dropped silently, which is the one failure mode this
+design may not have. All four belong before the default reaches a release.

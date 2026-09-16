@@ -68,6 +68,65 @@ func baseOpts(t *testing.T) steerOpts {
 	}
 }
 
+// TestStartSteerWatcherDeclineMessage pins who hears about a declined watch.
+// Steering is on by default, so a decline is usually an ordinary condition —
+// a local run, GitLab, a runtime that cannot take a message. Announcing that
+// on every such run would be noise, so the reason is printed only when the
+// harness asked for steering by name. The ineligibility used here is the
+// fakeRuntime's missing Steerer, which is what makes startSteerWatcher take
+// the decline path at all.
+func TestStartSteerWatcherDeclineMessage(t *testing.T) {
+	tests := []struct {
+		name      string
+		steer     *harness.SteerConfig
+		wantPrint bool
+	}{
+		{
+			name:      "no steer block: on by default, decline stays quiet",
+			steer:     nil,
+			wantPrint: false,
+		},
+		{
+			name:      "enabled: true: the harness asked, so it hears why not",
+			steer:     &harness.SteerConfig{Enabled: steerBoolPtr(true)},
+			wantPrint: true,
+		},
+		{
+			name:      "enabled: false: opted out, nothing to report",
+			steer:     &harness.SteerConfig{Enabled: steerBoolPtr(false)},
+			wantPrint: false,
+		},
+		{
+			name:      "a block that only tunes the cap is not an explicit request",
+			steer:     &harness.SteerConfig{MaxSteers: 3},
+			wantPrint: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			o := baseOpts(t)
+			o.harness = &harness.Harness{Agent: "agents/review.md", Role: "review", Steer: tt.steer}
+			o.printer = ui.New(&out)
+
+			require.NotEmpty(t, steerEligible(o),
+				"the fixture must be ineligible, or this test proves nothing")
+
+			assert.Nil(t, startSteerWatcher(context.Background(), o),
+				"an ineligible run must not get a watcher whatever the harness says")
+
+			if tt.wantPrint {
+				assert.Contains(t, out.String(), "Steering disabled:",
+					"a harness that named steering must be told why it did not get it")
+			} else {
+				assert.Empty(t, out.String(),
+					"a run that never asked for steering must not be warned about it")
+			}
+		})
+	}
+}
+
 func TestSteerEligible(t *testing.T) {
 	t.Run("a runtime without Steerer is not eligible", func(t *testing.T) {
 		assert.Contains(t, steerEligible(baseOpts(t)), "cannot take a message into a running session")
