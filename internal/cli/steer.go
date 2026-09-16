@@ -122,9 +122,9 @@ type steerOpts struct {
 	printer     *ui.Printer
 }
 
-// steerEligible reports why steering cannot run even though the harness
-// asked for it, or "" when it can. Callers check SteerEnabled first: a
-// harness that never opted in is not "blocked", it is off.
+// steerEligible reports why steering cannot run even though the harness has
+// it on, or "" when it can. Callers check SteerEnabled first: a harness that
+// opted out is not "blocked", it is off.
 //
 // Steering needs a runtime that can take a message into a running session
 // and a GitHub Actions job to watch follow-up runs in.
@@ -282,7 +282,15 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		return nil
 	}
 	if reason := steerEligible(o); reason != "" {
-		o.printer.StepWarn("Steering disabled: " + reason)
+		// Steering is on by default now, so most declines are ordinary
+		// conditions rather than misconfiguration: every local run is not in
+		// GitHub Actions, every GitLab run queues instead of steering, and a
+		// runtime that cannot take a message never could. Warning once per
+		// iteration for those would be noise on runs that never asked for
+		// steering, so say it only when the harness named it.
+		if o.harness.SteerExplicitlyEnabled() {
+			o.printer.StepWarn("Steering disabled: " + reason)
+		}
 		return nil
 	}
 

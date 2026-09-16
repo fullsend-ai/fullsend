@@ -21,6 +21,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// steerBoolPtr builds a *bool for SteerConfig.Enabled.
+func steerBoolPtr(v bool) *bool { return &v }
+
 // fakeRuntime satisfies agentruntime.Runtime for the eligibility checks. It
 // deliberately does NOT implement Steerer.
 type fakeRuntime struct{ name string }
@@ -39,7 +42,7 @@ func (fakeRuntime) ClearIterationArtifacts(string) error { return nil }
 func steerHarness(enabled bool) *harness.Harness {
 	h := &harness.Harness{Agent: "agents/review.md", Role: "review"}
 	if enabled {
-		h.Steer = &harness.SteerConfig{Enabled: true}
+		h.Steer = &harness.SteerConfig{Enabled: steerBoolPtr(true)}
 	}
 	return h
 }

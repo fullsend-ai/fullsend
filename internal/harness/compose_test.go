@@ -9651,5 +9651,27 @@ model: opus
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 	assert.Nil(t, h.Steer)
-	assert.False(t, h.SteerEnabled())
+	assert.True(t, h.SteerEnabled(), "steering is on when neither harness says anything")
+}
+
+func TestLoadWithBase_SteerChildInheritsBaseOptOut(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+steer:
+  enabled: false
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, h.Steer)
+	assert.False(t, h.SteerEnabled(),
+		"a child that says nothing about steer inherits the base's opt-out, not the default")
 }

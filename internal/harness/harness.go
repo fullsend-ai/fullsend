@@ -240,7 +240,12 @@ type TraceConfig struct {
 // instead of letting a queued follow-up run redo the work. Disabled by
 // default: enabling it changes how long a run holds its VM.
 type SteerConfig struct {
-	Enabled bool `yaml:"enabled,omitempty"` // default: false (opt-in)
+	// Enabled turns the follow-up run watcher on. nil = true: steering is
+	// on by default, and a harness opts out with `steer: {enabled: false}`
+	// (ADR 0113). A pointer, not a bool, so that a block setting only
+	// max_steers or poll_interval_seconds still means "on with that value"
+	// rather than silently opting out.
+	Enabled *bool `yaml:"enabled,omitempty"`
 	// MaxSteers caps how many updates one run absorbs. Beyond the cap the
 	// run settles and the queued follow-up run does the work. 0 = default (2).
 	MaxSteers int `yaml:"max_steers,omitempty"`
@@ -263,9 +268,24 @@ const DefaultSteerPollInterval = 30 * time.Second
 // this makes a steer arrive after most runs have already settled.
 const maxSteerPollInterval = 10 * time.Minute
 
+// DefaultSteerEnabled is whether the follow-up run watcher runs when the
+// harness says nothing about it. On since the release that made run
+// continuation unconditional; a harness opts out with enabled: false.
+const DefaultSteerEnabled = true
+
 // SteerEnabled reports whether the follow-up run watcher is configured on.
 func (h *Harness) SteerEnabled() bool {
-	return h.Steer != nil && h.Steer.Enabled
+	if h.Steer == nil {
+		return DefaultSteerEnabled
+	}
+	return BoolDefault(h.Steer.Enabled, DefaultSteerEnabled)
+}
+
+// SteerExplicitlyEnabled reports whether the harness asked for steering by
+// name, as opposed to getting it from the default. The runner uses this to
+// decide whether a declined watch is worth telling the operator about.
+func (h *Harness) SteerExplicitlyEnabled() bool {
+	return h.Steer != nil && h.Steer.Enabled != nil && *h.Steer.Enabled
 }
 
 // SteerMaxSteers returns the per-run steer cap, applying the default.
