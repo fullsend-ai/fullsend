@@ -100,6 +100,142 @@ func TestOpenCodeRuntimeBootstrap_NilInput(t *testing.T) {
 	assert.Contains(t, err.Error(), "bootstrap input is required")
 }
 
+func TestOpenCodeRuntimeBootstrap_AgentNameFallback(t *testing.T) {
+	// When agentName is empty but the frontmatter has a name, use the
+	// frontmatter name; when both are empty, derive from the file path.
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// Case 1: agentName empty → falls back to frontmatter name "triage".
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
+	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
+}
+
+func TestOpenCodeRuntimeBootstrap_AgentNameFromPath(t *testing.T) {
+	// When both agentName and the frontmatter name are empty, the bootstrap
+	// derives the agent name from the file path.
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	namelessDef := `---
+description: A nameless agent
+tools: Read
+model: sonnet
+---
+Do something.
+`
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, namelessDef),
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+}
+
+func TestOpenCodeRuntimeBootstrap_BadAgentFile(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   filepath.Join(t.TempDir(), "noexist.md"),
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading agent definition")
+}
+
+func TestOpenCodeRuntimeBootstrap_BodyOnlyAgent(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// parsePiAgent treats a file without frontmatter fences as body-only;
+	// the bootstrap should still succeed with the agent name from input.
+	bodyOnly := `No frontmatter, just a prompt.`
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, bodyOnly),
+		agentName:   "test",
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("test")))
+	assert.Contains(t, agentMD, "No frontmatter, just a prompt.")
+}
+
+func TestOpenCodeRuntimeBootstrap_AgentNameSanitizationFailure(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// An agent name with shell metacharacters will be sanitized differently
+	// by openCodeValidatedArg, causing a mismatch.
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "agent;rm",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openCodeValidatedArg strips")
+}
+
+func TestOpenCodeRuntimeBootstrap_DuplicateSkillName(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// Two different skill paths that both resolve to the same sandbox
+	// basename should fail (duplicateDestinationNameError checks base != p).
+	skillDir1 := filepath.Join(t.TempDir(), "my-skill")
+	skillDir2 := filepath.Join(t.TempDir(), "my-skill")
+	require.NoError(t, os.MkdirAll(skillDir1, 0o755))
+	require.NoError(t, os.MkdirAll(skillDir2, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir1, "SKILL.md"), []byte("---\nname: a\n---\n# a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir2, "SKILL.md"), []byte("---\nname: b\n---\n# b"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{skillDir1, skillDir2},
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "my-skill")
+}
+
+func TestOpenCodeRuntimeBootstrap_SkillEmptyPath(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// An empty skill path should be skipped (not cause an error).
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{""},
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+}
+
 func TestOpenCodePreflightVersionFailure(t *testing.T) {
 	work := t.TempDir()
 	binDir := t.TempDir()
@@ -328,4 +464,76 @@ func TestOpenCodeRuntimeRun_StreamErrorOverridesExit(t *testing.T) {
 	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, exit)
+}
+
+func TestOpenCodeRuntimeRun_FallbackModelsWarning(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := `{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	params := RunParams{
+		SandboxName:    "sb",
+		AgentBaseName:  "triage",
+		RepoDir:        "/repo",
+		Timeout:        30 * time.Second,
+		FallbackModels: []string{"sonnet", "haiku"},
+		OnEvent:        func(AgentEvent) {},
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	// The printer output should contain a warning about unsupported fallbacks.
+	assert.Contains(t, buf.String(), "fallback models")
+}
+
+func TestOpenCodeRuntimeRun_DefaultHandler(t *testing.T) {
+	// When OnEvent is nil, Run creates a default EventRenderer handler.
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := `{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	printer := ui.New(&strings.Builder{})
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		// OnEvent intentionally nil — tests default handler creation.
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+}
+
+func TestOpenCodeRuntimeRun_ErrorSubtypeEmptyMessage(t *testing.T) {
+	// When the stream reports an error with an empty ErrorMessage, the
+	// warning should include the subtype instead.
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "err.jsonl")
+	stream := `{"type":"error","timestamp":1,"sessionID":"s1","error":{"name":"UnknownError","data":{}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		OnEvent:       func(AgentEvent) {},
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, exit)
+	assert.Contains(t, buf.String(), "subtype")
 }
