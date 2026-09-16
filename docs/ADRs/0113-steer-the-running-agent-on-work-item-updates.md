@@ -1,5 +1,5 @@
 ---
-title: "101. Steer the running agent on work-item updates"
+title: "113. Steer the running agent on work-item updates"
 status: Accepted
 relates_to:
   - security-threat-model
@@ -11,7 +11,7 @@ topics:
   - runtime
 ---
 
-# 101. Steer the running agent on work-item updates
+# 113. Steer the running agent on work-item updates
 
 Date: 2026-09-03
 
@@ -21,7 +21,7 @@ Accepted
 
 ## Context
 
-[ADR 0113](0113-preserve-the-agent-run-in-flight-on-work-item-updates.md) stops the
+[ADR 0101](0101-preserve-the-agent-run-in-flight-on-work-item-updates.md) stops the
 cancellation: the stage job already working on a work item is left to finish, and the newer
 event waits as the single pending run the platform keeps per concurrency group. This ADR builds
 on that decision and addresses what preserving alone leaves standing.
@@ -51,7 +51,7 @@ Steering is an **opt-in** extension of preserving, enabled per harness by the `s
 While the run in flight holds the work item it absorbs updates to that item itself — the queued
 follow-up run becomes the *notification*, not the worker — so that when the queued run finally
 starts it finds a receipt saying the work is done and exits. With the block absent, which is the
-default everywhere, the behaviour is ADR 0113 alone and nothing more. Steering requires
+default everywhere, the behaviour is ADR 0101 alone and nothing more. Steering requires
 preserving; the reverse is not true.
 
 The runner learns about an update by listing the execution platform's own run records for its
@@ -105,7 +105,7 @@ contract with the fleet agent definitions, versioned in
 - A run now holds its sandbox until it settles rather than ending at its first result, so a
   steered run occupies a VM longer and can cost as much again per absorbed update.
 - Nothing changes for a repository that does not opt in, and the fallback in every failure path —
-  no ack, no time left, cap reached, runtime cannot steer — is ADR 0113 on its own.
+  no ack, no time left, cap reached, runtime cannot steer — is ADR 0101 on its own.
 
 Related: [#5445](https://github.com/fullsend-ai/fullsend/issues/5445) and
 [#2388](https://github.com/fullsend-ai/fullsend/issues/2388) — `/fs-cancel` gains a second

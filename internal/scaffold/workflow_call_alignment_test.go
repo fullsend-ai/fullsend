@@ -1481,7 +1481,7 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 }
 
 // TestPerRepoShimRunName validates the run-name that binds a follow-up run
-// to its work item (ADR 0101). issue_comment and issues runs carry no
+// to its work item (ADR 0113). issue_comment and issues runs carry no
 // pull_requests[], so display_title (which is what run-name renders to) is
 // the only server-side field an in-flight run can match on.
 func TestPerRepoShimRunName(t *testing.T) {

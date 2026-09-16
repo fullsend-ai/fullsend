@@ -3,7 +3,7 @@
 The **steer envelope** — the contract between the fullsend runner and the agent
 definitions in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) for a
 message delivered into a session that is already running
-([ADR 0101](../../../ADRs/0101-steer-the-running-agent-on-work-item-updates.md)).
+([ADR 0113](../../../ADRs/0113-steer-the-running-agent-on-work-item-updates.md)).
 
 Two repositories read these strings, so they are fixed here rather than in
 either one. The mechanics around them — when a steer is sent, what authorizes

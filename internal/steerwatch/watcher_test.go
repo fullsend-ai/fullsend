@@ -191,7 +191,7 @@ func TestPollAndSteer_StopsAtCap(t *testing.T) {
 
 // TestPollAndSteer_PriorSteersMakeTheCapPerRun is the validation loop: each
 // iteration builds its own watcher, so without the seed the counter resets
-// and a three-iteration run absorbs three times max_steers. ADR 0101
+// and a three-iteration run absorbs three times max_steers. ADR 0113
 // documents the cap as per run.
 func TestPollAndSteer_PriorSteersMakeTheCapPerRun(t *testing.T) {
 	steerOnce := func(t *testing.T, prior int, runID int64, head string) *Watcher {

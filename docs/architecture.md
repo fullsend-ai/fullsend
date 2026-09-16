@@ -291,7 +291,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   optional `runtime.Steerer` capability; the terminal status comment then
   carries a processing receipt naming what was absorbed, which is how the queued
   run knows to skip. Opt-in per agent and per repository; off, behaviour is
-  unchanged ([ADR 0101](ADRs/0101-steer-the-running-agent-on-work-item-updates.md),
+  unchanged ([ADR 0113](ADRs/0113-steer-the-running-agent-on-work-item-updates.md),
   mechanics in [steering.md](contributing/steering.md)).
 - Routing moves from workflow bash to harness CEL `trigger` expressions
   evaluated by `fullsend dispatch` with pluggable input/output drivers

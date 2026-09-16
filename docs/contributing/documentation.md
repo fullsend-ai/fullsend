@@ -116,7 +116,7 @@ The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` s
 |----------|-------|
 | CLI reference | `docs/cli/README.md` (Additional commands) |
 | Guides | `docs/guides/dev/cli-internals.md` |
-| ADRs | `docs/ADRs/0101-steer-the-running-agent-on-work-item-updates.md` |
+| ADRs | `docs/ADRs/0113-steer-the-running-agent-on-work-item-updates.md` |
 | Contributing | `docs/contributing/runtime-implementation.md` (the `Steerer` row), `docs/contributing/harness-fields.md` (the `steer` block) |
 | Go source | `internal/cli/steercmd.go`, `internal/cli/steer.go` |
 

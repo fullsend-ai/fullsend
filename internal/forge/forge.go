@@ -229,7 +229,7 @@ type PullRequestInfo struct {
 // ReferencedWorkflow is one reusable workflow a run called, pinned by ref
 // and resolved sha. Comparing two runs' sets is how a caller establishes
 // that both came through the same dispatch chain without knowing which
-// version that chain is on (ADR 0101).
+// version that chain is on (ADR 0113).
 type ReferencedWorkflow struct {
 	Path string // "owner/repo/.github/workflows/file.yml@ref"
 	Ref  string // "refs/heads/main"

@@ -140,7 +140,7 @@ func (n *Notifier) SetWarnFunc(f func(string, ...any)) {
 
 // SetSteerMarker records what the run absorbed so the terminal status
 // comment carries the steer marker the queued follow-up run's skip check
-// reads (ADR 0101). An empty marker (nothing consumed, no head) leaves the
+// reads (ADR 0113). An empty marker (nothing consumed, no head) leaves the
 // comment unchanged.
 func (n *Notifier) SetSteerMarker(m SteerMarker) {
 	n.steerMarker = BuildSteerMarker(m)

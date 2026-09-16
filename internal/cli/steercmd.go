@@ -146,7 +146,7 @@ func newSteerCmd() *cobra.Command {
 The comment fires the repository's fullsend shim like any other event. Its
 route job authorizes you and selects a stage; the agent run already in
 flight on that work item then absorbs the comment instead of being
-cancelled and restarted (ADR 0101). There is no steer-specific command —
+cancelled and restarted (ADR 0113). There is no steer-specific command —
 the run in flight absorbs the follow-up run whichever stage command
 produced it.
 

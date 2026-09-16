@@ -365,7 +365,7 @@ func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, noteable
 }
 
 // ListIssueCommentsSince is not yet implemented for GitLab: its only caller,
-// the steer watcher, runs on GitHub only (ADR 0101).
+// the steer watcher, runs on GitHub only (ADR 0113).
 func (c *LiveClient) ListIssueCommentsSince(_ context.Context, _, _ string, _ int, _ time.Time) ([]forge.IssueComment, error) {
 	return nil, forge.ErrNotSupported
 }

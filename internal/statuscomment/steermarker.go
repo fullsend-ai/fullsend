@@ -12,7 +12,7 @@ import (
 
 // The steer marker records what a settled run absorbed, so the follow-up
 // run that is still queued behind it can tell whether its own event was
-// already handled (ADR 0101). It rides on the terminal status comment
+// already handled (ADR 0113). It rides on the terminal status comment
 // because that comment is already App-authored, already the last thing a
 // run writes, and already the thing the queued run can find by marker.
 //
@@ -129,7 +129,7 @@ func ParseSteerMarker(body string) (SteerMarker, bool) {
 // and internal/cli/run.go returns before the start comment or the
 // pre-script on the strength of it. Calling the check "advisory" would
 // describe an implementation that does not exist. It is trusted — which is
-// why ADR 0101 makes authenticated receipts a precondition for ENABLING
+// why ADR 0113 makes authenticated receipts a precondition for ENABLING
 // steering in a repository, rather than something to tighten later. The
 // gate is the ADR's; fullsend#7006 carries the work, and the ADR states
 // the policy without citing the issue by number.

@@ -5,7 +5,7 @@ item — a push, a comment, a stage command — instead of being cancelled and
 restarted, and how the run queued behind it learns the work is done.
 
 This page is the contributor reference for the mechanics.
-[ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md) is the
+[ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md) is the
 decision record: it says what was decided and why, and links here for how. The
 byte-level envelope the agent receives is a versioned contract of its own, in
 [normative/steer-envelope/v1](../normative/steer-envelope/v1/README.md).
@@ -40,7 +40,7 @@ concurrency:
 ```
 
 so the active run always finishes while one run waits behind it as the single pending run
-([ADR 0113](../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)). Whether that
+([ADR 0101](../ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)). Whether that
 surviving run is *steered* is decided here, by the harness `steer:` block. Preserving is useful on
 its own and is the base change's whole subject; steering builds on it.
 

@@ -88,7 +88,7 @@ type steerOpts struct {
 	seen     []int64
 	baseline time.Time
 	// priorSteers is how many steers earlier iterations of this run already
-	// spent. max_steers is a per-run cap (ADR 0101) and each iteration
+	// spent. max_steers is a per-run cap (ADR 0113) and each iteration
 	// builds its own watcher, so without carrying this the cap would reset
 	// every iteration.
 	priorSteers int
@@ -441,7 +441,7 @@ type steerMarkerReader interface {
 }
 
 // steerAlreadyHandled reports whether an earlier run already absorbed the
-// follow-up run that dispatched me (ADR 0101).
+// follow-up run that dispatched me (ADR 0113).
 //
 // Dispatch is never suppressed while a run is in flight: a route arm that
 // skipped whenever something was running would lose a steer that lands after

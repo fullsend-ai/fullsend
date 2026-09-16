@@ -532,7 +532,7 @@ func (c *LiveClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ ma
 }
 
 // ListWorkflowRunsSince is not yet implemented for GitLab: its only caller,
-// the steer watcher, runs on GitHub only (ADR 0101).
+// the steer watcher, runs on GitHub only (ADR 0113).
 func (c *LiveClient) ListWorkflowRunsSince(_ context.Context, _, _, _ string, _ time.Time, _ int) ([]forge.WorkflowRun, error) {
 	return nil, forge.ErrNotSupported
 }

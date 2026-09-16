@@ -1,6 +1,6 @@
 // Package steerwatch watches a repository's follow-up workflow runs while an
 // agent run is in flight and turns the ones that pass provenance into steers
-// delivered to the running session (ADR 0101).
+// delivered to the running session (ADR 0113).
 //
 // The runner in a CI job has no inbound path: GitHub Actions cannot deliver
 // input to a running job. But every legitimate update to the work item
@@ -31,7 +31,7 @@ const listPerPage = 100
 // narrow interface is a test seam, letting tests point a real client at an
 // httptest server or pass a small stub. Only the GitHub client implements
 // these reads; GitLab returns forge.ErrNotSupported, and the runner gates
-// steering to GitHub (ADR 0101).
+// steering to GitHub (ADR 0113).
 type ActionsReader interface {
 	// GetWorkflowRun returns one run record, including its provenance
 	// fields (path, referenced workflows, actors, item association).

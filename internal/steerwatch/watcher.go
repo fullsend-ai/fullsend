@@ -91,7 +91,7 @@ type Config struct {
 	// follow-up runs the previous iteration already absorbed.
 	AlreadySeen []int64
 	// PriorSteers is how many steers earlier watchers of this run already
-	// spent. MaxSteers is a per-run cap (ADR 0101) and the validation loop
+	// spent. MaxSteers is a per-run cap (ADR 0113) and the validation loop
 	// builds a fresh watcher per iteration, so without this the counter
 	// resets each iteration and a three-iteration run absorbs three times
 	// the cap. Seeding it leaves each watcher MaxSteers − PriorSteers of

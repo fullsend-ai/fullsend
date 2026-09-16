@@ -2564,7 +2564,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 
 // workflowRunJSON is the wire shape of a workflow run, including the
 // provenance fields a caller needs to establish that two runs came through
-// the same dispatch chain (ADR 0101).
+// the same dispatch chain (ADR 0113).
 type workflowRunJSON struct {
 	ID              int                    `json:"id"`
 	Name            string                 `json:"name"`

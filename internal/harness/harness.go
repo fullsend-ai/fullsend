@@ -234,7 +234,7 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
-// SteerConfig controls the follow-up run watcher (ADR 0101). When enabled
+// SteerConfig controls the follow-up run watcher (ADR 0113). When enabled
 // and the selected runtime implements runtime.Steerer, the runner keeps the
 // agent session open and delivers work-item updates that arrive mid-run
 // instead of letting a queued follow-up run redo the work. Disabled by
@@ -414,7 +414,7 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
-	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // follow-up run watcher (ADR 0101); default off
+	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // follow-up run watcher (ADR 0113); default off
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()

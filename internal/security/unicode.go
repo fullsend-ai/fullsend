@@ -297,7 +297,7 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 // folding with it, which is the accepted cost of removing the dangerous
 // characters with this normalizer.
 //
-// Both the validation-feedback prompt and the steer envelope (ADR 0101) go
+// Both the validation-feedback prompt and the steer envelope (ADR 0113) go
 // through this one function so the two treatments cannot drift.
 func SanitizeAgentText(text string) (string, int) {
 	result := NewUnicodeNormalizer().Scan(text)

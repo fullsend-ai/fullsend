@@ -417,7 +417,7 @@ func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
 // TestStartSteerWatcher_SeedsThePriorSteerCount is the validation loop:
 // each iteration builds its own watcher, so the count earlier iterations
 // spent has to be carried in or max_steers caps the iteration rather than
-// the run (ADR 0101).
+// the run (ADR 0113).
 func TestStartSteerWatcher_SeedsThePriorSteerCount(t *testing.T) {
 	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
 		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)

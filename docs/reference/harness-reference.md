@@ -120,7 +120,7 @@ overlays:
 security:
   fail_mode: closed                  # "closed" (default) or "open"
 
-# ── Steering (ADR 0101) ───────────────────────────────────────
+# ── Steering (ADR 0113) ───────────────────────────────────────
 steer:
   enabled: false                     # default: false — opt in per agent
   max_steers: 2                      # default: 2 — updates one run absorbs
@@ -184,7 +184,7 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a stage command such as `/fs-review` — instead of being cancelled and restarted from nothing ([ADR 0101](../ADRs/0101-steer-the-running-agent-on-work-item-updates.md); field-by-field in [steering.md](../contributing/steering.md#configuration)). Off by default: enabling it means a run holds its sandbox until it settles rather than ending at its first result.
+**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a stage command such as `/fs-review` — instead of being cancelled and restarted from nothing ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md); field-by-field in [steering.md](../contributing/steering.md#configuration)). Off by default: enabling it means a run holds its sandbox until it settles rather than ending at its first result.
 
 It takes effect only when two things line up: `enabled: true` here, and a runtime that can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)). Miss either and the run behaves exactly as it does today; the runner prints why it declined.
 

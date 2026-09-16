@@ -1240,7 +1240,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// steerMarker records what this run absorbed; the status-notification
 	// defer writes it onto the terminal comment so the run queued behind
-	// this one can skip work already covered (ADR 0101). It is chosen after
+	// this one can skip work already covered (ADR 0113). It is chosen after
 	// the iteration loop from iterSteerMarkers, which holds each
 	// iteration's own receipts.
 	var steerMarker statuscomment.SteerMarker
@@ -1261,7 +1261,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var steerSeen []int64
 	var steerBaseline time.Time
 	// steerSpent carries the steer count the same way, because max_steers is
-	// a cap on the run and not on each of its iterations (ADR 0101).
+	// a cap on the run and not on each of its iterations (ADR 0113).
 	var steerSpent int
 
 	// The runtime, sandbox name and timeout are not resolved yet; the
@@ -2326,7 +2326,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// The follow-up run watcher runs beside the heartbeat: it absorbs
 		// work-item updates into this run instead of letting the run queued
-		// behind it redo the work (ADR 0101). Nil when steering is off or
+		// behind it redo the work (ADR 0113). Nil when steering is off or
 		// the runtime cannot take a message into a running session, in
 		// which case Steerable stays false and Run is single-turn as today.
 		//
