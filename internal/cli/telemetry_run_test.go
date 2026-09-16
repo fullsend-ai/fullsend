@@ -297,7 +297,7 @@ func TestChildScriptEnv_StripsWorkflowToken(t *testing.T) {
 		if i := strings.IndexByte(e, '='); i > 0 {
 			key = e[:i]
 		}
-		assert.NotEqual(t, workflowTokenEnv, key, "FULLSEND_WORKFLOW_TOKEN must be stripped from child script env")
+		assert.NotEqual(t, workflowTokenEnv, key, "GH_WORKFLOW_TOKEN must be stripped from child script env")
 	}
 
 	hasSafe, hasRunner := false, false

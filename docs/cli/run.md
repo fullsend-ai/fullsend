@@ -292,8 +292,8 @@ troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-work
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
-`FULLSEND_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
-credentials may expand `${FULLSEND_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
+`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
+credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
 derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
 the minted App identity.

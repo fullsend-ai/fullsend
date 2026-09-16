@@ -175,12 +175,12 @@ func TestProfileExists(t *testing.T) {
 
 func TestExpandProviderValue_AllowsWorkflowToken(t *testing.T) {
 	const token = "ghs_workflow_token_value_xx"
-	t.Setenv("FULLSEND_WORKFLOW_TOKEN", token)
-	got := expandProviderValue("${FULLSEND_WORKFLOW_TOKEN}")
-	assert.Equal(t, token, got, "provider credentials may expand FULLSEND_WORKFLOW_TOKEN (#6649)")
+	t.Setenv("GH_WORKFLOW_TOKEN", token)
+	got := expandProviderValue("${GH_WORKFLOW_TOKEN}")
+	assert.Equal(t, token, got, "provider credentials may expand GH_WORKFLOW_TOKEN (#6649)")
 
 	args, extraEnv, secrets := buildProviderArgs("github-packages", "fullsend-github-packages",
-		map[string]string{"GITHUB_TOKEN": "${FULLSEND_WORKFLOW_TOKEN}"}, nil, false)
+		map[string]string{"GITHUB_TOKEN": "${GH_WORKFLOW_TOKEN}"}, nil, false)
 	assert.Contains(t, extraEnv, "GITHUB_TOKEN="+token)
 	assert.Contains(t, secrets, token)
 	assert.NotContains(t, strings.Join(args, " "), token, "the real token must not appear on the command line")

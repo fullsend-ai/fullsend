@@ -2372,12 +2372,12 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
 	}
 	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
-	assert.False(t, oidcDenyKeys[workflowTokenEnv], "FULLSEND_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
+	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
 }
 
 func TestProviderOnlyKeys_WorkflowToken(t *testing.T) {
 	assert.True(t, providerOnlyKeys[workflowTokenEnv])
-	assert.True(t, reservedSandboxKeys[workflowTokenEnv], "env.sandbox must not inject FULLSEND_WORKFLOW_TOKEN")
+	assert.True(t, reservedSandboxKeys[workflowTokenEnv], "env.sandbox must not inject GH_WORKFLOW_TOKEN")
 	assert.True(t, harnessExpansionDenied(workflowTokenEnv))
 	assert.False(t, oidcDenyKeys[workflowTokenEnv])
 
@@ -3042,7 +3042,7 @@ func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
 }
 
 func TestSensitiveEnvKey(t *testing.T) {
-	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "FULLSEND_WORKFLOW_TOKEN"} {
+	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "GH_WORKFLOW_TOKEN"} {
 		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)
 	}
 	for _, k := range []string{"TARGET_BRANCH", "REPO_FULL_NAME", "ISSUE_NUMBER", "KEYCHAIN"} {
@@ -5779,7 +5779,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
 	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
 	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
-	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "non-Actions mint must not derive FULLSEND_WORKFLOW_TOKEN from a local PAT")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "non-Actions mint must not derive GH_WORKFLOW_TOKEN from a local PAT")
 }
 
 func TestMintAgentToken_PreservesWorkflowTokenInActions(t *testing.T) {
@@ -5833,7 +5833,7 @@ func TestMintAgentToken_PreservesWorkflowTokenInActions(t *testing.T) {
 
 	cleanup()
 	assert.Equal(t, workflowToken, os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
-	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup should unset FULLSEND_WORKFLOW_TOKEN when it was not preset")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup should unset GH_WORKFLOW_TOKEN when it was not preset")
 }
 
 func TestMintAgentToken_DoesNotDeriveWorkflowTokenOutsideActions(t *testing.T) {
@@ -5856,7 +5856,7 @@ func TestMintAgentToken_DoesNotDeriveWorkflowTokenOutsideActions(t *testing.T) {
 	assert.True(t, minted)
 
 	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
-	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not copy a local PAT into FULLSEND_WORKFLOW_TOKEN")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not copy a local PAT into GH_WORKFLOW_TOKEN")
 }
 
 func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
@@ -5880,7 +5880,7 @@ func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
 	assert.True(t, minted)
 
 	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
-	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "caller-set FULLSEND_WORKFLOW_TOKEN is left alone outside Actions")
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "caller-set GH_WORKFLOW_TOKEN is left alone outside Actions")
 
 	cleanup()
 	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "cleanup must not unset a caller-set token outside Actions")

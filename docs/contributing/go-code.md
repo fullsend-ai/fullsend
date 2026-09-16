@@ -465,7 +465,7 @@ function in `internal/cli/run.go` is the canonical implementation.
 
 2. **Scan `providerOnlyKeys` from the process environment
    (`os.Getenv`) for credential literal values.** Provider-only
-   credentials such as `FULLSEND_WORKFLOW_TOKEN` are intentionally kept
+   credentials such as `GH_WORKFLOW_TOKEN` are intentionally kept
    out of `RunnerEnv` (see #6649) so harness-controlled `${}` expansion
    can't reach them, which means the `RunnerEnv` scan in invariant 1
    never sees them. Iterate `providerOnlyKeys`, read each value with
@@ -502,7 +502,7 @@ No single pass is sufficient. Opaque tokens declared in `RunnerEnv`
 (e.g., a GitHub installation token with no recognizable prefix) have no
 pattern for the `SecretRedactor` to match — only the literal `RunnerEnv`
 scan catches those. Provider-only credentials such as
-`FULLSEND_WORKFLOW_TOKEN` are deliberately excluded from `RunnerEnv`, so
+`GH_WORKFLOW_TOKEN` are deliberately excluded from `RunnerEnv`, so
 neither the `RunnerEnv` scan nor an unrelated `SecretRedactor` pattern
 match is guaranteed to catch them — only the `providerOnlyKeys` scan of
 the process environment does, though `SecretRedactor` may also match

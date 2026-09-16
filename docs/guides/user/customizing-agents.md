@@ -150,14 +150,14 @@ A minted GitHub App token can read packages owned by the organization the App
 is installed in. It cannot read a public npm package on GitHub Packages that
 another organization owns — `npm.pkg.github.com` returns 403 for installation
 tokens across orgs. The Actions workflow token (`packages: read`) can, and
-fullsend preserves it as `FULLSEND_WORKFLOW_TOKEN` for **provider credentials
+fullsend preserves it as `GH_WORKFLOW_TOKEN` for **provider credentials
 only**.
 
-`${FULLSEND_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+`${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
 `env.sandbox`, `host_files`, and `validation_loop.schema`. Pre/post/validation
 scripts never see it. `gh` keeps using the minted App token in `GH_TOKEN`.
 Outside GitHub Actions the variable is left alone: a local PAT is never copied
-into it. Set `FULLSEND_WORKFLOW_TOKEN` yourself only if you intend a local run
+into it. Set `GH_WORKFLOW_TOKEN` yourself only if you intend a local run
 to hit GitHub Packages.
 
 Same-org packages also work with `${GH_TOKEN}` (the App token) and need no
@@ -166,7 +166,7 @@ workflow token. The shipped code and fix workflows already grant
 is read from the trusted ref, so a pull request cannot redirect the provider at
 a different credential.
 
-`FULLSEND_WORKFLOW_TOKEN` is scoped to *provider credential* expansion as a
+`GH_WORKFLOW_TOKEN` is scoped to *provider credential* expansion as a
 class, not to the `fullsend-github-packages` provider specifically: any
 provider definition's `${}` credential can reference it, the same way any
 provider can already reference `${GH_TOKEN}` or `${PUSH_TOKEN}`. This is not
@@ -187,7 +187,7 @@ repository (or config repo) and overlay them onto `code` and `fix`.
 name: github-packages
 type: fullsend-github-packages
 credentials:
-  GITHUB_TOKEN: "${FULLSEND_WORKFLOW_TOKEN}"
+  GITHUB_TOKEN: "${GH_WORKFLOW_TOKEN}"
 ```
 
 **`.fullsend/profiles/fullsend-github-packages.yaml`:**

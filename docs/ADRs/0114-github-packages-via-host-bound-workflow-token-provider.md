@@ -62,7 +62,7 @@ credential bound to the GitHub Packages hosts; forge identity stays the minted
 App token.**
 
 1. On GitHub Actions, `mintAgentToken` copies the pre-mint `GH_TOKEN` to
-   `FULLSEND_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted token,
+   `GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted token,
    masks it, and unsets it at cleanup. Outside Actions nothing is copied: a local
    PAT never becomes a workflow token, and a caller-set value is left alone.
 2. The variable is a new credential class, provider-only: every harness `${}`
