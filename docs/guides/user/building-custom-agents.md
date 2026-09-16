@@ -566,7 +566,7 @@ run with `cancel-in-progress: false`, so a newer event on the same work item
 waits as the single pending run and works from current state instead of
 cancelling the run in flight
 ([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
-decided it; [ADR 0113](../../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)
+decided it; [ADR 0101](../../ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)
 implements it in the reusable dispatch workflow). Keep the setting aligned with
 the reusable workflow that invokes the agent.
 

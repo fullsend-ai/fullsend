@@ -95,7 +95,7 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 - A `/fs-fix` comment while a fix run is already in flight for the same PR does
   not cancel it: that run finishes, and the new dispatch waits as the single
   pending run (normally but not necessarily the newest event), then works from
-  the PR's current state ([ADR 0113](../ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
+  the PR's current state ([ADR 0101](../ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 
 ## How it helps
 

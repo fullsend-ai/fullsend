@@ -360,7 +360,7 @@ event-driven dispatch already assumes under `cancel-in-progress`.
 > replaces automatic cancellation with serialized runs and platform-native
 > pending-run coalescing. Source-native locks and agent idempotency remain
 > defense in depth for duplicate dispatch and side effects. On GitHub,
-> [ADR 0113](0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)
+> [ADR 0101](0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)
 > implements this: stage jobs no longer cancel the run in flight, so layer 2
 > above is gone, and the duplicate-poll case is where that trade is least
 > favourable, because two duplicate dispatches are the same work rather than a

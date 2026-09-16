@@ -1,5 +1,5 @@
 ---
-title: "113. Preserve the agent run in flight on work-item updates"
+title: "101. Preserve the agent run in flight on work-item updates"
 status: Accepted
 relates_to:
   - flapping-convergence
@@ -10,7 +10,7 @@ topics:
   - dispatch
 ---
 
-# 113. Preserve the agent run in flight on work-item updates
+# 101. Preserve the agent run in flight on work-item updates
 
 Date: 2026-09-14
 
@@ -75,7 +75,7 @@ never a wider one, so it can miss an update that landed during setup but cannot 
 This decision needs no receipt or skip check. When nothing tells the run in flight what
 changed, the pending run simply does the work, so there is nothing to skip. Delivering the
 update *into* the running agent is a separate, opt-in decision that builds on this one,
-recorded as ADR 0101, the steering decision stacked on this change.
+recorded as ADR 0113, the steering decision stacked on this change.
 
 ## Consequences
 

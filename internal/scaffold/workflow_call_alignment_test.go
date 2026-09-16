@@ -644,7 +644,7 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 			}
 			assert.Equal(t, "false", job.Concurrency.CancelInProgress.Value,
 				"job %q must never cancel the run in flight when a newer event "+
-					"arrives on the same work item (ADR 0113). A new stage job must "+
+					"arrives on the same work item (ADR 0101). A new stage job must "+
 					"be added to dispatchStageConcurrencyExpectations, or its "+
 					"concurrency is unpinned", stage)
 			assert.Equal(t, "!!bool", job.Concurrency.CancelInProgress.Tag,

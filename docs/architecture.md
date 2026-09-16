@@ -301,7 +301,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   necessarily the newest event, waits as the single pending run and works from
   current state, and the runner exporting `FULLSEND_RUN_HEAD_SHA` and
   `FULLSEND_RUN_STARTED_AT` so an agent can see what moved beneath it
-  ([ADR 0113](ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
+  ([ADR 0101](ADRs/0101-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline

@@ -26,7 +26,7 @@
 # completes. Either way the pending run works from the work item's current
 # state rather than the state that dispatched it. That reconciliation is the
 # agent's side of the bargain, and is why the runner exports
-# FULLSEND_RUN_HEAD_SHA and FULLSEND_RUN_STARTED_AT (ADR 0113).
+# FULLSEND_RUN_HEAD_SHA and FULLSEND_RUN_STARTED_AT (ADR 0101).
 #
 # What that gives up: ADR 0063 names per-stage cancel-in-progress as the second
 # of two layers protecting poll dispatch from duplicate side effects, and that
