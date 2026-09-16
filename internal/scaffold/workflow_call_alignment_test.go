@@ -1404,7 +1404,10 @@ func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
 // replace the canonical profiles the fleet resolves from fullsend-ai/agents
 // (fullsend-github-ro, fullsend-vertex-ai, ...). A profile a runner needs
 // for its own provider type — fullsend-openai — is imported from the
-// embedded scaffold by `fullsend run` instead.
+// embedded scaffold by `fullsend run` instead. policies/ is on neither list:
+// the scaffold ships no policy, and listing it anyway is what left #6834's
+// consumers with a `[[ -d ]]` guard that never fired; the committed copy
+// `fullsend agent new` writes is the one CI runs.
 func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	notLayered := map[string]bool{"profiles": true}
 	want := make([]string, 0, len(layeredDirs))

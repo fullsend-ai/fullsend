@@ -44,13 +44,19 @@ func FileMode(path string) string {
 // layeredDirs contain upstream defaults provided at runtime via reusable
 // workflow workspace preparation. The scaffold does not install these;
 // customization uses base: harness composition instead. See ADR 0064.
+//
+// policies/ is deliberately absent: the scaffold ships no policy (fleet
+// agents resolve theirs from fullsend-ai/agents by URL; `fullsend agent new`
+// writes one for repo-local agents), and listing a directory the embed does
+// not populate is exactly what left #6834's consumers without a policy —
+// workspace preparation's `[[ -d ]]` guard skipped it on every run. See
+// TestLayeredDirsShipContent.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
 	"schemas/",
 	"harness/",
 	"plugins/",
-	"policies/",
 	"profiles/",
 	"providers/",
 	"scripts/",
