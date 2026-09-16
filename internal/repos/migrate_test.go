@@ -158,6 +158,14 @@ repos:
 	assert.Empty(t, result.Failed)
 	assert.Equal(t, 3, result.Unenrolled)
 	assert.NotNil(t, result.Manifest)
+
+	// ADR-0033: every per-repo install, including migrate, must set the
+	// guard so per-org reconcile does not open offboard PRs that delete
+	// the freshly installed shim.
+	for _, repo := range []string{"api", "web", "lib"} {
+		assert.Equal(t, "true", fc.VariableValues["acme/"+repo+"/"+forge.PerRepoGuardVar],
+			"migrated repo %s must set %s", repo, forge.PerRepoGuardVar)
+	}
 }
 
 // --- Migrate: idempotent re-run ---

@@ -45,10 +45,11 @@ fullsend repos migrate <org> --project <gcp-project> --dry-run
 ```
 
 The command discovers enrolled repos from the per-org config, provisions
-WIF infrastructure per repo, installs per-repo (scaffold, variables,
-secrets), unenrolls migrated repos from per-org config, and generates
-a `repos.yaml` manifest. If a manifest already exists, newly migrated
-repos are merged into it rather than overwriting it.
+WIF infrastructure per repo, installs per-repo (scaffold, variables
+including `FULLSEND_PER_REPO_INSTALL=true`, secrets), unenrolls migrated
+repos from per-org config, and generates a `repos.yaml` manifest. If a
+manifest already exists, newly migrated repos are merged into it rather
+than overwriting it.
 
 ### Creating a manifest from scratch
 
@@ -400,10 +401,12 @@ fullsend repos migrate <org> --project <gcp-project>
 ```
 
 This discovers enrolled repos from the per-org config, provisions WIF
-infrastructure, installs per-repo (scaffold, variables, secrets) with
-config carried over from the org config, unenrolls migrated repos,
-and writes `repos.yaml`. If a manifest already exists, new entries are
-merged in rather than overwriting it.
+infrastructure, installs per-repo (scaffold, variables including
+`FULLSEND_PER_REPO_INSTALL=true`, secrets) with config carried over from
+the org config, unenrolls migrated repos, and writes `repos.yaml`. If a
+manifest already exists, new entries are merged in rather than
+overwriting it. The guard variable prevents the still-live per-org
+reconcile from opening offboard PRs that would delete the new shim.
 
 Preview first with `--dry-run`:
 

@@ -29,7 +29,7 @@ These flags are inherited by all `repos` subcommands:
 One-command migration from per-org to per-repo fullsend installation. For each repo enrolled in the org's per-org config:
 
 1. Check inference WIF status; provision if needed
-2. Install per-repo (scaffold workflows, variables, secrets) with config carried over from the org config
+2. Install per-repo (scaffold workflows, variables including `FULLSEND_PER_REPO_INSTALL=true`, secrets) with config carried over from the org config
 3. Unenroll from per-org config
 
 Generates a `repos.yaml` manifest reflecting the migrated state. When a `repos.yaml` already exists (e.g. from a previous `--repo`-filtered run), newly migrated repos are merged into it instead of overwriting it. Re-running after a partial migration picks up where it left off.

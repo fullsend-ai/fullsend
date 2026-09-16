@@ -125,9 +125,9 @@ func TestInstall_FreshInstall_Direct(t *testing.T) {
 		t.Error("expected scaffold commit function to be called")
 	}
 
-	// Verify repository variables were set (mint URL + region).
-	if len(fc.Variables) != 2 {
-		t.Errorf("expected 2 variables, got %d", len(fc.Variables))
+	// Verify repository variables were set (mint URL + region + per-repo guard).
+	if len(fc.Variables) != 3 {
+		t.Errorf("expected 3 variables, got %d", len(fc.Variables))
 	}
 	varMap := make(map[string]string)
 	for _, v := range fc.Variables {
@@ -138,6 +138,9 @@ func TestInstall_FreshInstall_Direct(t *testing.T) {
 	}
 	if varMap["FULLSEND_GCP_REGION"] != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", varMap["FULLSEND_GCP_REGION"], "us-central1")
+	}
+	if varMap[forge.PerRepoGuardVar] != "true" {
+		t.Errorf("%s = %q, want %q", forge.PerRepoGuardVar, varMap[forge.PerRepoGuardVar], "true")
 	}
 
 	// Verify repository secrets were set.
@@ -763,6 +766,19 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		if _, ok := vars[k]; ok {
 			t.Errorf("GitLab vars should not include %q", k)
 		}
+	}
+}
+
+func TestInstallVarsForForge_GitHub_IncludesPerRepoGuard(t *testing.T) {
+	cfg := InstallConfig{
+		Forge: ForgeGitHub,
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if v, ok := vars[forge.PerRepoGuardVar]; !ok || v != "true" {
+		t.Errorf("%s = %q, want %q", forge.PerRepoGuardVar, v, "true")
 	}
 }
 

@@ -23,6 +23,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | Repo variable | GCP region for Agent Platform inference | `global` |
 | `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
+| `FULLSEND_PER_REPO_INSTALL` | Repo variable | Per-repo install marker that prevents per-org reconcile from offboarding the repo | `true` |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 

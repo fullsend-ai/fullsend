@@ -438,6 +438,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 	case ForgeGitHub:
 		vars := []ManagedVar{
 			{Name: forge.VarMintURL, Value: mintURL},
+			// Guard variable required by ADR-0033 so per-org reconcile
+			// (repo-maintenance.yml) does not offboard a per-repo install.
+			{Name: forge.PerRepoGuardVar, Value: "true"},
 		}
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})

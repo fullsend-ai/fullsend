@@ -252,10 +252,11 @@ func TestCheckOrphanVars_DetectsOrphan(t *testing.T) {
 	}
 }
 
-func TestCheckOrphanVars_PerRepoGuardVarFlaggedAsOrphan(t *testing.T) {
+func TestCheckOrphanVars_PerRepoGuardVarNotFlaggedAsOrphan(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
-	// Guard variable from a previous install should be flagged as orphan.
+	// Guard variable is a managed GitHub install var (ADR-0033) and must
+	// not be reported as leftover from a previous install.
 	fc.VariableValues["owner/repo/"+forge.PerRepoGuardVar] = "true"
 
 	cfg := InstallConfig{Forge: ForgeGitHub, MintURL: "https://mint.example.com"}
@@ -266,11 +267,8 @@ func TestCheckOrphanVars_PerRepoGuardVarFlaggedAsOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(orphans) != 1 {
-		t.Fatalf("expected 1 orphan var, got %d", len(orphans))
-	}
-	if orphans[0].Name != forge.PerRepoGuardVar {
-		t.Errorf("orphan name = %q, want %q", orphans[0].Name, forge.PerRepoGuardVar)
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphan vars, got %d: %v", len(orphans), orphans)
 	}
 }
 

@@ -351,6 +351,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
+- `FULLSEND_PER_REPO_INSTALL` — per-repo install marker (`true`); set by every GitHub per-repo install path, including `repos migrate`, so per-org reconcile does not offboard the repo (ADR-0033)
 
 #### GitLab
 
