@@ -56,17 +56,16 @@ sequenceDiagram
 |---|---|---|---|
 | Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT only**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)) |
 | Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
-| Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Ignored with a warning | Ignored with a warning |
+| Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Alias requests: tried in order on Vertex 404/403; pinned ids: fail loudly | Ignored with a warning |
 | Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
 | Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
 
-All three run unattended in the same sandbox, behind the same egress allowlist. Stay on `claude`
-when you need a fallback chain. Choose `pi` when you want a non-Anthropic model, several vendors
-from one runtime, or its `Agent`/`Task` sub-agent roster. Choose `codex` when you want OpenAI models
-specifically and codex's shell-centric way of working.
+All three run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
+want a non-Anthropic model, several vendors from one runtime, or its `Agent`/`Task` sub-agent roster.
+Choose `codex` when you want OpenAI models specifically and codex's shell-centric way of working.
 
 ## Selecting a runtime and model
 
