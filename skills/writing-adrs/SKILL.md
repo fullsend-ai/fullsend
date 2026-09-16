@@ -99,6 +99,23 @@ The threat model establishes least-privilege as a cross-cutting principle
 
 If this decision builds on or relates to another ADR, say so in Context.
 
+### References section format
+
+When listing other ADRs in a `## References` section, use this form exactly:
+
+```markdown
+- [ADR 0007 — Per-role GitHub Apps with manifest-based creation](0007-per-role-github-apps.md)
+```
+
+Copy the target's frontmatter `title` after the leading `N. ` prefix,
+character-for-character. Use a Unicode em dash (`—`) between the number
+and the title. Do not truncate, paraphrase, change capitalization, or
+append trailing description text. Do not rewrite existing entries that
+use another style.
+
+The `lint-adr-frontmatter` hook rejects `[ADR NNNN — …]` labels whose
+title text does not match the target. Full rule: [ADR conventions](../../docs/contributing/adrs.md#references-section-format).
+
 ### Normative specs (`docs/normative/`)
 
 - **Use** when the decision needs **byte-level or field-level** contracts, JSON
@@ -134,7 +151,9 @@ Follow these steps in order:
    Use **Deprecated** or **Superseded** when retiring an ADR. Include an
    Options section only when there are genuine alternatives worth documenting;
    if the decision is obvious, just decide it.
-5. **Write the ADR.** Follow the conciseness rules above.
+5. **Write the ADR.** Follow the conciseness rules above. If you include a
+   `## References` section, use the canonical entry format (see
+   [References section format](#references-section-format)).
 6. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
 7. **If status is Accepted, update living documents** (see below).
 
@@ -214,6 +233,8 @@ If the ADR partially answers a question, add a parenthetical:
 | Wrong ADR number | Check existing files in `docs/ADRs/` first |
 | Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
 | Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |
+| Truncating or paraphrasing an ADR reference title | Copy the target frontmatter title after the `N. ` prefix, character-for-character |
+| Adding trailing description text on a References-section ADR link | Use the canonical form with no trailing text; leave existing entries as-is |
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |

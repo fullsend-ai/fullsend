@@ -11,6 +11,7 @@ Checks:
 - Status is a valid value
 - relates_to entries reference existing problem docs (or "*")
 - topics is a list if present
+- [ADR NNNN — Title] reference labels match the target's frontmatter title
 
 Adapted from https://github.com/konflux-ci/architecture/blob/main/hack/lint-frontmatter
 """
@@ -26,6 +27,36 @@ ADR_DIR = os.path.join(REPO_ROOT, "docs", "ADRs")
 PROBLEMS_DIR = os.path.join(REPO_ROOT, "docs", "problems")
 
 VALID_STATUSES = {"Accepted", "Deprecated", "Superseded"}
+
+# Canonical References-section form: [ADR NNNN — <frontmatter title minus "N. ">]
+ADR_EMDASH_REF_RE = re.compile(r"\[ADR (\d{4}) — ([^\]]+)\]")
+TITLE_NUMBER_PREFIX_RE = re.compile(r"^\d+\.\s+")
+
+
+def expected_ref_title(frontmatter_title):
+    """Strip the leading 'N. ' prefix from an ADR frontmatter title."""
+    return TITLE_NUMBER_PREFIX_RE.sub("", frontmatter_title.strip(), count=1)
+
+
+def check_reference_titles(rel_path, content, titles_by_number):
+    """Return errors for [ADR NNNN — Title] labels that do not match frontmatter.
+
+    Only the canonical em-dash form is checked. Colon-form, number-only, and
+    unlinked references are left alone so existing entries are not retrofitted.
+    """
+    errors = []
+    for match in ADR_EMDASH_REF_RE.finditer(content):
+        number, label = match.group(1), match.group(2)
+        expected = titles_by_number.get(number)
+        if expected is None:
+            errors.append(f"{rel_path}: [ADR {number} — {label}] references unknown ADR {number}")
+            continue
+        if label != expected:
+            errors.append(
+                f"{rel_path}: [ADR {number} — {label}] title does not match "
+                f"frontmatter title {expected!r}"
+            )
+    return errors
 
 
 def get_valid_problem_docs():
@@ -164,6 +195,7 @@ def main():
     print("=" * 50)
 
     all_errors = []
+    titles_by_number = {}
     for filepath in adr_files:
         filename = os.path.basename(filepath)
         file_errors = validate_adr(filepath, valid_problems)
@@ -173,15 +205,37 @@ def main():
         else:
             print(f"  {filename}: OK")
 
+        fm, err = parse_frontmatter(filepath)
+        number_match = re.match(r"^(\d{4})-", filename)
+        if not err and number_match and isinstance(fm.get("title"), str):
+            titles_by_number[number_match.group(1)] = expected_ref_title(fm["title"])
+
+    print("=" * 50)
+    print()
+    print("Checking ADR reference titles...")
+    print("=" * 50)
+
+    for filepath in adr_files:
+        filename = os.path.basename(filepath)
+        rel_path = os.path.relpath(filepath, REPO_ROOT)
+        with open(filepath, encoding="utf-8") as f:
+            content = f.read()
+        ref_errors = check_reference_titles(rel_path, content, titles_by_number)
+        if ref_errors:
+            all_errors.extend(ref_errors)
+            print(f"  {filename}: FAIL")
+        else:
+            print(f"  {filename}: OK")
+
     print("=" * 50)
 
     if all_errors:
-        print(f"ERROR: {len(all_errors)} frontmatter validation error(s)")
+        print(f"ERROR: {len(all_errors)} ADR validation error(s)")
         for e in all_errors:
             print(f"  ERROR: {e}")
         return 1
     else:
-        print(f"OK: All {len(adr_files)} ADR files have valid frontmatter")
+        print(f"OK: All {len(adr_files)} ADR files have valid frontmatter and reference titles")
         return 0
 
 
