@@ -248,8 +248,10 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 // agent-name consumer) might mishandle even when correctly quoted. Values
 // with disallowed characters have them stripped rather than failing the run,
 // since the model/agent resolution already validated the harness inputs
-// upstream (config.validModelRef); an emptied value simply falls back to
-// OpenCode's own resolution.
+// upstream (config.validModelRef). An emptied --model value falls back to
+// OpenCode's own model resolution, but an emptied --agent value causes
+// opencode to use its default agent rather than the bootstrap-generated one
+// — callers should treat an empty result for agent names as an error.
 func openCodeValidatedArg(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -342,6 +344,10 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	handler = func(evt AgentEvent) {
 		switch e := evt.(type) {
 		case InitEvent:
+			// Forward-compatibility guard: parseOpenCodeStream does not emit
+			// InitEvent today (opencode_progress.go:111), but if a future
+			// wire-format revision adds one it must not duplicate the
+			// InitEvent already emitted above from RunParams.Model.
 			return
 		case ResultEvent:
 			lastResult = &e

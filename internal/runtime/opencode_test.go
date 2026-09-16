@@ -376,9 +376,11 @@ exit 0
 
 	localPath := filepath.Join(t.TempDir(), "debug.log")
 	// Exercise the code path where debug != "" (line 77 of opencode_transcript.go).
-	// sandbox.DownloadFile may return an error because the fake doesn't
-	// perfectly implement the download protocol, but the branch is covered.
-	_ = OpenCodeRuntime{}.ExtractDebugLog("sb", localPath, "true")
+	err := OpenCodeRuntime{}.ExtractDebugLog("sb", localPath, "true")
+	require.NoError(t, err)
+	data, readErr := os.ReadFile(localPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "debug log content")
 }
 
 func TestOpenCodeParseTranscriptErrors_BadDir(t *testing.T) {
