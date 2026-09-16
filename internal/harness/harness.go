@@ -435,7 +435,7 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
-	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // follow-up run watcher (ADR 0113); default off
+	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // follow-up run watcher (ADR 0113); on by default, steer: {enabled: false} opts out
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
