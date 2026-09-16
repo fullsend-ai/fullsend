@@ -30,10 +30,12 @@ pushes every intermediate review completes and is superseded, the waste behind
 [#1422](https://github.com/fullsend-ai/fullsend/issues/1422) and [#6573](https://github.com/fullsend-ai/fullsend/issues/6573).
 Review shows it most, but triage, code, fix, retro and prioritize all cancel the same way.
 
-Cancellation was chosen deliberately once: [ADR 0063](0063-polling-based-work-discovery.md)
-counts per-stage `cancel-in-progress` among its mitigations against duplicate dispatch from
-polling, alongside the source-native lock and agent idempotency. Any change here has to say
-what it gives up there.
+Cancellation was chosen deliberately once: [ADR 0063](0063-polling-based-work-discovery.md) counts
+per-stage `cancel-in-progress` among its mitigations against duplicate dispatch from polling,
+alongside the source-native lock and agent idempotency, so any change here has to say what it
+gives up there. [ADR 0106](0106-serialize-agent-runs-and-coalesce-subsequent-events.md) has since
+decided for preserve-and-coalesce and states that the reusable workflows must move to
+`cancel-in-progress: false`; this ADR is its GitHub side and records the two run facts it needs.
 
 ## Options
 
@@ -86,5 +88,3 @@ recorded as ADR 0101, the steering decision stacked on this change.
   everywhere, leaving the source-native lock and agent idempotency; the duplicate-poll case
   is the least favourable, two duplicate dispatches being the same work rather than a newer
   state superseding an older one.
-- Agents gain a stable baseline to compare against, but the exported start is later than the
-  run's true start; making it exact would cost an Actions API call on every run.

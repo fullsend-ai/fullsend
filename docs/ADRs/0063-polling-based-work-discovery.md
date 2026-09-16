@@ -359,14 +359,12 @@ event-driven dispatch already assumes under `cancel-in-progress`.
 > **Update (2026-09):** [ADR 0106](0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
 > replaces automatic cancellation with serialized runs and platform-native
 > pending-run coalescing. Source-native locks and agent idempotency remain
-> defense in depth for duplicate dispatch and side effects.
-
-> **Cross-reference (added later).** Layer 2 above is removed. Stage jobs no
-> longer cancel the run in flight when a newer event arrives on the same work
-> item ([ADR 0113](0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)),
-> which leaves the poller's lock and agent idempotency. The duplicate-poll case
-> is where that trade is least favourable, because two duplicate dispatches are
-> the same work rather than a newer state superseding an older one.
+> defense in depth for duplicate dispatch and side effects. On GitHub,
+> [ADR 0113](0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)
+> implements this: stage jobs no longer cancel the run in flight, so layer 2
+> above is gone, and the duplicate-poll case is where that trade is least
+> favourable, because two duplicate dispatches are the same work rather than a
+> newer state superseding an older one.
 
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:

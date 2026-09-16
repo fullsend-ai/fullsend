@@ -296,6 +296,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   over other comments and content discovered during reconciliation remains a
   separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  On GitHub this is every stage job in `reusable-dispatch.yml` running with
+  `cancel-in-progress: false`, so the last run to queue, normally but not
+  necessarily the newest event, waits as the single pending run and works from
+  current state, and the runner exporting `FULLSEND_RUN_HEAD_SHA` and
+  `FULLSEND_RUN_STARTED_AT` so an agent can see what moved beneath it
+  ([ADR 0113](ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
@@ -340,11 +346,6 @@ The existing design principle is that [the repo is the coordinator](problems/age
   until its versioned normalized-entity contract exists. Every run uses the
   harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
-- A work-item update never cancels the agent run in flight: every stage job runs with
-  `cancel-in-progress: false`, so the newer event waits as the single pending run and works
-  from the item's current state. The runner exports `FULLSEND_RUN_HEAD_SHA` and
-  `FULLSEND_RUN_STARTED_AT` so an agent can see what moved beneath it
-  ([ADR 0113](ADRs/0113-preserve-the-agent-run-in-flight-on-work-item-updates.md)).
 
 **Open questions:**
 
