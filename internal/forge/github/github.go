@@ -3138,13 +3138,17 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 // When commitSHA is non-empty it is sent as commit_id, pinning the
 // review to that commit. GitHub rejects the request if the commit is
 // not the PR's current HEAD, closing the TOCTOU gap between the
-// stale-head check and review submission.
-// When comments is non-nil, inline diff comments (Line > 0) are
-// attached to the review via the GitHub "comments" field.
-// File-level comments (Line == 0) are posted separately via
-// POST /pulls/{n}/comments with subject_type: "file". GitHub's
-// create-review comments[] schema has no subject_type and rejects
-// comments that omit both line and position with 422.
+// stale-head check and review submission — but that HEAD pinning is
+// only enforced by the POST /reviews call. When comments is non-nil,
+// inline diff comments (Line > 0) are attached to the review via the
+// GitHub "comments" field. File-level comments (Line == 0) are posted
+// separately via POST /pulls/{n}/comments with subject_type: "file".
+// GitHub's create-review comments[] schema has no subject_type and
+// rejects comments that omit both line and position with 422.
+// A COMMENT event whose only content is file-level comments skips the
+// POST /reviews call entirely (see below), so that case relies solely
+// on the caller's own stale-head check rather than GitHub-side HEAD
+// pinning for commitSHA.
 func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []forge.ReviewComment) error {
 	switch event {
 	case "APPROVE", "REQUEST_CHANGES", "COMMENT":

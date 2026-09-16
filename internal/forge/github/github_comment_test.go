@@ -491,7 +491,7 @@ func TestCreatePullRequestReview_FileLevelCommentsUseCommentsAPI(t *testing.T) {
 		case "/repos/owner/repo/pulls/7/comments":
 			assert.Equal(t, http.MethodPost, r.Method)
 			commentsPosts++
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"id": 1})
 		case "/repos/owner/repo/pulls/7/reviews":
@@ -536,12 +536,12 @@ func TestCreatePullRequestReview_MixedInlineAndFileLevel(t *testing.T) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/pulls/7/comments":
 			commentsPosts++
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"id": 1})
 		case "/repos/owner/repo/pulls/7/reviews":
 			reviewPosts++
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&reviewPayload))
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&reviewPayload))
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]any{"id": 999})
 		default:
@@ -609,7 +609,7 @@ func TestCreatePullRequestReview_FileLevelResolvesEmptyCommitSHA(t *testing.T) {
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/pulls/7/comments":
 			var payload map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 			gotCommit = payload["commit_id"]
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"id": 1})
@@ -656,7 +656,7 @@ func TestCreatePullRequestReview_MultipleFileLevelComments(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/owner/repo/pulls/7/comments", r.URL.Path)
 		var payload map[string]any
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		paths = append(paths, payload["path"].(string))
 		assert.Equal(t, "file", payload["subject_type"])
 		w.WriteHeader(http.StatusCreated)

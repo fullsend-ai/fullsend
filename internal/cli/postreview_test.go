@@ -1809,6 +1809,50 @@ func TestSubmitFormalReview_FileLevelFallbackFailureDoesNotBlockMainReview(t *te
 	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
 }
 
+func TestSubmitFormalReview_MultiFileLevel422SkipsProseFallback(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// Regression for the qodo finding: postFileLevelReviewComments (the
+	// forge implementation) posts file-level comments sequentially and
+	// stops at the first error, so when a batch of more than one
+	// comment 422s, an earlier comment in the batch may already be a
+	// real, live PR comment. The prose fallback must not re-embed the
+	// whole original batch in that case — doing so would duplicate the
+	// already-posted comment. Simulate that by having the batched
+	// file-level review call fail with 422; the main review still
+	// succeeds.
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "First out-of-hunk finding."},
+		{Severity: "low", Category: "style", File: "internal/service.go", Line: 1200, Description: "Second out-of-hunk finding."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "File-level comments failed with 422")
+	assert.Contains(t, output, "skipping the review-body fallback")
+	assert.Contains(t, output, "duplicating already-posted comments")
+
+	// Only the main review was submitted; no fallback COMMENT review
+	// carrying the (potentially already-posted) comments as prose.
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
+}
+
 func TestSubmitFormalReview_CommentVerdictOnlyFileLevelFindings(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-bot"

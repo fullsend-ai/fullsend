@@ -440,9 +440,13 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // postFileLevelComments submits file-level review comments in their own
 // COMMENT review, isolated from the main review batch. It is best-effort:
 // every failure path logs and returns so the caller's main review still
-// proceeds. On a 422 the comment bodies are retried inside a plain review
-// body — mirroring the main review's fallback — so the findings stay
-// visible on the review itself rather than only in the sticky comment.
+// proceeds. On a 422 for a single comment, the comment body is retried
+// inside a plain review body — mirroring the main review's fallback — so
+// the finding stays visible on the review itself rather than only in the
+// sticky comment. For a multi-comment batch the retry is skipped instead:
+// the forge implementation posts comments sequentially and stops at the
+// first error, so some may already be live on the PR, and re-embedding
+// the whole original batch would duplicate them.
 func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo string, pr int, commitSHA string, comments []forge.ReviewComment, printer *ui.Printer) {
 	err := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", "", commitSHA, comments)
 	if err == nil {
@@ -453,6 +457,22 @@ func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo
 	if is422Error(err) {
 		printer.StepWarn(fmt.Sprintf("File-level comments failed with 422 (%d comment(s)), retrying without comments", len(comments)))
 		logRejectedComments(comments, err, printer)
+
+		// postFileLevelReviewComments (the forge implementation) posts
+		// each file-level comment sequentially and stops at the first
+		// error, so when there is more than one comment some may
+		// already be live on the PR as real comments by the time this
+		// 422 is observed. Embedding the original, unfiltered comments
+		// slice in a prose fallback would duplicate those already-
+		// posted comments. There is no way from this error alone to
+		// tell which comments succeeded, so skip the prose fallback for
+		// multi-comment batches; the findings remain visible in the
+		// sticky comment. A single-comment batch can't have partially
+		// succeeded, so it is still safe to embed it below.
+		if len(comments) > 1 {
+			printer.StepWarn("Multiple file-level comments were in this batch; skipping the review-body fallback to avoid duplicating already-posted comments (findings remain in sticky comment)")
+			return
+		}
 
 		fallbackBody := buildFallbackReviewBody("", comments)
 		if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", fallbackBody, commitSHA, nil); retryErr != nil {
