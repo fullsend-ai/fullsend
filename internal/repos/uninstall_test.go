@@ -552,6 +552,22 @@ func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
 
 func TestUninstall_GitLabRootCI_DeletedWhenEmpty(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
+	// Override the shared fixture: omit merge_request_event. It's no
+	// longer in unmergeWorkflowRules (#7333) — with no provenance signal
+	// to distinguish a fullsend-installed copy from the repo owner's own
+	// MR gate, it survives unmerge — so a fixture containing it would
+	// never leave the file empty. This test exercises the "genuinely
+	// nothing left" deletion path, which is orthogonal to that decision.
+	client.FileContents["acme/api/.gitlab-ci.yml"] = []byte("---\n" +
+		"include:\n" +
+		"  - local: '.gitlab/ci/fullsend-pipeline.yml'\n" +
+		"\n" +
+		"workflow:\n" +
+		"  auto_cancel:\n" +
+		"    on_new_commit: none\n" +
+		"  rules:\n" +
+		"    - if: $CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_REF_PROTECTED == \"true\"\n" +
+		"    - if: $CI_PIPELINE_SOURCE == \"api\" && $CI_COMMIT_REF_PROTECTED == \"true\" && $STAGE\n")
 
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testGitLabManifest("acme/api"),

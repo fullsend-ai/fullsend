@@ -230,8 +230,10 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 	var h struct {
 		Agent     string   `yaml:"agent"`
 		Policy    string   `yaml:"policy"`
-		Profiles  []string `yaml:"profiles"`
 		Providers []string `yaml:"providers"`
+		OpenShell struct {
+			Profiles []string `yaml:"profiles"`
+		} `yaml:"openshell"`
 	}
 	if err := yaml.Unmarshal([]byte(doc), &h); err != nil {
 		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
@@ -269,7 +271,7 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 	for _, group := range []struct {
 		field string
 		paths []string
-	}{{"profiles", h.Profiles}, {"providers", h.Providers}} {
+	}{{"profiles", h.OpenShell.Profiles}, {"providers", h.Providers}} {
 		for _, rel := range group.paths {
 			if rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "https://") {
 				continue

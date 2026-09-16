@@ -2329,6 +2329,420 @@ func TestCreatePullRequestReview_Approve_409AlreadyMerged(t *testing.T) {
 	assert.Contains(t, err.Error(), "409 Conflict")
 }
 
+// mockApproverIdentity mocks the /user and MR-info endpoints that
+// isAuthenticatedUserMRAuthor uses to check the authenticated bot
+// identity against the MR author, both as CreatePullRequestReview's
+// pre-call check (skip the approve call outright on a match) and as its
+// post-401 safety net.
+func mockApproverIdentity(t *testing.T, mux *http.ServeMux, botUsername, mrAuthorUsername string) {
+	t.Helper()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": botUsername})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               30,
+			"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/30",
+			"sha":               "sha123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 1, "username": mrAuthorUsername},
+			"source_project_id": 100,
+			"target_project_id": 100,
+		})
+	})
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatches(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesWithBody(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1, "fallback should combine body into a single note")
+	assert.Contains(t, notes[0], "LGTM!")
+	assert.Contains(t, notes[0], approvalFallbackNote)
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesWithInline(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "nit: rename"},
+	})
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 2)
+	assert.Contains(t, notes[0], "LGTM!")
+	assert.Contains(t, notes[0], approvalFallbackNote)
+	assert.Contains(t, notes[1], "`main.go:10`")
+	assert.Contains(t, notes[1], "nit: rename")
+}
+
+// TestCreatePullRequestReview_Approve_401SafetyNetAfterPreCheckError covers
+// the safety net: if the pre-call identity check itself fails (here, a
+// transient error on the first /user call), CreatePullRequestReview falls
+// through to the normal approve call instead of guessing, and the
+// existing 401 handling still recovers via a second identity check.
+func TestCreatePullRequestReview_Approve_401SafetyNetAfterPreCheckError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	userCalls := 0
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		userCalls++
+		if userCalls == 1 {
+			// A non-retryable status (unlike 5xx/429, the client does not
+			// retry this internally) so the first identity check surfaces
+			// a real error to CreatePullRequestReview's pre-call check.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": "review-bot"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               30,
+			"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/30",
+			"sha":               "sha123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 1, "username": "review-bot"},
+			"source_project_id": 100,
+			"target_project_id": 100,
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.True(t, approveCalled, "a pre-check error must fall through to the normal approve call rather than guess")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_401CredentialFailure(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized: invalid token",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid token")
+	assert.False(t, noteCalled, "credential 401 must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesEmptyBody(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_401NonAuthorMR(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err, "a 401 on an MR the bot doesn't author is a real ineligibility, not self-approval")
+	assert.Contains(t, err.Error(), "401")
+	assert.False(t, noteCalled, "a 401 on an MR the bot doesn't author must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_401EmptyBodyNonAuthorMR(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.Error(t, err, "GitLab's real generic (empty-body) 401 must still fail closed when the bot isn't the author")
+	assert.False(t, noteCalled, "an empty-body 401 on an MR the bot doesn't author must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_401IdentityCheckFailsClosed(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify self-approval")
+	assert.False(t, noteCalled, "an identity-check failure must fail closed, not fall back to a note")
+}
+
+func TestIsAuthenticatedUserMRAuthor(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.NoError(t, err)
+	assert.True(t, isAuthor)
+}
+
+func TestIsAuthenticatedUserMRAuthor_Mismatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.NoError(t, err)
+	assert.False(t, isAuthor)
+}
+
+func TestIsAuthenticatedUserMRAuthor_PullRequestInfoError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": "review-bot"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	_, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get merge request !30 author")
+}
+
+func TestIsAuthenticatedUserMRAuthor_EmptyAuthUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	// An empty authenticated username (never expected from a real 200
+	// response) must fail closed rather than compare equal to an equally
+	// empty MR author username.
+	mockApproverIdentity(t, mux, "", "")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.False(t, isAuthor)
+	assert.Contains(t, err.Error(), "empty username")
+}
+
+func TestIsAuthenticatedUserMRAuthor_EmptyMRAuthor(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.False(t, isAuthor)
+	assert.Contains(t, err.Error(), "empty author username")
+}
+
+func TestCreatePullRequestReview_Approve_403NoFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{
+			"message": "403 Forbidden",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+	assert.False(t, noteCalled, "non-401 approve failures must not fall back to a note")
+}
+
+// TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesNoteFailure
+// covers the pre-call skip path (matching bot/author identity, so the
+// approve call is never attempted) when the fallback note itself fails to
+// post. The /approve handler below is registered only to assert it is
+// never reached; the 401 it would return is irrelevant here because the
+// pre-call identity check short-circuits before any approve call is made.
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesNoteFailure(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{
+			"message": "boom",
+		})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post approval fallback comment")
+	assert.False(t, approveCalled, "matching identity must skip the approve call outright, not reach it and recover from a 401")
+}
+
+func TestIsCredentialFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{name: "empty", msg: "", want: false},
+		{name: "generic 401", msg: "401 Unauthorized", want: false},
+		{name: "unauthorized only", msg: "Unauthorized", want: false},
+		{name: "padded case", msg: "  401 UNAUTHORIZED  ", want: false},
+		{name: "cannot approve own", msg: "You cannot approve your own merge request", want: false},
+		{name: "author cannot approve", msg: "Author cannot approve this merge request", want: false},
+		{name: "invalid token", msg: "401 Unauthorized: invalid token", want: true},
+		{name: "bad credentials", msg: "Bad credentials", want: true},
+		{name: "access token expired", msg: "access token expired", want: true},
+		{name: "token revoked", msg: "Token is invalid or revoked", want: true},
+		{name: "insufficient scope", msg: "insufficient_scope", want: true},
+		{name: "not authenticated", msg: "not authenticated", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isCredentialFailure(tt.msg))
+		})
+	}
+}
+
 func TestCreateRepoSecret_MaskedFallback(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

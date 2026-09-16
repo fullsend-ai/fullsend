@@ -20,8 +20,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/fullsend-ai/fullsend/internal/resolve"
 )
 
 const (
@@ -252,7 +250,7 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 		}
 	}
 
-	// Best-effort delete so content changes propagate (same pattern as ImportProfiles).
+	// Best-effort delete so content changes propagate.
 	delCtx, delCancel := context.WithTimeout(ctx, providerTimeout)
 	exec.CommandContext(delCtx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
 	delCancel()
@@ -790,148 +788,8 @@ func CheckGateway() error {
 	return nil
 }
 
-// ImportProfiles imports provider profile YAMLs from a directory into the
-// gateway via openshell provider profile import. If the directory does not
-// exist, this is a no-op. This allows callers to import profiles from optional
-// directories without checking existence first.
-//
-// Idempotency is hash-based: the function computes a SHA-256 digest of the
-// profile directory contents and compares it against a cached value in a temp
-// file. When the hash matches (profiles unchanged), the import is skipped
-// entirely. This makes parallel fullsend run invocations safe — only the
-// first process imports, and subsequent processes see the cache hit.
-//
-// Concurrency safety: the delete+reimport critical section is protected by
-// a cross-process file lock (flock) keyed by directory path. This prevents the
-// race where a concurrent process deletes profiles between another process's
-// import and provider creation. Processes that block on the lock re-check the
-// cache after acquiring it (double-check pattern) and skip the import if the
-// winner already wrote the cache.
-//
-// When profiles have changed (hash mismatch or no cache), existing profiles
-// are deleted and reimported. If the reimport fails because a parallel process
-// already imported them, the error is treated as success.
-func ImportProfiles(dir string) error {
-	if _, err := os.Stat(dir); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("checking profiles directory %s: %w", dir, err)
-	}
-
-	currentHash, err := hashProfileDir(dir)
-	if err != nil {
-		return fmt.Errorf("hashing profiles directory %s: %w", dir, err)
-	}
-
-	// Fast path: check cache before acquiring the lock.
-	cachePath := profileCachePath(dir)
-	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
-		if strings.TrimSpace(string(cached)) == currentHash {
-			return nil
-		}
-	}
-
-	// Acquire a cross-process file lock so only one process at a time
-	// performs the non-atomic delete+reimport sequence for this directory.
-	lockPath := profileDirLockPath(dir)
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("opening profiles lock for %q: %w", dir, err)
-	}
-	defer lockFile.Close()
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquiring profiles lock for %q: %w", dir, err)
-	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
-
-	// Double-check: the process that held the lock before us may have
-	// already imported these profiles and written the cache.
-	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
-		if strings.TrimSpace(string(cached)) == currentHash {
-			return nil
-		}
-	}
-
-	ids, err := resolve.CollectProfileIDs(dir)
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		// Best-effort delete; ignore errors (profile may not exist yet).
-		ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
-		exec.CommandContext(ctx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
-		cancel()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
-	if err != nil {
-		outStr := strings.ToLower(string(out))
-		if strings.Contains(outStr, "already exists") {
-			// A parallel process imported the profiles — safe to continue.
-			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
-			return nil
-		}
-		return fmt.Errorf("provider profile import from %s failed: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
-	}
-	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
-	return nil
-}
-
-// hashProfileDir computes a deterministic SHA-256 digest of all YAML files in
-// a directory. The digest covers both filenames and file contents so that any
-// change to any profile is detected.
-func hashProfileDir(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-	h := sha256.New()
-	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return "", err
-		}
-		fileHash := sha256.Sum256(data)
-		fmt.Fprintf(h, "%s:%x\n", e.Name(), fileHash)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// profileDirTempPath returns a temp file path keyed by the absolute directory
-// path with the given extension. Used by profileCachePath and profileDirLockPath
-// to derive deterministic, per-directory paths without duplicating the hashing
-// logic. This mirrors profileTempPath for single-profile paths.
-func profileDirTempPath(dir, ext string) string {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		absDir = dir
-	}
-	dirHash := sha256.Sum256([]byte(absDir))
-	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+"."+ext)
-}
-
-// profileCachePath returns a temp file path for caching the profile directory
-// hash. The path is keyed to the absolute directory path so that different
-// fullsend-dir values get separate caches.
-func profileCachePath(dir string) string {
-	return profileDirTempPath(dir, "sha256")
-}
-
-// profileDirLockPath returns a temp file path used as a cross-process flock
-// for serializing the delete+reimport critical section in ImportProfiles.
-// Keyed by directory path so different profile directories lock independently.
-func profileDirLockPath(dir string) string {
-	return profileDirTempPath(dir, "lock")
-}
-
 // hashProfileFile computes a SHA-256 digest of a single profile file's
-// contents. This is the single-file analog of hashProfileDir.
+// contents.
 func hashProfileFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

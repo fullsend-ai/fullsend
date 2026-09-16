@@ -551,6 +551,7 @@ type Client interface {
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
 	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 	// the default branch, this reads from the specified ref.
+	// Returns forge.ErrNotFound if the file or ref does not exist.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 
 	// CommitFiles atomically commits multiple files to the repository's
@@ -563,6 +564,16 @@ type Client interface {
 	// branch. Like CommitFiles, it is idempotent: if all files already
 	// have the expected content, no commit is created.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
+
+	// ForceCommitFileToBranch force-updates branch to a single-file commit
+	// re-rooted on a fixed base SHA (the repository's root commit). The
+	// target branch is created if it does not exist. History is pruned:
+	// each call leaves the branch at base + 1 commit. The commit message
+	// is suffixed with [skip ci] if not already present.
+	//
+	// This is used for GitLab poller state persistence on Developer-writable
+	// unprotected branches. GitHub returns ErrNotSupported.
+	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 
 	// Ref operations
 	// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").

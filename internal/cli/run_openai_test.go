@@ -326,13 +326,49 @@ func recordingProvidersStub(t *testing.T) string {
 	t.Setenv("TMPDIR", t.TempDir())
 	binDir := t.TempDir()
 	logPath := filepath.Join(binDir, "openshell.log")
+	profilesState := logPath + ".profiles"
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + shellQuoteForTest(logPath) + "\n" +
+		"STATE=" + shellQuoteForTest(profilesState) + "\n" +
 		"case \"$1 $2\" in\n" +
 		"  'gateway list') echo default-gateway; exit 0 ;;\n" +
 		"  'settings '*) exit 0 ;;\n" +
-		"  'provider list-profiles') echo '    fullsend-openai  Fullsend OpenAI  endpoints: 1'; exit 0 ;;\n" +
-		"  'provider profile'|'provider create'|'provider update') exit 0 ;;\n" +
+		// Track imported profile ids so list-profiles can satisfy
+		// ImportProfileVerified (Forget -> import -> ProfileExists), mirroring
+		// testdata/providers-stub instead of a fixed id.
+		"  'provider list-profiles')\n" +
+		"    printf '['\n" +
+		"    first=1\n" +
+		"    if [ -f \"$STATE\" ]; then\n" +
+		"      while IFS= read -r id; do\n" +
+		"        [ -n \"$id\" ] || continue\n" +
+		"        if [ \"$first\" -eq 1 ]; then first=0; else printf ','; fi\n" +
+		"        printf '{\"id\":\"%s\"}' \"$id\"\n" +
+		"      done < \"$STATE\"\n" +
+		"    fi\n" +
+		"    printf ']\\n'\n" +
+		"    exit 0 ;;\n" +
+		"  'provider profile')\n" +
+		"    case \"$3\" in\n" +
+		"      delete)\n" +
+		"        if [ -n \"$4\" ] && [ -f \"$STATE\" ]; then\n" +
+		"          grep -v \"^$4$\" \"$STATE\" > \"$STATE.tmp\" || true\n" +
+		"          mv \"$STATE.tmp\" \"$STATE\"\n" +
+		"        fi\n" +
+		"        exit 0 ;;\n" +
+		"      import)\n" +
+		"        prev=\"\"\n" +
+		"        for arg in \"$@\"; do\n" +
+		"          if [ \"$prev\" = '--file' ] && [ -f \"$arg\" ]; then\n" +
+		"            id=$(awk '/^id:/{print $2; exit}' \"$arg\")\n" +
+		"            [ -n \"$id\" ] && printf '%s\\n' \"$id\" >> \"$STATE\"\n" +
+		"          fi\n" +
+		"          prev=\"$arg\"\n" +
+		"        done\n" +
+		"        exit 0 ;;\n" +
+		"    esac\n" +
+		"    exit 0 ;;\n" +
+		"  'provider create'|'provider update') exit 0 ;;\n" +
 		// Like OpenShell 0.0.83: a provider cannot be deleted while a sandbox
 		// still references it, so track the sandbox in a marker file.
 		"  'provider delete') if [ -e " + shellQuoteForTest(logPath+".sandbox") + " ]; then echo \"error: provider '$3' is attached to sandbox(es): fs-x\" >&2; exit 1; fi; exit 0 ;;\n" +
@@ -471,18 +507,12 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 		{"path-form provider entry", false, true, false},
 		{"bare name, no providers/openai.yaml on disk (embedded definition)", false, false, true},
 	}
-	t.Run("a workspace profile with the reserved id is refused", func(t *testing.T) {
-		recordingProvidersStub(t)
-		for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
-			t.Setenv(k, "")
-		}
-		t.Setenv("OPENAI_API_KEY", "sk-local-static-key-for-test")
-		dir := writeOpenAIFullsendDir(t, false)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "profiles", "fullsend-openai.yaml"), []byte("id: fullsend-openai\ndisplay_name: Not the real one\n"), 0o644))
-		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "reserved for the copy built into fullsend")
-	})
+	// The "a workspace profile with the reserved id is refused" subtest was
+	// removed: it tested that rejectReservedProfileID caught a profiles/
+	// directory file with the reserved ID (fullsend-openai). Since #7095,
+	// directory-only profiles are no longer scanned or imported, so a file
+	// in profiles/ that is not listed in openshell.profiles is inert. The
+	// unit test TestRejectReservedProfileID covers the harness-listed path.
 	for _, tc := range cases {
 		keep := tc.keep
 		t.Run(tc.name, func(t *testing.T) {
@@ -870,10 +900,9 @@ func TestEnsureOpenAIProvider_IgnoresExtraCredentialKeys(t *testing.T) {
 
 func TestCheckProviderProfileIntegrity_KnowsEmbeddedOpenAIProfile(t *testing.T) {
 	providers := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: openAIProviderType}}}
-	w, err := checkProviderProfileIntegrity(providers, nil, []string{"fullsend-github"})
+	err := checkProviderProfileIntegrity(providers, nil)
 	require.NoError(t, err, "the runner imports fullsend-openai itself, so a path-form provider needs no profiles: entry")
-	assert.Empty(t, w)
-	_, err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil, []string{"fullsend-github"})
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil)
 	require.Error(t, err)
 }
 
@@ -891,12 +920,11 @@ func TestAppendEmbeddedProviderDefs(t *testing.T) {
 }
 
 func TestRejectReservedProfileID(t *testing.T) {
-	require.NoError(t, rejectReservedProfileID(openAIProviderType, nil, []string{"fullsend-github"}))
-	err := rejectReservedProfileID(openAIProviderType, nil, []string{"fullsend-openai"})
+	require.NoError(t, rejectReservedProfileID(openAIProviderType, nil))
+	require.NoError(t, rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-github"}}))
+	err := rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
-	err = rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}}, nil)
-	require.Error(t, err)
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {

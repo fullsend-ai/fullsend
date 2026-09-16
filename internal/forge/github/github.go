@@ -4023,6 +4023,11 @@ func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ str
 	return forge.ErrNotSupported
 }
 
+// ForceCommitFileToBranch is not supported on GitHub.
+func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
+	return forge.ErrNotSupported
+}
+
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {
 	var apiErr *APIError

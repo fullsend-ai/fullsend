@@ -20,7 +20,7 @@ type Options struct {
 // NormalizedEvent conversion and dispatch.
 type RoutableEvent struct {
 	Type            string
-	Action          string // MR lifecycle action for Type=="mr_event": "opened", or empty (merged)
+	Action          string // MR lifecycle action for Type=="mr_event": "opened", "closed", or empty (merged)
 	IID             int
 	UpdatedAt       time.Time
 	Labels          []string // full label set at event time

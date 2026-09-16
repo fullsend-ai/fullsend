@@ -788,6 +788,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.CommitFiles(ctx, "o", "r", "m", nil)
 			return err
 		}},
+		{"ForceCommitFileToBranch", func(fc *FakeClient) error {
+			return fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
+		}},
 		{"CreateOrUpdateOrgVariable", func(fc *FakeClient) error {
 			return fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", nil)
 		}},
@@ -904,6 +907,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteOrgSecret(ctx, "o", "n")
 			_ = fc.SetOrgSecretRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}})
+			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data"))
 			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgVariableExists(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
@@ -1800,4 +1804,136 @@ func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestFakeClient_ForceCommitFileToBranch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	t.Run("create-on-first-write", func(t *testing.T) {
+		_, err := fc.GetBranchRef(ctx, "owner", "repo", "fullsend-poll-state-slash")
+		require.ErrorIs(t, err, ErrNotFound)
+
+		err = fc.ForceCommitFileToBranch(ctx, "owner", "repo", "fullsend-poll-state-slash", "state.json", "init", []byte(`{"v":1}`))
+		require.NoError(t, err)
+
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "fullsend-poll-state-slash")
+		require.NoError(t, err)
+		assert.NotEmpty(t, sha)
+
+		content, err := fc.GetFileContentAtRef(ctx, "owner", "repo", "state.json", "fullsend-poll-state-slash")
+		require.NoError(t, err)
+		assert.Equal(t, `{"v":1}`, string(content))
+
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		rec := fc.ForceCommittedFiles[0]
+		assert.True(t, rec.Force)
+		assert.Equal(t, ForceCommitFixedBaseSHA, rec.StartSHA)
+		assert.Equal(t, "init [skip ci]", rec.Message)
+		assert.Equal(t, 1, fc.ForceReachableCommits["owner/repo/fullsend-poll-state-slash"])
+	})
+
+	t.Run("last-write-wins and prune to one commit", func(t *testing.T) {
+		fc := NewFakeClient()
+		for i := 1; i <= 5; i++ {
+			body := []byte(fmt.Sprintf("v%d", i))
+			err := fc.ForceCommitFileToBranch(ctx, "o", "r", "state", "state.json", fmt.Sprintf("w%d", i), body)
+			require.NoError(t, err)
+		}
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/state"])
+		content, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "state")
+		require.NoError(t, err)
+		assert.Equal(t, "v5", string(content))
+		require.Len(t, fc.ForceCommittedFiles, 5)
+		for _, rec := range fc.ForceCommittedFiles {
+			assert.Equal(t, ForceCommitFixedBaseSHA, rec.StartSHA)
+			assert.True(t, rec.Force)
+		}
+	})
+
+	t.Run("per-branch files do not clobber", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "slash", "state.json", "s", []byte("fast")))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "events", "state.json", "e", []byte("full")))
+
+		fast, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "slash")
+		require.NoError(t, err)
+		full, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "events")
+		require.NoError(t, err)
+		assert.Equal(t, "fast", string(fast))
+		assert.Equal(t, "full", string(full))
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/slash"])
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/events"])
+	})
+
+	t.Run("re-root drops sibling files on the same branch", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "a.json", "a", []byte("A")))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "b.json", "b", []byte("B")))
+
+		_, err := fc.GetFileContentAtRef(ctx, "o", "r", "a.json", "b")
+		require.ErrorIs(t, err, ErrNotFound)
+		got, err := fc.GetFileContentAtRef(ctx, "o", "r", "b.json", "b")
+		require.NoError(t, err)
+		assert.Equal(t, "B", string(got))
+	})
+
+	t.Run("idempotent write of unchanged content still prunes", func(t *testing.T) {
+		fc := NewFakeClient()
+		body := []byte("same")
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "m", body))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "m", body))
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/b"])
+		got, err := fc.GetFileContentAtRef(ctx, "o", "r", "f", "b")
+		require.NoError(t, err)
+		assert.Equal(t, "same", string(got))
+	})
+
+	t.Run("required args", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.ForceCommitFileToBranch(ctx, "o", "r", "", "f", "m", []byte("x"))
+		require.Error(t, err)
+		err = fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "", "m", []byte("x"))
+		require.Error(t, err)
+		assert.Empty(t, fc.ForceCommittedFiles)
+	})
+
+	t.Run("skip ci already present", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "msg [skip ci]", []byte("x")))
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		assert.Equal(t, "msg [skip ci]", fc.ForceCommittedFiles[0].Message)
+	})
+
+	t.Run("empty message becomes skip ci", func(t *testing.T) {
+		fc := &FakeClient{}
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "", []byte("x")))
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		assert.Equal(t, "[skip ci]", fc.ForceCommittedFiles[0].Message)
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/b"])
+	})
+}
+
+func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	const goroutines = 12
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state", "state.json", "w", []byte(fmt.Sprintf("v%d", n)))
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, fc.ForceReachableCommits["o/r/state"])
+	content, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "state")
+	require.NoError(t, err)
+	assert.NotEmpty(t, content)
+	sha, err := fc.GetBranchRef(ctx, "o", "r", "state")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sha)
 }

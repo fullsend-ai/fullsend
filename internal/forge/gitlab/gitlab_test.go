@@ -913,6 +913,33 @@ func TestGetFileContentAtRef(t *testing.T) {
 	assert.Equal(t, content, string(data))
 }
 
+func TestGetFileContentAtRef_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/files/state.json", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "404 File Not Found"})
+	})
+
+	_, err := client.GetFileContentAtRef(context.Background(), "owner", "repo", "state.json", "fullsend-poll-state-slash")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+}
+
+func TestGetFileContentAtRef_NonNotFoundError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/files/state.json", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "forbidden"})
+	})
+
+	_, err := client.GetFileContentAtRef(context.Background(), "owner", "repo", "state.json", "main")
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "get file content")
+}
+
 func TestGetFileContent_PlainEncoding(t *testing.T) {
 	client, mux := setupTest(t)
 
@@ -1441,6 +1468,348 @@ func TestCommitFilesToBranch_Empty(t *testing.T) {
 	committed, err := client.CommitFilesToBranch(context.Background(), "o", "r", "b", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestWithSkipCI(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"save state", "save state [skip ci]"},
+		{"save state [skip ci]", "save state [skip ci]"},
+		{"", "[skip ci]"},
+		{"  padded  ", "padded [skip ci]"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, withSkipCI(tt.in), "in=%q", tt.in)
+	}
+}
+
+func TestForceCommitFileToBranch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("tree endpoint must not be called for force-re-root commits")
+	})
+
+	var commitPayload map[string]any
+	commitCalls := 0
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			assert.Equal(t, "main", r.URL.Query().Get("ref_name"))
+			assert.Equal(t, "true", r.URL.Query().Get("first_parent"))
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			assert.Equal(t, "1", r.URL.Query().Get("page"))
+			assert.Empty(t, r.URL.Query().Get("order_by"), "order_by is not a valid param on this endpoint")
+			assert.Empty(t, r.URL.Query().Get("sort"), "sort is not a valid param on this endpoint")
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "root-sha-abc"},
+			})
+		case http.MethodPost:
+			commitCalls++
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &commitPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.ForceCommitFileToBranch(ctx, "owner", "repo", "fullsend-poll-state-slash", "state.json", "save poll state", []byte(`{"n":1}`))
+	require.NoError(t, err)
+	assert.Equal(t, 1, commitCalls)
+	assert.Equal(t, "fullsend-poll-state-slash", commitPayload["branch"])
+	assert.Equal(t, true, commitPayload["force"])
+	assert.Equal(t, "root-sha-abc", commitPayload["start_sha"])
+	assert.Equal(t, "save poll state [skip ci]", commitPayload["commit_message"])
+
+	actions, ok := commitPayload["actions"].([]any)
+	require.True(t, ok)
+	require.Len(t, actions, 1)
+	action := actions[0].(map[string]any)
+	assert.Equal(t, "create", action["action"])
+	assert.Equal(t, "state.json", action["file_path"])
+	assert.Equal(t, "base64", action["encoding"])
+	decoded, err := base64.StdEncoding.DecodeString(action["content"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, `{"n":1}`, string(decoded))
+}
+
+func TestForceCommitFileToBranch_RepeatedWrites(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	var payloads []map[string]any
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "fixed-root"}})
+		case http.MethodPost:
+			var payload map[string]any
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &payload))
+			payloads = append(payloads, payload)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": fmt.Sprintf("c%d", len(payloads))})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	require.NoError(t, client.ForceCommitFileToBranch(ctx, "owner", "repo", "state-branch", "state.json", "w1", []byte("v1")))
+	require.NoError(t, client.ForceCommitFileToBranch(ctx, "owner", "repo", "state-branch", "state.json", "w2", []byte("v2")))
+	require.Len(t, payloads, 2)
+	for i, p := range payloads {
+		assert.Equal(t, true, p["force"], "write %d", i)
+		assert.Equal(t, "fixed-root", p["start_sha"], "write %d", i)
+		assert.Equal(t, "state-branch", p["branch"], "write %d", i)
+	}
+}
+
+// TestForceCommitFileToBranch_WalksToLastPage asserts the actual root
+// resolution protocol: first-parent history is paginated (not sorted via
+// order_by/sort, which this endpoint does not support) and the root is the
+// *last* entry of the *last* page - not the first entry of the first page,
+// which would just be the default branch's current HEAD.
+func TestForceCommitFileToBranch_WalksToLastPage(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	var commitPayload map[string]any
+	var pagesRequested []string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			assert.Equal(t, "true", r.URL.Query().Get("first_parent"))
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			page := r.URL.Query().Get("page")
+			pagesRequested = append(pagesRequested, page)
+			switch page {
+			case "1":
+				// A full page: the branch tip ("head-commit") is first,
+				// far from the true root. If resolution stopped after the
+				// first page (or took its first entry), it would wrongly
+				// pick a non-root commit.
+				commits := make([]map[string]any, 100)
+				commits[0] = map[string]any{"id": "head-commit"}
+				for i := 1; i < 100; i++ {
+					commits[i] = map[string]any{"id": fmt.Sprintf("mid-commit-%d", i)}
+				}
+				w.Header().Set("X-Next-Page", "2")
+				json.NewEncoder(w).Encode(commits)
+			case "2":
+				// Final, partial page: its last entry is the true root.
+				json.NewEncoder(w).Encode([]map[string]any{
+					{"id": "penultimate-commit"},
+					{"id": "true-root-commit"},
+				})
+			default:
+				t.Fatalf("unexpected page %q", page)
+			}
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &commitPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": "new-commit"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.ForceCommitFileToBranch(ctx, "owner", "repo", "state-branch", "state.json", "save poll state", []byte(`{"n":1}`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pagesRequested)
+	assert.Equal(t, "true-root-commit", commitPayload["start_sha"])
+}
+
+func TestForceCommitFileToBranch_SkipCIAlreadyPresent(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	var message string
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root"}})
+		case http.MethodPost:
+			var payload map[string]any
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &payload))
+			message = payload["commit_message"].(string)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": "c"})
+		}
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "already [skip ci]", []byte("x"))
+	require.NoError(t, err)
+	assert.Equal(t, "already [skip ci]", message)
+}
+
+func TestForceCommitFileToBranch_MissingBase(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.Contains(t, err.Error(), "resolve force-commit base")
+}
+
+func TestForceCommitFileToBranch_UnreachableBase(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"message": "404 Commit Not Found"})
+			return
+		}
+		t.Fatal("POST must not run when the base is unreachable")
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+}
+
+func TestForceCommitFileToBranch_GetRepoError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "404 Project Not Found"})
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolve force-commit base")
+}
+
+func TestForceCommitFileToBranch_CommitError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{{"id": "root"}})
+		case http.MethodPost:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "start_sha is invalid"})
+		}
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "force commit f to b")
+}
+
+func TestForceCommitFileToBranch_RequiredArgs(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	err := client.ForceCommitFileToBranch(ctx, "owner", "repo", "", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
+
+	err = client.ForceCommitFileToBranch(ctx, "owner", "repo", "b", "", "m", []byte("x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "branch and path are required")
+}
+
+func TestForceCommitFileToBranch_DecodeCommitsError(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		w.Write([]byte("not-json"))
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode commits")
+}
+
+func TestForceCommitFileToBranch_EmptyCommitID(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "", "visibility": "public",
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "", r.URL.Query().Get("ref_name"))
+		json.NewEncoder(w).Encode([]map[string]any{{"id": ""}})
+	})
+
+	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
 }
 
 func TestUpdateIssueComment_FoundInClosedIssues(t *testing.T) {

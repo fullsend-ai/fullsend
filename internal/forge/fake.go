@@ -14,18 +14,19 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:      make(map[string][]byte),
-		WorkflowRuns:      make(map[string]*WorkflowRun),
-		Secrets:           make(map[string]bool),
-		VariablesExist:    make(map[string]bool),
-		VariableValues:    make(map[string]string),
-		Errors:            make(map[string]error),
-		DirContents:       make(map[string][]DirectoryEntry),
-		FileContentsRef:   make(map[string][]byte),
-		BranchRefs:        make(map[string]string),
-		Refs:              make(map[string]string),
-		ProtectedBranches: make(map[string]bool),
-		PipelineSchedules: make(map[string][]PipelineSchedule),
+		FileContents:          make(map[string][]byte),
+		WorkflowRuns:          make(map[string]*WorkflowRun),
+		Secrets:               make(map[string]bool),
+		VariablesExist:        make(map[string]bool),
+		VariableValues:        make(map[string]string),
+		Errors:                make(map[string]error),
+		DirContents:           make(map[string][]DirectoryEntry),
+		FileContentsRef:       make(map[string][]byte),
+		BranchRefs:            make(map[string]string),
+		Refs:                  make(map[string]string),
+		ProtectedBranches:     make(map[string]bool),
+		PipelineSchedules:     make(map[string][]PipelineSchedule),
+		ForceReachableCommits: make(map[string]int),
 	}
 }
 
@@ -134,6 +135,19 @@ type CommitFilesToBranchRecord struct {
 	Files                        []TreeFile
 }
 
+// ForceCommitFileToBranchRecord records a ForceCommitFileToBranch call.
+type ForceCommitFileToBranchRecord struct {
+	Owner, Repo, Branch, Path, Message string
+	Content                            []byte
+	StartSHA                           string
+	Force                              bool
+}
+
+// ForceCommitFixedBaseSHA is the synthetic parent SHA of every FakeClient
+// force-re-root commit. The GitLab implementation uses the repository's
+// root commit; tests assert the fake always re-roots on this same base.
+const ForceCommitFixedBaseSHA = "0000000000000000000000000000000000000001"
+
 // FakeClient is a thread-safe test double for forge.Client.
 // Pre-populate its fields to control return values, and inspect
 // recorder slices after the test to verify which calls were made.
@@ -203,6 +217,11 @@ type FakeClient struct {
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+
+	// ForceReachableCommits maps "owner/repo/branch" to the number of
+	// commits reachable on that branch after force-re-root writes.
+	// Always 1 after a successful ForceCommitFileToBranch.
+	ForceReachableCommits map[string]int
 
 	// Branch refs for GetBranchRef.
 	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
@@ -300,6 +319,7 @@ type FakeClient struct {
 	DismissedReviews        []DismissedReviewRecord
 	CommittedFiles          []CommitFilesRecord
 	CommittedFilesToBranch  []CommitFilesToBranchRecord
+	ForceCommittedFiles     []ForceCommitFileToBranchRecord
 	CreatedForks            []string // "owner/repo"
 	ClosedProposals         []int    // PR numbers
 	DeletedComments         []int    // comment IDs
@@ -319,6 +339,7 @@ type FakeClient struct {
 	commentCounter  int
 	issueCounter    int
 	reactionCounter int64
+	forceCommitSeq  int
 }
 
 // err checks for an injected error for the given method name.
@@ -753,6 +774,72 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
+}
+
+func (f *FakeClient) ForceCommitFileToBranch(_ context.Context, owner, repo, branch, path, message string, content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ForceCommitFileToBranch"); e != nil {
+		return e
+	}
+	if branch == "" || path == "" {
+		return fmt.Errorf("force commit: branch and path are required")
+	}
+
+	if !strings.Contains(message, "[skip ci]") {
+		message = strings.TrimSpace(message)
+		if message == "" {
+			message = "[skip ci]"
+		} else {
+			message += " [skip ci]"
+		}
+	}
+
+	copied := make([]byte, len(content))
+	copy(copied, content)
+
+	f.ForceCommittedFiles = append(f.ForceCommittedFiles, ForceCommitFileToBranchRecord{
+		Owner:    owner,
+		Repo:     repo,
+		Branch:   branch,
+		Path:     path,
+		Message:  message,
+		Content:  copied,
+		StartSHA: ForceCommitFixedBaseSHA,
+		Force:    true,
+	})
+
+	if f.FileContentsRef == nil {
+		f.FileContentsRef = make(map[string][]byte)
+	}
+	// Force-re-root replaces the branch tree with base + this one file.
+	prefix := owner + "/" + repo + "/"
+	suffix := "@" + branch
+	for k := range f.FileContentsRef {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
+			delete(f.FileContentsRef, k)
+		}
+	}
+	f.FileContentsRef[fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, branch)] = copied
+
+	f.forceCommitSeq++
+	tipSHA := fmt.Sprintf("force-%d", f.forceCommitSeq)
+	if f.BranchRefs == nil {
+		f.BranchRefs = make(map[string]string)
+	}
+	if f.Refs == nil {
+		f.Refs = make(map[string]string)
+	}
+	f.BranchRefs[owner+"/"+repo+"/"+branch] = tipSHA
+	f.Refs[owner+"/"+repo+"/heads/"+branch] = tipSHA
+
+	if f.ForceReachableCommits == nil {
+		f.ForceReachableCommits = make(map[string]int)
+	}
+	f.ForceReachableCommits[owner+"/"+repo+"/"+branch] = 1
+
+	return nil
 }
 
 func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {

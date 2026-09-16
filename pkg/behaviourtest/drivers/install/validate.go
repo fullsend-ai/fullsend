@@ -8,9 +8,14 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
+
+// vendoredBinaryPathPerRepo is the upload path inside a per-repo target.
+// Duplicated from layers.VendoredBinaryPathPerRepo so this package does
+// not import internal/layers (which transitively pulls the nested mintcore
+// module via internal/repos).
+const vendoredBinaryPathPerRepo = ".fullsend/bin/fullsend"
 
 // validateMaxAttempts is the number of GetFileContent attempts before
 // giving up. GitHub's API can return transient 404s immediately after a
@@ -95,8 +100,8 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	if _, err := getFileWithRetry(ctx, client, org, repo, markerPath); err != nil {
 		return fmt.Errorf("post-install: missing vendored marker %s: %w", markerPath, err)
 	}
-	if _, err := getFileWithRetry(ctx, client, org, repo, layers.VendoredBinaryPathPerRepo); err != nil {
-		return fmt.Errorf("post-install: missing vendored binary at %s: %w", layers.VendoredBinaryPathPerRepo, err)
+	if _, err := getFileWithRetry(ctx, client, org, repo, vendoredBinaryPathPerRepo); err != nil {
+		return fmt.Errorf("post-install: missing vendored binary at %s: %w", vendoredBinaryPathPerRepo, err)
 	}
 	return nil
 }
