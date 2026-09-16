@@ -122,32 +122,52 @@ type steerOpts struct {
 	printer     *ui.Printer
 }
 
+// steerDecline is why steering cannot run on this run, and whether that is
+// something an operator needs to hear about.
+//
+// With steering on by default most declines are ordinary: a local run is not
+// in GitHub Actions, a GitLab run queues instead of steering, a runtime that
+// cannot take a message never could, and a run dispatched against no work item
+// has nothing to watch. Announcing those once per iteration would be noise on
+// runs that never asked to steer.
+//
+// A missing job token or run id is not ordinary. The job is a GitHub Actions
+// run against a work item on a runtime that can steer, and its environment is
+// incomplete — a token that failed to reach the step, a run id that never got
+// exported. Those are announced whatever the harness says, because with the
+// default on almost nobody sets enabled: true, so suppressing them would hide
+// a fleet-wide plumbing regression behind silence.
+type steerDecline struct {
+	reason string
+	defect bool
+}
+
 // steerEligible reports why steering cannot run even though the harness has
-// it on, or "" when it can. Callers check SteerEnabled first: a harness that
-// opted out is not "blocked", it is off.
+// it on, or a zero steerDecline when it can. Callers check SteerEnabled first:
+// a harness that opted out is not "blocked", it is off.
 //
 // Steering needs a runtime that can take a message into a running session
 // and a GitHub Actions job to watch follow-up runs in.
-func steerEligible(o steerOpts) string {
+func steerEligible(o steerOpts) steerDecline {
 	if os.Getenv("GITHUB_ACTIONS") != "true" {
-		return "not running in GitHub Actions"
+		return steerDecline{reason: "not running in GitHub Actions"}
 	}
 	if o.forgePlatform == "gitlab" {
-		return "GitLab pipelines queue rather than cancel; the watcher is GitHub-only for now"
+		return steerDecline{reason: "GitLab pipelines queue rather than cancel; the watcher is GitHub-only for now"}
 	}
 	if _, ok := o.runtime.(agentruntime.Steerer); !ok {
-		return fmt.Sprintf("runtime %q cannot take a message into a running session", o.runtime.Name())
+		return steerDecline{reason: fmt.Sprintf("runtime %q cannot take a message into a running session", o.runtime.Name())}
 	}
 	if o.statusRepo == "" || o.statusNum <= 0 {
-		return "no work item to watch"
+		return steerDecline{reason: "no work item to watch"}
 	}
 	if o.jobToken == "" {
-		return "no job token to read the Actions API with"
+		return steerDecline{reason: "no job token to read the Actions API with", defect: true}
 	}
 	if steerRunID() == 0 {
-		return "GITHUB_RUN_ID is not set"
+		return steerDecline{reason: "GITHUB_RUN_ID is not set", defect: true}
 	}
-	return ""
+	return steerDecline{}
 }
 
 // steerRunID returns this job's workflow run id, or 0 when it is unset or
@@ -281,15 +301,12 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 	if !o.harness.SteerEnabled() {
 		return nil
 	}
-	if reason := steerEligible(o); reason != "" {
-		// Steering is on by default now, so most declines are ordinary
-		// conditions rather than misconfiguration: every local run is not in
-		// GitHub Actions, every GitLab run queues instead of steering, and a
-		// runtime that cannot take a message never could. Warning once per
-		// iteration for those would be noise on runs that never asked for
-		// steering, so say it only when the harness named it.
-		if o.harness.SteerExplicitlyEnabled() {
-			o.printer.StepWarn("Steering disabled: " + reason)
+	if d := steerEligible(o); d.reason != "" {
+		// An ordinary decline is announced only to a harness that named
+		// steering itself; an environment defect is announced to everyone.
+		// See steerDecline for which is which and why.
+		if d.defect || o.harness.SteerExplicitlyEnabled() {
+			o.printer.StepWarn("Steering disabled: " + d.reason)
 		}
 		return nil
 	}

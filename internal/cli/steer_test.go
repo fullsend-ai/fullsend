@@ -39,12 +39,21 @@ func (fakeRuntime) Run(context.Context, agentruntime.RunParams, *ui.Printer, tim
 }
 func (fakeRuntime) ClearIterationArtifacts(string) error { return nil }
 
+// steerHarness builds a harness that says `enabled` explicitly. Both values
+// have to be explicit: since steering is on by default, an absent block is a
+// third state that means on, not off — see steerHarnessDefault.
 func steerHarness(enabled bool) *harness.Harness {
-	h := &harness.Harness{Agent: "agents/review.md", Role: "review"}
-	if enabled {
-		h.Steer = &harness.SteerConfig{Enabled: steerBoolPtr(true)}
+	return &harness.Harness{
+		Agent: "agents/review.md",
+		Role:  "review",
+		Steer: &harness.SteerConfig{Enabled: steerBoolPtr(enabled)},
 	}
-	return h
+}
+
+// steerHarnessDefault builds a harness that says nothing about steering, which
+// is the on-by-default case.
+func steerHarnessDefault() *harness.Harness {
+	return &harness.Harness{Agent: "agents/review.md", Role: "review"}
 }
 
 func baseOpts(t *testing.T) steerOpts {
@@ -110,8 +119,11 @@ func TestStartSteerWatcherDeclineMessage(t *testing.T) {
 			o.harness = &harness.Harness{Agent: "agents/review.md", Role: "review", Steer: tt.steer}
 			o.printer = ui.New(&out)
 
-			require.NotEmpty(t, steerEligible(o),
+			d := steerEligible(o)
+			require.NotEmpty(t, d.reason,
 				"the fixture must be ineligible, or this test proves nothing")
+			require.False(t, d.defect,
+				"these rows test the ordinary declines; the defect rows are below")
 
 			assert.Nil(t, startSteerWatcher(context.Background(), o),
 				"an ineligible run must not get a watcher whatever the harness says")
@@ -127,48 +139,84 @@ func TestStartSteerWatcherDeclineMessage(t *testing.T) {
 	}
 }
 
+// TestStartSteerWatcherAnnouncesEnvironmentDefects is the other half of the
+// gate above. A run that is a GitHub Actions job, against a work item, on a
+// runtime that can steer, and still cannot steer, has something wrong with its
+// environment rather than its intent. With steering on by default almost no
+// harness sets enabled: true, so suppressing these would hide a fleet-wide
+// plumbing regression behind silence.
+func TestStartSteerWatcherAnnouncesEnvironmentDefects(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(t *testing.T, o *steerOpts)
+		want string
+	}{
+		{"no job token", func(_ *testing.T, o *steerOpts) { o.jobToken = "" }, "no job token"},
+		{"no run id", func(t *testing.T, _ *steerOpts) { t.Setenv("GITHUB_RUN_ID", "") }, "GITHUB_RUN_ID"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			o := baseOpts(t)
+			// A harness that never named steering: it has the default only,
+			// which is exactly the case the warning must still reach.
+			o.harness = steerHarnessDefault()
+			o.runtime = steerableRuntime{}
+			o.printer = ui.New(&out)
+			tt.mut(t, &o)
+
+			d := steerEligible(o)
+			require.True(t, d.defect, "%s must be classed as an environment defect", tt.name)
+			assert.Nil(t, startSteerWatcher(context.Background(), o))
+			assert.Contains(t, out.String(), "Steering disabled: ")
+			assert.Contains(t, out.String(), tt.want)
+		})
+	}
+}
+
 func TestSteerEligible(t *testing.T) {
 	t.Run("a runtime without Steerer is not eligible", func(t *testing.T) {
-		assert.Contains(t, steerEligible(baseOpts(t)), "cannot take a message into a running session")
+		assert.Contains(t, steerEligible(baseOpts(t)).reason, "cannot take a message into a running session")
 	})
 
 	t.Run("outside GitHub Actions", func(t *testing.T) {
 		o := baseOpts(t)
 		t.Setenv("GITHUB_ACTIONS", "")
-		assert.Contains(t, steerEligible(o), "not running in GitHub Actions")
+		assert.Contains(t, steerEligible(o).reason, "not running in GitHub Actions")
 	})
 
 	t.Run("GitLab is not wired yet", func(t *testing.T) {
 		o := baseOpts(t)
 		o.forgePlatform = "gitlab"
-		assert.Contains(t, steerEligible(o), "GitLab")
+		assert.Contains(t, steerEligible(o).reason, "GitLab")
 	})
 
 	t.Run("no work item", func(t *testing.T) {
 		o := baseOpts(t)
 		o.runtime = steerableRuntime{}
 		o.statusNum = 0
-		assert.Contains(t, steerEligible(o), "no work item")
+		assert.Contains(t, steerEligible(o).reason, "no work item")
 	})
 
 	t.Run("no job token", func(t *testing.T) {
 		o := baseOpts(t)
 		o.runtime = steerableRuntime{}
 		o.jobToken = ""
-		assert.Contains(t, steerEligible(o), "no job token")
+		assert.Contains(t, steerEligible(o).reason, "no job token")
 	})
 
 	t.Run("no run id", func(t *testing.T) {
 		o := baseOpts(t)
 		o.runtime = steerableRuntime{}
 		t.Setenv("GITHUB_RUN_ID", "")
-		assert.Contains(t, steerEligible(o), "GITHUB_RUN_ID")
+		assert.Contains(t, steerEligible(o).reason, "GITHUB_RUN_ID")
 	})
 
 	t.Run("everything present", func(t *testing.T) {
 		o := baseOpts(t)
 		o.runtime = steerableRuntime{}
-		assert.Empty(t, steerEligible(o))
+		assert.Empty(t, steerEligible(o).reason)
 	})
 }
 
@@ -180,9 +228,39 @@ func (steerableRuntime) Steer(context.Context, string, agentruntime.SteerMessage
 func (steerableRuntime) Settle(context.Context, string) error                           { return nil }
 
 func TestStartSteerWatcher_DisabledHarnessStartsNothing(t *testing.T) {
+	// The runtime is steerable and every other condition is met, so the
+	// opt-out is the only thing that can stop the watcher. With the default
+	// on, a fixture that merely omits the block would prove nothing here.
 	o := baseOpts(t)
+	o.runtime = steerableRuntime{}
 	o.harness = steerHarness(false)
+	require.Empty(t, steerEligible(o).reason, "the fixture must be otherwise eligible")
 	assert.Nil(t, startSteerWatcher(context.Background(), o))
+}
+
+func TestStartSteerWatcher_DefaultHarnessStartsAWatcher(t *testing.T) {
+	// The companion to the case above, and the PR's central claim: a harness
+	// that says nothing about steering gets a real watcher. Asserting the
+	// getters alone would not show that, since every other condition could
+	// still turn the run away before a session is built.
+	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
+		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
+	o := steerableOpts(t, srv)
+	o.harness = steerHarnessDefault()
+	require.True(t, o.harness.SteerEnabled())
+	require.False(t, o.harness.SteerExplicitlyEnabled(),
+		"the default must not read as an explicit request")
+
+	sess := startSteerWatcher(context.Background(), o)
+	require.NotNil(t, sess, "a harness with no steer block must get a watcher")
+
+	done := make(chan struct{})
+	go func() { defer close(done); sess.stop() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not return")
+	}
 }
 
 func TestStartSteerWatcher_IneligibleStartsNothing(t *testing.T) {
@@ -708,29 +786,36 @@ func TestSteerAlreadyHandled_FailsOpen(t *testing.T) {
 }
 
 func TestCheckSteerAlreadyHandled_OffPaths(t *testing.T) {
-	t.Run("steering disabled", func(t *testing.T) {
-		o := baseOpts(t)
-		o.harness = steerHarness(false)
-		assert.False(t, checkSteerAlreadyHandled(context.Background(), o))
-	})
+	// Each case must short-circuit before the timeline read. Returning false
+	// is not enough on its own — a failed read returns false too, after a
+	// warning and a live API call — so every case also asserts that nothing
+	// was printed. That is what makes these cases fail if their guard goes.
+	cases := []struct {
+		name string
+		mut  func(t *testing.T, o *steerOpts)
+	}{
+		{"steering explicitly disabled", func(_ *testing.T, o *steerOpts) {
+			o.harness = steerHarness(false)
+		}},
+		{"outside GitHub Actions", func(t *testing.T, _ *steerOpts) {
+			t.Setenv("GITHUB_ACTIONS", "")
+		}},
+		{"no receipt token", func(_ *testing.T, o *steerOpts) { o.receiptToken = "" }},
+		{"gitlab", func(_ *testing.T, o *steerOpts) { o.forgePlatform = "gitlab" }},
+	}
 
-	t.Run("outside GitHub Actions", func(t *testing.T) {
-		o := baseOpts(t)
-		t.Setenv("GITHUB_ACTIONS", "")
-		assert.False(t, checkSteerAlreadyHandled(context.Background(), o))
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			o := baseOpts(t)
+			o.printer = ui.New(&out)
+			tc.mut(t, &o)
 
-	t.Run("no receipt token", func(t *testing.T) {
-		o := baseOpts(t)
-		o.receiptToken = ""
-		assert.False(t, checkSteerAlreadyHandled(context.Background(), o))
-	})
-
-	t.Run("gitlab", func(t *testing.T) {
-		o := baseOpts(t)
-		o.forgePlatform = "gitlab"
-		assert.False(t, checkSteerAlreadyHandled(context.Background(), o))
-	})
+			assert.False(t, checkSteerAlreadyHandled(context.Background(), o))
+			assert.Empty(t, out.String(),
+				"the guard must return before anything tries to read the timeline")
+		})
+	}
 }
 
 // stubItemReader satisfies steerwatch.ItemReader with no forge behind it.
@@ -871,6 +956,39 @@ func TestCheckSteerAlreadyHandled_ReadsTheMarker(t *testing.T) {
 		}}
 	}
 	assert.True(t, checkSteerAlreadyHandled(context.Background(), o))
+}
+
+// TestCheckSteerAlreadyHandled_RunsForADefaultHarness covers the harness shape
+// almost every consumer actually has: no `steer:` block at all.
+//
+// checkSteerAlreadyHandled gates on SteerEnabled(), which is default-aware, but
+// every other success-path case here builds its harness with steerHarness(true).
+// Without this one, flipping the default off would leave the skip check dead for
+// every harness that says nothing — the majority — with the whole file still
+// green, because each remaining case opts in explicitly.
+func TestCheckSteerAlreadyHandled_RunsForADefaultHarness(t *testing.T) {
+	o := baseOpts(t)
+	o.harness = steerHarnessDefault()
+	require.True(t, o.harness.SteerEnabled())
+	require.False(t, o.harness.SteerExplicitlyEnabled(),
+		"the point of this case is a harness that never named steering")
+
+	prev := steerMarkerClient
+	t.Cleanup(func() { steerMarkerClient = prev })
+	var read bool
+	steerMarkerClient = func(token string) steerMarkerReader {
+		read = true
+		if token == o.roleToken {
+			return fakeMarkerReader{login: "fullsend[bot]"}
+		}
+		return fakeMarkerReader{login: "github-actions[bot]", comments: []forge.IssueComment{
+			{Author: "github-actions[bot]", Body: "<!-- fullsend:steer consumed=33740015232 head=abc -->"},
+		}}
+	}
+
+	assert.True(t, checkSteerAlreadyHandled(context.Background(), o),
+		"a harness with no steer block must reach the marker read and skip on its own receipt")
+	assert.True(t, read, "the guard returned before the timeline was read")
 }
 
 // TestCheckSteerAlreadyHandled_ReadsWithTheJobToken pins the credential the

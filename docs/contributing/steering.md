@@ -369,8 +369,9 @@ trying to raise the cap.
 The runner sets `RunParams.Steerable` only when all of: the harness has not opted out, the runtime
 implements `Steerer`, and the job is a GitHub Actions run. Otherwise `Steerable` stays false and
 `Run` is single-turn exactly as before. The runner announces a declined watch only when the
-harness named steering itself — with the default on, most declines are ordinary conditions rather
-than misconfiguration.
+harness set `enabled: true` itself — a block that sets only a cap or a cadence stays quiet, since
+with the default on most declines are ordinary conditions rather than misconfiguration. A missing
+job token or `GITHUB_RUN_ID` is always announced.
 
 ## What changes for each stage
 
@@ -404,8 +405,8 @@ possible follow-up, not part of this decision.
 
 **GitLab is not wired.** GitLab pipelines already queue rather than cancel, and the provenance
 join is different — `GET /pipelines/:id/variables` exposes the poller-set `STAGE` and
-`RESOURCE_KEY`, already covered by the HMAC dispatch signature. The watcher is GitHub-only for now
-and says so when it declines to start.
+`RESOURCE_KEY`, already covered by the HMAC dispatch signature. The watcher is GitHub-only for now,
+and on GitLab it declines quietly unless the harness set `enabled: true` itself.
 
 **A steer needs time left.** The exec hosting a live session cannot be extended once running, so
 the watcher settles rather than steering when less than `MinRemaining` (default five minutes) of

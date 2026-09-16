@@ -227,6 +227,7 @@ More-specific entries go last so they override broader defaults.
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |
+| `steer` | Child replaces the whole block if it sets one; otherwise inherits the base's block entire, including an `enabled: false` opt-out. A child block is never merged field-by-field, so it gets the defaults for every key it omits, not the base's values |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote

@@ -234,11 +234,12 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
-// SteerConfig controls the follow-up run watcher (ADR 0113). When enabled
-// and the selected runtime implements runtime.Steerer, the runner keeps the
-// agent session open and delivers work-item updates that arrive mid-run
-// instead of letting a queued follow-up run redo the work. Disabled by
-// default: enabling it changes how long a run holds its VM.
+// SteerConfig controls the follow-up run watcher (ADR 0113). Unless the
+// harness opts out, and when the selected runtime implements runtime.Steerer,
+// the runner keeps the agent session open and delivers work-item updates that
+// arrive mid-run instead of letting a queued follow-up run redo the work.
+// Enabled by default; `steer: {enabled: false}` opts out, at the cost of the
+// queued run redoing the work the update would otherwise have gone into.
 type SteerConfig struct {
 	// Enabled turns the follow-up run watcher on. nil = true: steering is
 	// on by default, and a harness opts out with `steer: {enabled: false}`
