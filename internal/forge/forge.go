@@ -319,7 +319,9 @@ type PullRequestReview struct {
 // than a specific line. This is used for findings that reference a file
 // in the diff but a line outside any diff hunk. Forge implementations
 // translate Line==0 into the appropriate API representation (e.g.,
-// GitHub's subject_type: "file").
+// GitHub posts these via the pull-request comments API with
+// subject_type: "file", because create-review comments[] has no
+// subject_type and 422s comments that omit both line and position).
 type ReviewComment struct {
 	Path string // relative file path in the repository
 	Line int    // line number in the diff (right side); 0 for file-level comments

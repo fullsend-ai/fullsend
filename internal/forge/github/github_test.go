@@ -1090,6 +1090,88 @@ func TestCheckStatus_EmptyBody(t *testing.T) {
 	require.ErrorAs(t, csErr, &apiErr)
 	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
 	assert.Equal(t, "Unprocessable Entity", apiErr.Message)
+	assert.Empty(t, apiErr.Body)
+}
+
+func TestCheckStatus_PreservesRawBody(t *testing.T) {
+	raw := `{"message":"Validation Failed","errors":[{"resource":"PullRequestReviewComment","field":"path","code":"invalid"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, raw)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, "Validation Failed", apiErr.Message)
+	assert.JSONEq(t, raw, apiErr.Body)
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "path", apiErr.Errors[0].Field)
+}
+
+func TestParseAPIErrorDetails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want []APIErrorDetail
+	}{
+		{name: "empty", raw: "", want: nil},
+		{name: "null", raw: "null", want: nil},
+		{
+			name: "objects",
+			raw:  `[{"resource":"PullRequestReviewComment","field":"line","code":"invalid","message":"line must be part of the diff"}]`,
+			want: []APIErrorDetail{
+				{Resource: "PullRequestReviewComment", Field: "line", Code: "invalid", Message: "line must be part of the diff"},
+			},
+		},
+		{
+			name: "strings",
+			raw:  `["Position can't be blank",""]`,
+			want: []APIErrorDetail{{Message: "Position can't be blank"}},
+		},
+		{name: "object not array", raw: `{"message":"nope"}`, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var raw json.RawMessage
+			if tt.raw != "" {
+				raw = json.RawMessage(tt.raw)
+			}
+			assert.Equal(t, tt.want, parseAPIErrorDetails(raw))
+		})
+	}
+}
+
+func TestCheckStatus_StringErrors(t *testing.T) {
+	// GitHub sometimes returns errors as an array of strings rather than
+	// objects. Those used to fail to unmarshal, dropping the cause.
+	raw := `{"message":"Validation Failed","errors":["Position can't be blank"]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, raw)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+
+	csErr := checkStatus(resp, http.StatusOK)
+	require.Error(t, csErr)
+
+	var apiErr *APIError
+	require.ErrorAs(t, csErr, &apiErr)
+	assert.Equal(t, "Validation Failed", apiErr.Message)
+	assert.JSONEq(t, raw, apiErr.Body)
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "Position can't be blank", apiErr.Errors[0].Message)
 }
 
 func TestCheckStatus_MultiByteTruncation(t *testing.T) {

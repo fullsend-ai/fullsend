@@ -463,6 +463,8 @@ func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
 		assert.Equal(t, "internal/service.go", c["path"])
 		assert.Equal(t, float64(42), c["line"])
 		assert.Contains(t, c["body"], "missing-test")
+		_, hasSubject := c["subject_type"]
+		assert.False(t, hasSubject, "inline comments must not send subject_type")
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{"id": 999})
@@ -475,6 +477,200 @@ func TestCreatePullRequestReview_WithInlineComments(t *testing.T) {
 	}
 	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "REQUEST_CHANGES", "Review", "abc123", comments)
 	require.NoError(t, err)
+}
+
+func TestCreatePullRequestReview_FileLevelCommentsUseCommentsAPI(t *testing.T) {
+	// Regression for #7346: file-level comments (file in the diff, line
+	// outside any hunk) must POST /pulls/{n}/comments with subject_type
+	// "file" and no line/position. Sending them on create-review 422s
+	// because that comments[] schema has no subject_type.
+	var commentsPosts, reviewPosts int
+	var commentPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/7/comments":
+			assert.Equal(t, http.MethodPost, r.Method)
+			commentsPosts++
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": 1})
+		case "/repos/owner/repo/pulls/7/reviews":
+			reviewPosts++
+			// Create-review rejects file-level comments. If we hit this
+			// path the production bug has returned.
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Validation Failed",
+				"errors":  []string{"Position can't be blank"},
+			})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments := []forge.ReviewComment{
+		{Path: "docs/ADRs/0063-polling-based-work-discovery.md", Line: 0, Body: "_Line 486_ \u00b7 finding"},
+	}
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "COMMENT", "", "abc123", comments)
+	require.NoError(t, err)
+	assert.Equal(t, 1, commentsPosts)
+	assert.Equal(t, 0, reviewPosts, "file-only COMMENT review must not POST /reviews")
+
+	assert.Equal(t, "file", commentPayload["subject_type"])
+	assert.Equal(t, "docs/ADRs/0063-polling-based-work-discovery.md", commentPayload["path"])
+	assert.Equal(t, "abc123", commentPayload["commit_id"])
+	assert.Contains(t, commentPayload["body"], "Line 486")
+	_, hasLine := commentPayload["line"]
+	assert.False(t, hasLine, "file-level payload must omit line")
+	_, hasPosition := commentPayload["position"]
+	assert.False(t, hasPosition, "file-level payload must omit position")
+}
+
+func TestCreatePullRequestReview_MixedInlineAndFileLevel(t *testing.T) {
+	var commentsPosts, reviewPosts int
+	var commentPayload, reviewPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/7/comments":
+			commentsPosts++
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&commentPayload))
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": 1})
+		case "/repos/owner/repo/pulls/7/reviews":
+			reviewPosts++
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&reviewPayload))
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{"id": 999})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments := []forge.ReviewComment{
+		{Path: "changed.go", Line: 10, Body: "inline finding"},
+		{Path: "changed.go", Line: 0, Body: "_Line 50_ \u00b7 file-level finding"},
+	}
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "REQUEST_CHANGES", "See review.", "abc123", comments)
+	require.NoError(t, err)
+	assert.Equal(t, 1, commentsPosts)
+	assert.Equal(t, 1, reviewPosts)
+
+	assert.Equal(t, "file", commentPayload["subject_type"])
+	_, hasLine := commentPayload["line"]
+	assert.False(t, hasLine)
+
+	reviewComments, ok := reviewPayload["comments"].([]any)
+	require.True(t, ok)
+	require.Len(t, reviewComments, 1, "create-review must carry only inline comments")
+	rc := reviewComments[0].(map[string]any)
+	assert.Equal(t, float64(10), rc["line"])
+	_, hasSubject := rc["subject_type"]
+	assert.False(t, hasSubject)
+}
+
+func TestCreatePullRequestReview_FileLevelComment422(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/pulls/7/comments", r.URL.Path)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Validation Failed",
+			"errors":  []string{"Position can't be blank"},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "COMMENT", "", "abc123", []forge.ReviewComment{
+		{Path: "docs/problems/security-threat-model.md", Line: 0, Body: "_Line 390_ \u00b7 finding"},
+	})
+	require.Error(t, err)
+
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Body, "Position can't be blank")
+	require.Len(t, apiErr.Errors, 1)
+	assert.Equal(t, "Position can't be blank", apiErr.Errors[0].Message)
+}
+
+func TestCreatePullRequestReview_FileLevelResolvesEmptyCommitSHA(t *testing.T) {
+	var gotCommit any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls/7":
+			json.NewEncoder(w).Encode(map[string]any{
+				"head": map[string]any{"sha": "headsha123"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/pulls/7/comments":
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			gotCommit = payload["commit_id"]
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"id": 1})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "COMMENT", "", "", []forge.ReviewComment{
+		{Path: "changed.go", Line: 0, Body: "file-level"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "headsha123", gotCommit)
+}
+
+func TestCreatePullRequestReview_FileLevelHeadSHALookupFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/pulls/7", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "COMMENT", "", "", []forge.ReviewComment{
+		{Path: "changed.go", Line: 0, Body: "file-level"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving HEAD")
+}
+
+func TestCreatePullRequestReview_InvalidEvent(t *testing.T) {
+	client := New("test-token")
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "INVALID", "", "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid event")
+}
+
+func TestCreatePullRequestReview_MultipleFileLevelComments(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/pulls/7/comments", r.URL.Path)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		paths = append(paths, payload["path"].(string))
+		assert.Equal(t, "file", payload["subject_type"])
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": len(paths)})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreatePullRequestReview(context.Background(), "owner", "repo", 7, "COMMENT", "", "deadbeef", []forge.ReviewComment{
+		{Path: "a.md", Line: 0, Body: "first"},
+		{Path: "b.md", Line: 0, Body: "second"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a.md", "b.md"}, paths)
 }
 
 func TestListPullRequestFileDiffs(t *testing.T) {

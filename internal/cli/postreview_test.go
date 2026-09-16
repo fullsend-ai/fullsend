@@ -1847,6 +1847,55 @@ func TestSubmitFormalReview_CommentVerdictOnlyFileLevelFindings(t *testing.T) {
 	}
 }
 
+func TestSubmitFormalReview_FileLevel422LogsRawAPIErrorBody(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "docs/ADRs/0063-polling-based-work-discovery.md", Patch: "@@ -1,5 +1,8 @@ # ADR"},
+		},
+	}
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Body:       `{"message":"Validation Failed","errors":["Position can't be blank"]}`,
+			Errors: []gh.APIErrorDetail{
+				{Message: "Position can't be blank"},
+			},
+		},
+		nil,
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "medium", Category: "docs", File: "docs/ADRs/0063-polling-based-work-discovery.md", Line: 486, Description: "Outside hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "File-level comments failed with 422")
+	assert.Contains(t, output, "API error body:")
+	assert.Contains(t, output, "Position can't be blank")
+	assert.Contains(t, output, "docs/ADRs/0063-polling-based-work-discovery.md (file-level)")
+}
+
+func TestLogAPIErrorDetails_FallsBackToMessageWhenBodyEmpty(t *testing.T) {
+	var out bytes.Buffer
+	printer := ui.New(&out)
+	logAPIErrorDetails(&gh.APIError{
+		StatusCode: http.StatusUnprocessableEntity,
+		Message:    "Validation Failed",
+	}, printer)
+	assert.Contains(t, out.String(), "API error message: Validation Failed")
+	assert.NotContains(t, out.String(), "API error body:")
+}
+
 func TestBuildFallbackReviewBody(t *testing.T) {
 	t.Run("with original body and comments", func(t *testing.T) {
 		comments := []forge.ReviewComment{

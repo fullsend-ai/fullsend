@@ -542,27 +542,34 @@ func is422Error(err error) bool {
 }
 
 // logAPIErrorDetails logs GitHub API error details when a non-inline-comment
-// 422 (or other error) occurs. This surfaces the validation error fields that
-// would otherwise be lost in the wrapped error message.
+// 422 (or other error) occurs. This surfaces the validation error fields and
+// the raw response body that would otherwise be lost in the wrapped error.
 func logAPIErrorDetails(err error, printer *ui.Printer) {
 	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) {
-		for _, d := range apiErr.Errors {
-			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
-		}
+	if !errors.As(err, &apiErr) {
+		return
+	}
+	if compact := compactForLog(apiErr.Body); compact != "" {
+		printer.StepInfo("  API error body: " + compact)
+	} else if apiErr.Message != "" {
+		printer.StepInfo("  API error message: " + apiErr.Message)
+	}
+	for _, d := range apiErr.Errors {
+		printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
 	}
 }
 
+// compactForLog collapses whitespace so a JSON error body logs as one line.
+func compactForLog(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // logRejectedComments logs structured details about inline comments that
-// triggered a 422 response, including GitHub's error details when available.
-// This captures which specific comment caused the failure to aid debugging.
+// triggered a 422 response, including GitHub's error details and raw body
+// when available. This captures which specific comment caused the failure
+// and the exact API rejection so a follow-up fix is not guessing.
 func logRejectedComments(comments []forge.ReviewComment, err error, printer *ui.Printer) {
-	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) {
-		for _, d := range apiErr.Errors {
-			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
-		}
-	}
+	logAPIErrorDetails(err, printer)
 	for _, c := range comments {
 		if c.Line > 0 {
 			printer.StepInfo(fmt.Sprintf("  Rejected comment: %s:%d", c.Path, c.Line))
