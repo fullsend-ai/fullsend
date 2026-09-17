@@ -1243,6 +1243,56 @@ test("skipped persona logs reject", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// subagent_type is caller-controlled (an orchestrator dispatching on an
+// agent's behalf) and reaches logPersona's name= field via the "unknown
+// persona" reject path without ever passing a name-shape check. A value
+// containing "::"-delimited GHA workflow-command syntax must not reach the
+// workflow log unbroken (#7387 follow-up).
+test("unknown persona reject escapes workflow-command syntax in name", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "::error::pwned" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.length > 0, logs.join("\n"));
+  for (const l of markers) assert.ok(!l.includes("::error::"), `marker line must not contain an unbroken :: sequence: ${l}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown persona reject decodes URL-encoded newline in name", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "bad%0Aname" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.some((l) => /name="bad name"/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The skipped-persona reason string is config-controlled (bootstrap logs
+// the reason a sub-agents/*.md file failed to register) and reaches
+// logPersona's reason= field through the reject path's error message.
+test("skipped persona reject escapes workflow-command syntax in reason", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.skippedPersonas = { locked: "::error::pwned" };
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run({ prompt: "ok", subagent_type: "locked" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.length > 0, logs.join("\n"));
+  for (const l of markers) assert.ok(!l.includes("::error::"), `marker line must not contain an unbroken :: sequence: ${l}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("anonymous child does not emit persona lifecycle lines", async () => {
   const { dir, manifest } = personaFixture();
   const logs = [];

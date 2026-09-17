@@ -50,6 +50,33 @@ export const RESULT_MAX_BYTES = 64 * 1024;
 const TRUNCATED_MARKER = "\n[truncated]";
 const STDERR_TAIL_BYTES = 4 * 1024;
 const LOG_PREFIX = "[fullsend-agent]";
+// ANSI_OSC_RE matches ANSI CSI sequences, OSC sequences, and charset
+// designators, mirroring the Go runtime's ansiEscRe (internal/runtime/sanitize.go).
+const ANSI_OSC_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g;
+
+// sanitizePersonaLogField mirrors the Go runtime's sanitizeOutput
+// substitution rules (internal/runtime/sanitize.go) for agent-controlled
+// values interpolated into fullsend:persona:<action> lines: strip
+// ANSI/OSC escape sequences, break "::" pairs so a workflow log cannot
+// parse a GHA workflow command out of the text, replace %0A/%0a/%0D/%0d
+// encoded-newline sequences, and replace remaining control characters
+// with a space. subagent_type, reject/skip reasons, model, and stopReason
+// all originate from agent- or persona-file-controlled text, none of
+// which is validated against ValidSubagentKey by the time it reaches here.
+function sanitizePersonaLogField(value) {
+  let s = value.replace(ANSI_OSC_RE, "");
+  // Fixed point, same as the Go implementation: a single non-overlapping
+  // pass can reconstitute "::" at the seam of two replacements.
+  while (s.includes("::")) s = s.split("::").join(": :");
+  for (const enc of ["%0A", "%0a", "%0D", "%0d"]) s = s.split(enc).join(" ");
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    out += (cp >= 0x20 && cp < 0x7f) || cp > 0x9f ? ch : " ";
+  }
+  return out.trim();
+}
+
 // logPersona emits a grep-stable lifecycle line so a workflow log can tell
 // invoke / complete / error / reject / skip apart for a named persona
 // (fullsend#7387). Values that contain whitespace are JSON-quoted.
@@ -57,7 +84,7 @@ function logPersona(log, action, fields) {
   const bits = [`${LOG_PREFIX} fullsend:persona:${action}`];
   for (const [key, val] of Object.entries(fields)) {
     if (val === undefined || val === null || val === "") continue;
-    const safe = String(val).replace(/[\r\n\t]+/g, " ").trim();
+    const safe = sanitizePersonaLogField(String(val));
     bits.push(`${key}=${/\s/.test(safe) ? JSON.stringify(safe) : safe}`);
   }
   log(bits.join(" "));

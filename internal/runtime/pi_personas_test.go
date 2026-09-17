@@ -359,6 +359,69 @@ func TestResolvePersonaModels_DiscoverySkipEscapesName(t *testing.T) {
 	assert.NotContains(t, stderr, "fullsend:persona:skip name=bad\nname")
 }
 
+// A skipped persona's file-derived name can carry "::"-delimited GHA
+// workflow-command syntax (e.g. "::error::") or a %0A-encoded newline —
+// neither is blocked by ValidSubagentKey, which is often exactly why the
+// file was skipped. formatPersonaLogName must route the name through the
+// same substitution rules as sanitizeOutput so the marker line can never
+// carry an unbroken "::" sequence or a decoded newline into the workflow
+// log (#7387 follow-up).
+func TestResolvePersonaModels_DiscoverySkipEscapesWorkflowCommandInName(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	skipped := []piSkippedPersona{{Name: "::error::pwned", Path: "/tmp/bad.md", Reason: "frontmatter name: is required"}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+		require.NoError(t, err)
+	})
+	found := false
+	for _, line := range strings.Split(stderr, "\n") {
+		if !strings.Contains(line, "fullsend:persona:skip") {
+			continue
+		}
+		found = true
+		assert.NotContains(t, line, "::", "marker line must not contain an unbroken :: sequence: %q", line)
+	}
+	assert.True(t, found, "expected a fullsend:persona:skip line, got:\n%s", stderr)
+}
+
+func TestResolvePersonaModels_DiscoverySkipDecodesURLEncodedNewlineInName(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	skipped := []piSkippedPersona{{Name: "bad%0Aname", Path: "/tmp/bad.md", Reason: "frontmatter name: is required"}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, stderr, `fullsend:persona:skip name="bad name"`)
+}
+
+// sk.Reason can echo attacker-controlled frontmatter content (e.g. a parse
+// error quoting the declared name), and was previously interpolated
+// through %q alone, which escapes quotes/newlines but not "::". Routing it
+// through sanitizeOutput first closes that gap too.
+func TestResolvePersonaModels_DiscoverySkipEscapesWorkflowCommandInReason(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+
+	skipped := []piSkippedPersona{{Name: "bad", Path: "/tmp/bad.md", Reason: "frontmatter name: ::error::pwned"}}
+	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
+	stderr := captureStderr(t, func() {
+		_, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+		require.NoError(t, err)
+	})
+	found := false
+	for _, line := range strings.Split(stderr, "\n") {
+		if !strings.Contains(line, "fullsend:persona:skip") {
+			continue
+		}
+		found = true
+		assert.NotContains(t, line, "::", "marker line must not contain an unbroken :: sequence: %q", line)
+	}
+	assert.True(t, found, "expected a fullsend:persona:skip line, got:\n%s", stderr)
+}
+
 // personaSkipNameRe is the shared grep pattern for the name= field of a
 // fullsend:persona:skip marker line: either a bare token or a double-quoted
 // string. The JS runtime's test suite (fullsend-agent.test.mjs, "logPersona

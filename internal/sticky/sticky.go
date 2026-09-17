@@ -88,16 +88,24 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	return created.HTMLURL, nil
 }
 
-// FindMarkedComment returns the first comment whose body contains the
+// FindMarkedComment returns the first comment whose body starts with the
 // given marker string, or nil if none is found. When botUser is non-empty,
 // only comments authored by that user are considered. This prevents
 // untrusted users from spoofing the marker in their own comments.
+//
+// The match is a body prefix, not an unanchored substring: Post always
+// writes marker+"\n"+body (and BuildUpdatedBody preserves that prefix
+// across updates), so a legitimate sticky comment's body always starts
+// with its marker. Matching by Contains instead would let this function
+// select (and Post then overwrite) an unrelated bot-authored comment that
+// merely quotes another marker string somewhere in its body — e.g. a
+// review finding that cites the literal diagnostic marker text.
 func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *forge.IssueComment {
 	for i := range comments {
 		if botUser != "" && comments[i].Author != botUser {
 			continue
 		}
-		if strings.Contains(comments[i].Body, marker) {
+		if strings.HasPrefix(comments[i].Body, marker) {
 			return &comments[i]
 		}
 	}

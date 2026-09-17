@@ -100,6 +100,61 @@ func TestParseReviewResult_MalformedRiskAssessmentDoesNotDiscardResult(t *testin
 	assert.Nil(t, result.RiskAssessment)
 }
 
+// TestParseReviewResult_EmptyRiskAssessmentObjectTreatedAsAbsent guards
+// against a successfully-decoded {} (or any object missing the ADR 0089
+// required score/level fields) being treated as a present risk assessment.
+// json.Unmarshal decodes {} into a zero-value RiskAssessment{} rather than
+// leaving the pointer nil, so parseReviewResult must reject it explicitly
+// the same way it rejects null and wrong-typed values.
+func TestParseReviewResult_EmptyRiskAssessmentObjectTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentMissingScoreAndLevelTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"rationale":"no score or level"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentOutOfRangeScoreTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":0,"level":"low"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentUnknownLevelTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":3,"level":"unknown-level"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+// TestPostMissingRiskAssessment_PostsDiagnosticForEmptyRiskAssessmentObject
+// exercises the postMissingRiskAssessment path end-to-end for the {} case:
+// with the pre-fix behavior, RiskAssessment would be a non-nil zero-value
+// struct and this would silently skip the diagnostic instead of posting it.
+func TestPostMissingRiskAssessment_PostsDiagnosticForEmptyRiskAssessmentObject(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	parsed, err := parseReviewResult(`{"body":"ok","action":"approve","risk_assessment":{}}`)
+	require.NoError(t, err)
+	require.Nil(t, parsed.RiskAssessment)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, parsed, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
 func TestSanitizeRiskLevel(t *testing.T) {
 	tests := []struct {
 		level string
@@ -2016,14 +2071,40 @@ func TestPostMissingRiskAssessment_SupersedesStaleDiagnosticWhenPresent(t *testi
 	assert.NotContains(t, comments[0].Body, "Risk assessment unavailable this run")
 }
 
+// TestPostMissingRiskAssessment_DoesNotOverwriteCommentQuotingMarker guards
+// against sticky.FindMarkedComment (Contains-based, pre-fix) selecting a
+// bot-authored review comment whose body happens to quote the diagnostic
+// marker string mid-body — e.g. a review finding that cites the literal
+// "<!-- fullsend:risk-assessment-missing -->" text, which both ADR 0089 and
+// this PR now document. Such a comment must be left untouched and the
+// diagnostic must be posted as a separate new comment.
+func TestPostMissingRiskAssessment_DoesNotOverwriteCommentQuotingMarker(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	reviewBody := reviewMarker + "\n## Review\n\nA finding cites " + missingRiskAssessmentMarker + " as an example of marker collision.\n"
+	_, err := fc.CreateIssueComment(context.Background(), "o", "r", 1, reviewBody)
+	require.NoError(t, err)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 2, "the diagnostic must be created as a new comment, not overwrite the review comment")
+	assert.Equal(t, reviewBody, comments[0].Body, "the review comment must be left untouched")
+	assert.Contains(t, comments[1].Body, missingRiskAssessmentMarker)
+	assert.Contains(t, comments[1].Body, "Risk assessment unavailable this run")
+}
+
 // TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker guards
 // against reintroducing the marker collision found in review: post-review.sh
 // (fullsend-ai/agents) locates the ADR 0089 score-card comment via
-// contains("<!-- fullsend:risk-assessment -->"). sticky.FindMarkedComment
-// also matches via strings.Contains, so the missing-assessment diagnostic
-// marker must be neither equal to, nor a superstring/substring of, that
-// score-card marker — otherwise this CLI could select and overwrite the
-// score card, or the score-card lookup could pick up this diagnostic.
+// contains("<!-- fullsend:risk-assessment -->"). The missing-assessment
+// diagnostic marker must be neither equal to, nor a superstring/substring
+// of, that score-card marker — otherwise the score-card lookup (which still
+// matches by Contains on the agents-repo side) could pick up this
+// diagnostic, or vice versa.
 func TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker(t *testing.T) {
 	const scoreCardMarker = "<!-- fullsend:risk-assessment -->"
 	assert.NotContains(t, missingRiskAssessmentMarker, scoreCardMarker)

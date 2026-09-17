@@ -29,10 +29,11 @@ const reviewMarker = "<!-- fullsend:review-agent -->"
 // risk_assessment was expected but absent. This is deliberately distinct
 // from "<!-- fullsend:risk-assessment -->", the marker post-review.sh (in
 // fullsend-ai/agents) uses to find and update the ADR 0089 score-card
-// comment. sticky.FindMarkedComment matches via strings.Contains, not a
-// prefix check, so reusing that marker (or a value containing it) here
-// would let this CLI select and overwrite the score card instead of its
-// own diagnostic. See ADR 0089's "Silent-miss observability" section.
+// comment. sticky.FindMarkedComment matches by body prefix, so reusing
+// that marker (or a value containing it) here would still risk this CLI
+// selecting and overwriting the score card instead of its own diagnostic
+// if the two comments ever collapsed into one body. See ADR 0089's
+// "Silent-miss observability" section.
 const missingRiskAssessmentMarker = "<!-- fullsend:risk-assessment-missing -->"
 
 // missingRiskAssessmentBody is posted when risk assessment was expected
@@ -336,6 +337,15 @@ func sanitizeRiskLevel(level string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// hasUsableRiskAssessment reports whether ra carries the ADR 0089 required
+// fields (score in 1-5, level in the score-to-level enum) rather than being
+// a zero-value struct produced by decoding {} or an object missing those
+// keys. parseReviewResult uses this to decide whether a successfully-parsed
+// risk_assessment value counts as present.
+func hasUsableRiskAssessment(ra RiskAssessment) bool {
+	return ra.Score >= 1 && ra.Score <= 5 && sanitizeRiskLevel(ra.Level) != "unknown"
 }
 
 // postMissingRiskAssessment posts a sticky diagnostic when the feature
@@ -981,6 +991,14 @@ func parseReviewResult(input string) (ReviewResult, error) {
 		var ra RiskAssessment
 		if err := json.Unmarshal(raw.RiskAssessment, &ra); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is malformed, ignoring: %v\n", err)
+		} else if !hasUsableRiskAssessment(ra) {
+			// A successfully-decoded object that omits (or garbles) the
+			// ADR 0089 required fields — e.g. {} — decodes into a
+			// zero-value struct rather than leaving this pointer nil.
+			// Treat it the same as an absent risk_assessment so
+			// postMissingRiskAssessment posts the "unavailable" diagnostic
+			// instead of treating a zero-value struct as a present one.
+			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is missing score/level (score=%d level=%q), treating as absent\n", ra.Score, ra.Level)
 		} else {
 			result.RiskAssessment = &ra
 		}
