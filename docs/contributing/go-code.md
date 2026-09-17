@@ -359,6 +359,37 @@ This matches the pattern in `internal/cli/tracker_client.go` and `internal/cli/f
 
 When multiple code paths produce errors for the same condition across different forges or providers, ensure they mention the same remediation options. For example, if one "no token found" error suggests both the environment variable and the `--token` flag, other forge-specific token errors should do the same — so users see consistent guidance regardless of which code path triggers.
 
+### Classify errors before a degraded fallback
+
+When code catches an error and takes a degraded-but-successful fallback path (for example, posting a plain note instead of a positioned discussion, or skipping an optional enrichment step), it must first distinguish the error(s) that are the documented, expected trigger for that fallback from unexpected ones. Log or surface the unexpected case rather than silently discarding it.
+
+Treating every error as the expected trigger masks 5xx, rate-limit, and network failures as if they were a normal downgrade, leaving no diagnostic trail. Discarding the error with no `else` branch is the same anti-pattern: the fallback still runs, and unexpected failures still vanish.
+
+```go
+// WRONG — any error, including 5xx/network failures, silently
+// degrades to the fallback path with no diagnostic trail.
+if err := postDiffDiscussion(ctx, rc); err != nil {
+    return postInlineNote(ctx, rc) // expected 4xx and unexpected outages
+}
+```
+
+Classify first. Expected fallback triggers (such as a 4xx from GitLab rejecting a diff position) may stay silent by design. Unexpected or transient failures must be logged or returned before the same degraded path runs. [`forge.IsTransient`](../../internal/forge/forge.go) is the canonical classifier for forge API calls — 5xx, rate limit, and network timeout versus caller-intent context errors and ordinary 4xx. That helper is the same one the `Timeout() bool` / `context.DeadlineExceeded` pitfall later in this file uses to keep classification honest.
+
+```go
+// CORRECT — expected fallback trigger stays silent; unexpected
+// transient failures are logged before taking the degraded path.
+if err := postDiffDiscussion(ctx, rc); err != nil {
+    if forge.IsTransient(err) {
+        log.Printf("post diff discussion failed, falling back to note: %v", err)
+    }
+    return postInlineNote(ctx, rc)
+}
+```
+
+Worked example: [`postInlineComments`](../../internal/forge/gitlab/mr.go) in the GitLab forge client (PR #7342). Both `postDiffDiscussion` (fallback-on-any-error) and `getMergeRequestDiffRefs` (error discarded with no `else` branch) swallowed unexpected failures until they classified with `forge.IsTransient` and logged the transient case.
+
+**When reviewing PRs:** Flag any error-handling branch that falls back to a degraded path without either (a) checking the error against the documented/expected fallback condition, or (b) logging/surfacing unexpected errors, as a medium-severity finding.
+
 ## Go pitfalls
 
 ### `Timeout() bool` interface and `context.DeadlineExceeded`
