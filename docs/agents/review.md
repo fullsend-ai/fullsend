@@ -17,25 +17,7 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** posts the review on the PR. Findings that include a file path and a line in the change diff are also posted as inline comments on that line (GitHub review comments; GitLab merge-request discussions). Findings that cannot be positioned — file-level notes, lines outside the diff, or a GitLab diff version whose `head_sha` no longer matches the reviewed commit — stay in the sticky review comment, and on GitLab as general MR notes.
 
-On GitHub, the built-in review workflow also publishes
-`fullsend/review-completed` on the exact PR head commit. It is pending while the
-review runs and succeeds only after a non-skipped review completes. A failed
-run publishes a non-successful status. A cancelled run intentionally leaves the
-status pending so its cleanup cannot overwrite a replacement run on the same
-commit. If status publication fails, the required check remains absent or
-pending and continues to block merging without suppressing the review itself.
-Repositories that do not use GitHub's merge queue can require this status in
-branch protection or a ruleset to prevent an unreviewed head commit from
-merging. See
-[Operations](../guides/getting-started/operations.md#requiring-review-completion-on-github).
-
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
-
-When cancellation cleanup runs and status comments are enabled, a built-in
-review run with status publishing active explicitly warns maintainers not to
-merge until `fullsend/review-completed` succeeds on the current PR head. Custom
-review-role harnesses without status publishing receive a generic warning that
-the review did not complete. Run `/fs-review` on the PR to retry it.
 
 ## How it helps
 
@@ -55,6 +37,15 @@ write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+If a GitHub review run is cancelled, its status comment explicitly warns that
+the current HEAD was not reviewed and directs maintainers to retry with
+`/fs-review` before merging.
+
+GitHub review submissions whose state is `commented` and whose body is empty
+are ignored. These are containers for inline replies and carry no
+dispatch-relevant review message; non-empty comments and other review states
+continue through normal routing.
+
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
 (up to one poll interval of delay). Native `merge_request_event` dispatch was removed; all GitLab events route
 through the poller. Push-to-open-MR (GitHub `synchronize`) is not auto-detected;

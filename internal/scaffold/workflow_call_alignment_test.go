@@ -45,7 +45,6 @@ type callerJob struct {
 	Uses        string            `yaml:"uses"`
 	With        map[string]string `yaml:"with"`
 	Secrets     map[string]string `yaml:"secrets"`
-	Permissions map[string]string `yaml:"permissions"`
 	Concurrency *jobConcurrency   `yaml:"concurrency"`
 }
 
@@ -146,29 +145,18 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 	},
 }
 
-// stepDeclRe matches a workflow YAML step declaration line.
+// stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
-
-// actionStepDeclRe matches a composite-action YAML step declaration line.
-var actionStepDeclRe = regexp.MustCompile(`(?m)^    - name: (.+)$`)
 
 // extractStepSection returns the YAML block for the step named marker in
 // content. It fails the test if the marker doesn't match exactly one step
 // declaration.
 func extractStepSection(t *testing.T, content, marker string) string {
-	return extractNamedYAMLBlock(t, content, marker, stepDeclRe)
-}
-
-func extractActionStepSection(t *testing.T, content, marker string) string {
-	return extractNamedYAMLBlock(t, content, marker, actionStepDeclRe)
-}
-
-func extractNamedYAMLBlock(t *testing.T, content, marker string, declRe *regexp.Regexp) string {
 	t.Helper()
 
 	var count int
 	var matchStart int
-	for _, loc := range declRe.FindAllStringSubmatchIndex(content, -1) {
+	for _, loc := range stepDeclRe.FindAllStringSubmatchIndex(content, -1) {
 		name := content[loc[2]:loc[3]]
 		if name == marker {
 			count++
@@ -178,8 +166,8 @@ func extractNamedYAMLBlock(t *testing.T, content, marker string, declRe *regexp.
 	require.Equal(t, 1, count, "expected exactly one step named %q, found %d", marker, count)
 
 	section := content[matchStart:]
-	if rest := content[matchStart+1:]; declRe.FindStringIndex(rest) != nil {
-		next := declRe.FindStringIndex(rest)
+	if rest := content[matchStart+1:]; stepDeclRe.FindStringIndex(rest) != nil {
+		next := stepDeclRe.FindStringIndex(rest)
 		section = content[matchStart : matchStart+1+next[0]]
 	}
 	return section
@@ -954,9 +942,6 @@ func TestPerRepoShimReviewEventFilter(t *testing.T) {
 			assert.Contains(t, job.If, "github.event.review.body != ''")
 			assert.NotContains(t, job.If, "github.event.review.user.login",
 				"shim must preserve review events used by custom harness triggers")
-			assert.Equal(t, "write", job.Permissions["statuses"])
-			assert.Equal(t, "true", job.With["review_status_enabled"],
-				"managed shims must opt in only after granting statuses: write")
 		})
 	}
 }
@@ -1064,164 +1049,6 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
-func TestActionReviewCompletionStatusLifecycle(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
-	require.NoError(t, err)
-	s := string(content)
-
-	assert.NotContains(t, s, "  role:\n    description: Resolved harness role",
-		"the shared status must not be selected by a custom harness role")
-	assert.Contains(t, s, "review-status-enabled:",
-		"the shared status lifecycle must require an explicit action opt-in")
-	pending := extractActionStepSection(t, s, "Set review completion status pending")
-	assert.Contains(t, pending, "if: inputs.agent == 'review'")
-	assert.Contains(t, pending, "inputs.review-status-enabled == 'true'")
-	assert.NotContains(t, pending, "RESOLVED_ROLE")
-	assert.Contains(t, pending, `--sha "${PR_HEAD_SHA}"`)
-	assert.Contains(t, pending, "--state pending")
-	assert.Contains(t, pending, "GITHUB_TOKEN: ${{ inputs.github_token }}")
-
-	finalize := extractActionStepSection(t, s, "Finalize review completion status")
-	assert.Contains(t, finalize, "if: always()")
-	assert.Contains(t, finalize, "inputs.agent == 'review'")
-	assert.NotContains(t, finalize, "RESOLVED_ROLE")
-	assert.Contains(t, finalize, `fullsend review-status`)
-	assert.Contains(t, finalize, `--sha "${PR_HEAD_SHA}"`)
-	assert.Contains(t, finalize, `--job-status "${JOB_STATUS}"`)
-	assert.Contains(t, finalize, `--was-skipped`)
-	assert.Contains(t, finalize, "GITHUB_TOKEN: ${{ inputs.github_token }}")
-
-	reconcile := extractActionStepSection(t, s, "Finalize orphaned status comment")
-	assert.Contains(t, reconcile, "REVIEW_STATUS_ENABLED: ${{ inputs.review-status-enabled }}")
-	assert.Contains(t, reconcile, `[[ "${AGENT}" == "review" ]]`)
-	assert.Contains(t, reconcile, `[[ "${REVIEW_STATUS_ENABLED}" == "true" ]]`)
-	assert.Contains(t, reconcile, `[[ -n "${PR_HEAD_SHA_INPUT}" ]]`)
-	assert.Contains(t, reconcile, `RECONCILE_FLAGS+=(--review-status-enabled)`)
-
-	pendingIndex := strings.Index(s, "- name: Set review completion status pending")
-	installIndex := strings.Index(s, "- name: Install Podman")
-	finalizeIndex := strings.Index(s, "- name: Finalize review completion status")
-	commentIndex := strings.Index(s, "- name: Finalize orphaned status comment")
-	require.NotEqual(t, -1, pendingIndex)
-	require.NotEqual(t, -1, installIndex)
-	require.NotEqual(t, -1, finalizeIndex)
-	require.NotEqual(t, -1, commentIndex)
-	assert.Less(t, pendingIndex, installIndex, "pending status must precede sandbox setup")
-	assert.Less(t, finalizeIndex, commentIndex,
-		"blocking status must resolve before best-effort comment reconciliation")
-
-	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
-	var dispatch callerWorkflow
-	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
-	assert.Equal(t, "write", dispatch.Jobs["review"].Permissions["statuses"])
-	assert.NotContains(t, dispatch.Jobs["harness-run"].Permissions, "statuses",
-		"custom harness agents must not share the built-in review status")
-}
-
-func TestActionReviewCompletionStatusRuntime(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
-	require.NoError(t, err)
-
-	var action struct {
-		Runs struct {
-			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"runs"`
-	}
-	require.NoError(t, yaml.Unmarshal(content, &action))
-
-	stepScript := func(t *testing.T, name string) string {
-		t.Helper()
-		for _, step := range action.Runs.Steps {
-			if step.Name == name {
-				require.NotEmpty(t, step.Run)
-				return step.Run
-			}
-		}
-		t.Fatalf("action step %q not found", name)
-		return ""
-	}
-
-	runWithStub := func(t *testing.T, script, jobStatus string, stubExit int) ([]byte, string, error) {
-		t.Helper()
-		dir := t.TempDir()
-		logPath := filepath.Join(dir, "fullsend.log")
-		stub := fmt.Sprintf("#!/usr/bin/env bash\nprintf '%%s\\n' \"$*\" >> \"$FULLSEND_STUB_LOG\"\nexit %d\n", stubExit)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "fullsend"), []byte(stub), 0o755))
-
-		cmd := exec.Command("bash", "-c", script)
-		cmd.Env = append(os.Environ(),
-			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-			"FULLSEND_STUB_LOG="+logPath,
-			"STATUS_REPO=acme/widget",
-			"RUN_URL=https://github.com/acme/widget/actions/runs/42",
-			"PR_HEAD_SHA=0123456789abcdef0123456789abcdef01234567",
-			"JOB_STATUS="+jobStatus,
-			"WAS_SKIPPED=false",
-			"GITHUB_TOKEN=stub-token",
-		)
-		output, runErr := cmd.CombinedOutput()
-		log, readErr := os.ReadFile(logPath)
-		if readErr != nil && !os.IsNotExist(readErr) {
-			require.NoError(t, readErr)
-		}
-		return output, string(log), runErr
-	}
-
-	t.Run("pending publication failure does not suppress review", func(t *testing.T) {
-		output, log, err := runWithStub(t,
-			stepScript(t, "Set review completion status pending"), "", 1)
-		require.NoError(t, err, "%s", output)
-		assert.Contains(t, log, "review-status")
-		assert.Contains(t, string(output), "warning")
-	})
-
-	t.Run("cancelled run leaves pending status for replacement", func(t *testing.T) {
-		output, log, err := runWithStub(t,
-			stepScript(t, "Finalize review completion status"), "cancelled", 0)
-		require.NoError(t, err, "%s", output)
-		assert.Empty(t, log, "cancelled cleanup must not overwrite a replacement run's status")
-
-		output, log, err = runWithStub(t,
-			stepScript(t, "Finalize review completion status"), "success", 0)
-		require.NoError(t, err, "%s", output)
-		assert.Contains(t, log, "--job-status success",
-			"the replacement run must still resolve the shared status")
-	})
-
-	t.Run("non-cancelled terminal publication remains blocking", func(t *testing.T) {
-		output, log, err := runWithStub(t,
-			stepScript(t, "Finalize review completion status"), "failure", 1)
-		require.Error(t, err, "%s", output)
-		assert.Contains(t, log, "review-status")
-		assert.Contains(t, log, "--job-status failure")
-	})
-}
-
-func TestReusableDispatchReviewStatusOptIn(t *testing.T) {
-	contentBytes := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
-	content := string(contentBytes)
-	assert.Contains(t, content, "review_status_enabled:",
-		"reusable dispatch must offer an explicit status-publication opt-in")
-	assert.Contains(t, content, "default: false",
-		"callers must opt in before the built-in review publishes a status")
-
-	var dispatch callerWorkflow
-	require.NoError(t, yaml.Unmarshal(contentBytes, &dispatch))
-	assert.Equal(t, "write", dispatch.Jobs["review"].Permissions["statuses"],
-		"all callers must grant the review job's static statuses permission even when status publication is disabled")
-
-	review := extractStepSection(t, content, "Run review agent")
-	assert.Contains(t, review, "review-status-enabled: ${{ inputs.review_status_enabled }}",
-		"only opted-in callers may activate the review status lifecycle")
-
-	harness := extractStepSection(t, content, "Run harness agent")
-	assert.NotContains(t, harness, "review-status-enabled:",
-		"custom harness agents must never activate the shared status")
-}
-
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
 // reusable-dispatch.yml pass pr-head-sha to the action.
 func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
@@ -1257,8 +1084,6 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 			"harness-run pr-head-sha must be populated from event_payload")
 		assert.Contains(t, section, "matrix.event_payload",
 			"harness-run must use matrix.event_payload, not needs.route.outputs")
-		assert.NotContains(t, section, "role: ${{ matrix.role }}",
-			"custom harness roles must not select the shared review status")
 	})
 }
 

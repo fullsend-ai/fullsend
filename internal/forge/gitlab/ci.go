@@ -749,26 +749,6 @@ func (c *LiveClient) GetWorkflowRunAnnotations(_ context.Context, _, _ string, _
 	return nil, nil
 }
 
-// SetCommitStatus creates a commit status on an exact SHA.
-func (c *LiveClient) SetCommitStatus(ctx context.Context, owner, repo, sha string, status forge.CommitStatus) error {
-	state := string(status.State)
-	if status.State == forge.CommitStatusFailure || status.State == forge.CommitStatusError {
-		state = "failed"
-	}
-	body := map[string]string{
-		"state":       state,
-		"name":        status.Context,
-		"description": status.Description,
-		"target_url":  status.TargetURL,
-	}
-	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/statuses/%s", projectPath(owner, repo), sha), body)
-	if err != nil {
-		return fmt.Errorf("set commit status: %w", err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline creation (API-triggered dispatch)
 // ---------------------------------------------------------------------------

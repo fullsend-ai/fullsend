@@ -183,8 +183,7 @@ fullsend
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
     ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
-    ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
-    └── --review-status-enabled              #   This run published the built-in review completion status
+    └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
 ```
 
 ### Command Decomposition

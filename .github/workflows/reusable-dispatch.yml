@@ -67,11 +67,6 @@ on:
         type: string
         required: false
         default: "ubuntu-24.04"
-      review_status_enabled:
-        description: "Publish the built-in review completion status. All callers must grant statuses: write, even when this is false."
-        type: boolean
-        required: false
-        default: false
       matrix:
         description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix."
         required: false
@@ -855,7 +850,6 @@ jobs:
       id-token: write
       issues: write
       pull-requests: write
-      statuses: write
 
     steps:
       - name: Checkout config repository
@@ -971,7 +965,6 @@ jobs:
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
-          review-status-enabled: ${{ inputs.review_status_enabled }}
 
   fix:
     name: Fix

@@ -66,12 +66,6 @@ type PipelineCallRecord struct {
 	Variables        map[string]string
 }
 
-// CommitStatusRecord records a SetCommitStatus call.
-type CommitStatusRecord struct {
-	Owner, Repo, SHA string
-	Status           CommitStatus
-}
-
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -342,7 +336,6 @@ type FakeClient struct {
 	DeletedScheduleIDs      []int64
 	UpdatedVariables        []VariableRecord
 	CreatedProtectedVars    []VariableRecord
-	CommitStatuses          []CommitStatusRecord
 
 	// CommitAncestry maps "owner/repo/base/head" to a comparison status
 	// string ("ahead", "behind", "identical", "diverged") for CompareCommits.
@@ -1384,22 +1377,6 @@ func (f *FakeClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ ma
 		return e
 	}
 
-	return nil
-}
-
-func (f *FakeClient) SetCommitStatus(_ context.Context, owner, repo, sha string, status CommitStatus) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("SetCommitStatus"); e != nil {
-		return e
-	}
-	f.CommitStatuses = append(f.CommitStatuses, CommitStatusRecord{
-		Owner:  owner,
-		Repo:   repo,
-		SHA:    sha,
-		Status: status,
-	})
 	return nil
 }
 

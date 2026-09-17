@@ -48,7 +48,6 @@ jobs:
       issues: write
       packages: read
       pull-requests: write
-      statuses: write
     uses: __REUSABLE_DISPATCH__
     with:
       event_action: ${{ github.event.action }}
@@ -57,7 +56,6 @@ jobs:
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
       project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}
       runner_image: __GH_RUNNER__
-      review_status_enabled: true
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
