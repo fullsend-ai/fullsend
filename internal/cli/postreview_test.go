@@ -1968,7 +1968,7 @@ func TestPostMissingRiskAssessment_PostsDiagnosticWhenAbsent(t *testing.T) {
 
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
-	assert.Contains(t, comments[0].Body, riskAssessmentMarker)
+	assert.Contains(t, comments[0].Body, missingRiskAssessmentMarker)
 	assert.Contains(t, comments[0].Body, "Risk assessment unavailable this run")
 }
 
@@ -2011,9 +2011,23 @@ func TestPostMissingRiskAssessment_SupersedesStaleDiagnosticWhenPresent(t *testi
 
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1, "the stale diagnostic should be updated in-place, not duplicated")
-	assert.Contains(t, comments[0].Body, riskAssessmentMarker)
+	assert.Contains(t, comments[0].Body, missingRiskAssessmentMarker)
 	assert.Contains(t, comments[0].Body, "Risk assessment now present")
 	assert.NotContains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
+// TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker guards
+// against reintroducing the marker collision found in review: post-review.sh
+// (fullsend-ai/agents) locates the ADR 0089 score-card comment via
+// contains("<!-- fullsend:risk-assessment -->"). sticky.FindMarkedComment
+// also matches via strings.Contains, so the missing-assessment diagnostic
+// marker must be neither equal to, nor a superstring/substring of, that
+// score-card marker — otherwise this CLI could select and overwrite the
+// score card, or the score-card lookup could pick up this diagnostic.
+func TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker(t *testing.T) {
+	const scoreCardMarker = "<!-- fullsend:risk-assessment -->"
+	assert.NotContains(t, missingRiskAssessmentMarker, scoreCardMarker)
+	assert.NotContains(t, scoreCardMarker, missingRiskAssessmentMarker)
 }
 
 func TestPostMissingRiskAssessment_SilentWhenDisabled(t *testing.T) {

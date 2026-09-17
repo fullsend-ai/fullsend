@@ -91,10 +91,17 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 sandbox, so set it in the harness's `env.sandbox` (the upstream default
 lives in `harness/review.yaml`).
 
-`REVIEW_RISK_ASSESSMENT_ENABLED` is different: `fullsend post-review`
-reads it directly from the runner process's own environment, not the
-sandbox. Set it in the harness's `env.runner` instead — setting it only
-in `env.sandbox` will not change the post-script's diagnostic behavior.
+`REVIEW_RISK_ASSESSMENT_ENABLED` is different: it is read independently in
+two separate execution contexts. The review orchestrator reads it from
+`env.sandbox` to decide whether to dispatch the ADR 0089 risk-assessment
+pre-pass at all. `fullsend post-review` separately reads it from the
+runner process's own environment (`env.runner`) to decide whether to post
+the missing-assessment diagnostic. Setting it only in `env.runner`
+suppresses the diagnostic but still dispatches the persona (spending
+tokens on a disabled feature); setting it only in `env.sandbox` stops
+dispatch but leaves the runner-side default of `true` in effect, so the
+diagnostic still fires on every run. Fully enabling or disabling the
+feature requires setting the variable consistently in both places.
 
 To override either variable per repo or org, use `base:` composition
 rather than the CI workflow `env:` block — workflow `env:` is reserved

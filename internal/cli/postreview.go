@@ -24,7 +24,16 @@ import (
 )
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
-const riskAssessmentMarker = "<!-- fullsend:risk-assessment -->"
+
+// missingRiskAssessmentMarker identifies the sticky diagnostic posted when
+// risk_assessment was expected but absent. This is deliberately distinct
+// from "<!-- fullsend:risk-assessment -->", the marker post-review.sh (in
+// fullsend-ai/agents) uses to find and update the ADR 0089 score-card
+// comment. sticky.FindMarkedComment matches via strings.Contains, not a
+// prefix check, so reusing that marker (or a value containing it) here
+// would let this CLI select and overwrite the score card instead of its
+// own diagnostic. See ADR 0089's "Silent-miss observability" section.
+const missingRiskAssessmentMarker = "<!-- fullsend:risk-assessment-missing -->"
 
 // missingRiskAssessmentBody is posted when risk assessment was expected
 // (REVIEW_RISK_ASSESSMENT_ENABLED, default true per ADR 0089) but the
@@ -352,7 +361,7 @@ func postMissingRiskAssessment(ctx context.Context, client forge.Client, owner, 
 	}
 
 	cfg := sticky.Config{
-		Marker:      riskAssessmentMarker,
+		Marker:      missingRiskAssessmentMarker,
 		DryRun:      dryRun,
 		KeepHistory: keepHistory,
 	}
@@ -387,12 +396,12 @@ func clearMissingRiskAssessmentDiagnostic(ctx context.Context, client forge.Clie
 		return
 	}
 
-	if sticky.FindMarkedComment(comments, riskAssessmentMarker, botUser) == nil {
+	if sticky.FindMarkedComment(comments, missingRiskAssessmentMarker, botUser) == nil {
 		return
 	}
 
 	cfg := sticky.Config{
-		Marker:      riskAssessmentMarker,
+		Marker:      missingRiskAssessmentMarker,
 		DryRun:      dryRun,
 		KeepHistory: keepHistory,
 	}
