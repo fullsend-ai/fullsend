@@ -44,6 +44,12 @@ func TestNewComposedDriver_InvalidCapacity(t *testing.T) {
 	assert.Contains(t, err.Error(), "capacity must be positive")
 }
 
+func TestNewComposedDriver_NilEnsurer(t *testing.T) {
+	_, err := newComposedDriver("org", &fakeMintDriver{}, nil, 1, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ensurer must not be nil")
+}
+
 func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	e := newFakeEnsurer()
 	mint := &fakeMintDriver{}
@@ -239,6 +245,26 @@ func TestComposedDriver_FinalizeWithOutstanding(t *testing.T) {
 	err = d.Finalize(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outstanding lease")
+	assert.True(t, mint.teardownCalled, "mint teardown should still be called")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "Finalize should best-effort delete leaked leases")
+}
+
+func TestComposedDriver_FinalizeDeleteErrorStillReturnsLeakErr(t *testing.T) {
+	mint := &fakeMintDriver{}
+	e := newFakeEnsurer()
+	e.deleteErr = fmt.Errorf("delete boom")
+
+	d, err := newComposedDriver("org", mint, e, 2, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	err = d.Finalize(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outstanding lease")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "Finalize should still attempt delete even though it fails")
 	assert.True(t, mint.teardownCalled, "mint teardown should still be called")
 }
 

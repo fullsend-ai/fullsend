@@ -47,6 +47,9 @@ func newComposedDriver(
 	if capacity <= 0 {
 		return nil, fmt.Errorf("composed driver: capacity must be positive, got %d", capacity)
 	}
+	if ensurer == nil {
+		return nil, errors.New("composed driver: ensurer must not be nil")
+	}
 	names := make(chan string, capacity)
 	for i := 1; i <= capacity; i++ {
 		names <- fmt.Sprintf("test-repo-%02d", i)
@@ -127,13 +130,16 @@ func (d *composedDriver) DeallocateRepo(ctx context.Context, repoName string) er
 }
 
 // Finalize tears down suite-scoped resources (mint). If leases are
-// still outstanding, it reclaims them (logging the names) and returns
-// an error alongside any mint teardown error via errors.Join.
+// still outstanding, it reclaims them (logging the names), best-effort
+// deletes each leaked repo (same log-and-continue policy as
+// DeallocateRepo, so a leak doesn't leave the forge repo behind until
+// the next acquire), and returns an error alongside any mint teardown
+// error via errors.Join.
 func (d *composedDriver) Finalize(ctx context.Context) error {
 	d.mu.Lock()
 	var leakErr error
+	leaked := make([]string, 0, len(d.outstanding))
 	if len(d.outstanding) > 0 {
-		leaked := make([]string, 0, len(d.outstanding))
 		for name := range d.outstanding {
 			leaked = append(leaked, name)
 		}
@@ -145,6 +151,12 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 		leakErr = fmt.Errorf("Finalize: %d outstanding lease(s) not deallocated: %v", len(leaked), leaked)
 	}
 	d.mu.Unlock()
+
+	for _, name := range leaked {
+		if err := d.ensurer.DeleteRepo(ctx, d.org, name); err != nil {
+			d.logf("[driver] Finalize: deleting leaked repo %s/%s: %v", d.org, name, err)
+		}
+	}
 
 	var teardownErr error
 	if d.mint != nil {

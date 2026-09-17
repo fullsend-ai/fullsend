@@ -275,7 +275,7 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
 | Write access | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs (ephemeral, rebuilt each CI run) and the `halfsend` STAGE org (durable repos reused across runs). No write access extends beyond these test-only organisations.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs and the `halfsend` STAGE org — the STAGE organisation/mint itself is durable, but its `test-repo-NN` repos now follow the same ephemeral per-lease lifecycle as DEV (deleted and recreated on each lease). No write access extends beyond these test-only organisations.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 
@@ -437,7 +437,7 @@ URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`
 
 The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
-The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
+`doEnsure` always resets (delete + recreate), installs, and settles: every lease starts from a freshly created repo, so there is no re-vendor path that skips the settle wait — the settle step runs on every ensure.
 
 ## Version pinning for `fullsend-ai/agents`
 
