@@ -416,7 +416,10 @@ runs:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
-        GH_TOKEN: ${{ inputs.github_token }}
+        # The workflow token can write review statuses. Keep it confined to
+        # the dedicated status steps; fullsend mints a role-scoped GH_TOKEN.
+        GH_TOKEN: ""
+        GITHUB_TOKEN: ""
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
