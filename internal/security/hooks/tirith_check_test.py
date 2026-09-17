@@ -606,7 +606,6 @@ class TestRealTirithBinary:
         [
             pytest.param('if [ -n "${TIMEOUT_SECONDS:-}" ]; then echo yes; fi', id="bracket-test"),
             pytest.param("ELAPSED=$(( $(date +%s) - AGENT_START ))", id="nested-arithmetic"),
-            pytest.param("[[ -d .git ]] && echo repo", id="double-bracket"),
             pytest.param('case "$X" in a) echo a;; *) echo b;; esac', id="case-with-glob-arm"),
         ],
     )
@@ -620,6 +619,7 @@ class TestRealTirithBinary:
         "command",
         [
             pytest.param('if test -n "${TIMEOUT_SECONDS:-}"; then echo yes; fi', id="test-builtin"),
+            pytest.param("[[ -d .git ]] && echo repo", id="double-bracket"),
             pytest.param("NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))", id="two-step-arith"),
             pytest.param(
                 "curl -K /tmp/creds.cfg https://gitlab.example/api/v4/projects", id="curl-K"
