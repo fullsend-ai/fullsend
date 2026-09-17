@@ -517,7 +517,7 @@ fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
 
 # 4. Configure GitHub with public apps (installable by other orgs)
 fullsend github setup "$FIRST_ORG" \
-  --mint-url "$(fullsend mint status --project="$GCP_PROJECT" -o url)" \
+  --mint-url "$(fullsend mint status --mint-url= --project="$GCP_PROJECT" -o url)" \
   --inference-wif-provider "$(fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" -o provider)" \
   --inference-project "$GCP_PROJECT" \
   --public
@@ -630,7 +630,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status` to confirm which org is missing
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which org is missing
 2. Re-run `fullsend mint enroll` for the missing org
 3. Always enroll orgs serially — one at a time
 

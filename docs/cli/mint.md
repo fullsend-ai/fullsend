@@ -340,8 +340,10 @@ fullsend mint status <org> \
 When `--mint-url` is provided, `--project` is ignored and the API-based path
 is used. When `FULLSEND_MINT_URL` is set and `--project` is also provided,
 the command returns an error to prevent silent mode ambiguity — either unset
-the env var or omit `--project`. The `[org]` argument is not supported in
-API-based mode.
+the env var or pass `--mint-url=` (empty) to force GCP-based mode. Omitting
+`--project` does not select GCP-based mode; it leaves API-based mode as the
+active path whenever `FULLSEND_MINT_URL` is set. The `[org]` argument is not
+supported in API-based mode.
 
 Read-only — makes no changes.
 
