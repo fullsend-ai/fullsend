@@ -619,6 +619,7 @@ class TestRealTirithBinary:
         "command",
         [
             pytest.param('if test -n "${TIMEOUT_SECONDS:-}"; then echo yes; fi', id="test-builtin"),
+            pytest.param('[ -n "$X" ] && echo yes', id="bare-single-bracket"),
             pytest.param("[[ -d .git ]] && echo repo", id="double-bracket"),
             pytest.param("NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))", id="two-step-arith"),
             pytest.param(
