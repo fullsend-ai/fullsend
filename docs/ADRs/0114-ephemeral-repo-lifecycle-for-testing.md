@@ -16,73 +16,50 @@ Date: 2026-09-14
 
 ## Status
 
-Accepted — supersedes [ADR 0040](0040-org-pool-for-parallel-e2e-tests.md).
+Accepted
+
+Supersedes [ADR 0040](0040-org-pool-for-parallel-e2e-tests.md) for behaviour
+tests. Admin e2e tests continue using ADR 0040's exclusive-lock org pool
+unchanged (see Consequences).
 
 ## Context
 
-Fullsend's tests (behaviour tests, with admin e2e tests to migrate) need
-real repositories on real forges to exercise dispatch, harness loading, scaffold
-mutations, and CI workflows. The prior approach took two forms:
-
-1. **Reused repos** — behaviour tests ran against a fixed pool of repo *names*
-   (`test-repo-01` … `test-repo-NN`), created once per run and identical across
-   runs. Each scenario *leased* a name from the pool and returned it when done,
-   so a name was reused by later scenarios within a run, and the pool size
-   capped concurrency. The repo *object*, however, was ephemeral per lease: on
-   every allocation the repo was deleted and recreated before install. This was
-   necessary because repeated runs bloated a repo's git history to gigabyte
-   scale, and the pre-review shallow-clone deepening step then took 12+ minutes
-   fetching that history; delete-and-recreate restored a clean single-commit
-   repo (clearing leftover state was a secondary benefit). The cost was that
-   every lease paid a delete/recreate/reinstall cycle.
-
-2. **Pool of orgs with exclusive locking** ([ADR 0040](0040-org-pool-for-parallel-e2e-tests.md))
-   — both behaviour tests and admin e2e tests acquired exclusive access to one
-   of several pre-provisioned orgs (the `halfsend` pool) via an atomic lock repo
-   (`e2e-lock`). A run locked an entire org for its whole duration; a behaviour
-   run then used the reused name pool (form 1) *within* that locked org. This
-   prevented concurrent-run collisions but serialized runs within each org and
-   required pre-provisioned infrastructure per org.
-
-These two forms were layered, not alternatives: a behaviour run locked one org
-exclusively and then leased repos from the fixed name pool inside it.
-
-Neither approach was documented in a single ADR; the repo reuse strategy had no
-written design rationale at all.
+Behaviour tests need real repositories on real forges to exercise dispatch,
+harness loading, scaffold mutations, and CI workflows. Two prior approaches
+were layered but never documented in a single ADR: a fixed-name repo pool
+(`test-repo-01` … `test-repo-NN`) reused across leases with a delete-and-recreate
+reset per lease (to avoid multi-gigabyte git-history bloat and the 12+ minute
+shallow-clone deepening it caused), nested inside
+[ADR 0040](0040-org-pool-for-parallel-e2e-tests.md)'s exclusive per-org
+locking. Under growing CI load — every PR push triggers behaviour tests —
+this hit two ceilings at once: the fixed pool size (default 12) capped
+concurrency, and keeping the org small to limit cost pinned the rate limit
+near its floor.
 
 The behaviour test framework ([ADR 0066](0066-behaviour-tests-with-gherkin-and-drivers.md))
-motivated a move to ephemeral repos created on demand per scenario. This
-eliminates state leakage, but the rate-limit implications differ sharply by
-forge:
+motivated moving to ephemeral repos created per scenario, eliminating state
+leakage — but the two forges' rate-limit models differ fundamentally.
+GitHub's REST limit is org-scoped and scales with repo count: 5,000 base + 50
+per repo beyond 20, capped at 12,500/hr
+([GitHub rate limits for GitHub Apps](https://docs.github.com/en/apps/creating-github-apps/setting-up-a-github-app/rate-limits-for-github-apps),
+retrieved 2026-09-14), so retaining repos raises the ceiling. GitLab.com's
+limit is per user, fixed regardless of project count (≈7,200 requests/hr,
+200/min on the Projects/Groups/Users endpoints), so retention buys no
+headroom there.
 
-- **GitHub.** The REST API rate limit is **org-scoped and scales with repo
-  count**: 5,000 base + 50 per repo beyond 20, capped at 12,500/hr (the cap is
-  reached at ~170 repos). Deleting every repo after each run keeps the org small
-  and the rate limit low, so on GitHub it pays to *retain* repos to raise the
-  ceiling.
-
-- **GitLab.com.** Rate limits are **per user** (authenticated requests), not
-  per project or per group, and do **not** scale with the number of projects.
-  Retaining repos buys no rate-limit headroom on GitLab; the per-user budget
-  (≈7,200 requests/hr general, 200/min on the Projects/Groups/Users endpoints)
-  is fixed regardless of group size.
-
-At an observed ~3,000 API calls per behaviour test run, a single GitHub org with
-few repos supports only one or two concurrent runs before hitting the rate limit
-cap; a well-populated org supports around four.
-
-Under growing CI load — every PR push triggers behaviour tests — the reused-repo
-model on GitHub hit **two ceilings at once**. First, the fixed name pool (default
-12) hard-capped how many scenarios could run concurrently. Second, keeping the
-org small (only the ~12 pool repos) pinned the rate limit near its 5,000/hr
-floor, since the repo-count bonus does not begin until 20 repos. The result was
-a low concurrency cap layered on top of a low rate-limit cap — the motivation for
-this ADR is to lift both.
+At an observed ~3,000 API calls per behaviour test run, a small GitHub org
+supports only one or two concurrent runs before hitting its cap; a
+well-populated org supports around four — the gap this ADR's retention
+policy closes. See [testing-agents.md](../problems/testing-agents.md) for the
+broader agent-testing problem space; this ADR addresses test infrastructure
+capacity, not LLM/instruction coverage. Full migration scope is tracked in
+[#6864](https://github.com/fullsend-ai/fullsend/issues/6864).
 
 ## Decision
 
-All tests — behaviour tests and admin e2e tests (migrating from the org pool) —
-use **ephemeral repos**:
+Behaviour tests use **ephemeral repos** (admin e2e continues using
+[ADR 0040](0040-org-pool-for-parallel-e2e-tests.md)'s exclusive-lock org pool
+unchanged; see Consequences for a note on a possible future migration):
 
 - **Ephemeral creation.** Each test scenario creates a uniquely-named repo
   `bt-{run-id}-{uuid8}`. The `run-id` is a **time-ordered UUID** (e.g. UUIDv7),
@@ -109,12 +86,21 @@ use **ephemeral repos**:
     completion. The accumulated repo count raises the org's rate-limit cap
     toward 12,500/hr, so retention is load-bearing. At the end of a run, when
     the org's `bt-` repo count exceeds a threshold (default 200), the
-    framework deletes the **oldest whole runs** — grouping repos by their shared
-    `run-id` and deleting entire run groups, oldest first, until removing the
-    next group would drop the total below the threshold. Because the `run-id` is
-    time-ordered, "oldest first" is a simple sort on the prefix. Pruning by
-    whole runs minimizes churn and preserves rate-limit headroom. Pruning can
-    be disabled to retain repos for debugging.
+    framework deletes the **oldest whole runs** — grouping repos by their
+    shared `run-id` and considering groups for deletion oldest-first, but
+    **skipping any run-id that currently owns an
+    [ADR 0115](0115-lock-based-pool-coordination-for-testing-orgs.md) lock
+    slot** (checked via the lock repos' owner-token descriptions). Only
+    groups whose lock has been released, or which ADR 0115's liveness check
+    has judged stale, are eligible for deletion. Eligible groups are deleted
+    oldest-first until deleting the next one would drop the total below the
+    threshold, so pruning stops with the post-prune count at or above the
+    threshold. Because the `run-id` is time-ordered, "oldest first" is a
+    simple sort on the prefix. Pruning by whole runs minimizes churn and
+    preserves rate-limit headroom; skipping locked runs prevents pruning from
+    deleting a still-running suite's repos out from under it, which could
+    otherwise let ADR 0115's liveness check mistakenly reclaim that suite's
+    lock. Pruning can be disabled to retain repos for debugging.
 
   - **GitLab.com — delete per scenario.** Rate limits are per user and do not
     scale with project count, so retention buys nothing. GitLab therefore
@@ -159,12 +145,17 @@ use **ephemeral repos**:
   the per-repo provider-ID path, this sidesteps the provider-ID naming
   limitation noted under Consequences entirely.
 
-- **Admin install test migration.** Admin install tests will migrate from the
-  exclusive-lock org pool ([ADR 0040](0040-org-pool-for-parallel-e2e-tests.md))
-  to this model. The migration is incremental; both models can coexist during
-  the transition.
+- **Retained-repo sanitization.** Before a GitHub repo becomes eligible for
+  retention past its scenario (i.e., as soon as the scenario finishes and the
+  repo enters the retained pool), the framework uninstalls the fullsend app,
+  strips any repo-scoped secrets or variables the scenario wrote, and disables
+  the repo's GitHub Actions workflows. Retained repos keep real scaffolding and
+  CI configuration (that realism is the point — see Consequences), but they
+  must not be able to invoke the shared org-scoped WIF provider on their own
+  after their scenario ends; sanitization removes the installed app and
+  workflow triggers that would let leftover CI configuration do so.
 
-## Benefits
+## Consequences
 
 The change bundles two separable decisions; on GitHub each delivers its own win.
 
@@ -194,9 +185,13 @@ The change bundles two separable decisions; on GitHub each delivers its own win.
 
 - **~2.5× the rate-limit budget.** ~12 repos pinned the cap near 5,000/hr;
   retaining ~200 repos raises it toward 12,500/hr.
-- **Roughly 4× effective concurrent runs.** At ~3,000 calls/run that is the
-  difference between ~1 and ~4 concurrent runs per org — directly the headroom
-  ADR 0115's per-org concurrency is built on.
+- **More effective concurrent runs.** Raising the cap from ~5,000/hr to
+  ~12,500/hr raises how many runs an org can sustain per hour, but the exact
+  multiple depends on typical run duration, not just the hourly budget — see
+  [ADR 0115](0115-lock-based-pool-coordination-for-testing-orgs.md)'s
+  duration-aware `N` formula. For a run lasting close to an hour this is close
+  to 4×; shorter runs, run sequentially in more waves per hour, yield a
+  smaller safe `N`.
 - Retained repos are inert and permitted: GitHub's Terms of Service do not
   prohibit retaining test repos, which contain real scaffolding and CI
   configuration, not empty shells.
@@ -204,16 +199,18 @@ The change bundles two separable decisions; on GitHub each delivers its own win.
 Together these lift both ceilings the reused-repo model hit under CI load: the
 pool-size concurrency cap and the small-org rate-limit floor.
 
-## Consequences
-
 - **Forge asymmetry is fundamental, not incidental.** Retention as a rate-limit
   lever is GitHub-only; on GitLab.com the per-user limit cannot be raised by
   adding repos or groups. The lifecycle *mechanism* is forge-agnostic, but its
   teardown *policy* is deliberately forge-specific, and the design does not
   pretend one strategy fits both.
-- On GitHub the testing org grows large and cluttered by design; batch pruning
-  keeps the count between the threshold and the threshold minus the last-pruned
-  run groups, so the rate limit is lowest immediately after pruning.
+- On GitHub the testing org grows large and cluttered by design; batch
+  pruning keeps the count at or above the threshold — it stops as soon as
+  removing another eligible run group would drop below it — so the rate
+  limit is lowest immediately after a prune and highest just before the next
+  one triggers. A run-id whose lock is still held (and not yet judged stale)
+  is skipped even when it is the oldest group, so the count can temporarily
+  exceed the threshold while older runs are still active.
 - On GitLab, delete-per-scenario adds no storage over time but pays a delete on
   every scenario — acceptable, since GitLab gains no rate-limit headroom that
   would justify retention.
@@ -225,6 +222,14 @@ pool-size concurrency cap and the small-org rate-limit floor.
   model, which paid create + install per lease *plus* the reset overhead this
   change removes. The change earns its keep specifically under growing CI load —
   at low concurrency the reused-repo model was adequate.
+- **Admin e2e migration is an open question, not part of this Decision.**
+  This ephemeral-repo model is a candidate future replacement for admin e2e's
+  use of [ADR 0040](0040-org-pool-for-parallel-e2e-tests.md)'s exclusive-lock
+  org pool, but [#6864](https://github.com/fullsend-ai/fullsend/issues/6864)
+  — the issue authorizing this ADR — scopes admin e2e as unaffected: its pool
+  infrastructure (`AcquireOrg`, `OrgPool`, `ReleaseLock`) stays in place.
+  Migrating admin e2e to this model would need its own authorizing issue
+  before it proceeds.
 - **Known limitation — GitHub WIF provider-ID collisions.** On GitHub, the
   per-repo Workload Identity Federation provider ID is derived from the
   `{owner}/{repo}` pair and truncated to GCP's 32-character limit. A long org

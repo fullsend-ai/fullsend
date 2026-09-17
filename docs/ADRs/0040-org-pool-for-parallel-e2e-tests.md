@@ -16,7 +16,9 @@ Date: 2026-05-19
 ## Status
 
 Superseded by [ADR 0114](0114-ephemeral-repo-lifecycle-for-testing.md) and
-[ADR 0115](0115-lock-based-pool-coordination-for-testing-orgs.md).
+[ADR 0115](0115-lock-based-pool-coordination-for-testing-orgs.md) for
+behaviour tests. Admin e2e continues using this ADR's org pool and locking
+mechanism unchanged ([#6864](https://github.com/fullsend-ai/fullsend/issues/6864)).
 
 ## Context
 
