@@ -998,7 +998,7 @@ func parseReviewResult(input string) (ReviewResult, error) {
 			// Treat it the same as an absent risk_assessment so
 			// postMissingRiskAssessment posts the "unavailable" diagnostic
 			// instead of treating a zero-value struct as a present one.
-			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is missing score/level (score=%d level=%q), treating as absent\n", ra.Score, ra.Level)
+			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is missing score/level (score=%d level=%q), treating as absent\n", ra.Score, sanitizeRiskLevel(ra.Level))
 		} else {
 			result.RiskAssessment = &ra
 		}

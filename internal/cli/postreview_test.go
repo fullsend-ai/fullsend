@@ -134,6 +134,24 @@ func TestParseReviewResult_RiskAssessmentUnknownLevelTreatedAsAbsent(t *testing.
 	assert.Nil(t, result.RiskAssessment)
 }
 
+// TestParseReviewResult_UnusableRiskAssessmentLevelSanitizedInWarning guards
+// against the unusable-risk_assessment WARNING line interpolating an
+// agent-authored level value raw. An unallowlisted level like
+// "::error::pwned" must never reach the GHA-visible stderr line except
+// through sanitizeRiskLevel, which replaces it with "unknown".
+func TestParseReviewResult_UnusableRiskAssessmentLevelSanitizedInWarning(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":3,"level":"::error::pwned"}}`
+	var result ReviewResult
+	var err error
+	stderr := captureStderr(t, func() {
+		result, err = parseReviewResult(input)
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+	assert.Contains(t, stderr, `level="unknown"`)
+	assert.NotContains(t, stderr, "::error::pwned")
+}
+
 // TestPostMissingRiskAssessment_PostsDiagnosticForEmptyRiskAssessmentObject
 // exercises the postMissingRiskAssessment path end-to-end for the {} case:
 // with the pre-fix behavior, RiskAssessment would be a non-nil zero-value
