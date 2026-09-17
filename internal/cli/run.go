@@ -4708,7 +4708,7 @@ func stripControlChars(s string) string {
 //
 // OIDC credential vars and provider-only keys are stripped so user-authored
 // pre/post scripts and validation/preflight commands cannot mint their own
-// tokens or read the preserved workflow token. The parent harness process
+// tokens, read the preserved workflow token, or use GITHUB_TOKEN. The parent harness process
 // retains them for mintAgentToken and provider credential expansion.
 // See #5832, #6649.
 //
@@ -4737,9 +4737,14 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
-			continue
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key := e[:i]
+			// Strip OIDC credential vars, provider-only keys, and the GitHub
+			// workflow token from user-authored child scripts. A minted GH_TOKEN
+			// remains available to the agent through its role-scoped runner environment.
+			if harnessExpansionDenied(key) || key == "GITHUB_TOKEN" {
+				continue
+			}
 		}
 		env = append(env, e)
 	}
