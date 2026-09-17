@@ -131,6 +131,13 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 	case "ready-to-code":
 		stage = "code"
 	case "ready-for-review":
+		// Duplicate handling is independent of authorization: an
+		// automatic creation handoff is skipped here so the opened
+		// path supplies the single initial review. Explicit
+		// ready-for-review applications omit the provenance label.
+		if IsAutomaticReviewHandoff(event) {
+			return nil, nil
+		}
 		stage = "review"
 	default:
 		return nil, nil

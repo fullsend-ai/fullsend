@@ -48,7 +48,7 @@ These labels are applied by the review post-script based on the review outcome.
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) post-script after pushing. In per-repo installs, triggers review when applied to a PR. |
+| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) post-script after pushing. In per-repo installs, an **explicit** application (no `fullsend-auto-review-handoff` provenance on the event) triggers review. The automatic code-agent application is a state marker; initial review comes from the PR-opened path so the pair does not double-dispatch. See [Review handoff dedup](../contributing/review-handoff-dedup.md). |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and the post-script closed it. |
