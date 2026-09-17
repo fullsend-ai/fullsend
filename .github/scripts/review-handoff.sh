@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # review-handoff.sh — Decide whether a ready-for-review labeled event is
 # the automatic code-agent creation handoff (skip) or an explicit review
 # request (dispatch).
@@ -11,11 +10,11 @@
 # maintainer patch is applied. That job sparse-checkouts only
 # .fullsend/config.yaml, so it cannot source this file. Keep the
 # inlined check and this helper in sync.
+#
+# This file is sourced only (by review-handoff-test.sh); it is not
+# invoked directly, so it carries no shebang and is not executable.
 
 # shellcheck shell=bash
-
-[[ -n "${REVIEW_HANDOFF_SH_LOADED:-}" ]] && return 0
-REVIEW_HANDOFF_SH_LOADED=1
 
 AUTO_REVIEW_HANDOFF_LABEL="fullsend-auto-review-handoff"
 
@@ -35,19 +34,27 @@ should_skip_automatic_review_handoff() {
   return 1
 }
 
-# github_like_should_dispatch_review <action> <csv-labels>
+# github_like_should_dispatch_review <action> <triggering-label> <csv-labels>
 # Mirrors per-repo GitHub Route after the maintainer patch:
-# opened|synchronize|ready_for_review dispatch; labeled dispatches
-# unless the automatic-handoff provenance label is present;
-# slash-review dispatches. Authorization is out of scope.
+# opened|synchronize|ready_for_review dispatch; a labeled event only
+# enters the ready-for-review decision when the triggering label is
+# ready-for-review (production YAML gates on
+# TRIGGERING_LABEL == "ready-for-review" before checking has_label), and
+# dispatches unless the automatic-handoff provenance label is present;
+# other labeled events skip; slash-review dispatches. Authorization is
+# out of scope.
 github_like_should_dispatch_review() {
   local action="${1:-}"
-  local csv_labels="${2:-}"
+  local triggering_label="${2:-}"
+  local csv_labels="${3:-}"
   case "${action}" in
     opened|synchronize|ready_for_review|slash-review)
       return 0
       ;;
     labeled)
+      if [[ "${triggering_label}" != "ready-for-review" ]]; then
+        return 1
+      fi
       if should_skip_automatic_review_handoff "${csv_labels}"; then
         return 1
       fi

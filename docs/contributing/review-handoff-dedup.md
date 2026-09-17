@@ -70,6 +70,10 @@ In `scripts/post-code.src.sh`, after `forge_create_pr`:
    provenance from the poll snapshot. `scripts/pre-review.src.sh` must
    remove `fullsend-auto-review-handoff` (and should continue to treat
    `ready-for-review` as a state marker) when a review run starts.
+   Consequence: until pre-review strips it, the marker is
+   indistinguishable from the automatic handoff, so a deliberate
+   `ready-for-review` re-application in that window is not guaranteed to
+   dispatch a review — see the GitLab note under Coordinated rollout.
 
 Do not skip applying `ready-for-review`. Do not suppress bot-applied labels
 in the dispatcher by username.
@@ -149,8 +153,27 @@ until they move the pin.
 
 GitLab: the poller already entity-dedups the same stage in one cycle, and
 does not currently emit MR `ready-for-review` label events. The Go router
-skip still applies if MR label discovery is added later. GitHub
-`synchronize` after a fix-agent push is unchanged.
+skip still applies if MR label discovery is added later — but because
+GitLab leaves provenance in place until pre-review (see the Agents-repo
+change above), an explicit re-application of `ready-for-review` observed
+before pre-review runs would be skipped like the automatic handoff. If MR
+label discovery is added, either strip provenance earlier than pre-review
+or document that explicit re-labeling is not guaranteed to dispatch until
+pre-review removes the marker. GitHub `synchronize` after a fix-agent push
+is unchanged.
+
+## Known limitations
+
+- **Lost `opened` delivery.** The maintainer patch's `labeled` skip does
+  not corroborate that the `opened` event was actually processed. If
+  `opened` delivery is lost or fails for a given revision and the
+  `labeled` (`ready-for-review`) event still carries
+  `fullsend-auto-review-handoff`, no automatic review dispatches for that
+  revision. Recover with `/fs-review` or a new push (`synchronize`). Only
+  the code post-script is expected to add the provenance label, so this
+  gap is not attacker-controlled, but it is a defense-in-depth regression
+  from today's behavior where the `labeled` event is an independent
+  review trigger.
 
 ## Verification
 

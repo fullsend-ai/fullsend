@@ -12,7 +12,12 @@
 #   pre-commit run --files .github/workflows/reusable-dispatch.yml \
 #     internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml
 #
-# See docs/contributing/review-handoff-dedup.md for rollout order.
+# See docs/contributing/review-handoff-dedup.md for rollout order and,
+# under "Known limitations", the residual risk this patch accepts: a
+# lost/failed `opened` delivery combined with a `labeled` event that
+# still carries `fullsend-auto-review-handoff` will not dispatch any
+# automatic review of that revision (recover with `/fs-review` or a new
+# push).
 #
 --- a/.github/workflows/reusable-dispatch.yml
 +++ b/.github/workflows/reusable-dispatch.yml

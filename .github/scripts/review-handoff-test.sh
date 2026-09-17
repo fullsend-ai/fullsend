@@ -12,6 +12,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=review-handoff.sh
 source "${SCRIPT_DIR}/review-handoff.sh"
 
+TMPDIR_ROOT="$(mktemp -d)"
+trap 'rm -rf "${TMPDIR_ROOT}"' EXIT
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -39,15 +42,15 @@ assert_dispatch_label() {
 }
 
 assert_route() {
-  local name="$1" action="$2" labels="$3" expect="$4"
+  local name="$1" action="$2" triggering_label="$3" labels="$4" expect="$5"
   local rc=0
-  github_like_should_dispatch_review "${action}" "${labels}" || rc=$?
+  github_like_should_dispatch_review "${action}" "${triggering_label}" "${labels}" || rc=$?
   if [[ "${expect}" == "dispatch" && "${rc}" -eq 0 ]]; then
     pass "${name}"
   elif [[ "${expect}" == "skip" && "${rc}" -ne 0 ]]; then
     pass "${name}"
   else
-    fail "${name} — action=${action} labels='${labels}' expect=${expect} rc=${rc}"
+    fail "${name} — action=${action} triggering_label='${triggering_label}' labels='${labels}' expect=${expect} rc=${rc}"
   fi
 }
 
@@ -71,43 +74,49 @@ echo "=== github-like routing scenarios ==="
 HANDOFF="fullsend-auto-review-handoff,ready-for-review"
 EXPLICIT="ready-for-review"
 
-assert_route "opened dispatches" "opened" "${HANDOFF}" dispatch
-assert_route "automatic labeled skips" "labeled" "${HANDOFF}" skip
-assert_route "explicit labeled dispatches" "labeled" "${EXPLICIT}" dispatch
-assert_route "synchronize after handoff dispatches" "synchronize" "" dispatch
-assert_route "fix-agent push (synchronize) dispatches" "synchronize" "ready-for-review" dispatch
-assert_route "slash-review same SHA dispatches" "slash-review" "${HANDOFF}" dispatch
-assert_route "ready_for_review event dispatches" "ready_for_review" "" dispatch
-assert_route "closed does not dispatch review" "closed" "" skip
+assert_route "opened dispatches" "opened" "" "${HANDOFF}" dispatch
+assert_route "automatic labeled skips" "labeled" "ready-for-review" "${HANDOFF}" skip
+assert_route "explicit labeled dispatches" "labeled" "ready-for-review" "${EXPLICIT}" dispatch
+assert_route "synchronize after handoff dispatches" "synchronize" "" "" dispatch
+assert_route "fix-agent push (synchronize) dispatches" "synchronize" "" "ready-for-review" dispatch
+assert_route "slash-review same SHA dispatches" "slash-review" "" "${HANDOFF}" dispatch
+assert_route "ready_for_review event dispatches" "ready_for_review" "" "" dispatch
+assert_route "closed does not dispatch review" "closed" "" "" skip
+
+# A labeled event whose triggering label is not ready-for-review must
+# skip even when the label snapshot happens to include both
+# ready-for-review and the handoff marker (regression test for the
+# labeled arm dispatching on any triggering label).
+assert_route "non-ready-for-review labeled event skips" "labeled" "ready-to-code" "${HANDOFF}" skip
 
 count_pair() {
-  local first_action="$1" first_labels="$2"
-  local second_action="$3" second_labels="$4"
+  local first_action="$1" first_trigger="$2" first_labels="$3"
+  local second_action="$4" second_trigger="$5" second_labels="$6"
   local n=0 rc
   rc=0
-  github_like_should_dispatch_review "${first_action}" "${first_labels}" || rc=$?
+  github_like_should_dispatch_review "${first_action}" "${first_trigger}" "${first_labels}" || rc=$?
   [[ "${rc}" -eq 0 ]] && n=$((n + 1))
   rc=0
-  github_like_should_dispatch_review "${second_action}" "${second_labels}" || rc=$?
+  github_like_should_dispatch_review "${second_action}" "${second_trigger}" "${second_labels}" || rc=$?
   [[ "${rc}" -eq 0 ]] && n=$((n + 1))
   echo "${n}"
 }
 
-got=$(count_pair opened "${HANDOFF}" labeled "${HANDOFF}")
+got=$(count_pair opened "" "${HANDOFF}" labeled "ready-for-review" "${HANDOFF}")
 if [[ "${got}" == "1" ]]; then
   pass "opened then automatic labeled: one review"
 else
   fail "opened then automatic labeled: got ${got}, want 1"
 fi
 
-got=$(count_pair labeled "${HANDOFF}" opened "${HANDOFF}")
+got=$(count_pair labeled "ready-for-review" "${HANDOFF}" opened "" "${HANDOFF}")
 if [[ "${got}" == "1" ]]; then
   pass "automatic labeled then opened: one review"
 else
   fail "automatic labeled then opened: got ${got}, want 1"
 fi
 
-got=$(count_pair opened "" labeled "${EXPLICIT}")
+got=$(count_pair opened "" "" labeled "ready-for-review" "${EXPLICIT}")
 if [[ "${got}" == "2" ]]; then
   pass "opened then explicit labeled: two reviews"
 else
@@ -117,33 +126,32 @@ fi
 echo "=== concurrent-ish pair (background) ==="
 
 concurrent_count() {
-  local a1="$1" l1="$2" a2="$3" l2="$4"
+  local a1="$1" t1="$2" l1="$3" a2="$4" t2="$5" l2="$6"
   local tmp
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "${TMPDIR_ROOT}/concurrent.XXXXXX")"
   (
     rc=0
-    github_like_should_dispatch_review "${a1}" "${l1}" || rc=$?
+    github_like_should_dispatch_review "${a1}" "${t1}" "${l1}" || rc=$?
     [[ "${rc}" -eq 0 ]] && echo 1 >"${tmp}/1"
   ) &
   (
     rc=0
-    github_like_should_dispatch_review "${a2}" "${l2}" || rc=$?
+    github_like_should_dispatch_review "${a2}" "${t2}" "${l2}" || rc=$?
     [[ "${rc}" -eq 0 ]] && echo 1 >"${tmp}/2"
   ) &
   wait
   local n=0
   [[ -f "${tmp}/1" ]] && n=$((n + 1))
   [[ -f "${tmp}/2" ]] && n=$((n + 1))
-  rm -rf "${tmp}"
   echo "${n}"
 }
 
 i=0
 while [[ "${i}" -lt 16 ]]; do
   if [[ $((i % 2)) -eq 0 ]]; then
-    got=$(concurrent_count opened "${HANDOFF}" labeled "${HANDOFF}")
+    got=$(concurrent_count opened "" "${HANDOFF}" labeled "ready-for-review" "${HANDOFF}")
   else
-    got=$(concurrent_count labeled "${HANDOFF}" opened "${HANDOFF}")
+    got=$(concurrent_count labeled "ready-for-review" "${HANDOFF}" opened "" "${HANDOFF}")
   fi
   if [[ "${got}" != "1" ]]; then
     fail "concurrent automatic pair iteration ${i}: got ${got}, want 1"
@@ -157,7 +165,7 @@ fi
 
 i=0
 while [[ "${i}" -lt 16 ]]; do
-  got=$(concurrent_count opened "" labeled "${EXPLICIT}")
+  got=$(concurrent_count opened "" "" labeled "ready-for-review" "${EXPLICIT}")
   if [[ "${got}" != "2" ]]; then
     fail "concurrent explicit pair iteration ${i}: got ${got}, want 2"
     break
@@ -214,7 +222,7 @@ else
     fail "git apply --check failed"
   fi
 
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "${TMPDIR_ROOT}/patch.XXXXXX")"
   mkdir -p "${tmp}/.github/workflows" \
     "${tmp}/internal/scaffold/fullsend-repo/.github/workflows"
   cp "${DISPATCH}" "${tmp}/.github/workflows/reusable-dispatch.yml"
@@ -242,7 +250,6 @@ else
   else
     fail "git apply on temp copies failed"
   fi
-  rm -rf "${tmp}"
 fi
 
 echo "=== results ==="

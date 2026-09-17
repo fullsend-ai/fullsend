@@ -135,7 +135,7 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 		// automatic creation handoff is skipped here so the opened
 		// path supplies the single initial review. Explicit
 		// ready-for-review applications omit the provenance label.
-		if IsAutomaticReviewHandoff(event) {
+		if isAutomaticReviewHandoff(event) {
 			return nil, nil
 		}
 		stage = "review"
