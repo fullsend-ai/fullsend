@@ -42,11 +42,10 @@ Some doc content lives in separate repositories linked as git submodules:
 |-----------|------|-------------|
 | [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` -> `../experiments` |
 
-The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step.
+The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step.
 
 ## CI/CD
 
-- **`.github/workflows/site-build.yml`** — builds the VitePress site on PRs and pushes to `main`, uploads the artifact
-- **`.github/workflows/site-deploy.yml`** — deploys the built artifact to Cloudflare Workers on `main` pushes (skipped when a newer successful **Build Site** run already exists), uploads preview versions on PRs
+- **`.github/workflows/site.yml`** — builds the VitePress site on PRs and pushes to `main`, uploads the artifact, deploys to Cloudflare Workers on `main`, and uploads preview versions on same-repository PRs (fork PRs build only)
 
 For Cloudflare Worker setup and troubleshooting, see [`site-deployment.md`](site-deployment.md).

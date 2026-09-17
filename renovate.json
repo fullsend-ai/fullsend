@@ -116,8 +116,8 @@
     },
     {
       "customType": "regex",
-      "description": "Track wranglerVersion pins in site-deploy.yml so they bump with the cloudflare-workers group",
-      "managerFilePatterns": ["/^\\.github/workflows/site-deploy\\.yml$/"],
+      "description": "Track wranglerVersion pins in site.yml so they bump with the cloudflare-workers group",
+      "managerFilePatterns": ["/^\\.github/workflows/site\\.yml$/"],
       "matchStrings": [
         "wranglerVersion: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],

@@ -11,8 +11,11 @@ The site is served by a **Cloudflare Worker with [static assets](https://develop
 [`cloudflare_site/worker/src/index.ts`](../cloudflare_site/worker/src/index.ts) and is a plain
 passthrough to the `ASSETS` binding — it requires **no vars and no secrets**.
 
-**Build Site** (`.github/workflows/site-build.yml`) builds the VitePress site and assembles
-`_bundle/`:
+**Site** (`.github/workflows/site.yml`) is one workflow with a `build` job and a `deploy`
+job. `build` runs the VitePress site and assembles `_bundle/`; `deploy` publishes that
+artifact. The jobs stay separate so Cloudflare secrets never sit on the runner that
+executes PR-controlled `npm ci` / `npx mvb`, and so `wrangler.toml` is always taken from
+the default branch rather than from a PR tree.
 
 | Bundle path | Source |
 |---|---|
@@ -23,13 +26,14 @@ passthrough to the `ASSETS` binding — it requires **no vars and no secrets**.
 | `_bundle/public/` | `cloudflare_site/public/` (`robots.txt`, `llms.txt`) |
 | `_bundle/worker/` | `cloudflare_site/worker/` |
 
-**Deploy Site** (`.github/workflows/site-deploy.yml`) checks out **only the default branch** so
-[`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml) is always trusted and never
-taken from a PR-built zip, downloads the artifact, **copies only** `_bundle/public/` and
-`_bundle/worker/` into `cloudflare_site/`, then runs Wrangler. Production deploys from `push`
-events skip when a newer successful **Build Site** run already exists, so a slow overlapping
-`main` build cannot overwrite the current site. Those `push` deploys do not cancel in-progress
-runs in the same concurrency group for the same reason.
+The `deploy` job checks out **the default branch on pull requests** (and the pushed commit on
+`main`) so [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml) is always trusted
+and never taken from a PR-built zip, downloads the artifact, **copies only** `_bundle/public/`
+and `_bundle/worker/` into `cloudflare_site/`, then runs Wrangler. Fork PRs still **build**
+(so the site compiles) but **skip deploy**: `pull_request` from a fork does not receive
+repository secrets. Same-repository PRs upload a preview version; pushes to `main` deploy
+production. A newer run in the same concurrency group cancels an in-flight one, so production
+always comes from the latest `main` push that touched site files.
 
 Repository layout for `web/` vs `cloudflare_site/` is decided in
 [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
@@ -73,15 +77,20 @@ If you previously used **Cloudflare Pages** with `wrangler pages deploy`, create
 
 ### Fork
 
-On a **fork**, open **Settings → Secrets and variables → Actions**. Add secrets **`CLOUDFLARE_API_TOKEN`**, **`CLOUDFLARE_ACCOUNT_ID`**, and variable **`CLOUDFLARE_PROJECT_NAME`** (Worker name).
+Fork PRs run the `build` job in the fork (no Cloudflare credentials required). They do **not**
+get a preview URL: GitHub does not pass repository secrets to `pull_request` workflows from
+forks, and this workflow does not use `workflow_run` / `pull_request_target` to work around
+that.
 
-Under **Settings → Actions → General**, allow **Fork pull request workflows** from contributors so fork PRs can run **Build Site** without Cloudflare credentials in the fork.
-
-**Deploy Site** runs in the base repository with secrets; fork workflow logs should not show those values.
+Under **Settings → Actions → General**, allow **Fork pull request workflows** from contributors
+so fork PRs can still run **Site** / `build` as a compile check.
 
 ### Upstream
 
-Configure the same secrets/variables at org or repo scope. Confirm **`pull-requests: write`** on the deploy workflow matches org policy for fork PR comments.
+Configure secrets **`CLOUDFLARE_API_TOKEN`** and **`CLOUDFLARE_ACCOUNT_ID`**, and variable
+**`CLOUDFLARE_PROJECT_NAME`** (Worker name), at org or repo scope. Confirm
+**`pull-requests: write`** on the `deploy` job matches org policy for same-repository PR
+preview comments.
 
 Disable **GitHub Pages** under **Settings → Pages** if it was only used for this site.
 
@@ -106,12 +115,12 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 
 ## Troubleshooting
 
-**Deploy job skipped.** The triggering workflow display name must be **Build Site** exactly, and `workflow_run.repository` must match the current repo. A `push` production deploy is also skipped when a newer successful **Build Site** run already exists (overlapping `main` builds can finish out of order).
+**Deploy job skipped.** Fork PRs skip `deploy` (no secrets). Same-repository PRs and `push` to `main` run `deploy` after a successful `build`.
 
 **`Could not determine Workers deployment URL`.** The workflow reads `deployment-url` from `cloudflare/wrangler-action`, then falls back to parsing Wrangler stdout/stderr for a `workers.dev` URL. Upgrade **`wranglerVersion`** in the workflow if Wrangler output format changed.
 
-**Preview upload fails (PR builds).** Requires Wrangler **≥ 4.21.0** for `--preview-alias`. The pinned version is `wranglerVersion` in [`site-deploy.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site-deploy.yml) — check there rather than trusting a number copied into this page.
+**Preview upload fails (PR builds).** Requires Wrangler **≥ 4.21.0** for `--preview-alias`. The pinned version is `wranglerVersion` in [`site.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site.yml) — check there rather than trusting a number copied into this page.
 
-**Artifact download 404.** **Build Site** must upload artifact **`site`**; **Deploy Site** needs `actions: read`.
+**Artifact download 404.** The `build` job must upload artifact **`site`**; `deploy` downloads it in the same workflow run.
 
 **Stale `/admin/*` links.** The admin SPA was removed. A 404 will be returned.

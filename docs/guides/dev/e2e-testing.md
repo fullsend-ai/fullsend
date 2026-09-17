@@ -61,7 +61,7 @@ Required repository secrets:
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
-| `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (DEV) and `stage-mint` (STAGE) (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (DEV) and `stage-mint` (STAGE) (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from the Site workflow `CLOUDFLARE_*`) |
 | `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
@@ -80,9 +80,9 @@ After the environments exist, restrict `stage` to `main`:
 
 ### Cloudflare Worker mint BT credentials
 
-The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production site-deploy `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site-deploy.yml` (Worker `site`).
+The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production Site-workflow `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site.yml` (Worker `site`).
 
-Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from site-deploy credentials and intended only for this test path.
+Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from Site-workflow credentials and intended only for this test path.
 
 **STAGE environment:** The STAGE driver (`NewRepoPoolCFMintStage`) deploys a separate durable Worker **`stage-mint`** at `stage-mint.fullsend.sh` instead of using preview aliases on `mint-test`. The `TEST_CLOUDFLARE_API_TOKEN` must have permissions to manage the `stage-mint` Worker in addition to `mint-test`. If the Cloudflare account uses a Specified-Workers-only token policy, operators need a distinct Workers Edit token (for example `fullsend-ai/fullsend-stage-mint`) that covers the `stage-mint` Worker.
 
@@ -343,7 +343,7 @@ enrolled on a test mint, update the PEM secret there as well.
 Edit (or the Edit Cloudflare Workers template), store it as
 `TEST_CLOUDFLARE_API_TOKEN`, and keep `TEST_CLOUDFLARE_ACCOUNT_ID` aligned with
 the account that hosts Workers `mint-test` and `stage-mint`. The token must
-cover both Workers. Do not put the new value into site-deploy
+cover both Workers. Do not put the new value into the Site workflow
 `CLOUDFLARE_API_TOKEN`.
 
 **Installing on a new pool org:** Install each app via its public install

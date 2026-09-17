@@ -24,6 +24,11 @@ Date: 2026-04-15
 > unchanged, as is the Build Site / Deploy Site artifact contract. The public mint
 > Worker (`internal/dispatch/cf/workersrc/`, `mint.fullsend.sh`) is a separate
 > deployment and was never covered by this ADR.
+>
+> **Note (2026-09-17):** Site CI is a single workflow (`.github/workflows/site.yml`)
+> with `build` and `deploy` jobs. The `_bundle/` artifact contract, artifact name
+> `site`, and environments `site-preview` / `site-production` are unchanged. See
+> [`site-deployment.md`](../site-deployment.md).
 
 ## Status
 

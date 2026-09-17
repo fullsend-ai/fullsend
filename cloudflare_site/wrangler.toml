@@ -1,5 +1,5 @@
 # Cloudflare Worker + static assets. User Worker entry is worker/src/index.ts (stub passes through ASSETS).
-# Deploy: site-deploy.yml checks out the default branch (trusted TOML), downloads the Build Site artifact to _bundle/, copies only ./public/ and ./worker/ from it, then runs Wrangler here.
+# Deploy: site.yml checks out the default branch on PRs (trusted TOML), downloads the build artifact to _bundle/, copies only ./public/ and ./worker/ from it, then runs Wrangler here.
 # The workflow passes --name to match your account Worker name (GitHub variable CLOUDFLARE_PROJECT_NAME).
 # See: https://developers.cloudflare.com/workers/static-assets/
 
