@@ -117,7 +117,7 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 
 **Deploy job skipped.** Fork PRs skip `deploy` (no secrets). Same-repository PRs and `push` to `main` run `deploy` after a successful `build`.
 
-**`Could not determine Workers deployment URL`.** The workflow reads `deployment-url` from `cloudflare/wrangler-action`, then falls back to parsing Wrangler stdout/stderr for a `workers.dev` URL. Upgrade **`wranglerVersion`** in the workflow if Wrangler output format changed.
+**`Could not determine Workers deployment URL`.** For PR uploads the workflow prefers a `workers.dev` URL that contains the preview alias (`pr-<number>`) from Wrangler stdout/stderr. Otherwise it uses `deployment-url` from `cloudflare/wrangler-action`, then the first `workers.dev` URL in the logs. Upgrade **`wranglerVersion`** in the workflow if Wrangler output format changed.
 
 **Preview upload fails (PR builds).** Requires Wrangler **≥ 4.21.0** for `--preview-alias`. The pinned version is `wranglerVersion` in [`site.yml`](https://github.com/fullsend-ai/fullsend/blob/main/.github/workflows/site.yml) — check there rather than trusting a number copied into this page.
 

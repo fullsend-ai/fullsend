@@ -190,7 +190,7 @@ jobs:
       - name: Deploy to production (Workers + static assets)
         id: cf-prod
         if: github.event_name == 'push'
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           wranglerVersion: "4.128.0"
           workingDirectory: cloudflare_site
@@ -202,7 +202,7 @@ jobs:
       - name: Upload preview version (Workers + static assets)
         id: cf-preview
         if: github.event_name == 'pull_request'
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           wranglerVersion: "4.128.0"
           workingDirectory: cloudflare_site
@@ -225,14 +225,24 @@ jobs:
           ERR_PROD: ${{ steps.cf-prod.outputs.command-stderr }}
           OUT_PR: ${{ steps.cf-preview.outputs.command-output }}
           ERR_PR: ${{ steps.cf-preview.outputs.command-stderr }}
+          ALIAS_TOKEN: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || '' }}
         run: |
           set -euo pipefail
-          url="${URL_PROD:-}"
+          comb="${OUT_PROD:-}${ERR_PROD:-}${OUT_PR:-}${ERR_PR:-}"
+          url=""
+          # wrangler-action's deployment-url is the versioned hostname
+          # (https://<version-id>-site....workers.dev). Prefer the preview-alias
+          # URL from Wrangler output when this is a PR upload.
+          if [[ -n "${ALIAS_TOKEN:-}" ]]; then
+            url=$(printf '%s' "$comb" | grep -oE 'https://[a-zA-Z0-9._/?#&=%_-]+' | grep -E '\.workers\.dev(/|$)' | grep -F "$ALIAS_TOKEN" | head -1 || true)
+          fi
+          if [ -z "$url" ]; then
+            url="${URL_PROD:-}"
+          fi
           if [ -z "$url" ]; then
             url="${URL_PREVIEW:-}"
           fi
           if [ -z "$url" ]; then
-            comb="${OUT_PROD:-}${ERR_PROD:-}${OUT_PR:-}${ERR_PR:-}"
             url=$(printf '%s' "$comb" | grep -oE 'https://[a-zA-Z0-9._/?#&=%_-]+' | grep -E '\.workers\.dev(/|$)' | head -1 || true)
           fi
           if [ -z "$url" ]; then
