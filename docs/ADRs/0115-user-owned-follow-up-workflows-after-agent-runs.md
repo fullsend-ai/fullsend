@@ -116,3 +116,9 @@ installation mode only.
   never validates, so `workflow_run.conclusion` is the first filter.
 - Agents without a `validation_loop` schema publish only status; the guide says
   so, and the fleet agents gain a result contract only when they adopt a schema.
+- Consumers currently pay for discovery: an artifacts-API call to learn which
+  agent ran, a download of the full artifact including transcripts and logs,
+  and knowledge of each agent's result filename. A runner-written summary
+  artifact that carries the envelope and the validated result would collapse
+  that to one small download and a `jq` filter; it is tracked as a follow-up
+  in fullsend-ai/fullsend#7413 and does not change this decision.

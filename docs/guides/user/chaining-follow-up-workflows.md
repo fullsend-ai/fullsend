@@ -58,6 +58,12 @@ filtering on `workflow_run.conclusion == 'success'` is enough to skip it.
 The shim workflow completing raises a `workflow_run` event in your repository.
 That event is your trigger.
 
+> **Planned:** a runner-written `fullsend-summary-<agent>` artifact
+> ([#7413](https://github.com/fullsend-ai/fullsend/issues/7413)) will carry the
+> agent name, the subject (PR number, head SHA), the run status and the
+> validated result in one small file. Until it lands, consumers gate on the
+> artifacts API and read the result out of `fullsend-<agent>` as shown below.
+
 ## Steps
 
 ### 1. Make the result carry what the follow-up needs
@@ -161,6 +167,10 @@ follow-up, including runs where dispatch routed nothing (an unauthorized
 comment, an event no agent matches) and runs of other agents. The gate step is
 one API call; when no `fullsend-*` artifact exists, every later step is
 skipped and nothing is downloaded. Budget for one short job per shim run.
+With the planned summary artifact
+([#7413](https://github.com/fullsend-ai/fullsend/issues/7413)) the gate and the
+glob become a single download of `fullsend-summary-*` and a `jq` filter on
+`.agent`.
 
 ### 3. Act on the result
 
