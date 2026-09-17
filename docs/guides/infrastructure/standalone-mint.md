@@ -322,6 +322,28 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
+### Check status via the CLI
+
+If `FULLSEND_MINT_URL` is set (or you pass `--mint-url`), the CLI can
+query the mint's `/v1/status` endpoint using auto-discovered GitHub
+credentials — but only GitHub Actions OIDC succeeds against a standalone
+mint built per Step 3 above (`go build -o fullsend-mint .`, no
+`-tags github`): the `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`
+fallback always returns HTTP 401 unless the binary was compiled with
+`-tags github` and `StatusGitHubGroup` is set to a non-empty
+`ORG/TEAM` (see [Enabling optional
+validators](infrastructure-reference.md#status-endpoint)). Run it from
+within a GitHub Actions workflow to use OIDC:
+
+```bash
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+This reports the mint's version, enrolled organizations, configured
+roles, and workflow host repos — without requiring any GCP IAM roles.
+To verify locally without GitHub Actions OIDC, use the health endpoint
+above instead.
+
 ### Test from a GitHub Actions workflow
 
 Create a test workflow that requests a token for your custom role:
