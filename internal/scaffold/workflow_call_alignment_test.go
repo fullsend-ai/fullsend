@@ -1049,6 +1049,21 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+func TestActionRunDoesNotExposeWorkflowTokens(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+
+	s := string(content)
+	runStart := strings.Index(s, "    - name: Run fullsend\n")
+	require.NotEqual(t, -1, runStart)
+	runStep := s[runStart:]
+	if nextStep := strings.Index(runStep[1:], "\n    - name: "); nextStep >= 0 {
+		runStep = runStep[:nextStep+1]
+	}
+	assert.Contains(t, runStep, "GH_TOKEN: \"\"")
+	assert.Contains(t, runStep, "GITHUB_TOKEN: \"\"")
+}
+
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
 // reusable-dispatch.yml pass pr-head-sha to the action.
 func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {

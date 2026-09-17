@@ -4144,9 +4144,10 @@ func stripControlChars(s string) string {
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
 //
-// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
-// scripts and validation/preflight commands cannot mint their own tokens.
-// The parent harness process retains them for mintAgentToken. See #5832.
+// OIDC credential vars and GITHUB_TOKEN are stripped so user-authored
+// pre/post scripts and validation/preflight commands cannot mint their own
+// tokens or use the workflow token. The parent harness process retains OIDC
+// credentials for mintAgentToken. See #5832.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := append(os.Environ(), envToList(runnerEnv)...)
 	env := make([]string, 0, len(merged)+1)
@@ -4154,9 +4155,14 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars from child script env (#5832).
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
-			continue
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key := e[:i]
+			// Strip OIDC credential vars and the GitHub workflow token from
+			// user-authored child scripts. A minted GH_TOKEN remains available
+			// to the agent through its role-scoped runner environment.
+			if oidcDenyKeys[key] || key == "GITHUB_TOKEN" {
+				continue
+			}
 		}
 		env = append(env, e)
 	}

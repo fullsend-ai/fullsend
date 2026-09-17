@@ -319,6 +319,21 @@ func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
 	assert.True(t, hasLegit, "non-OIDC RunnerEnv var must survive")
 }
 
+func TestChildScriptEnv_StripsGitHubWorkflowToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "workflow-token")
+
+	env := childScriptEnv(map[string]string{
+		"GITHUB_TOKEN": "runner-token",
+		"SAFE_VAR":     "allowed",
+	}, "")
+
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		assert.NotEqual(t, "GITHUB_TOKEN", key, "workflow token must not reach child scripts")
+	}
+	assert.Contains(t, env, "SAFE_VAR=allowed")
+}
+
 func TestAgentSpanStartAttrs(t *testing.T) {
 	attrs := agentSpanStartAttrs(3, "code")
 	require.Len(t, attrs, 3)
