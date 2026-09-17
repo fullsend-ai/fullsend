@@ -74,6 +74,125 @@ func TestParseReviewResult_Findings(t *testing.T) {
 	assert.True(t, result.Findings[0].Actionable)
 }
 
+func TestParseReviewResult_RiskAssessment(t *testing.T) {
+	input := `{"body":"Review","action":"approve","risk_assessment":{"score":2,"level":"moderate","rationale":"Small blast radius"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	require.NotNil(t, result.RiskAssessment)
+	assert.Equal(t, 2, result.RiskAssessment.Score)
+	assert.Equal(t, "moderate", result.RiskAssessment.Level)
+	assert.Equal(t, "Small blast radius", result.RiskAssessment.Rationale)
+}
+
+func TestParseReviewResult_RiskAssessmentAbsent(t *testing.T) {
+	input := `{"body":"Review","action":"approve"}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_MalformedRiskAssessmentDoesNotDiscardResult(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":"oops"}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Equal(t, "approve", result.Action)
+	assert.Equal(t, "ok", result.Body)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+// TestParseReviewResult_EmptyRiskAssessmentObjectTreatedAsAbsent guards
+// against a successfully-decoded {} (or any object missing the ADR 0089
+// required score/level fields) being treated as a present risk assessment.
+// json.Unmarshal decodes {} into a zero-value RiskAssessment{} rather than
+// leaving the pointer nil, so parseReviewResult must reject it explicitly
+// the same way it rejects null and wrong-typed values.
+func TestParseReviewResult_EmptyRiskAssessmentObjectTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentMissingScoreAndLevelTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"rationale":"no score or level"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentOutOfRangeScoreTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":0,"level":"low"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+func TestParseReviewResult_RiskAssessmentUnknownLevelTreatedAsAbsent(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":3,"level":"unknown-level"}}`
+	result, err := parseReviewResult(input)
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+}
+
+// TestParseReviewResult_UnusableRiskAssessmentLevelSanitizedInWarning guards
+// against the unusable-risk_assessment WARNING line interpolating an
+// agent-authored level value raw. An unallowlisted level like
+// "::error::pwned" must never reach the GHA-visible stderr line except
+// through sanitizeRiskLevel, which replaces it with "unknown".
+func TestParseReviewResult_UnusableRiskAssessmentLevelSanitizedInWarning(t *testing.T) {
+	input := `{"body":"ok","action":"approve","risk_assessment":{"score":3,"level":"::error::pwned"}}`
+	var result ReviewResult
+	var err error
+	stderr := captureStderr(t, func() {
+		result, err = parseReviewResult(input)
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result.RiskAssessment)
+	assert.Contains(t, stderr, `level="unknown"`)
+	assert.NotContains(t, stderr, "::error::pwned")
+}
+
+// TestPostMissingRiskAssessment_PostsDiagnosticForEmptyRiskAssessmentObject
+// exercises the postMissingRiskAssessment path end-to-end for the {} case:
+// with the pre-fix behavior, RiskAssessment would be a non-nil zero-value
+// struct and this would silently skip the diagnostic instead of posting it.
+func TestPostMissingRiskAssessment_PostsDiagnosticForEmptyRiskAssessmentObject(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	parsed, err := parseReviewResult(`{"body":"ok","action":"approve","risk_assessment":{}}`)
+	require.NoError(t, err)
+	require.Nil(t, parsed.RiskAssessment)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, parsed, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
+func TestSanitizeRiskLevel(t *testing.T) {
+	tests := []struct {
+		level string
+		want  string
+	}{
+		{"low", "low"},
+		{"moderate", "moderate"},
+		{"elevated", "elevated"},
+		{"high", "high"},
+		{"critical", "critical"},
+		{"critical\n::add-mask::oops", "unknown"},
+		{"", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level, func(t *testing.T) {
+			assert.Equal(t, tt.want, sanitizeRiskLevel(tt.level))
+		})
+	}
+}
+
 func TestReviewActionToEvent(t *testing.T) {
 	tests := []struct {
 		action    string
@@ -1882,6 +2001,197 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		body := buildFallbackReviewBody("", nil)
 		assert.Equal(t, "", body)
 	})
+}
+
+func TestRiskAssessmentEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{name: "unset", val: "", want: true},
+		{name: "true", val: "true", want: true},
+		{name: "TRUE", val: "TRUE", want: true},
+		{name: "false", val: "false", want: false},
+		{name: "FALSE", val: "FALSE", want: false},
+		{name: "0", val: "0", want: false},
+		{name: "no", val: "no", want: false},
+		{name: "off", val: "off", want: false},
+		{name: "yes", val: "yes", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.val == "" {
+				t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "")
+			} else {
+				t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", tt.val)
+			}
+			assert.Equal(t, tt.want, riskAssessmentEnabled())
+		})
+	}
+}
+
+func TestPostMissingRiskAssessment_PostsDiagnosticWhenAbsent(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, missingRiskAssessmentMarker)
+	assert.Contains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
+func TestPostMissingRiskAssessment_SilentWhenPresent(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	parsed := ReviewResult{
+		Action:         "approve",
+		Body:           "ok",
+		RiskAssessment: &RiskAssessment{Score: 2, Level: "moderate", Rationale: "small"},
+	}
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, parsed, true, false, printer)
+
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestPostMissingRiskAssessment_SupersedesStaleDiagnosticWhenPresent(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	// A prior run posted the "unavailable this run" diagnostic. keepHistory
+	// is false here so the assertions below can check the resulting body
+	// directly, without needing to account for collapsed history blocks.
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, false, false, printer)
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	require.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Risk assessment unavailable this run")
+
+	// A later run on the same PR does produce a risk_assessment.
+	parsed := ReviewResult{
+		Action:         "approve",
+		Body:           "ok",
+		RiskAssessment: &RiskAssessment{Score: 2, Level: "moderate", Rationale: "small"},
+	}
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, parsed, false, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1, "the stale diagnostic should be updated in-place, not duplicated")
+	assert.Contains(t, comments[0].Body, missingRiskAssessmentMarker)
+	assert.Contains(t, comments[0].Body, "Risk assessment now present")
+	assert.NotContains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
+// TestPostMissingRiskAssessment_DoesNotOverwriteCommentQuotingMarker guards
+// against sticky.FindMarkedComment (Contains-based, pre-fix) selecting a
+// bot-authored review comment whose body happens to quote the diagnostic
+// marker string mid-body — e.g. a review finding that cites the literal
+// "<!-- fullsend:risk-assessment-missing -->" text, which both ADR 0089 and
+// this PR now document. Such a comment must be left untouched and the
+// diagnostic must be posted as a separate new comment.
+func TestPostMissingRiskAssessment_DoesNotOverwriteCommentQuotingMarker(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	reviewBody := reviewMarker + "\n## Review\n\nA finding cites " + missingRiskAssessmentMarker + " as an example of marker collision.\n"
+	_, err := fc.CreateIssueComment(context.Background(), "o", "r", 1, reviewBody)
+	require.NoError(t, err)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 2, "the diagnostic must be created as a new comment, not overwrite the review comment")
+	assert.Equal(t, reviewBody, comments[0].Body, "the review comment must be left untouched")
+	assert.Contains(t, comments[1].Body, missingRiskAssessmentMarker)
+	assert.Contains(t, comments[1].Body, "Risk assessment unavailable this run")
+}
+
+// TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker guards
+// against reintroducing the marker collision found in review: post-review.sh
+// (fullsend-ai/agents) locates the ADR 0089 score-card comment via
+// contains("<!-- fullsend:risk-assessment -->"). The missing-assessment
+// diagnostic marker must be neither equal to, nor a superstring/substring
+// of, that score-card marker — otherwise the score-card lookup (which still
+// matches by Contains on the agents-repo side) could pick up this
+// diagnostic, or vice versa.
+func TestMissingRiskAssessmentMarker_DoesNotCollideWithScoreCardMarker(t *testing.T) {
+	const scoreCardMarker = "<!-- fullsend:risk-assessment -->"
+	assert.NotContains(t, missingRiskAssessmentMarker, scoreCardMarker)
+	assert.NotContains(t, scoreCardMarker, missingRiskAssessmentMarker)
+}
+
+func TestPostMissingRiskAssessment_SilentWhenDisabled(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "false")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestPostMissingRiskAssessment_DefaultEnabledWhenUnset(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Risk assessment unavailable this run")
+}
+
+func TestPostMissingRiskAssessment_DryRunDoesNotPost(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, true, printer)
+
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestPostMissingRiskAssessment_ListErrorDoesNotPanic(t *testing.T) {
+	t.Setenv("REVIEW_RISK_ASSESSMENT_ENABLED", "true")
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["ListIssueComments"] = fmt.Errorf("boom")
+	printer := ui.New(io.Discard)
+
+	postMissingRiskAssessment(context.Background(), fc, "o", "r", 1, ReviewResult{Action: "approve", Body: "ok"}, true, false, printer)
+
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestSanitizeReviewResult_RedactsSecretsInRiskRationale(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	r := ReviewResult{
+		Body:   "Looks good",
+		Action: "approve",
+		RiskAssessment: &RiskAssessment{
+			Score:     3,
+			Level:     "elevated",
+			Rationale: "token " + secret + " leaked",
+		},
+	}
+	sanitized := sanitizeReviewResult(r, printer)
+	require.NotNil(t, sanitized.RiskAssessment)
+	assert.NotContains(t, sanitized.RiskAssessment.Rationale, "ghp_FAKEtest", "secret should be redacted from risk rationale")
+	assert.Contains(t, sanitized.RiskAssessment.Rationale, "token", "non-secret text should remain")
 }
 
 func TestNewPostReviewCmd_FullsendDirDefaultsToEnvVar(t *testing.T) {

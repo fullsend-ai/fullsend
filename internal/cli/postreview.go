@@ -25,6 +25,31 @@ import (
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
 
+// missingRiskAssessmentMarker identifies the sticky diagnostic posted when
+// risk_assessment was expected but absent. This is deliberately distinct
+// from "<!-- fullsend:risk-assessment -->", the marker post-review.sh (in
+// fullsend-ai/agents) uses to find and update the ADR 0089 score-card
+// comment. sticky.FindMarkedComment matches by body prefix, so reusing
+// that marker (or a value containing it) here would still risk this CLI
+// selecting and overwriting the score card instead of its own diagnostic
+// if the two comments ever collapsed into one body. See ADR 0089's
+// "Silent-miss observability" section.
+const missingRiskAssessmentMarker = "<!-- fullsend:risk-assessment-missing -->"
+
+// missingRiskAssessmentBody is posted when risk assessment was expected
+// (REVIEW_RISK_ASSESSMENT_ENABLED, default true per ADR 0089) but the
+// review result omitted the field. It is informational only.
+const missingRiskAssessmentBody = "**Risk assessment unavailable this run**\n\n" +
+	"The review agent was expected to produce a risk assessment but the result JSON did not include one. This is informational only and does not change the review verdict.\n\n" +
+	"Check the workflow log for `fullsend:persona:` markers on `name=risk-assessment` to distinguish never-dispatched from dispatched-but-lost from errored."
+
+// clearedRiskAssessmentBody supersedes a previously-posted
+// missingRiskAssessmentBody diagnostic once a later run on the same PR
+// does produce a risk_assessment, so the sticky comment stops describing
+// a run that in fact succeeded.
+const clearedRiskAssessmentBody = "**Risk assessment now present**\n\n" +
+	"A previous run on this PR was missing a risk assessment and posted a diagnostic here. The current run includes one; see the review comment for details."
+
 // StaleHeadExitCode is the process exit code used when a review is
 // discarded because the PR HEAD moved after the agent reviewed it.
 // post-review.sh uses this to detect stale-head outcomes and
@@ -61,9 +86,13 @@ a <details> block, and edits in-place. Stale formal reviews by the
 same user are minimized before submitting a new one.
 
 The --result flag accepts a file path containing a JSON review result
-(with action, body, and optionally head_sha fields), or reads from
-stdin if set to "-". Plain text input is treated as a comment-only
-review.
+(with action, body, and optionally head_sha and risk_assessment fields),
+or reads from stdin if set to "-". Plain text input is treated as a
+comment-only review.
+
+When REVIEW_RISK_ASSESSMENT_ENABLED is true (the ADR 0089 default) and
+the result JSON omits risk_assessment, a sticky diagnostic comment is
+posted so the omission is never silent.
 
 When --head-sha is provided (or head_sha is in the JSON), the CLI
 verifies that the PR HEAD still matches before posting. If the HEAD
@@ -148,10 +177,14 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 			}
 
 			// Failure action: post a failure notice as a sticky comment,
-			// skip formal review.
+			// skip formal review. Still surface a missing risk assessment
+			// so a failed run is not a silent omission (#7387).
 			if strings.ToLower(parsed.Action) == "failure" {
+				postMissingRiskAssessment(cmd.Context(), client, owner, repoName, pr, parsed, resolvedKeepHistory, dryRun, printer)
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
+
+			postMissingRiskAssessment(cmd.Context(), client, owner, repoName, pr, parsed, resolvedKeepHistory, dryRun, printer)
 
 			commentURL, err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer)
 			if err != nil {
@@ -184,11 +217,21 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 // ReviewResult represents a parsed review result file.
 type ReviewResult struct {
-	Body     string          `json:"body"`
-	Action   string          `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
-	HeadSHA  string          `json:"head_sha"` // commit SHA the agent reviewed
-	Reason   string          `json:"reason"`   // failure reason (when action is "failure")
-	Findings []ReviewFinding `json:"findings"`
+	Body           string          `json:"body"`
+	Action         string          `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
+	HeadSHA        string          `json:"head_sha"` // commit SHA the agent reviewed
+	Reason         string          `json:"reason"`   // failure reason (when action is "failure")
+	Findings       []ReviewFinding `json:"findings"`
+	RiskAssessment *RiskAssessment `json:"risk_assessment,omitempty"`
+}
+
+// RiskAssessment is the optional PR-level score from the risk-assessment
+// sub-agent (ADR 0089). Absence is not an error; when the feature flag is
+// on, post-review posts a diagnostic instead of staying silent (#7387).
+type RiskAssessment struct {
+	Score     int    `json:"score"`
+	Level     string `json:"level"`
+	Rationale string `json:"rationale"`
 }
 
 // ReviewFinding is the structured form emitted by the review agent.
@@ -273,6 +316,110 @@ The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. T
 		return fmt.Errorf("posting stale-head notice: %w", err)
 	}
 	return &staleHeadError{reviewedSHA: reviewedSHA, currentSHA: currentSHA}
+}
+
+// riskAssessmentEnabled reports whether the ADR 0089 risk-assessment
+// pre-pass is expected this run. Empty or unset follows the default true.
+func riskAssessmentEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("REVIEW_RISK_ASSESSMENT_ENABLED")))
+	return v != "false" && v != "0" && v != "no" && v != "off"
+}
+
+// sanitizeRiskLevel allowlists a risk-assessment level against the ADR 0089
+// enum before it is interpolated into any printer output. Level comes from
+// agent-authored JSON and, unlike Rationale, is not run through the output
+// security pipeline, so an unrecognized value is replaced with a fixed
+// placeholder rather than passed through.
+func sanitizeRiskLevel(level string) string {
+	switch level {
+	case "low", "moderate", "elevated", "high", "critical":
+		return level
+	default:
+		return "unknown"
+	}
+}
+
+// hasUsableRiskAssessment reports whether ra carries the ADR 0089 required
+// fields (score in 1-5, level in the score-to-level enum) rather than being
+// a zero-value struct produced by decoding {} or an object missing those
+// keys. parseReviewResult uses this to decide whether a successfully-parsed
+// risk_assessment value counts as present.
+func hasUsableRiskAssessment(ra RiskAssessment) bool {
+	return ra.Score >= 1 && ra.Score <= 5 && sanitizeRiskLevel(ra.Level) != "unknown"
+}
+
+// postMissingRiskAssessment posts a sticky diagnostic when the feature
+// flag is on and the result omitted risk_assessment. Failures are logged
+// rather than returned so they cannot block the review itself.
+func postMissingRiskAssessment(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, keepHistory, dryRun bool, printer *ui.Printer) {
+	if !riskAssessmentEnabled() {
+		printer.StepInfo("Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED); skipping diagnostic")
+		return
+	}
+	if parsed.RiskAssessment != nil {
+		printer.StepInfo(fmt.Sprintf("Risk assessment present: %s (%d/5)", sanitizeRiskLevel(parsed.RiskAssessment.Level), parsed.RiskAssessment.Score))
+		clearMissingRiskAssessmentDiagnostic(ctx, client, owner, repo, pr, keepHistory, dryRun, printer)
+		return
+	}
+
+	printer.StepWarn("Risk assessment expected but absent from review result; posting diagnostic")
+
+	body := missingRiskAssessmentBody
+	pipeline := security.OutputPipeline()
+	if result := pipeline.Scan(body); result.Sanitized != "" {
+		body = result.Sanitized
+	}
+
+	cfg := sticky.Config{
+		Marker:      missingRiskAssessmentMarker,
+		DryRun:      dryRun,
+		KeepHistory: keepHistory,
+	}
+	if _, err := sticky.Post(ctx, client, owner, repo, pr, body, cfg, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to post risk-assessment diagnostic: %v", err))
+		return
+	}
+	printer.StepDone("Risk-assessment diagnostic posted")
+}
+
+// clearMissingRiskAssessmentDiagnostic supersedes a previously-posted
+// missing-risk-assessment diagnostic once a later run on the same PR does
+// produce a risk_assessment. It only updates an existing diagnostic
+// sticky and never creates one, since a present risk assessment is the
+// success path and does not warrant a new comment on its own. Failures
+// are logged rather than returned so they cannot block the review.
+func clearMissingRiskAssessmentDiagnostic(ctx context.Context, client forge.Client, owner, repo string, pr int, keepHistory, dryRun bool, printer *ui.Printer) {
+	if dryRun {
+		printer.StepInfo("Dry run — would check for a stale risk-assessment diagnostic to supersede")
+		return
+	}
+
+	botUser, err := client.GetAuthenticatedUser(ctx)
+	if err != nil {
+		printer.StepInfo("Could not determine bot user, skipping stale risk-assessment diagnostic check")
+		return
+	}
+
+	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
+	if err != nil {
+		printer.StepInfo(fmt.Sprintf("Could not list comments (%v), skipping stale risk-assessment diagnostic check", err))
+		return
+	}
+
+	if sticky.FindMarkedComment(comments, missingRiskAssessmentMarker, botUser) == nil {
+		return
+	}
+
+	cfg := sticky.Config{
+		Marker:      missingRiskAssessmentMarker,
+		DryRun:      dryRun,
+		KeepHistory: keepHistory,
+	}
+	if _, err := sticky.Post(ctx, client, owner, repo, pr, clearedRiskAssessmentBody, cfg, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to supersede stale risk-assessment diagnostic: %v", err))
+		return
+	}
+	printer.StepDone("Stale risk-assessment diagnostic superseded")
 }
 
 // postFailureNotice posts a failure comment as a sticky comment.
@@ -800,7 +947,28 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 		}
 	}
 
+	if r.RiskAssessment != nil && r.RiskAssessment.Rationale != "" {
+		result := pipeline.Scan(r.RiskAssessment.Rationale)
+		if result.Sanitized != "" {
+			r.RiskAssessment.Rationale = result.Sanitized
+		}
+	}
+
 	return r
+}
+
+// reviewResultRaw mirrors ReviewResult but decodes risk_assessment as raw
+// JSON. That keeps a malformed risk_assessment value (the field itself, or
+// one of its nested fields, having the wrong type) from failing the parse
+// for the whole result — a review with a valid action/body/findings should
+// still post even if risk_assessment alone is garbled.
+type reviewResultRaw struct {
+	Body           string          `json:"body"`
+	Action         string          `json:"action"`
+	HeadSHA        string          `json:"head_sha"`
+	Reason         string          `json:"reason"`
+	Findings       []ReviewFinding `json:"findings"`
+	RiskAssessment json.RawMessage `json:"risk_assessment,omitempty"`
 }
 
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.
@@ -808,9 +976,32 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 // Returns an error if the JSON is valid but the body field is empty
 // (unless the action is "failure", which may omit the body).
 func parseReviewResult(input string) (ReviewResult, error) {
-	var result ReviewResult
-	if err := json.Unmarshal([]byte(input), &result); err != nil {
+	var raw reviewResultRaw
+	if err := json.Unmarshal([]byte(input), &raw); err != nil {
 		return ReviewResult{Body: input, Action: "comment"}, nil
+	}
+	result := ReviewResult{
+		Body:     raw.Body,
+		Action:   raw.Action,
+		HeadSHA:  raw.HeadSHA,
+		Reason:   raw.Reason,
+		Findings: raw.Findings,
+	}
+	if len(raw.RiskAssessment) > 0 && string(raw.RiskAssessment) != "null" {
+		var ra RiskAssessment
+		if err := json.Unmarshal(raw.RiskAssessment, &ra); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is malformed, ignoring: %v\n", err)
+		} else if !hasUsableRiskAssessment(ra) {
+			// A successfully-decoded object that omits (or garbles) the
+			// ADR 0089 required fields — e.g. {} — decodes into a
+			// zero-value struct rather than leaving this pointer nil.
+			// Treat it the same as an absent risk_assessment so
+			// postMissingRiskAssessment posts the "unavailable" diagnostic
+			// instead of treating a zero-value struct as a present one.
+			fmt.Fprintf(os.Stderr, "WARNING: review result risk_assessment is missing score/level (score=%d level=%q), treating as absent\n", ra.Score, sanitizeRiskLevel(ra.Level))
+		} else {
+			result.RiskAssessment = &ra
+		}
 	}
 	if result.Body == "" && strings.ToLower(result.Action) != "failure" {
 		return ReviewResult{}, fmt.Errorf("review result JSON has empty body field")

@@ -15,7 +15,7 @@ The review agent is triggered when a PR is opened or updated. It follows the sam
 1. **Pre-script** validates inputs and fetches PR metadata.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** posts the review on the PR.
+4. **Post-script** posts the review on the PR. When `REVIEW_RISK_ASSESSMENT_ENABLED` is on (the default) and the result JSON omits `risk_assessment`, `fullsend post-review` posts a sticky diagnostic (`Risk assessment unavailable this run`) so a missed risk-assessment pre-pass is never silent. Workflow logs also carry `fullsend:persona:` invoke/complete/error/reject/skip markers for each named persona.
 
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
 
@@ -85,14 +85,28 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_RISK_ASSESSMENT_ENABLED` | Gates the ADR 0089 risk-assessment pre-pass and the missing-assessment diagnostic. When on and the result JSON omits `risk_assessment`, `fullsend post-review` posts a sticky "Risk assessment unavailable this run" comment. | `true` | `true`/`false` (also accepts `0`/`no`/`off` as false) |
 
-Set this in the harness's `env.sandbox` (the upstream default lives in
-`harness/review.yaml`). To override per repo or org, use `base:`
-composition rather than the CI workflow `env:` block — workflow `env:`
-is reserved for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
+`REVIEW_FINDING_SEVERITY_THRESHOLD` is read inside the review agent's
+sandbox, so set it in the harness's `env.sandbox` (the upstream default
+lives in `harness/review.yaml`).
+
+`REVIEW_RISK_ASSESSMENT_ENABLED` is different: it is read independently in
+two separate execution contexts. The review orchestrator reads it from
+`env.sandbox` to decide whether to dispatch the ADR 0089 risk-assessment
+pre-pass at all. `fullsend post-review` separately reads it from the
+runner process's own environment (`env.runner`) to decide whether to post
+the missing-assessment diagnostic. Setting it only in `env.runner`
+suppresses the diagnostic but still dispatches the persona (spending
+tokens on a disabled feature); setting it only in `env.sandbox` stops
+dispatch but leaves the runner-side default of `true` in effect, so the
+diagnostic still fires on every run. Fully enabling or disabling the
+feature requires setting the variable consistently in both places.
+
+To override either variable per repo or org, use `base:` composition
+rather than the CI workflow `env:` block — workflow `env:` is reserved
+for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
 for details on harness composition and workflow-env conventions).
-The post-script reads the value from the runner environment directly —
-no separate configuration is needed.
 
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as

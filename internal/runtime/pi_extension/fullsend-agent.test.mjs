@@ -1181,3 +1181,191 @@ test("childArgs: non-persona dispatch names session dir with agent prefix", () =
   assert.ok(sessionDirIdx >= 0);
   assert.ok(args[sessionDirIdx + 1].endsWith("/agent-2"), `session dir should use agent prefix: ${args[sessionDirIdx + 1]}`);
 });
+
+function personaLines(logs) {
+  return logs.filter((l) => l.includes("fullsend:persona:"));
+}
+
+test("persona lifecycle logs invoke then complete", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, false, res.error);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:invoke name=correctness seq=1 model=anthropic-vertex\/claude-opus-4-6/.test(l)), logs.join("\n"));
+  assert.ok(markers.some((l) => /fullsend:persona:complete name=correctness seq=1 stop=stop/.test(l)), logs.join("\n"));
+  assert.equal(markers.filter((l) => l.includes("fullsend:persona:error")).length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("persona lifecycle logs error on child failure", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "crash", subagent_type: "style" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:invoke name=style/.test(l)), logs.join("\n"));
+  assert.ok(markers.some((l) => /fullsend:persona:error name=style/.test(l) && /error=true/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown persona logs reject", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "nonexistent" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs);
+  assert.ok(markers.some((l) => /fullsend:persona:reject name=nonexistent/.test(l)), logs.join("\n"));
+  assert.equal(markers.filter((l) => l.includes("fullsend:persona:invoke")).length, 0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("skipped persona logs reject", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.skippedPersonas = { locked: "declares an empty tool set" };
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run({ prompt: "ok", subagent_type: "locked" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(res.isError, true);
+  assert.ok(personaLines(logs).some((l) => /fullsend:persona:reject name=locked/.test(l) && /empty tool set/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// subagent_type is caller-controlled (an orchestrator dispatching on an
+// agent's behalf) and reaches logPersona's name= field via the "unknown
+// persona" reject path without ever passing a name-shape check. A value
+// containing "::"-delimited GHA workflow-command syntax must not reach the
+// workflow log unbroken (#7387 follow-up).
+test("unknown persona reject escapes workflow-command syntax in name", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "::error::pwned" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.length > 0, logs.join("\n"));
+  for (const l of markers) assert.ok(!l.includes("::error::"), `marker line must not contain an unbroken :: sequence: ${l}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("unknown persona reject decodes URL-encoded newline in name", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run(
+    { prompt: "ok", subagent_type: "bad%0Aname" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.some((l) => /name="bad name"/.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The skipped-persona reason string is config-controlled (bootstrap logs
+// the reason a sub-agents/*.md file failed to register) and reaches
+// logPersona's reason= field through the reject path's error message.
+test("skipped persona reject escapes workflow-command syntax in reason", async () => {
+  const { dir, manifest } = fixture();
+  manifest.agent.skippedPersonas = { locked: "::error::pwned" };
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const res = await tool.run({ prompt: "ok", subagent_type: "locked" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(res.isError, true);
+  const markers = personaLines(logs).filter((l) => l.includes("fullsend:persona:reject"));
+  assert.ok(markers.length > 0, logs.join("\n"));
+  for (const l of markers) assert.ok(!l.includes("::error::"), `marker line must not contain an unbroken :: sequence: ${l}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("anonymous child does not emit persona lifecycle lines", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run({ prompt: "ok" }, { parentModel: "anthropic-vertex/claude-sonnet-4-6" });
+  assert.equal(personaLines(logs).length, 0, logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("shutdown logs skip for never-dispatched personas", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  tool.shutdown();
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.ok(skips.some((l) => /name=style reason=never-dispatched/.test(l)), logs.join("\n"));
+  assert.equal(skips.filter((l) => /name=correctness/.test(l)).length, 0, "dispatched persona must not also skip");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// personaSkipNameRe is the shared grep pattern for the name= field of a
+// fullsend:persona:skip marker line: either a bare token or a double-quoted
+// string. The Go runtime's test suite (pi_personas_test.go,
+// TestResolvePersonaModels_SkipMarkerNameMatchesSharedRegex) applies the
+// identical pattern to both of its fullsend:persona:skip emission sites,
+// so this one regex is proven to match every emission site — the two in
+// Go and this JS emitter — rather than each site needing its own scraper
+// rule (#7387 follow-up).
+const personaSkipNameRe = /fullsend:persona:skip name=("(?:[^"\\]|\\.)*"|\S+)/;
+
+test("logPersona name field matches the shared skip-name regex", async () => {
+  const { dir, manifest } = personaFixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  await tool.run(
+    { prompt: "ok", subagent_type: "correctness" },
+    { parentModel: "anthropic-vertex/claude-sonnet-4-6" },
+  );
+  tool.shutdown();
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.ok(skips.some((l) => personaSkipNameRe.test(l)), logs.join("\n"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A persona queued behind maxConcurrent has already entered run() — it must
+// not be mislabeled never-dispatched by shutdown's registered-persona sweep,
+// and its own eventual skip must carry a reason that says it was aborted,
+// not that it was never attempted (#7387).
+test("shutdown does not mislabel a persona queued behind maxConcurrent as never-dispatched", async () => {
+  const { manifest } = personaFixture();
+  manifest.agent.maxConcurrent = 1;
+  const { spawn, children } = fakeSpawn();
+  const logs = [];
+  const tool = createAgentTool(manifest, { spawn, log: (m) => logs.push(m) });
+  const running = tool.run({ prompt: "ok", subagent_type: "correctness" }, {});
+  const queued = tool.run({ prompt: "ok", subagent_type: "style" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the second persona call is queued, not spawned");
+
+  tool.shutdown();
+  const queuedRes = await queued;
+  assert.equal(queuedRes.isError, true);
+  assert.equal(queuedRes.stopReason, "aborted");
+
+  const skips = personaLines(logs).filter((l) => l.includes("fullsend:persona:skip"));
+  assert.equal(skips.filter((l) => /name=style/.test(l)).length, 1, "queued persona logs exactly one skip");
+  assert.ok(!skips.some((l) => /name=style\b.*reason=never-dispatched/.test(l)), logs.join("\n"));
+  assert.ok(skips.some((l) => /name=style\b.*reason=aborted/.test(l)), logs.join("\n"));
+
+  children[0].child.finish(okStream("done"));
+  await running;
+});

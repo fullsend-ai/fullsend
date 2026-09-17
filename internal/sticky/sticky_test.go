@@ -61,6 +61,22 @@ func TestFindMarkedComment_Empty(t *testing.T) {
 	assert.Nil(t, found)
 }
 
+// TestFindMarkedComment_RequiresPrefixNotSubstring guards against
+// reintroducing an unanchored substring match. Post always writes
+// marker+"\n"+body, so a legitimate marked comment's body always starts
+// with the marker. A bot-authored comment under a *different* marker that
+// merely quotes this marker string somewhere in its body (e.g. a review
+// finding citing the exact diagnostic marker text) must not be selected or
+// overwritten.
+func TestFindMarkedComment_RequiresPrefixNotSubstring(t *testing.T) {
+	comments := []forge.IssueComment{
+		{ID: 1, Body: "<!-- fullsend:other -->\nSee finding about <!-- fullsend:test --> collision.", Author: "bot"},
+	}
+
+	found := FindMarkedComment(comments, "<!-- fullsend:test -->", "bot")
+	assert.Nil(t, found, "marker embedded mid-body must not match; only a body prefix should")
+}
+
 func TestBuildUpdatedBody_CollapsesOldContent(t *testing.T) {
 	oldBody := "<!-- fullsend:test -->\nOld findings."
 	newBody := "<!-- fullsend:test -->\nNew findings."

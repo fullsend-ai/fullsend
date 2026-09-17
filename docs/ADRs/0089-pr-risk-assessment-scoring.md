@@ -156,6 +156,21 @@ The protected-path check remains the sole blocking mechanism.
 
 **Feature flag:** `REVIEW_RISK_ASSESSMENT_ENABLED` env var, default `true`.
 
+**Silent-miss observability ([#7387](https://github.com/fullsend-ai/fullsend/issues/7387)):**
+the pi Agent tool logs `fullsend:persona:{invoke,complete,error,reject,skip}`
+markers for every named persona (including `risk-assessment`). When the flag is
+on and the result JSON omits `risk_assessment`, `fullsend post-review` posts a
+sticky diagnostic (`Risk assessment unavailable this run`) instead of staying
+silent about the missing assessment. Risk level remains informational and
+does not gate the review outcome.
+
+This diagnostic is a separate sticky comment identified by its own marker
+(`<!-- fullsend:risk-assessment-missing -->`), distinct from the
+`<!-- fullsend:risk-assessment -->` marker `post-review.sh` uses to find and
+update the score-card comment above. The two markers must not overlap as
+substrings of one another, since comment lookup matches by substring
+containment rather than an exact or prefix match.
+
 ## Consequences
 
 - Review pipeline gains a quantitative risk signal visible via labels and PR

@@ -50,6 +50,45 @@ export const RESULT_MAX_BYTES = 64 * 1024;
 const TRUNCATED_MARKER = "\n[truncated]";
 const STDERR_TAIL_BYTES = 4 * 1024;
 const LOG_PREFIX = "[fullsend-agent]";
+// ANSI_OSC_RE matches ANSI CSI sequences, OSC sequences, and charset
+// designators, mirroring the Go runtime's ansiEscRe (internal/runtime/sanitize.go).
+const ANSI_OSC_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g;
+
+// sanitizePersonaLogField mirrors the Go runtime's sanitizeOutput
+// substitution rules (internal/runtime/sanitize.go) for agent-controlled
+// values interpolated into fullsend:persona:<action> lines: strip
+// ANSI/OSC escape sequences, break "::" pairs so a workflow log cannot
+// parse a GHA workflow command out of the text, replace %0A/%0a/%0D/%0d
+// encoded-newline sequences, and replace remaining control characters
+// with a space. subagent_type, reject/skip reasons, model, and stopReason
+// all originate from agent- or persona-file-controlled text, none of
+// which is validated against ValidSubagentKey by the time it reaches here.
+function sanitizePersonaLogField(value) {
+  let s = value.replace(ANSI_OSC_RE, "");
+  // Fixed point, same as the Go implementation: a single non-overlapping
+  // pass can reconstitute "::" at the seam of two replacements.
+  while (s.includes("::")) s = s.split("::").join(": :");
+  for (const enc of ["%0A", "%0a", "%0D", "%0d"]) s = s.split(enc).join(" ");
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    out += (cp >= 0x20 && cp < 0x7f) || cp > 0x9f ? ch : " ";
+  }
+  return out.trim();
+}
+
+// logPersona emits a grep-stable lifecycle line so a workflow log can tell
+// invoke / complete / error / reject / skip apart for a named persona
+// (fullsend#7387). Values that contain whitespace are JSON-quoted.
+function logPersona(log, action, fields) {
+  const bits = [`${LOG_PREFIX} fullsend:persona:${action}`];
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === undefined || val === null || val === "") continue;
+    const safe = sanitizePersonaLogField(String(val));
+    bits.push(`${key}=${/\s/.test(safe) ? JSON.stringify(safe) : safe}`);
+  }
+  log(bits.join(" "));
+}
 const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const DEFAULT_THINKING = "medium";
@@ -488,6 +527,16 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
   let seq = 0;
   let active = 0;
+  // dispatchedPersonas records registered personas this session actually
+  // attempted (invoke or reject). Shutdown then logs skip for the rest.
+  const dispatchedPersonas = new Set();
+  // startedPersonas records registered personas whose run() has been entered
+  // (lookupPersona matched), including ones still queued behind
+  // maxConcurrent. Shutdown consults this — not dispatchedPersonas — to
+  // decide "never-dispatched": a queued call has started but has not yet
+  // invoked, rejected, or been skipped, so it must not be double-counted as
+  // never attempted (#7387).
+  const startedPersonas = new Set();
   // waiters are dispatches queued behind maxConcurrent. Each is an object
   // so shutdown (and an abort while queued) can take a specific one out of
   // the queue instead of only ever releasing the head.
@@ -701,6 +750,20 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     // Persona dispatch (#7031): when subagent_type names a registered persona,
     // use its resolved model and log if the caller also supplied a model arg.
     const persona = lookupPersona(agent, subagentType);
+    const personaName = subagentType.toLowerCase();
+    // Mark the persona as started as soon as it's matched, before the
+    // dispatch is queued (await acquire() below): a shutdown while queued
+    // must not mislabel this call "never-dispatched" (#7387).
+    if (persona) startedPersonas.add(personaName);
+    // rejectNamed logs a grep-stable reject marker for named personas
+    // (registered, skipped, or unknown) so a miss is never silent (#7387).
+    const rejectNamed = (error, model = "") => {
+      if (personaName) {
+        logPersona(log, "reject", { name: personaName, seq: id, reason: capBytes(error, 300) });
+      }
+      if (persona) dispatchedPersonas.add(personaName);
+      return { seq: id, isError: true, error, text: "", stopReason: "rejected", model };
+    };
     let modelSpec;
     if (persona) {
       modelSpec = typeof persona.model === "string" ? persona.model.trim() : "";
@@ -714,26 +777,26 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         try {
           modelSpec = resolveModel(agent, "", parentModel);
         } catch (err) {
-          return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
+          return rejectNamed(err.message);
         }
         if (!modelSpec) {
           // Structural guard: falling through to the shared resolve below
           // would consult params.model, and a persona never takes its
           // model from the caller.
-          return { seq: id, isError: true, error: `persona "${subagentType}" has no model and this run reports none to inherit`, text: "", stopReason: "rejected", model: "" };
+          return rejectNamed(`persona "${subagentType}" has no model and this run reports none to inherit`);
         }
       }
     } else if (subagentType !== "" && agent?.skippedPersonas?.[subagentType.toLowerCase()]) {
       // A persona file that did not register at Bootstrap: say why rather
       // than run the name as an anonymous child with the parent's tools.
-      return { seq: id, isError: true, error: `subagent_type "${subagentType}" names a persona that was not registered: ${agent.skippedPersonas[subagentType.toLowerCase()]}`, text: "", stopReason: "rejected", model: "" };
+      return rejectNamed(`subagent_type "${subagentType}" names a persona that was not registered: ${agent.skippedPersonas[subagentType.toLowerCase()]}`);
     } else if (subagentType !== "" && !CLAUDE_BUILTIN_AGENT_TYPES.has(subagentType.toLowerCase())) {
       // Unknown non-empty type: reject when personas are registered (the
       // caller likely misspelled a persona name); otherwise accept for
       // forward compatibility.
       const names = registeredPersonaNames(agent);
       if (names.length > 0) {
-        return { seq: id, isError: true, error: `subagent_type "${subagentType}" is not a registered persona; available: ${names.join(", ")}`, text: "", stopReason: "rejected", model: "" };
+        return rejectNamed(`subagent_type "${subagentType}" is not a registered persona; available: ${names.join(", ")}`);
       }
     }
     if (!modelSpec) {
@@ -744,6 +807,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       }
     }
     if (typeof params?.prompt !== "string" || params.prompt.trim() === "") {
+      if (persona) return rejectNamed("prompt is required", modelSpec);
       return { seq: id, isError: true, error: "prompt is required", text: "", stopReason: "rejected", model: modelSpec };
     }
     const cancelled = () => {
@@ -751,8 +815,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       if (signal?.aborted) return { seq: id, isError: true, error: "the tool call was aborted", text: "", stopReason: "aborted", model: modelSpec };
       return null;
     };
+    const skipNamed = (res, reason) => {
+      if (persona && !dispatchedPersonas.has(personaName)) {
+        dispatchedPersonas.add(personaName);
+        logPersona(log, "skip", { name: personaName, seq: id, reason });
+      }
+      return res;
+    };
     let early = cancelled();
-    if (early) return early;
+    if (early) return skipNamed(early, early.stopReason);
     const tools = childTools(agent, params?.subagent_type);
     // The ticket carries the queue entry (before a slot is free) and then
     // the running child, so an abort reaches whichever stage the dispatch
@@ -774,15 +845,20 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         // Only a ticket that was granted a slot gives one back; one that was
         // evicted from the queue never held one.
         if (ticket.acquired) release();
-        return early;
+        return skipNamed(early, early.stopReason);
       }
       try {
         const drift = manifestDrift();
         if (drift) {
+          if (persona) return rejectNamed(drift, modelSpec);
           return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
         }
         log(`${LOG_PREFIX} #${id}${persona ? ` [${subagentType}]` : ""} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
-        outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? subagentType.trim().toLowerCase() : "");
+        if (persona) {
+          dispatchedPersonas.add(personaName);
+          logPersona(log, "invoke", { name: personaName, seq: id, model: modelSpec });
+        }
+        outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? personaName : "");
       } finally {
         release();
       }
@@ -817,6 +893,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     const isError = error !== "";
     if (droppedLines > 0) log(`${LOG_PREFIX} #${id} dropped ${droppedLines} stdout line(s) over ${MAX_STDOUT_LINE_CHARS} chars`);
     log(`${LOG_PREFIX} #${id} done ${durationMs}ms ${stopReason || "unknown"}`);
+    if (persona) {
+      logPersona(log, isError ? "error" : "complete", {
+        name: personaName,
+        seq: id,
+        stop: stopReason || "unknown",
+        duration_ms: durationMs,
+        ...(isError ? { error: "true" } : {}),
+      });
+    }
     recordUsage({
       seq: id,
       // The persona this child ran as, so a cost report can say which
@@ -836,6 +921,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
 
   const shutdown = () => {
     shuttingDown = true;
+    for (const name of registeredPersonaNames(agent)) {
+      const key = name.toLowerCase();
+      // A persona whose run() already started (e.g. still queued behind
+      // maxConcurrent) is not "never-dispatched" — it logs its own skip
+      // reason via skipNamed once cancelled() observes shuttingDown.
+      if (startedPersonas.has(key)) continue;
+      dispatchedPersonas.add(key);
+      logPersona(log, "skip", { name: key, reason: "never-dispatched" });
+    }
     for (const handle of running) handle.terminate();
     // Queued dispatches would otherwise never settle: nothing will call
     // release() for them once the in-flight children are gone. They are

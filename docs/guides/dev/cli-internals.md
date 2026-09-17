@@ -161,6 +161,8 @@ fullsend
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+│                                            #   When REVIEW_RISK_ASSESSMENT_ENABLED is on (default) and
+│                                            #   the result omits risk_assessment, posts a sticky diagnostic
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 │   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
