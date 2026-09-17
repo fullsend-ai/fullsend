@@ -37,10 +37,11 @@ repository. The threat model asks for least privilege and separation of duties
 ([security-threat-model.md](../problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials)),
 and control-plane scopes such as `actions: write` unlock approving fork runs,
 dispatching workflows on any ref, and deleting runs and logs. GitHub Agentic
-Workflows reaches the same conclusion: its agent job holds no write token, each
-write is an opt-in typed operation executed in a separate job with only its own
-permission, and its `approve-workflow-run` design notes that `actions: write`
-is a broad scope granted only where explicitly enabled
+Workflows reaches the same conclusion: its agent job runs with read-only
+repository permissions, every write is an opt-in typed "safe output" executed
+in a separate job whose permissions are the union of the enabled output types,
+and its draft `approve-workflow-run` design calls `actions: write` a broad
+scope to be granted only where that output is explicitly enabled
 ([safe outputs reference](https://github.github.com/gh-aw/reference/safe-outputs/)).
 
 Every run already publishes what a follow-up needs. The runner action uploads
