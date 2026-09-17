@@ -1045,7 +1045,7 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 	assert.Contains(t, body, terminalTag)
 }
 
-func TestReconcileOrphaned_CancelledReviewWarnsAgainstMerge(t *testing.T) {
+func TestReconcileOrphaned_CancelledReviewIdentifiesCancelledCommit(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{
 		"org/repo/7": {{
@@ -1059,8 +1059,9 @@ func TestReconcileOrphaned_CancelledReviewWarnsAgainstMerge(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fc.UpdatedComments, 1)
 	body := fc.UpdatedComments[0].Body
-	assert.Contains(t, body, "Automated review did not complete for the current pull request HEAD")
-	assert.Contains(t, body, "Do not merge")
+	assert.Contains(t, body, "Automated review did not complete for this commit")
+	assert.Contains(t, body, "Review the current pull request HEAD before merging")
+	assert.NotContains(t, body, "Do not merge")
 	assert.Contains(t, body, "`/fs-review`")
 }
 

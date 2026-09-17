@@ -37,9 +37,9 @@ write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
-If a GitHub review run is cancelled, its status comment explicitly warns that
-the current HEAD was not reviewed and directs maintainers to retry with
-`/fs-review` before merging.
+If a GitHub review run is cancelled, its status comment identifies that
+cancelled commit and directs maintainers to review the current HEAD or retry
+with `/fs-review` before merging.
 
 GitHub review submissions whose state is `commented` and whose body is empty
 are ignored. These are containers for inline replies and carry no
