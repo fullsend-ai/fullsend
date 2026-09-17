@@ -876,7 +876,7 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 		b.WriteString(strings.Join(parts, " · "))
 	}
 	if reason == ReasonCancelled && reviewRun {
-		b.WriteString("\n\n**Automated review did not complete for the current pull request HEAD. Do not merge until it completes. Comment `/fs-review` to retry.**")
+		b.WriteString("\n\n**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
 	}
 	return b.String()
 }
