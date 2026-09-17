@@ -88,6 +88,7 @@ permissions:
   issues: write
   packages: read
   pull-requests: write
+  statuses: write
 
 jobs:
   poll:
@@ -161,7 +162,7 @@ jobs:
 2. Replace `PROJ` with your Jira project key.
 3. Commit and push the workflow file.
 
-**How this works:** The `poll` job queries Jira and builds a dispatch matrix in the format expected by `reusable-dispatch.yml`. When the `matrix` input is provided, `reusable-dispatch.yml` skips its routing and dispatch steps and goes directly to running harness agents with the pre-computed matrix. This approach maintains ADR 62's inlining decision (no version skew) while enabling custom pollers to reuse fullsend's harness infrastructure. See [Custom Poller Example](custom-poller-example.md) for more details on this pattern.
+**How this works:** The `poll` job queries Jira and builds a dispatch matrix in the format expected by `reusable-dispatch.yml`. When the `matrix` input is provided, `reusable-dispatch.yml` skips its routing and dispatch steps and goes directly to running harness agents with the pre-computed matrix. The caller must still grant every permission statically declared by the reusable workflow, including `statuses: write`, even though this harness-only path does not enable review-status publication. This approach maintains ADR 62's inlining decision (no version skew) while enabling custom pollers to reuse fullsend's harness infrastructure. See [Custom Poller Example](custom-poller-example.md) for more details on this pattern.
 
 **`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 

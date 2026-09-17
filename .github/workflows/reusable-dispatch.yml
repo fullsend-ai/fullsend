@@ -68,7 +68,7 @@ on:
         required: false
         default: "ubuntu-24.04"
       review_status_enabled:
-        description: "Publish the built-in review completion status. The caller must grant statuses: write."
+        description: "Publish the built-in review completion status. All callers must grant statuses: write, even when this is false."
         type: boolean
         required: false
         default: false

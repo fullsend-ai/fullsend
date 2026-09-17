@@ -28,6 +28,7 @@ permissions:
   issues: write
   packages: read
   pull-requests: write
+  statuses: write
 
 jobs:
   poll:
@@ -145,6 +146,7 @@ Required permissions:
 - `contents: write` - needed by code/fix agents
 - `packages: read` - needed by code/fix agents
 - `actions: write`, `id-token: write`, `issues: write`, `pull-requests: write` - needed by all agents
+- `statuses: write` - statically required by the built-in review job, even when `review_status_enabled` is omitted or `false`
 
 ## Authorization
 

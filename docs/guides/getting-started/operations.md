@@ -91,11 +91,13 @@ head was not reviewed. Comment `/fs-review` on the PR to review the current
 head again.
 
 The generated per-repo workflow grants `statuses: write` to its trusted
-workflow token and passes `review_status_enabled: true`. Older or custom
-callers leave the status disabled by default; they must grant the same
-permission and explicitly opt in. Only the built-in `review` agent publishes
-this shared status. The review sandbox continues to use its separately minted
-review token.
+workflow token and passes `review_status_enabled: true`. Every caller of
+`reusable-dispatch.yml` must grant `statuses: write` because GitHub validates
+the called workflow's static job permissions before evaluating its jobs or
+inputs. The `review_status_enabled` input controls publication only: callers
+that leave it `false` still need the permission, but do not publish the status.
+Only the built-in `review` agent publishes this shared status. The review
+sandbox continues to use its separately minted review token.
 
 ## Uninstalling
 

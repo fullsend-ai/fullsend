@@ -1201,11 +1201,17 @@ func TestActionReviewCompletionStatusRuntime(t *testing.T) {
 }
 
 func TestReusableDispatchReviewStatusOptIn(t *testing.T) {
-	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	contentBytes := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	content := string(contentBytes)
 	assert.Contains(t, content, "review_status_enabled:",
-		"reusable dispatch must offer a backwards-compatible status opt-in")
+		"reusable dispatch must offer an explicit status-publication opt-in")
 	assert.Contains(t, content, "default: false",
-		"legacy callers without statuses: write must remain compatible")
+		"callers must opt in before the built-in review publishes a status")
+
+	var dispatch callerWorkflow
+	require.NoError(t, yaml.Unmarshal(contentBytes, &dispatch))
+	assert.Equal(t, "write", dispatch.Jobs["review"].Permissions["statuses"],
+		"all callers must grant the review job's static statuses permission even when status publication is disabled")
 
 	review := extractStepSection(t, content, "Run review agent")
 	assert.Contains(t, review, "review-status-enabled: ${{ inputs.review_status_enabled }}",
