@@ -339,10 +339,13 @@ within a GitHub Actions workflow to use OIDC:
 fullsend mint status --mint-url="$FULLSEND_MINT_URL"
 ```
 
-This reports the mint's version, enrolled organizations, configured
-roles, and workflow host repos — without requiring any GCP IAM roles.
-To verify locally without GitHub Actions OIDC, use the health endpoint
-above instead.
+Under GitHub Actions OIDC, this reports the mint's version, build commit,
+the calling workflow's organization, configured roles, and workflow host
+repos — without requiring any GCP IAM roles. It does not list all enrolled
+organizations; that field (`allowed_orgs`) is only populated on the
+non-OIDC (GitHub token) path, which a default standalone mint rejects with
+HTTP 401 as described above. To verify locally without GitHub Actions
+OIDC, use the health endpoint above instead.
 
 ### Test from a GitHub Actions workflow
 

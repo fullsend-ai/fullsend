@@ -427,11 +427,16 @@ roles (see the [IAM table above](#prerequisites)).
 
 ```bash
 # Overview of all enrolled orgs
-fullsend mint status --project="$GCP_PROJECT"
+fullsend mint status --mint-url= --project="$GCP_PROJECT"
 
 # Drill into a specific org's PEM status
-fullsend mint status acme-corp --project="$GCP_PROJECT"
+fullsend mint status acme-corp --mint-url= --project="$GCP_PROJECT"
 ```
+
+When `FULLSEND_MINT_URL` is set and `--project` is also provided, the
+command returns an error to prevent silent mode ambiguity — either unset
+the env var or pass `--mint-url=` to force GCP-based mode, as in the
+examples above.
 
 > **Note:** The IAM roles listed in the [table above](#prerequisites) apply
 > only to `--project` (GCP-based) mode. API-based mode requires only valid
@@ -587,7 +592,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
 2. Re-run `fullsend mint enroll` for any org — this triggers a new revision and routes traffic to it
 3. If no enrollment is needed, manually route traffic with:
 
@@ -605,7 +610,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to check revision state
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to check revision state
 2. If the template diverges from traffic, re-run the enrollment command — the CLI will detect the org is already in the template and route traffic to the new revision
 3. Check the CLI output for partial failure messages — if the traffic PATCH failed, the new revision name is reported for manual recovery
 
