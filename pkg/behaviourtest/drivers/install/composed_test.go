@@ -61,11 +61,58 @@ func TestComposedDriver_AllocateAndDeallocate(t *testing.T) {
 	// Deallocate the repo.
 	err = d.DeallocateRepo(ctx, name)
 	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "deallocate should delete the leased repo")
 
 	// Re-allocate should succeed.
 	name2, err := d.AllocateRepo(ctx)
 	require.NoError(t, err)
 	assert.NotEmpty(t, name2)
+}
+
+func TestComposedDriver_ReallocateAfterDeallocateReensures(t *testing.T) {
+	e := newFakeEnsurer()
+	mint := &fakeMintDriver{}
+
+	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.calls.Load())
+
+	require.NoError(t, d.DeallocateRepo(ctx, name))
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+
+	name2, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, name, name2, "capacity-1 pool should reissue the same name")
+	assert.Equal(t, int32(2), e.calls.Load(), "re-acquire should re-ensure after cache invalidation")
+}
+
+func TestComposedDriver_DeallocateDeleteError_ReturnsNameToPool(t *testing.T) {
+	e := newFakeEnsurer()
+	e.deleteErr = fmt.Errorf("delete boom")
+	mint := &fakeMintDriver{}
+
+	d, err := newComposedDriver("org", mint, e, 1, t.Logf)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	name, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+
+	// Delete failure is logged, not returned — the slot must not leak.
+	err = d.DeallocateRepo(ctx, name)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+
+	name2, err := d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, name, name2)
+	assert.Equal(t, int32(2), e.calls.Load(), "failed delete still invalidates the ensure cache")
 }
 
 func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
@@ -78,6 +125,7 @@ func TestComposedDriver_DeallocateUnknownName(t *testing.T) {
 	err = d.DeallocateRepo(context.Background(), "unknown-repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not an outstanding lease")
+	assert.Equal(t, int32(0), e.deleteCalls.Load(), "unknown name must not be deleted")
 }
 
 func TestComposedDriver_DoubleDeallocate(t *testing.T) {
@@ -94,11 +142,13 @@ func TestComposedDriver_DoubleDeallocate(t *testing.T) {
 	// First deallocate succeeds.
 	err = d.DeallocateRepo(ctx, name)
 	require.NoError(t, err)
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
 
 	// Second deallocate fails.
 	err = d.DeallocateRepo(ctx, name)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "double-release")
+	assert.Equal(t, int32(1), e.deleteCalls.Load(), "double-release must not delete again")
 }
 
 func TestComposedDriver_AllocateBlocksUntilDeallocate(t *testing.T) {
@@ -255,6 +305,10 @@ type failingEnsurer struct {
 
 func (f *failingEnsurer) EnsureRepo(_ context.Context, _, _ string) error {
 	return f.err
+}
+
+func (f *failingEnsurer) DeleteRepo(_ context.Context, _, _ string) error {
+	return nil
 }
 
 // rateReportingClient is a forge.Client that also reports a fixed

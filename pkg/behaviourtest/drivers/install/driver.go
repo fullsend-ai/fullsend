@@ -39,20 +39,24 @@ type Factory func(
 // Driver owns mint/environment lifecycle and test-repo allocation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory
 // and threads it through World; scenarios call AllocateRepo to lease a
-// ready repo and DeallocateRepo to return it. Finalize tears down
-// suite-scoped resources and reclaims any outstanding leases.
+// ready repo and DeallocateRepo to delete it and return the name.
+// Finalize tears down suite-scoped resources and reclaims any
+// outstanding leases.
 //
 // Implementations must be safe for concurrent use by multiple godog
 // scenarios (GODOG_CONCURRENCY > 1).
 type Driver interface {
-	// AllocateRepo leases a slot and makes that repo ready (create if
-	// missing, install if needed). Blocks until a slot is free or ctx
-	// is cancelled. Returns the repo name only (org is fixed for the
-	// driver / World).
+	// AllocateRepo leases a slot and makes that repo ready (delete and
+	// recreate if it already exists, then install). Blocks until a slot
+	// is free or ctx is cancelled. Returns the repo name only (org is
+	// fixed for the driver / World).
 	AllocateRepo(ctx context.Context) (repoName string, err error)
 
-	// DeallocateRepo returns a previously allocated repo. Errors on
-	// unknown name or double-release.
+	// DeallocateRepo deletes the leased repository (best-effort) and
+	// returns the name to the pool. Errors on unknown name or
+	// double-release. Called after scenario cleanup and debug
+	// collection so leftover base-repo state cannot leak to the next
+	// lessee.
 	DeallocateRepo(ctx context.Context, repoName string) error
 
 	// Finalize always tears down suite-scoped resources (e.g. preview
