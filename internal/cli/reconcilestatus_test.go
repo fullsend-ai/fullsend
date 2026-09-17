@@ -32,7 +32,7 @@ func gitlabNoteServer() *httptest.Server {
 func TestNewReconcileStatusCmd_RequiredFlags(t *testing.T) {
 	cmd := newReconcileStatusCmd()
 
-	for _, name := range []string{"repo", "number", "run-id", "review-status-enabled"} {
+	for _, name := range []string{"repo", "number", "run-id"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, "flag %q should exist", name)
 	}
@@ -364,7 +364,7 @@ func TestNewReconcileStatusCmd_GitLabNoMintRequired(t *testing.T) {
 
 // stubReconcileVars replaces the three package-level func vars used by
 // newReconcileStatusCmd and returns a teardown function.
-func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus string, wasSkipped bool, agentDescription string, reviewStatusEnabled bool)) {
+func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus string, wasSkipped bool, agentDescription string)) {
 	t.Helper()
 	origMint := reconcileMintToken
 	origForge := reconcileNewForgeClient
@@ -385,8 +385,8 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 		return tracker.NewForgeClient(fc)
 	}
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, reviewStatusEnabled bool) error {
-		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription, reviewStatusEnabled)
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
 	t.Cleanup(func() {
@@ -407,7 +407,7 @@ status_notifications:
 	require.NoError(t, err)
 
 	var gotMode, gotStatus string
-	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string, _ bool) {
+	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string) {
 		gotMode = completionMode
 		gotStatus = jobStatus
 	})
@@ -443,7 +443,7 @@ status_notifications:
 	require.NoError(t, err)
 
 	var gotMode, gotStatus string
-	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string, _ bool) {
+	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string) {
 		gotMode = completionMode
 		gotStatus = jobStatus
 	})
@@ -472,7 +472,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MalformedConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	var gotMode string
-	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string, _ bool) {
+	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string) {
 		gotMode = completionMode
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -496,7 +496,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
 	dir := t.TempDir() // no config.yaml written
 
 	var gotMode string
-	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string, _ bool) {
+	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string) {
 		gotMode = completionMode
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -519,7 +519,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
 func TestNewReconcileStatusCmd_FullsendDir_MissingConfig_LogsDiagnostic(t *testing.T) {
 	dir := t.TempDir() // no config.yaml written
 
-	stubReconcileVars(t, func(_, _ string, _ bool, _ string, _ bool) {})
+	stubReconcileVars(t, func(_, _ string, _ bool, _ string) {})
 	t.Setenv("FULLSEND_MINT_URL", "")
 
 	cmd := newReconcileStatusCmd()
@@ -542,7 +542,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig_LogsDiagnostic(t *testi
 
 func TestNewReconcileStatusCmd_WasSkippedFlag_Threaded(t *testing.T) {
 	var gotSkipped bool
-	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string, _ bool) {
+	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string) {
 		gotSkipped = wasSkipped
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -565,7 +565,7 @@ func TestNewReconcileStatusCmd_WasSkippedFlag_Threaded(t *testing.T) {
 
 func TestNewReconcileStatusCmd_WasSkippedFlag_DefaultsFalse(t *testing.T) {
 	var gotSkipped bool
-	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string, _ bool) {
+	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string) {
 		gotSkipped = wasSkipped
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -586,7 +586,7 @@ func TestNewReconcileStatusCmd_WasSkippedFlag_DefaultsFalse(t *testing.T) {
 
 func TestNewReconcileStatusCmd_AgentDescription_DerivedFromRole(t *testing.T) {
 	var gotDescription string
-	stubReconcileVars(t, func(_, _ string, _ bool, agentDescription string, _ bool) {
+	stubReconcileVars(t, func(_, _ string, _ bool, agentDescription string) {
 		gotDescription = agentDescription
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -603,28 +603,6 @@ func TestNewReconcileStatusCmd_AgentDescription_DerivedFromRole(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 	assert.Equal(t, "Code Review", gotDescription)
-}
-
-func TestNewReconcileStatusCmd_ReviewStatusEnabledFlag_Threaded(t *testing.T) {
-	var gotEnabled bool
-	stubReconcileVars(t, func(_, _ string, _ bool, _ string, reviewStatusEnabled bool) {
-		gotEnabled = reviewStatusEnabled
-	})
-	t.Setenv("FULLSEND_MINT_URL", "")
-
-	cmd := newReconcileStatusCmd()
-	cmd.SetArgs([]string{
-		"--repo", "org/repo",
-		"--number", "7",
-		"--run-id", "run-1",
-		"--mint-url", "https://mint.example.com",
-		"--role", "review",
-		"--review-status-enabled",
-	})
-
-	err := cmd.Execute()
-	require.NoError(t, err)
-	assert.True(t, gotEnabled)
 }
 
 // writeJiraDispatchEvent writes a dispatch/event-payload.json containing a
@@ -654,7 +632,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
 		gotProject = project
 		gotNumber = number
 		return nil
@@ -741,7 +719,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string) error {
 		gotProject = project
 		gotNumber = number
 		return nil
@@ -780,7 +758,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 func TestNewReconcileStatusCmd_NoEvent_FallsBackToForge(t *testing.T) {
 	// When no normalized event is found, the command falls back to the
 	// forge path using --repo, verifying backward compatibility.
-	stubReconcileVars(t, func(_, _ string, _ bool, _ string, _ bool) {})
+	stubReconcileVars(t, func(_, _ string, _ bool, _ string) {})
 	t.Setenv("FULLSEND_MINT_URL", "")
 	t.Setenv("GITHUB_EVENT_PATH", "")
 

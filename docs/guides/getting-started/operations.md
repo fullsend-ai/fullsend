@@ -101,43 +101,6 @@ fullsend repos install -f repos.yaml
 
 This is idempotent — it provisions new repos, repairs missing or drifted components (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; the GitLab webhook fast path — a trigger token, webhook secret, and project webhook, provisioned only once the dispatcher template defines a runnable dispatcher job that admits trigger pipelines and its scripts are on the default branch, the default branch is protected and is the project's only protected-branch rule (the trigger token is project-wide, so other protected refs are not isolated), no other root job or include is admitted to trigger pipelines (user-owned jobs are never rewritten: add rules that reject `$CI_PIPELINE_SOURCE == "trigger"` to them), and `no_one_allowed` is verified — if default-branch protection disappears, or any of the last three stops holding or cannot be verified, converge revokes the Fullsend-managed trigger tokens and deletes the Fullsend-owned webhook instead of leaving the credential live, with credential-variable protection drift and pending superseded-token revocations repaired and hooks Fullsend does not own left untouched; GitLab pipeline-variable override-role inspection — typed pipeline-input dispatch activation fails closed unless the project already has `ci_pipeline_variables_minimum_override_role=no_one_allowed`; runnable typed templates are never delivered before that setting is verified, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced`; legacy upgrades require maintenance-window preparation; repos still pinned to the legacy variable-based wrapper are exempt from the requirement — see [GitLab Role-Credential Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs predating #7707), refreshes a declared configuration preset (`.fullsend/config.base.yaml`), rewrites a drifted managed `.fullsend/config.yaml`, and upgrades workflow refs. Variables with manifest-specified values (e.g. mint URL, GCP region, review app client ID) are checked for value drift; secrets and runtime-mutated variables are checked for presence only. For GitLab repos, converge also migrates any leftover legacy poll-state CI/CD variables (from installs predating #7380) into the HMAC-signed poll-state branches and deletes them, so they stop being seeded or reported as orphans. Converge also migrates the root `.gitlab-ci.yml`: an obsolete `merge_request_event` workflow rule left over from installs predating the removal of native MR dispatch (#7322) is stripped automatically, without disturbing any other fullsend or user-owned entries in the file. This automatic migration applies only to repos where fullsend owns the `workflow:` block (fresh installs, identified by the fullsend-generated `workflow.name`); repos enrolled by merging fullsend rules into a pre-existing `workflow:` block have no such ownership marker and are left untouched — remove the leftover `merge_request_event` rule from those manually, as described in the uninstall steps below. Converge separately strips a leftover empty `dispatch` stage from `stages:`, left over from installs predating the removal of the empty dispatch stage (#7337). This migration is gated differently: it applies whenever the file has the fullsend pipeline include and at least one current fullsend stage (`poll` or `agent`) already in `stages:`, and it additionally scans every job definition in the file — including ones reached only via `extends:` or the YAML merge key (`<<:`) — for a still-live reference to `dispatch`, leaving the stage in place if any job depends on it. Converge also backfills a missing `CI_DEBUG_TRACE` deny-before-admit workflow rule (ADR 0125) into `workflow:rules` for repos where fullsend owns the `workflow:` block; as with the other root-file migrations above, repos enrolled by merging fullsend rules into a pre-existing `workflow:` block have no ownership marker, so converge leaves them untouched — add that deny rule to those repos manually. Unmanaged `.fullsend/config.yaml` files are left untouched.
 
-## Requiring review completion on GitHub
-
-1. Sync the current managed workflow template.
-2. Keep the built-in review agent enabled for every repository that requires
-   the check.
-3. Add `fullsend/review-completed` as a required status check in the default
-   branch's branch protection rule or ruleset.
-4. Do not require this status in a repository that uses GitHub's merge queue.
-   The current workflow reports only on the pull request head SHA; it does not
-   handle the queue's separate `merge_group` SHA, so the queue would wait for a
-   status that never arrives.
-
-The status is tied to the exact pull request head SHA:
-
-- `pending` means an automated review started for that commit.
-- `success` means the review completed without being skipped.
-- A failure, timeout, cancellation, or skip never produces success.
-- Cancellation intentionally leaves the status pending so cleanup from the
-  cancelled run cannot overwrite a replacement run's success on the same SHA.
-- A status API failure does not suppress the automated review. The required
-  check remains absent or pending and continues to block the merge until a
-  later review resolves it.
-
-The status links to its workflow run. When cancellation cleanup runs and status
-comments are enabled, it also produces a PR comment warning that the current
-head was not reviewed. Comment `/fs-review` on the PR to review the current
-head again.
-
-The generated per-repo workflow grants `statuses: write` to its trusted
-workflow token and passes `review_status_enabled: true`. Every caller of
-`reusable-dispatch.yml` must grant `statuses: write` because GitHub validates
-the called workflow's static job permissions before evaluating its jobs or
-inputs. The `review_status_enabled` input controls publication only: callers
-that leave it `false` still need the permission, but do not publish the status.
-Only the built-in `review` agent publishes this shared status. The review
-sandbox continues to use its separately minted review token.
-
 ## Uninstalling
 
 ### Per-repo teardown
@@ -260,7 +223,7 @@ gcloud services enable \
 
 See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
 
-The composite action accepts these optional status inputs:
+The composite action accepts five optional inputs for status notifications:
 
 | Input | Description |
 |-------|-------------|
@@ -269,10 +232,8 @@ The composite action accepts these optional status inputs:
 | `status-number` | Issue or PR number for status comments |
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
-| `pr-head-sha` | Exact PR head SHA used for the review-completion status; per-repo reusable workflows populate it automatically |
-| `review-status-enabled` | Set to `true` only for the built-in review agent when the calling workflow grants `statuses: write` |
 
-The per-repo dispatch workflow passes these inputs automatically.
+All reusable workflows pass these inputs automatically.
 
 ### GitLab CI
 
