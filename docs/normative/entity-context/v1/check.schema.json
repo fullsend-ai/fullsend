@@ -13,9 +13,12 @@
     "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "never_started": {
       "type": "boolean",
-      "description": "Required for completed checks. True only when the forge explicitly reports that the job never started; false requires started_at."
+      "description": "Required for completed checks. True only when the forge explicitly reports a never-started terminal, including a completed skipped or cancelled outcome with no native started_at under the adapter mapping; false requires started_at."
     },
-    "completed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+    "completed_at": {
+      "$ref": "common.schema.json#/$defs/timestamp",
+      "description": "Native terminal timestamp when available. For never_started true, an absent native terminal timestamp is canonically represented by the source created_at value; this is not a runner-observed completion time."
+    }
   },
   "allOf": [
     {

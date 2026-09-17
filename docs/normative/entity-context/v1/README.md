@@ -198,9 +198,12 @@ Queued checks have no start, completion, or conclusion fields. In-progress
 checks require `started_at` and have no completion or conclusion. Completed
 checks require `completed_at`, `conclusion`, and `never_started`.
 `never_started: true` is emitted only when the forge explicitly reports that
-the job never started; it forbids `started_at` and is limited to `failure`,
-`skipped`, or `cancelled`. This includes GitHub `startup_failure`, which maps
-to the v1 `failure` conclusion. `never_started: false` requires `started_at`.
+the job never started; for a completed `skipped` or `cancelled` outcome, the
+adapter treats a missing native `started_at` as that explicit never-started
+report. It forbids `started_at` and is limited to `failure`, `skipped`, or
+`cancelled`. This includes GitHub `startup_failure`, which maps to the v1
+`failure` conclusion. `never_started: false` requires `started_at`; adapters
+must not set it on an ordinary `failure` merely because `started_at` is absent.
 Consumers must use the explicit flag and must not infer never-started state from
 an omitted timestamp.
 Check manifest records carry `created_at` but no `author_id` or `author`.
@@ -211,22 +214,36 @@ Adapters use these exhaustive v1 native-status mappings:
   `in_progress` maps to `in_progress`; `completed` maps to `completed` and its
   native conclusion maps identically to the v1 conclusion vocabulary, except
   `startup_failure`, which maps to `failure` with `never_started: true`.
+  Completed `skipped` and `cancelled` runs with no native `started_at` also
+  emit `never_started: true`; all other completed conclusions require
+  `never_started: false` and a native `started_at`.
 - GitLab `created`, `waiting_for_resource`, `waiting_for_callback`, `preparing`, `pending`, `scheduled`,
   and `manual` map to `queued`; `running` and `canceling` map to `in_progress`;
   `success`, `failed`, `canceled`, and `skipped` map to `completed` with
   conclusions `success`, `failure`, `cancelled`, and `skipped`, respectively.
+  For completed `canceled` and `skipped` jobs, a null native `started_at` is
+  the explicit never-started report and emits `never_started: true`; otherwise
+  they emit `never_started: false`. A `failed` job with no native `started_at`
+  remains ordinary failure and is `invalid_metadata`.
 - Forgejo `pending`, `waiting`, and `blocked` map to `queued`; `running` maps to
   `in_progress`; `success`, `failure`, `error`, `warning`, `cancelled`,
   `canceled`, and `skipped` map to `completed` with conclusions `success`,
   `failure`, `failure`, `neutral`, `cancelled`, `cancelled`, and `skipped`,
-  respectively.
+  respectively. For completed `cancelled`, `canceled`, and `skipped` jobs, a
+  null native `started_at` is the explicit never-started report and emits
+  `never_started: true`; otherwise they emit `never_started: false`.
 
 Any native status or conclusion not listed above is `invalid_metadata`; an
 adapter must not invent another mapping. Any mapped check whose forge data
 cannot satisfy `check.schema.json`'s status-specific timestamp requirements is
 also `invalid_metadata`. Completed checks with `never_started: true` require
 `completed_at` and omit `started_at`; all other completed checks require both
-timestamps. Native timestamp fields
+timestamps. `completed_at` is the native terminal timestamp when present. If a
+never-started completed check has no native terminal timestamp, the adapter
+uses its immutable source `created_at` as the canonical fallback; this records
+the only source-derived time available and is not a runner-observed completion
+time. If either required source timestamp is absent or invalid, the check is
+`invalid_metadata`. Native timestamp fields
 forbidden for the mapped status are omitted rather than copied.
 
 ## Relationships, history, and collection profiles
