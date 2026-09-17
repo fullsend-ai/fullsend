@@ -516,9 +516,13 @@ fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
 fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
 
 # 4. Configure GitHub with public apps (installable by other orgs)
+# $MINT_URL: the "Mint deployed at ..." URL printed by step 1.
+# $WIF_PROVIDER: the FULLSEND_GCP_WIF_PROVIDER value from step 3 — run
+#   `fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" --format=env`
+#   and copy it, or parse it from `--format=json`.
 fullsend github setup "$FIRST_ORG" \
-  --mint-url "$(fullsend mint status --mint-url= --project="$GCP_PROJECT" -o url)" \
-  --inference-wif-provider "$(fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" -o provider)" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
   --public
 ```
