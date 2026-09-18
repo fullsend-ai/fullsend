@@ -905,6 +905,9 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns runs of one workflow file created at or
+	// after since, with the provenance fields populated.
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
