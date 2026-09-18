@@ -76,6 +76,12 @@ Environment variables set by the runner, present in every agent's shell:
 - `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
 - `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
   write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
+- `FULLSEND_RUN_HEAD_SHA` — the work item's head as the dispatching event carried it; empty for an issue
+  and today on GitLab's poller-raised pipeline
+- `FULLSEND_RUN_STARTED_AT` — when the run started, RFC 3339 UTC. This is the runner's own clock
+  at the top of `fullsend run`, after the concurrency wait and the job steps that precede the
+  command, so activity from that gap falls before it
+  (see [`fullsend run` § Run baseline](../../cli/run.md#run-baseline))
 
 ## Process
 
@@ -496,7 +502,7 @@ on:
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -573,12 +579,13 @@ jobs:
           path: ${{ github.workspace }}/output
 ```
 
-This example reflects the currently deployed cancellation policy. Under
-[ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
-the platform will change subject-scoped agent workflows to
-`cancel-in-progress: false` once preserve-and-coalesce scheduling is
-implemented. Until that migration lands, keep the setting aligned with the
-reusable workflow that invokes the agent.
+This example matches the platform's scheduling: subject-scoped agent workflows
+run with `cancel-in-progress: false`, so a newer event on the same work item
+waits as the single pending run and works from current state instead of
+cancelling the run in flight
+([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
+which the reusable dispatch workflow implements). Keep the setting aligned with
+the reusable workflow that invokes the agent.
 
 ### Critical workflow steps
 
