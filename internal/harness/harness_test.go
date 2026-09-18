@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2489,4 +2490,130 @@ func TestParseProviderDef(t *testing.T) {
 	require.Error(t, err)
 	_, err = ParseProviderDef([]byte("name: bad name\ntype: x\n"))
 	require.Error(t, err)
+}
+
+// steerBool is a *bool for SteerConfig.Enabled, which is a pointer so that an
+// explicit opt-in or opt-out is distinguishable from a block that says nothing
+// about `enabled` and inherits the default.
+func steerBool(v bool) *bool { return &v }
+
+func TestSteerDefaults_NilConfig(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test"}
+	require.NoError(t, h.Validate())
+	assert.False(t, h.SteerEnabled(), "a harness with no steer block does not steer by default")
+	assert.False(t, h.SteerExplicitlyEnabled(), "the default is not an explicit request")
+	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
+	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())
+}
+
+func TestSteerDefaults_ZeroFields(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{Enabled: steerBool(true)}}
+	require.NoError(t, h.Validate())
+	assert.True(t, h.SteerEnabled())
+	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
+	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())
+}
+
+func TestSteerDefaults_ExplicitValues(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/code.md",
+		Role:  "test",
+		Steer: &SteerConfig{Enabled: steerBool(true), MaxSteers: 5, PollIntervalSeconds: 15},
+	}
+	require.NoError(t, h.Validate())
+	assert.Equal(t, 5, h.SteerMaxSteers())
+	assert.Equal(t, 15*time.Second, h.SteerPollInterval())
+}
+
+// TestSteerBlockWithoutEnabledTakesTheDefault pins the pointer's whole
+// purpose: a block that tunes only max_steers says nothing about whether
+// steering is on, so it takes DefaultSteerEnabled rather than being read as
+// either an opt-in or an opt-out. The tuned value is still honoured, so the
+// same config keeps its meaning when the default changes.
+func TestSteerBlockWithoutEnabledTakesTheDefault(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{MaxSteers: 3}}
+	require.NoError(t, h.Validate())
+	assert.Equal(t, DefaultSteerEnabled, h.SteerEnabled(),
+		"a block that tunes max_steers neither opts in nor opts out")
+	assert.False(t, h.SteerExplicitlyEnabled(),
+		"tuning a value is not asking for steering by name")
+	assert.Equal(t, 3, h.SteerMaxSteers())
+}
+
+func TestSteerOptOutIsExplicit(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{Enabled: steerBool(false)}}
+	require.NoError(t, h.Validate())
+	assert.False(t, h.SteerEnabled(), "steer: {enabled: false} is off")
+	assert.False(t, h.SteerExplicitlyEnabled())
+}
+
+func TestValidate_SteerNegativeMaxSteers(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{MaxSteers: -1}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.max_steers must not be negative")
+}
+
+func TestValidate_SteerNegativePollInterval(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{PollIntervalSeconds: -5}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.poll_interval_seconds must not be negative")
+}
+
+func TestValidate_SteerPollIntervalTooLong(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{PollIntervalSeconds: 601}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.poll_interval_seconds must be at most 600")
+}
+
+func TestLoad_SteerBlock(t *testing.T) {
+	content := `
+agent: agents/hello-world.md
+role: triage
+steer:
+  enabled: true
+  max_steers: 3
+  poll_interval_seconds: 20
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello-world.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.Steer)
+	assert.True(t, h.SteerEnabled())
+	assert.True(t, h.SteerExplicitlyEnabled())
+	assert.Equal(t, 3, h.SteerMaxSteers())
+	assert.Equal(t, 20*time.Second, h.SteerPollInterval())
+}
+
+func TestLoad_SteerOptOut(t *testing.T) {
+	content := `
+agent: agents/hello-world.md
+role: triage
+steer:
+  enabled: false
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello-world.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.Steer)
+	require.NotNil(t, h.Steer.Enabled, "enabled: false must survive as a set pointer, not a nil default")
+	assert.False(t, h.SteerEnabled())
+}
+
+func TestValidate_SteerMaxSteersUpperBound(t *testing.T) {
+	h := &Harness{Agent: "agents/code.md", Role: "test", Steer: &SteerConfig{MaxSteers: maxSteerMaxSteers + 1}}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "steer.max_steers must be at most")
+
+	h.Steer.MaxSteers = maxSteerMaxSteers
+	assert.NoError(t, h.Validate(), "the bound itself is allowed")
 }
