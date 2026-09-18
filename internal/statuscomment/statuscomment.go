@@ -33,6 +33,10 @@ var startBodyRe = regexp.MustCompile(`🤖 (.+?) · Started (\d{1,2}:\d{2} [AP]M
 
 const terminalTag = "<!-- fullsend:status:terminal -->"
 
+// statusMarkerPrefix is the invariant part of the per-run status marker
+// buildMarker writes. Used to recognise the runner's own status comments.
+const statusMarkerPrefix = "<!-- fullsend:agent-status:"
+
 // TerminationReason describes why the agent process was terminated.
 type TerminationReason string
 
@@ -85,7 +89,9 @@ type Notifier struct {
 	number        int
 	runURL        string
 	sha           string
+	settledSHA    string
 	marker        string
+	steerMarker   string
 
 	startCommentID string
 	// startReactionID is in-memory only, unlike startCommentID which can be
@@ -131,6 +137,21 @@ func New(client tracker.Client, cfg config.StatusNotificationConfig,
 // errors during fail-open operations). Defaults to a no-op.
 func (n *Notifier) SetWarnFunc(f func(string, ...any)) {
 	n.warnf = f
+}
+
+// SetSteerMarker records what the run absorbed so the terminal status comment
+// shows it to a reader. The hidden marker copy is informational and the skip
+// check does NOT honour it: the comment is App-authored, the identity the
+// agent's own output goes out under, and the receipt the check reads is a
+// separate comment written under the job token (ADR 0120). When the run
+// absorbed an update, the visible Commit line also names the head it settled
+// on. An empty marker (nothing consumed, no head) leaves the comment unchanged.
+func (n *Notifier) SetSteerMarker(m SteerMarker) {
+	n.steerMarker = BuildSteerMarker(m)
+	n.settledSHA = ""
+	if len(m.ConsumedRuns()) > 0 {
+		n.settledSHA = m.HeadSHA
+	}
 }
 
 // SetRunInfo sets optional runtime/model metadata rendered in the
@@ -405,6 +426,11 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 func visibleStatusBody(body tracker.Body, marker string) tracker.Body {
 	text := strings.TrimPrefix(string(body), marker+"\n")
 	text = strings.TrimPrefix(text, terminalTag+"\n")
+	if strings.HasPrefix(text, steerMarkerPrefix) {
+		if idx := strings.Index(text, "\n"); idx >= 0 {
+			text = text[idx+1:]
+		}
+	}
 	return tracker.Body(text)
 }
 
@@ -476,7 +502,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 		if c.Author != botUser {
 			continue
 		}
-		isStatus := strings.Contains(string(c.Body), "fullsend:agent-status:")
+		isStatus := strings.Contains(string(c.Body), statusMarkerPrefix)
 		if statusClient, ok := n.client.(tracker.StatusCommentClient); ok {
 			isStatus, err = statusClient.IsStatusComment(ctx, n.project, n.number, c.ID)
 			if err != nil {
@@ -517,6 +543,10 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	b.WriteString("\n")
 	b.WriteString(terminalTag)
 	b.WriteString("\n")
+	if n.steerMarker != "" {
+		b.WriteString(n.steerMarker)
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "🤖 Finished %s · %s · Started %s · Completed %s",
 		description, statusLabel, formatTime(n.startTime), formatTime(completionTime))
 
@@ -566,8 +596,14 @@ func BuildRunInfoFooter(info *RunInfo) string {
 
 func (n *Notifier) buildSecondLine() string {
 	var parts []string
-	if short := shortSHA(n.sha); short != "" {
-		parts = append(parts, fmt.Sprintf("Commit: `%s`", short))
+	start := shortSHA(n.sha)
+	switch settled := shortSHA(n.settledSHA); {
+	case settled != "" && start != "" && settled != start:
+		parts = append(parts, fmt.Sprintf("Commit: `%s` (started on `%s`)", settled, start))
+	case settled != "" && start == "":
+		parts = append(parts, fmt.Sprintf("Commit: `%s`", settled))
+	case start != "":
+		parts = append(parts, fmt.Sprintf("Commit: `%s`", start))
 	}
 	if n.runURL != "" && isSafeURL(n.runURL) {
 		parts = append(parts, fmt.Sprintf("[View workflow run →](%s)", n.runURL))
@@ -683,7 +719,7 @@ func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
 	}
-	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+	return statusMarkerPrefix + runID + " -->", nil
 }
 
 func mustBuildMarker(runID string) string {

@@ -2323,3 +2323,65 @@ func TestPhase_ReadsTheAnchoredField(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Stopped", phase)
 }
+
+// stubOpenshell installs an openshell stub on PATH that prints stdoutText and
+// stderrText and exits with exitCode.
+func stubOpenshell(t *testing.T, stdoutText, stderrText string, exitCode int) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"printf '%s' " + shellQuote(stdoutText) + "\n" +
+		"printf '%s' " + shellQuote(stderrText) + " >&2\n" +
+		fmt.Sprintf("exit %d\n", exitCode)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestExtractOutputFiles_OpenshellFailureIsAnError: the listing ends in
+// `|| true`, so a non-zero exit is openshell's own — a sandbox that is not
+// ready. Reading that as "no output" would let a run that published nothing
+// post a steer receipt.
+func TestExtractOutputFiles_OpenshellFailureIsAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub")
+	}
+	stubOpenshell(t, "", "sandbox is not ready", 1)
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox is not ready")
+	assert.Empty(t, got)
+}
+
+// TestExtractOutputFiles_EmptyOutputIsNotAnError: a sandbox that answered and
+// holds no output files is a genuinely empty result, not a failure.
+func TestExtractOutputFiles_EmptyOutputIsNotAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub")
+	}
+	stubOpenshell(t, "", "", 0)
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestExtractOutputFiles_ListedButNoneCopiedIsAnError: each copy is its own
+// openshell call, so the sandbox can stop answering after the listing. Files
+// that were listed but never copied are not an empty output directory.
+func TestExtractOutputFiles_ListedButNoneCopiedIsAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub")
+	}
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = exec ]; then printf '%s\\n' /sandbox/output/agent-result.json; exit 0; fi\n" +
+		"echo 'sandbox is not ready' >&2\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 listed, none copied")
+	assert.Empty(t, got)
+}
