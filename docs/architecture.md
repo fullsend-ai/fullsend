@@ -346,6 +346,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `fullsend run`. Delivery is at-least-once and state-based — an update the run
   misses is done by the pending run behind it
   ([ADR 0119](ADRs/0119-learn-of-later-events-by-listing-run-records.md)).
+- A run that absorbed an update posts a **receipt** naming the follow-up runs it
+  consumed, and a queued run that finds its own id in one exits without starting
+  the agent. The receipt is authenticated by its author alone: the GitHub Actions
+  job token, captured before minting swaps it out, and honoured only when that
+  swap happened and its login differs from the agent's. The terminal status
+  comment keeps an informational copy that the check does not honour. A second
+  pre-flight skip exits a queued review whose head the review App already
+  reviewed after the run was created, a duplicate no receipt covers
+  ([ADR 0120](ADRs/0120-receipt-the-absorbed-update-under-the-job-token.md),
+  mechanics in [steering.md](contributing/steering.md#the-skip-check)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
