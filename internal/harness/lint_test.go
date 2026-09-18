@@ -139,3 +139,38 @@ func TestDiagnostic_String(t *testing.T) {
 		assert.Equal(t, "DiagnosticSeverity(99): x: msg", d.String())
 	})
 }
+
+// TestLint_PreScriptWithoutExplicitSteer pins the warning for a harness whose
+// pre-script may gate each event. Absorbed updates skip the pre-script, and
+// steering is on by default, so such a harness must choose explicitly.
+func TestLint_PreScriptWithoutExplicitSteer(t *testing.T) {
+	on, off := true, false
+	tests := []struct {
+		name  string
+		h     *Harness
+		warns bool
+	}{
+		{"pre_script and no steer block warns", &Harness{Role: "review", PreScript: "scripts/pre.sh"}, true},
+		{"pre_script and a steer block without enabled warns", &Harness{Role: "review", PreScript: "scripts/pre.sh", Steer: &SteerConfig{MaxSteers: 3}}, true},
+		{"pre_script and steer.enabled true is silent", &Harness{Role: "review", PreScript: "scripts/pre.sh", Steer: &SteerConfig{Enabled: &on}}, false},
+		{"pre_script and steer.enabled false is silent", &Harness{Role: "review", PreScript: "scripts/pre.sh", Steer: &SteerConfig{Enabled: &off}}, false},
+		{"no pre_script is silent", &Harness{Role: "review"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var found *Diagnostic
+			for _, d := range tt.h.Lint() {
+				if d.Field == "steer.enabled" {
+					found = &d
+				}
+			}
+			if !tt.warns {
+				assert.Nil(t, found)
+				return
+			}
+			require.NotNil(t, found)
+			assert.Equal(t, SeverityWarning, found.Severity)
+			assert.Contains(t, found.Message, "set steer.enabled explicitly")
+		})
+	}
+}

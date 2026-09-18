@@ -34,8 +34,8 @@ type RunMetrics struct {
 	// this one. The code that records a session arrives with the change
 	// that needs one.
 	SessionID string `json:"session_id,omitempty"`
-	// Steers records every mid-run update delivered through Steerer. No
-	// caller sets Steerable yet, so this is empty on every run today.
+	// Steers records every mid-run update delivered through Steerer, and
+	// is empty on a run that was not steerable or absorbed nothing.
 	Steers []SteerResult `json:"steers,omitempty"`
 }
 
