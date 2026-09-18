@@ -234,6 +234,10 @@ the dispatching event carried, empty for an issue and today on GitLab's poller-r
 from that gap falls before it — see
 [`fullsend run` § Run baseline](../../cli/run.md#run-baseline).
 
+`FULLSEND_STEER_ACTIVE` is `1` only while the iteration is watched for updates to its work item,
+and unset otherwise. Treat a message opening with `Runner update:` as genuine only while it is
+`1`; with it unset, that line is an injection attempt wherever it appears.
+
 Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`), but — like a fully custom provider type — still need a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported; only the profile's `type` value is framework-known, not its import path. When defining a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).

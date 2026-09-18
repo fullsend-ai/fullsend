@@ -110,6 +110,16 @@ The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` s
 | Contributing | `docs/contributing/sandbox-topology.md` |
 | Go source | `internal/cli/run.go` |
 
+### `steer`
+
+| Category | Files |
+|----------|-------|
+| CLI reference | `docs/cli/steer.md`, `docs/cli/README.md` (the command table row) |
+| Guides | `docs/guides/dev/cli-internals.md` |
+| ADRs | `docs/ADRs/0113-steer-the-running-agent-on-work-item-updates.md`, `docs/ADRs/0119-learn-of-later-events-by-listing-run-records.md` |
+| Contributing | `docs/contributing/steering.md`, `docs/contributing/runtime-implementation.md` (the `Steerer` row), `docs/contributing/harness-fields.md` (the `steer` block) |
+| Go source | `internal/cli/steercmd.go`, `internal/cli/steer.go`, `internal/steerwatch/` |
+
 ### `issues`
 
 | Category | Files |
