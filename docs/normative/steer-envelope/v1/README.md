@@ -73,7 +73,7 @@ tried to do:
 |---|---|---|
 | `[work-item-context]` | `(work-item-context)` | anywhere in the body |
 | `[/work-item-context]` | `(/work-item-context)` | anywhere in the body |
-| `Instruction from @` | `Instruction from (at)` | at the start of a line, or after a table-cell `\|` |
+| `Instruction from @` | `Instruction from (at)` | at the start of a line, or after any `\|` in the line |
 | `Amendments`, alone on a line | `> Amendments` | line-anchored |
 | `Work-item context` beginning a line, as a whole word | the line, prefixed `> ` | line-anchored |
 
@@ -88,13 +88,24 @@ repository reads this table:
   `[!NOTE]`, a footnote `[^id]:`, a table cell `|`, emphasis or code marks
   `* _ ~ \``, an HTML tag — nested in any combination, with spaces or tabs
   between. The same wrappers may precede either heading, and `Amendments` may
-  also be followed by closing marks (`# Amendments #`, `<h1>Amendments</h1>`,
-  `**Amendments**`). The quoted line drops the wrappers: `> ## Amendments`
-  becomes `> Amendments`. A carriage return after `Amendments` is preserved.
+  also be followed by closing marks — a closing hash sequence, a closing HTML
+  tag, closing emphasis or code marks, a trailing table-cell `|`
+  (`# Amendments #`, `<h1>Amendments</h1>`, `**Amendments**`,
+  `| Amendments |`). The quoted line drops the wrappers: `> ## Amendments`
+  becomes `> Amendments`.
+- **Every line break is a line start.** Before defanging, CRLF, a bare CR, a
+  vertical tab, a form feed and NEL are all normalized to `\n` in the block,
+  and a line break is inserted before each HTML tag GitHub renders as a line
+  or block break (`<br>`, `<hr>`, `<p>`, `<div>`, headings, list items, table
+  rows and cells, blockquote, pre, details/summary, with any attributes), so
+  a token after any of them
+  is at the start of a line.
 - **Mid-sentence text is prose.** `I sent an instruction from @nobody by
   email.` and `The Amendments to the spec are in the linked doc.` are left as
-  written: the attribution is structure only where the runner writes it, at
-  the start of a line, and the headings only when standing alone.
+  written: the attribution is structure only where the runner writes it — at
+  the start of a line, or immediately after any literal `|` in the line (a
+  table cell is the case that matters; the rule does not parse tables) — and
+  the headings only when standing alone.
 - `Work-item context` must end on a word boundary, so `Work-item context.` and
   `Work-item context is...` are quoted, and `Work-item contexts` is not. The
   heading the runner writes continues with a period. Everything from there to
