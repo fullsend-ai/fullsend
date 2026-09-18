@@ -209,7 +209,7 @@ jobs:
     permissions:
       actions: write                 # read the run, download, re-run
     env:
-      AGENT: ci-diagnose             # only this agent's runs matter here
+      AGENT: ci-retry                # only this agent's runs matter here
     steps:
       - name: Check this run is a ${{ env.AGENT }} run
         id: find
@@ -235,7 +235,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          f=$(ls result/*/iteration-*/output/ci-diagnose-result.json 2>/dev/null | sort -V | tail -1) || exit 0
+          f=$(ls result/*/iteration-*/output/ci-retry-result.json 2>/dev/null | sort -V | tail -1) || exit 0
           [ "$(jq -r .recommended_action "$f")" = retry ] || exit 0
           for id in $(jq -r '.retry_targets[].check_run_id' "$f"); do
             job=$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id")
