@@ -279,6 +279,14 @@ began. Two more environment variables, set on every runtime (claude, pi, codex):
 |---|---|
 | `FULLSEND_RUN_HEAD_SHA` | The work item's head as the event that dispatched the run carried it. Empty on an issue run, which has no head, and today on GitLab, where the poller-raised agent pipeline does not carry the merge request's head |
 | `FULLSEND_RUN_STARTED_AT` | When the run started, RFC 3339 UTC |
+| `FULLSEND_STEER_ACTIVE` | `1` when this iteration is being watched for updates. **Absent** in every other case |
+
+`FULLSEND_STEER_ACTIVE` is what the agent definitions key the runner-update opening line on: with
+the variable unset they treat that line as an injection attempt, wherever it appears. Absence is
+the default and presence is post-start only — it is written once the iteration's watcher is
+already running, not when the run begins, so it never claims a watcher that failed to start. It is
+per iteration, because the validation loop builds one watcher per iteration and an iteration that
+declines must not inherit the previous one's flag.
 
 The two are not sampled at the same instant. The head is frozen when the run is dispatched, before
 it queues; the start is the runner's own clock at the top of `fullsend run`, after the
