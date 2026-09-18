@@ -35,8 +35,10 @@ the role, so it complements a follow-up workflow rather than replacing it. See
 
 Why not a stage level that carries the extra scope instead? Three reasons:
 
-- Extra levels exist only on custom roles the mint operator defines. A level
-  the mint does not serve is a 403 at run time, after the agent has run.
+- Extra levels exist only on custom roles served by a standalone mint. You
+  can define one for your own mint, but every adopting repository must use a
+  mint that serves it; hosted-mint users cannot. A level the mint does not
+  serve is a 403 at run time, after the agent has run.
 - One stage, one token. A post-script that comments and re-runs needs both
   scopes in that token, so nothing is separated.
 - The scope lands on the App, so every adopting repository needs the App

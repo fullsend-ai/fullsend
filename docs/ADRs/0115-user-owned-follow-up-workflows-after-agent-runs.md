@@ -80,9 +80,10 @@ The mint operator adds a level carrying `actions: write` to the agent's custom
 role and the harness maps `post_script` to it
 ([ADR 0073](0073-named-mint-privilege-levels.md), fullsend-ai/fullsend#7394).
 Rejected on three facts and their cost to the user. Extra levels exist only on
-operator-defined custom roles, so the harness author depends on the mint
-operator for every new scope and learns of a mismatch as a 403 that aborts the
-run after the agent has spent its budget. One stage receives one token, and
+custom roles served by a standalone mint, so an agent author can define one for
+their own mint but every adopting repository must then point at a mint that
+serves it; hosted-mint users cannot, and a level mismatch surfaces as a 403
+that aborts the run after the agent has spent its budget. One stage receives one token, and
 the post-script both comments and re-runs, so its level must hold
 `pull_requests: write` and `actions: write` together; the field separates
 sandbox from scripts, not one write from another. The App installation still
