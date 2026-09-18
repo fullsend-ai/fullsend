@@ -311,6 +311,101 @@ otherwise `Run` would hold a session open for a watcher that has stopped watchin
   run and the hooks stay loaded; interrupt-and-resume re-runs them. Neither weakens ADR 0090.
 
 
+## The skip check
+
+After a successful run that absorbed at least one steer, the runner posts a **receipt** as its
+own comment on the work item:
+
+```text
+<!-- fullsend:steer consumed=<run_id,...> head=<sha> -->
+_The run already working on this item absorbed follow-up run(s) 101, 102, so a run queued for
+those events exits without repeating the work._
+```
+
+It is a **processing receipt** in the sense of the entity-first evaluation ADR
+([fullsend#6956](https://github.com/fullsend-ai/fullsend/pull/6956)): a durable record on the
+subject of what a run handled, which is what lets a later run decide whether its own trigger is
+already covered. In `fullsend run`'s pre-flight — before the start comment and before the
+pre-script, whose side effects are not free — a queued run reads the latest receipt and exits 0
+without starting the agent when its own `GITHUB_RUN_ID` is listed.
+
+### Who may write a receipt
+
+**The author is the whole of the authentication, and it must be the job token's.**
+
+The runner captures the GitHub Actions job token — `GH_TOKEN` as the action passed it in —
+before minting swaps in the role token, and posts the receipt under that identity. The reader
+resolves that login from the token rather than hardcoding it, because it differs between
+github.com and GitHub Enterprise Server.
+
+Two conditions have to hold for that identity to mean anything, and both are enforced in code:
+
+- **Minting must actually have happened.** The swap is what puts the job token out of reach: it
+  replaces both `GH_TOKEN` and `GITHUB_TOKEN` before the sandbox exists, and a child script's
+  environment drops any remaining entry whose value is the swapped-away token, so a caller cannot
+  keep it reachable under a third name. With no mint URL or no role there is no swap,
+  the same credential stays in the environment a post-script inherits, and a post-script
+  shelling out to `gh` could sign a receipt. The receipt credential is the job token *only when
+  a role token was minted*; otherwise it is empty and both the writer and the check turn off.
+- **The two identities must differ.** The action's `github_token` input defaults to
+  `${{ github.token }}` but is an input, so a caller can pass an App installation token. If that
+  resolves to the login the role token posts under, the agent's own comments carry the trusted
+  author and the check is inverted. The reader resolves both logins and refuses to skip when
+  they match, warning as it goes.
+
+With both holding, nothing inside the sandbox can post as the receipt's author.
+
+**What the author check proves, exactly:** that the comment came from a workflow job token of
+*this repository* — not that it came from this run, or from fullsend. Every job's default
+`GITHUB_TOKEN` in a repository posts under the same login, so any other workflow there could
+write a comment carrying the marker syntax and it would be honoured. That is a
+maintainer-controlled boundary, and it is deliberately not narrowed: checking the named run id
+against the Actions API would add nothing, because that id is public.
+
+This is why the receipt is a **separate comment** rather than the marker on the terminal status
+comment. That comment is posted by the App, the identity the agent's own output goes out under,
+so a marker there authenticates two public strings rather than the code path that wrote them —
+an injection can induce the agent to write a well-formed marker into its review body, and the
+App then posts it. The runner still writes a copy of the marker into the status comment so a
+reader can see what a run absorbed, but **the skip check does not honour it**, and no
+App-authored marker of any shape is a receipt.
+
+The boundary this leaves is a credential leaked out of the runner's own process, which is a
+compromise of the runner rather than of the sandbox. Reading the Actions API is deliberately not
+held to the same bar: those reads prove no authorship, so the watcher uses the job token whether
+or not minting swapped it.
+
+One limit is inside the sandbox rather than outside it. What an acknowledgement attests differs by
+runtime: pi's carries only the rpc id while Claude Code's carries the message text, and `tail -f`
+follows a truncation, so an agent that rewrites a mailbox line under the same id is acked on pi as
+though the original text had been read. The run is the same principal on both sides and already
+owns its own output, so this changes no trust boundary — but `consumed` on pi means the update was
+delivered, not that its words survived. Put precisely: the acknowledgement record the receipt
+intersects against is influenced by the agent on pi, which can change the text an id acknowledges
+but cannot add an id the runner never delivered.
+
+### Failure directions
+
+The check fails open in every direction: no receipt, an unreadable timeline, an unresolvable
+login, a malformed run id. A false "already handled" silently drops the work; a false "not
+handled" costs one short run. Writing the receipt is best-effort for the same reason — a failed
+post costs one queued run that redoes finished work, where failing the run would throw away work
+that succeeded.
+
+Only an outright success leaves a receipt, and only one that absorbed something. A failed,
+cancelled, skipped or unvalidated run writes none, because a receipt claims the work is done. A
+run that absorbed nothing writes none either: the status comment still records the head it
+settled on, but a receipt asserting that a queued run may skip has nothing to assert. One
+receipt per run, not per steer, and it names only what the iteration whose output shipped
+absorbed — an update absorbed by an iteration that then failed validation never reached that
+output.
+
+Worst case is one short redundant run — the same window Actions has today, minus the wasted
+in-flight tokens.
+
+**On GitLab there is no receipt.** Its job token cannot post or read notes, so the skip check
+stays fail-open exactly as it is today: the queued pipeline does the work.
+
 ## The fleet-agent backstop
 
 The runner exports `FULLSEND_RUN_HEAD_SHA` and `FULLSEND_RUN_STARTED_AT` into the sandbox
