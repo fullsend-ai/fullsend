@@ -14,9 +14,31 @@
 # caller-provided matrix. This enables reuse without extracting separate workflows
 # while preserving ADR 62's inlining decision.
 #
-# Concurrency: each stage job declares a per-role cancel-in-progress group
-# (fullsend-{stage}-…). Roles operate independently — review dispatches do
-# not cancel triage, code, fix, etc.
+# Concurrency: each stage job declares a per-role group (fullsend-{stage}-...).
+# Roles operate independently: a review dispatch does not cancel triage, code,
+# fix, and so on.
+#
+# A second event on the same work item never cancels the run already working
+# on it. Every stage job carries cancel-in-progress: false, so the run in
+# flight finishes and one run waits behind it: GitHub Actions keeps a single
+# pending run per group, the last one to queue, which is normally but not
+# necessarily the newest event, since a stage job queues only after route
+# completes. Either way the pending run works from the work item's current
+# state rather than the state that dispatched it. That reconciliation is the
+# agent's side of the bargain, and is why the runner exports
+# FULLSEND_RUN_HEAD_SHA and FULLSEND_RUN_STARTED_AT (ADR 0106).
+#
+# What that gives up: ADR 0063 names per-stage cancel-in-progress as the second
+# of two layers protecting poll dispatch from duplicate side effects, and that
+# layer is now gone everywhere, leaving the first — the poller's own lock —
+# plus whatever idempotency the agent has. The duplicate-poll case is where
+# this costs most: two duplicate dispatches are the same work rather than a
+# newer state superseding an older one, so both run to completion instead of
+# one replacing the other.
+#
+# queue: max is deliberately not used. The default already keeps one pending
+# run per group, which is the coalescing ADR 0106 asks for, and N pending full
+# runs is the failure mode preserving the active run exists to remove.
 #
 # Flow: shim (per-repo) → reusable-dispatch.yml (route + inlined stage logic)
 # Or: custom poller → reusable-dispatch.yml (pre-computed matrix → harness-run)
@@ -656,7 +678,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: read
@@ -767,7 +789,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-code-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: write
@@ -908,7 +930,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: read
@@ -1038,7 +1060,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-fix-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: write
@@ -1320,7 +1342,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-retro-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: read
@@ -1432,7 +1454,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     concurrency:
       group: fullsend-prioritize-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       actions: write
       contents: read
@@ -1691,7 +1713,7 @@ jobs:
       matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || (needs.harness-dispatch.outputs.matrix != '' && needs.harness-dispatch.outputs.matrix || '{"include":[]}')) }}
     concurrency:
       group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
