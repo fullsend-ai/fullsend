@@ -788,11 +788,17 @@ func TestRewriteHarnessBaseURL_WrongOccurrenceDetected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "was not updated")
 
-	// The actual base: field must remain unchanged since the wrong
-	// occurrence was the one that got rewritten.
+	// The file on disk must be completely untouched: verification happens
+	// against a temp file before anything is written to path, so a failed
+	// verification must not leave the comment occurrence rewritten either.
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(got), "base: "+oldURL)
+	assert.Equal(t, content, string(got))
+
+	// No leftover temp file from the verification step.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "expected only code.yaml in dir, got %v", entries)
 }
 
 func TestRunAgentUpdate_NotFound(t *testing.T) {

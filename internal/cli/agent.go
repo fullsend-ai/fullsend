@@ -647,19 +647,40 @@ func rewriteHarnessBaseURL(path, oldURL, newURL string) error {
 		return fmt.Errorf("base URL not found in %s", path)
 	}
 	updated := bytes.Replace(data, []byte(oldURL), []byte(newURL), 1)
-	if err := os.WriteFile(path, updated, 0o644); err != nil {
-		return fmt.Errorf("writing harness file: %w", err)
-	}
+
 	// The replace above is a first-match, file-wide byte substitution, so
 	// oldURL appearing earlier in the file (e.g. in a comment) could mean
-	// the wrong occurrence was rewritten. Re-load and confirm the parsed
-	// base: field actually changed to newURL before reporting success.
-	h, err := harness.LoadRaw(path)
+	// the wrong occurrence was rewritten. Verify the parsed base: field
+	// actually changed to newURL against a temp file *before* touching the
+	// real harness file, so a failed verification never leaves path
+	// mutated with a wrong-occurrence replacement.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".rewrite-harness-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for verification: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(updated); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing temp file for verification: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file for verification: %w", err)
+	}
+
+	h, err := harness.LoadRaw(tmpPath)
 	if err != nil {
 		return fmt.Errorf("verifying rewritten harness file: %w", err)
 	}
 	if h.Base != newURL {
 		return fmt.Errorf("base URL in %s was not updated to the new value; a matching URL may have been replaced elsewhere in the file", path)
+	}
+
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("setting permissions on harness file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("writing harness file: %w", err)
 	}
 	return nil
 }
