@@ -114,11 +114,46 @@ func (d delta) empty() bool {
 	return !d.headMoved && len(d.amendments) == 0 && len(d.context) == 0
 }
 
-// isBot reports whether a forge login belongs to an App or bot. The runner's
-// own start comment and every CI comment are bot-authored; without this
-// filter a run would steer itself with its own output.
-func isBot(login string) bool {
-	return strings.HasSuffix(strings.ToLower(login), "[bot]")
+// ReviewBotLogins returns the review App logins exactly as
+// reusable-dispatch.yml constructs REVIEW_BOT and SHARED_REVIEW_BOT for a
+// repository owner: the org-specific form and the shared vendor form, which
+// docs/contributing/bot-identities.md requires any identity gate to match
+// together (#5550). A test pins both strings to the workflow file so the
+// two cannot drift apart silently.
+func ReviewBotLogins(owner string) []string {
+	return []string{owner + "-review[bot]", "fullsend-ai-review[bot]"}
+}
+
+// fullsendMarkerOpen matches the opening of any HTML comment in the
+// fullsend marker namespace — the status comment, the sticky review
+// comment and the rest of the runner's output all carry one. Deliberately
+// loose on whitespace and case: this decides only that a body is the
+// runner's own, and a looser match costs nothing but one App comment's
+// worth of context.
+var fullsendMarkerOpen = regexp.MustCompile(`(?is)<!--\s*fullsend\s*:`)
+
+// ownOutput reports whether an item is fullsend's own — the status comment,
+// a fullsend App's post-script comment, the processing receipt — and so
+// must not steer the run that wrote it.
+//
+// Neither rule reads the shape of a login; a user account can be named
+// `fullsend-ai-review` or end in `-bot`:
+//
+//   - Exact, case-insensitive match against Config.SelfLogins — the primary
+//     rule, since the post-fix and post-code comments carry no marker.
+//   - An App-authored body carrying a fullsend marker, App-ness being the
+//     forge's verdict (forge.IssueComment.AuthorIsApp). This covers fullsend
+//     output under a login no list holds, such as the receipt posted as
+//     github-actions[bot].
+//
+// A human is never own output, so an authorized `/fs-fix` that quotes a
+// status comment is still delivered. A miss leaves an App's text in context;
+// nothing here moves an author toward amendments.
+func (w *Watcher) ownOutput(login string, isApp bool, body string) bool {
+	if w.selfLogins[strings.ToLower(login)] {
+		return true
+	}
+	return isApp && fullsendMarkerOpen.MatchString(body)
 }
 
 // commentBindingTime is the instant an authorization must cover for this
@@ -481,7 +516,9 @@ func opensWithStageCommand(body string) bool {
 
 // buildDelta reads the current state of the work item and returns what
 // changed since baseline, split by whether its author is in the authorized
-// set. Only non-bot activity counts.
+// set. Everything on the item counts except fullsend's own output — an
+// App the repository installed is context the agent needs, and a human
+// nobody authorized is context the agent must not obey; see ownOutput.
 func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized map[string][]authorization) (delta, error) {
 	var d delta
 	owner, repo, err := splitRepo(w.cfg.Repo)
@@ -510,7 +547,7 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 	// with nothing delivered.
 	eligible := comments[:0:0]
 	for _, c := range comments {
-		if !isBot(c.Author) && parseForgeTime(c.CreatedAt).After(baseline) {
+		if parseForgeTime(c.CreatedAt).After(baseline) && !w.ownOutput(c.Author, c.AuthorIsApp, c.Body) {
 			eligible = append(eligible, c)
 		}
 	}
@@ -552,7 +589,7 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 			return d, fmt.Errorf("listing reviews: %w", err)
 		}
 		for _, r := range reviews {
-			if isBot(r.User) || !parseForgeTime(r.SubmittedAt).After(baseline) {
+			if !parseForgeTime(r.SubmittedAt).After(baseline) || w.ownOutput(r.User, r.AuthorIsApp, r.Body) {
 				continue
 			}
 			body := r.Body

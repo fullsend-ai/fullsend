@@ -4747,6 +4747,51 @@ func TestGetWorkflowRun_CarriesRunAttempt(t *testing.T) {
 	assert.Equal(t, "rerunner", run.TriggeringActor)
 }
 
+// AuthorIsApp comes from GitHub's own `user.type`, never from the login:
+// a person named like one of fullsend's Apps decodes as a person, and an
+// App decodes as an App whatever it is called.
+func TestListIssueComments_AuthorIsAppFromUserType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "started", "user": map[string]any{"login": "fullsend-ai-review[bot]", "type": "Bot"},
+				"created_at": "2026-09-03T10:01:00Z"},
+			{"id": 2, "body": "receipt", "user": map[string]any{"login": "github-actions[bot]", "type": "Bot"},
+				"created_at": "2026-09-03T10:02:00Z"},
+			{"id": 3, "body": "not the App", "user": map[string]any{"login": "fullsend-ai-review", "type": "User"},
+				"created_at": "2026-09-03T10:03:00Z"},
+			{"id": 4, "body": "no type at all", "user": map[string]any{"login": "octocat"},
+				"created_at": "2026-09-03T10:04:00Z"},
+		})
+	}))
+	defer srv.Close()
+
+	comments, err := newTestClient(t, srv).ListIssueComments(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, comments, 4)
+	assert.True(t, comments[0].AuthorIsApp)
+	assert.True(t, comments[1].AuthorIsApp)
+	assert.False(t, comments[2].AuthorIsApp, "a user account is a person whatever its login")
+	assert.False(t, comments[3].AuthorIsApp, "a missing type is not an App verdict")
+}
+
+func TestListPullRequestReviews_AuthorIsAppFromUserType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "state": "COMMENTED", "body": "nil check", "submitted_at": "2026-09-03T10:06:00Z",
+				"user": map[string]any{"login": "coderabbitai[bot]", "type": "Bot"}},
+			{"id": 2, "state": "APPROVED", "body": "", "submitted_at": "2026-09-03T10:07:00Z",
+				"user": map[string]any{"login": "acme-bot", "type": "User"}},
+		})
+	}))
+	defer srv.Close()
+
+	reviews, err := newTestClient(t, srv).ListPullRequestReviews(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, reviews, 2)
+	assert.True(t, reviews[0].AuthorIsApp)
+	assert.False(t, reviews[1].AuthorIsApp, "a login ending in -bot is not an App verdict")
+}
+
 func TestListIssueComments_SendsNoSinceWhenUnset(t *testing.T) {
 	var hadSince bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

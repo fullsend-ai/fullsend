@@ -51,6 +51,14 @@ type Config struct {
 	// from the shim's `run-name`; a shim that declares none leaves it
 	// empty, and then only pull-request events bind.
 	RunName string
+	// SelfLogins are the forge logins this run's own output is posted
+	// under, matched exactly and never by pattern: the login the role
+	// token resolves to (GetAuthenticatedUser) and ReviewBotLogins for the
+	// repository owner, in the REST form with the `[bot]` suffix. Required:
+	// Start refuses an empty list, because the post-fix and post-code
+	// comments carry no marker and only the login keeps them out of the
+	// delta.
+	SelfLogins []string
 	// StartedAt is the run's start; nothing created at or before it is a
 	// follow-up, and it is the baseline for the first delta.
 	StartedAt time.Time
@@ -115,6 +123,8 @@ type Watcher struct {
 	warnf   func(string, ...any)
 
 	myRun forge.WorkflowRun
+	// selfLogins is Config.SelfLogins lower-cased for exact lookup.
+	selfLogins map[string]bool
 	// freshAfter is the instant a candidate must have been created after to
 	// count as a follow-up. Set by Start from my own run's record.
 	freshAfter time.Time
@@ -171,19 +181,26 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 			observed[int64(r.ID)] = r
 		}
 	}
+	self := make(map[string]bool, len(cfg.SelfLogins))
+	for _, login := range cfg.SelfLogins {
+		if login = strings.ToLower(strings.TrimSpace(login)); login != "" {
+			self[login] = true
+		}
+	}
 	return &Watcher{
-		cfg:      cfg,
-		actions:  actions,
-		items:    items,
-		deliver:  deliver,
-		settle:   settle,
-		logf:     func(string, ...any) {},
-		warnf:    func(string, ...any) {},
-		seen:     seen,
-		observed: observed,
-		steers:   steers,
-		lastHead: cfg.Item.HeadSHA,
-		baseline: baseline,
+		cfg:        cfg,
+		actions:    actions,
+		items:      items,
+		deliver:    deliver,
+		settle:     settle,
+		logf:       func(string, ...any) {},
+		warnf:      func(string, ...any) {},
+		seen:       seen,
+		observed:   observed,
+		selfLogins: self,
+		steers:     steers,
+		lastHead:   cfg.Item.HeadSHA,
+		baseline:   baseline,
 	}
 }
 
@@ -291,6 +308,9 @@ func (w *Watcher) Start(ctx context.Context, stageHints ...string) error {
 	owner, repo, err := splitRepo(w.cfg.Repo)
 	if err != nil {
 		return err
+	}
+	if len(w.selfLogins) == 0 {
+		return errors.New("no self logins resolved; the run cannot tell its own output from an update")
 	}
 	run, err := w.actions.GetWorkflowRun(ctx, owner, repo, int(w.cfg.RunID))
 	if err != nil {
