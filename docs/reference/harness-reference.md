@@ -126,6 +126,12 @@ overlays:
 # ── Security ──────────────────────────────────────────────────
 security:
   fail_mode: closed                  # "closed" (default) or "open"
+
+# ── Steering (ADR 0113) ───────────────────────────────────────
+steer:
+  enabled: true                      # default: false — set true to opt in
+  max_steers: 2                      # default: 2 — updates one run absorbs
+  poll_interval_seconds: 30          # default: 30 — max 600
 ```
 
 > **Naming convention:** Prefix settings that tune one agent's behavior with
@@ -187,6 +193,14 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
+**`steer`** — Lets a run already in flight absorb updates to its work item rather than ending on what it started with ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md), [ADR 0117](../ADRs/0117-steer-interface-in-sandbox-mailbox.md); field-by-field in [steering.md](../contributing/steering.md#configuration)). Off by default, including when the block is absent entirely; `enabled: true` is the opt-in. A block that sets just `max_steers` or `poll_interval_seconds` says nothing about whether steering is on, so it takes the default.
+
+`enabled` is accepted, validated and composed today, and — like `max_steers` and `poll_interval_seconds` — **not yet consulted by any caller**: nothing in this change reads it or asks a runtime to keep its session open, so setting `enabled: true` is inert for now. It will take effect when two things line up: the harness has opted in, and the runtime can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)). Missing either will leave the run single-turn, finishing on what it started with, and a steered run will hold its sandbox longer because the session stays open until it settles rather than ending at the first result.
+
+`max_steers` caps how many updates one run absorbs before it settles — a steered turn on a large diff can cost as much as a fresh run. `poll_interval_seconds` (0–600; 0 or unset takes the default of 30) paces how often the runner looks for an update. Both are accepted and validated today; the code that spends the cap and paces the interval ships with the change that looks for updates.
+
+**Top level only** — `steer` is not a `ForgeConfig` field, so a `steer:` key placed under `forge:` or `overlays:` is silently ignored; only `base:` composition (see the merge table below) can override it.
+
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
 
 ## Deprecated fields
@@ -226,6 +240,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
+| `steer` | Child replaces the whole block if it sets one; otherwise inherits the base's block entire. A child block is never merged field-by-field, so it gets the defaults for every key it omits, not the base's values. Top-level only — not a `ForgeConfig` field, so this merge applies to `base:` composition alone and an `overlays:`/`forge:` entry is silently ignored |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote
