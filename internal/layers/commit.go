@@ -502,13 +502,15 @@ const (
 // GitHub fork creation is async (202 Accepted) and can take up to several
 // minutes for large repos. Polling uses exponential backoff starting at
 // forkWaitInitialInterval and doubling up to forkWaitMaxInterval.
+// Each sleep is bounded by remaining time until the deadline so the loop
+// does not overshoot timeout by a full backoff interval.
 //
 // The clk and timeout parameters allow tests to inject a fake clock and
 // shorter deadline without wall-clock delays.
 func waitForFork(ctx context.Context, client forge.Client, printer *ui.Printer,
 	forkOwner, forkRepo string, clk clock, timeout time.Duration) error {
 
-	deadline := time.Now().Add(timeout)
+	deadline := clk.Now().Add(timeout)
 	interval := forkWaitInitialInterval
 	printer.StepStart(fmt.Sprintf("Waiting for fork %s/%s to be ready", forkOwner, forkRepo))
 
@@ -520,14 +522,19 @@ func waitForFork(ctx context.Context, client forge.Client, printer *ui.Printer,
 			printer.StepFail("Error checking fork status")
 			return fmt.Errorf("checking fork %s/%s: %w", forkOwner, forkRepo, err)
 		}
-		if time.Now().After(deadline) {
+		remaining := deadline.Sub(clk.Now())
+		if remaining <= 0 {
 			printer.StepFail("Timed out waiting for fork")
 			return fmt.Errorf("fork %s/%s not ready after %s; try again in a few minutes", forkOwner, forkRepo, timeout)
+		}
+		sleep := interval
+		if remaining < sleep {
+			sleep = remaining
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-clk.After(interval):
+		case <-clk.After(sleep):
 		}
 		// Exponential backoff: double the interval up to the cap.
 		if interval < forkWaitMaxInterval {

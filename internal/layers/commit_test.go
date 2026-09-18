@@ -807,6 +807,10 @@ type recordingClock struct {
 	repoFullName string
 }
 
+func (c *recordingClock) Now() time.Time {
+	return time.Now()
+}
+
 func (c *recordingClock) After(d time.Duration) <-chan time.Time {
 	c.intervals = append(c.intervals, d)
 	c.callCount++
@@ -870,6 +874,10 @@ func TestWaitForFork_BackoffCapsAtMax(t *testing.T) {
 // ctx.Done() instead.
 type blockingClock struct{}
 
+func (blockingClock) Now() time.Time {
+	return time.Now()
+}
+
 func (blockingClock) After(time.Duration) <-chan time.Time {
 	return make(chan time.Time) // blocks forever
 }
@@ -886,15 +894,94 @@ func TestWaitForFork_ContextCancellation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// advancingClock owns both Now and After so waitForFork can be driven
+// entirely on fake time. After records the requested duration and
+// advances Now by that amount, then resolves immediately.
+type advancingClock struct {
+	now       time.Time
+	intervals []time.Duration
+}
+
+func (c *advancingClock) Now() time.Time {
+	return c.now
+}
+
+func (c *advancingClock) After(d time.Duration) <-chan time.Time {
+	c.intervals = append(c.intervals, d)
+	c.now = c.now.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.now
+	return ch
+}
+
 func TestWaitForFork_Timeout(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer, buf := newTestPrinter()
 
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := &advancingClock{now: start}
+
 	err := waitForFork(context.Background(), client, printer,
-		"contributor", "widget", fakeClock{}, 50*time.Millisecond)
+		"contributor", "widget", clk, 50*time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not ready after")
 	assert.Contains(t, buf.String(), "Timed out")
+	require.NotEmpty(t, clk.intervals, "timeout must sleep via clk.After")
+}
+
+func TestWaitForFork_BackoffBoundedByDeadline(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, _ := newTestPrinter()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := &advancingClock{now: start}
+	// 10s is between the first (3s) and second (6s) backoff interval,
+	// so the last sleep must be clipped to remaining time rather than
+	// using the full next interval.
+	const timeout = 10 * time.Second
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", clk, timeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready after 10s")
+
+	require.NotEmpty(t, clk.intervals, "backoff sleeps must go through clk.After")
+	var slept time.Duration
+	for _, d := range clk.intervals {
+		assert.LessOrEqual(t, d, timeout, "sleep %s must not exceed the deadline", d)
+		slept += d
+	}
+	assert.Equal(t, timeout, slept, "recorded sleeps must consume exactly the timeout")
+	assert.Equal(t, start.Add(timeout), clk.Now(), "clock must stop at the deadline, not past it")
+	assert.Equal(t, 3*time.Second, clk.intervals[0])
+	assert.Equal(t, 6*time.Second, clk.intervals[1])
+	assert.Equal(t, 1*time.Second, clk.intervals[len(clk.intervals)-1],
+		"final sleep must be remaining time, not the next backoff interval")
+}
+
+func TestWaitForFork_DoesNotSleepPastDeadline(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, _ := newTestPrinter()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := &advancingClock{now: start}
+	// Remaining time after the first 3s sleep is 2s, which is less than
+	// the next 6s interval. The loop must sleep 2s, not 6s.
+	const timeout = 5 * time.Second
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", clk, timeout)
+	require.Error(t, err)
+
+	require.GreaterOrEqual(t, len(clk.intervals), 2)
+	assert.Equal(t, 3*time.Second, clk.intervals[0])
+	assert.Equal(t, 2*time.Second, clk.intervals[1],
+		"sleep must be min(interval, remaining), not the full backoff")
+	for _, d := range clk.intervals {
+		assert.LessOrEqual(t, d, timeout)
+	}
+	assert.Equal(t, start.Add(timeout), clk.Now(),
+		"waitForFork must return at the deadline, not deadline+interval")
 }
 
 func TestPromptForkChoice_EOFWithPartialData(t *testing.T) {
