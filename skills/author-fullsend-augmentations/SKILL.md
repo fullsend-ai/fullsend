@@ -136,7 +136,7 @@ path. Everything below reads from those trees — not from memory.
 AGENTS_ROOT="${AGENTS_ROOT:-}"   # set if already cloned
 if [[ -z "$AGENTS_ROOT" ]]; then
   # try common local paths, else clone shallow
-  for d in "$HOME/development/agents" ./agents; do
+  for d in "$HOME/development/agents" ./_agents ./agents; do
     [[ -d "$d/harness" && -d "$d/agents" && -d "$d/schemas" ]] && AGENTS_ROOT="$d" && break
   done
 fi
@@ -250,7 +250,7 @@ cd "$FULLSEND_ROOT"
 rg -n 'file-level|sub-agent|override|skills:' \
   docs/guides/user/customizing-with-skills.md \
   docs/guides/user/customizing-agents.md \
-  docs/agents/topics/default-vs-custom.md
+  docs/guides/user/default-vs-custom-agents.md
 
 # Whether harness skills: accepts object/map overrides (schema + types)
 rg -n 'SkillEntry|file_overrides|Overrides' \
@@ -311,7 +311,7 @@ For derived harnesses and agent registration, read **only** these fullsend
 entry points (skip "layered configuration" / "overriding built-in skills"
 sections in older user guides — they describe removed overlay mechanics):
 
-- `docs/agents/topics/default-vs-custom.md` — augment vs derived
+- `docs/guides/user/default-vs-custom-agents.md` — augment vs derived
 - `docs/ADRs/0045-forge-portable-harness-schema.md` — `base:` merge rules
 - `docs/ADRs/0058-agent-registration.md` — registering harness URLs
 - `docs/guides/user/building-custom-agents.md` — new or derived agents

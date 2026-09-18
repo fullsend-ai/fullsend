@@ -167,12 +167,23 @@ When the right tracker is unclear, file in this repository and link the [experim
 
 The [`filing-issues`](skills/filing-issues/SKILL.md) skill encodes this split for automated filing.
 
-## Contributor ladder
+### Where to file agents-related issues
 
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) is a separate repository, vendored here as the `_agents/` git submodule. Its `docs/` tree is published on the docs site via the `docs/agents` symlink. File issues in the repository that owns the code or documentation being changed:
+
+| File in | When the work is |
+|---------|------------------|
+| [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents/issues) | Agent definitions, harness YAML, skills, schemas, scripts, policies, profiles, or agent reference pages **inside** the agents repository (the `_agents/` tree), including the markdown served at `/docs/agents/`. |
+| [`fullsend-ai/fullsend`](https://github.com/fullsend-ai/fullsend/issues) | How this repository consumes the submodule: `.gitmodules`, CODEOWNERS entries, Renovate bump/auto-merge policy, the `docs/agents` symlink, sidebar wiring, and lychee/CI exclusions. Customization guides that live under `docs/guides/user/` (for example default-vs-custom and the escalation ladder) also stay here. |
+
+When the right tracker is unclear, file in this repository and link the [agents issue tracker](https://github.com/fullsend-ai/agents/issues) in the body. Search both repositories before filing — the same topic may already exist in the other tracker.
+
+## Contributor ladder
 This project defines four contributor roles — Vouched, Triage, Write,
 and Maintainer — each granting additional capabilities. See
 [LADDER.md](LADDER.md) for the full ladder and how to request each role.
 
+## Maintainers
 For the Maintainer role specifically, see
 [MAINTAINERS.md](MAINTAINERS.md).
 
