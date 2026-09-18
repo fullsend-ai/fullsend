@@ -434,6 +434,14 @@ type IssueComment struct {
 	// UpdatedAt is empty on forges that do not report it.
 	CreatedAt string
 	UpdatedAt string
+	// AuthorIsApp reports whether the forge says the author is an App or
+	// bot account rather than a person — GitHub's `user.type == "Bot"`,
+	// which the platform sets for App identities and no user can choose.
+	// It is the only sanctioned way to tell the two apart: a login's shape
+	// (a `[bot]` suffix, a `-bot` ending, a name like one of fullsend's
+	// own) is choosable by any user account and decides nothing. False
+	// on forges whose decoder does not report it.
+	AuthorIsApp bool
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,
@@ -452,6 +460,9 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// AuthorIsApp is the forge's own verdict on the reviewer, as on
+	// IssueComment.AuthorIsApp.
+	AuthorIsApp bool
 }
 
 // ReviewComment represents an inline comment on a specific line of a

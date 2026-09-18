@@ -388,7 +388,7 @@ func TestStart_Errors(t *testing.T) {
 		api.myRun = runJSON(runOpts{id: myRunID, created: runStart, refs: []map[string]string{}})
 		api.myJobs = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
 		srv := api.server(t)
-		w := New(Config{Repo: "org/repo", RunID: myRunID,
+		w := New(Config{Repo: "org/repo", RunID: myRunID, SelfLogins: []string{"fullsend-ai-review[bot]"},
 			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond},
 			testGitHubClient(srv.URL), &stubItems{}, nil, nil)
 		err := w.Start(context.Background(), "")
@@ -400,7 +400,7 @@ func TestStart_Errors(t *testing.T) {
 		api := newFakeAPI()
 		api.status["/actions/runs/"] = 403
 		srv := api.server(t)
-		w := New(Config{Repo: "org/repo", RunID: myRunID,
+		w := New(Config{Repo: "org/repo", RunID: myRunID, SelfLogins: []string{"fullsend-ai-review[bot]"},
 			StartedAt: mustTime(t, runStart), PollInterval: time.Millisecond},
 			testGitHubClient(srv.URL), &stubItems{}, nil, nil)
 		err := w.Start(context.Background(), "")

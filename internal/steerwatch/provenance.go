@@ -37,8 +37,8 @@ import (
 //	                           closed check nothing. EXCLUDED.
 //	pull_request_review        checks pull_request.user.login while the run's
 //	                           actor is the review submitter, which the arm
-//	                           requires to be the review App. EXCLUDED (and
-//	                           bot actors are filtered out regardless).
+//	                           requires to be the review App. EXCLUDED: a
+//	                           review reaches the agent as context at most.
 //	pull_request_review_comment
 //	                           has no arm at all, so every stage job is
 //	                           skipped and check 5 already rejects it.

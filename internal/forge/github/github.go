@@ -2817,6 +2817,14 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 	return result, nil
 }
 
+// isAppUserType reports whether a GitHub `user.type` names an App or bot
+// account. GitHub sets the field to "Bot" for App identities, including
+// github-actions; a user account cannot choose it, which is what makes it
+// the only sanctioned App-versus-human test. The login's shape is not one.
+func isAppUserType(userType string) bool {
+	return userType == "Bot"
+}
+
 // ListIssueComments returns all comments on an issue, paginating automatically.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
 	return c.listIssueComments(ctx, owner, repo, number, time.Time{})
@@ -2855,6 +2863,7 @@ func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, 
 			Body    string `json:"body"`
 			User    struct {
 				Login string `json:"login"`
+				Type  string `json:"type"`
 			} `json:"user"`
 			CreatedAt string `json:"created_at"`
 			UpdatedAt string `json:"updated_at"`
@@ -2865,13 +2874,14 @@ func (c *LiveClient) listIssueComments(ctx context.Context, owner, repo string, 
 
 		for _, r := range raw {
 			result = append(result, forge.IssueComment{
-				ID:        r.ID,
-				NodeID:    r.NodeID,
-				HTMLURL:   r.HTMLURL,
-				Body:      r.Body,
-				Author:    r.User.Login,
-				CreatedAt: r.CreatedAt,
-				UpdatedAt: r.UpdatedAt,
+				ID:          r.ID,
+				NodeID:      r.NodeID,
+				HTMLURL:     r.HTMLURL,
+				Body:        r.Body,
+				Author:      r.User.Login,
+				CreatedAt:   r.CreatedAt,
+				UpdatedAt:   r.UpdatedAt,
+				AuthorIsApp: isAppUserType(r.User.Type),
 			})
 		}
 
@@ -3285,6 +3295,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			NodeID string `json:"node_id"`
 			User   struct {
 				Login string `json:"login"`
+				Type  string `json:"type"`
 			} `json:"user"`
 			State       string `json:"state"`
 			Body        string `json:"body"`
@@ -3302,6 +3313,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				State:       r.State,
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
+				AuthorIsApp: isAppUserType(r.User.Type),
 			})
 		}
 
