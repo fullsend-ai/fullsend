@@ -13,8 +13,9 @@
 # which determines the stage and runs the agent inline (ADR 62).
 # Adding a new stage requires only a job in reusable-dispatch.yml — zero changes to this repo.
 #
-# Concurrency: per-role cancel-in-progress groups live in reusable-dispatch.yml
-# stage jobs with -agent- suffix. Roles operate independently (#2452).
+# Concurrency: per-role groups (fullsend-{stage}-...) live in reusable-dispatch.yml
+# stage jobs. A newer event never cancels the run in flight; it waits as the single
+# pending run (ADR 0106). Roles operate independently (#2452).
 name: fullsend
 
 on:
