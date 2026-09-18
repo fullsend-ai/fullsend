@@ -676,6 +676,10 @@ jobs:
     needs: route
     if: needs.route.outputs.stage == 'triage'
     runs-on: ${{ inputs.runner_image }}
+    # The run in flight is never cancelled (see Concurrency above). Where the
+    # agent has steering enabled, it also absorbs the update through the
+    # runner's follow-up run watcher; one run still waits behind it as the
+    # single pending run (ADR 0113).
     concurrency:
       group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
@@ -1194,6 +1198,9 @@ jobs:
           if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty' | tr -d '\r')"
             if [[ -n "${COMMENT_BODY}" ]]; then
+              # The command that routed the comment here is routing, not
+              # instruction, so it is stripped before the text reaches the
+              # agent.
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
               INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
