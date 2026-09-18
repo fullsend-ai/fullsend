@@ -25,8 +25,10 @@ func fakeOpenshellCodex(t *testing.T, logPath, storeDir, versionOutput string, s
 	t.Helper()
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
 	streamCase := "exit 0"
+	firstLine := ":"
 	if len(streamFixture) > 0 && streamFixture[0] != "" {
 		streamCase = "cat '" + streamFixture[0] + "'; exit 0"
+		firstLine = "head -1 '" + streamFixture[0] + "'"
 	}
 	findCase := "exit 0"
 	if len(streamFixture) > 1 && streamFixture[1] != "" {
@@ -57,8 +59,47 @@ if [ "$2" = "upload" ]; then
   cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
   exit 0
 fi
+# Sandbox lifecycle, for the codex steer interrupt. FULLSEND_TEST_SANDBOX_STATE
+# names a file holding the phase: stop and start write it, get reports it.
+state="${FULLSEND_TEST_SANDBOX_STATE:-}"
+# A stop ends every process in the sandbox; the ".stopped" marker latches it
+# for a waiting process that could otherwise miss a brief Stopped phase.
+if [ "$2" = "stop" ]; then
+  if [ -n "${FULLSEND_TEST_STOP_FAILS:-}" ]; then echo "stop refused" >&2; exit 1; fi
+  if [ -n "${FULLSEND_TEST_STOP_NEVER_CONFIRMS:-}" ]; then echo Stopping > "$state"; : > "$state.stopped"; exit 0; fi
+  [ -n "$state" ] && echo Stopped > "$state" && : > "$state.stopped"; exit 0
+fi
+if [ "$2" = "start" ]; then [ -n "$state" ] && echo Ready > "$state"; exit 0; fi
+if [ "$2" = "get" ]; then
+  if [ -n "$state" ] && [ -f "$state" ]; then echo "Phase: $(cat "$state")"; else echo "Phase: Ready"; fi
+  exit 0
+fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
+  case "$last" in
+    *"exec --json"*" resume "*)
+      if [ -n "${FULLSEND_TEST_RESUME_EXIT:-}" ]; then exit "$FULLSEND_TEST_RESUME_EXIT"; fi
+      ` + streamCase + ` ;;
+    *"exec --json"*)
+      # The first process of a steered run: print the thread header, then
+      # stay "running" until the sandbox is stopped, and exit the way the
+      # openshell client does when the relay goes away.
+      if [ -n "${FULLSEND_TEST_FIRST_WAITS_FOR_STOP:-}" ]; then
+        ` + firstLine + `
+        while [ ! -f "$state.stopped" ]; do sleep 0.05; done
+        echo "Error:   x code: 'The service is currently unavailable', message: \"exec relay closed before the command reported an exit status\"" >&2
+        exit 1
+      fi
+      # A first process that completes its whole turn, then lingers until
+      # the test says so, and exits 0 on its own.
+      if [ -n "${FULLSEND_TEST_FIRST_WAITS_FOR_MARKER:-}" ]; then
+        ` + strings.Replace(streamCase, "; exit 0", "", 1) + `
+        while [ ! -f "$FULLSEND_TEST_FIRST_WAITS_FOR_MARKER" ]; do sleep 0.05; done
+        exit 0
+      fi
+      if [ -n "${FULLSEND_TEST_EXEC_EXIT:-}" ]; then exit "$FULLSEND_TEST_EXEC_EXIT"; fi
+      ` + streamCase + ` ;;
+  esac
   case "$last" in
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;

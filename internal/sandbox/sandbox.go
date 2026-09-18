@@ -1249,6 +1249,73 @@ func hasPolicySection(output string) bool {
 	return false
 }
 
+// StopTimeout bounds Stop. `sandbox stop` on the pinned OpenShell 0.0.116
+// podman driver always waits out the driver's 45 s grace
+// (NVIDIA/OpenShell#2855) before it returns, so the budget leaves room above
+// that for the phase poll and a slow gateway.
+const StopTimeout = 90 * time.Second
+
+// StartTimeout bounds Start. A start from Stopped measured 0.2 s to Ready on
+// 0.0.116; the budget is for a slow gateway, not the common case.
+const StartTimeout = 30 * time.Second
+
+// stoppedSandboxPhase is the phase Stop waits for.
+const stoppedSandboxPhase = "Stopped"
+
+// stopStartPoll is how often Stop and Start re-read the phase.
+var stopStartPoll = 250 * time.Millisecond
+
+// Phase reads a sandbox's current phase ("" when the field is absent).
+func Phase(ctx context.Context, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "openshell", "sandbox", "get", name).Output()
+	if err != nil {
+		return "", fmt.Errorf("sandbox get %q: %w", name, err)
+	}
+	return sandboxPhase(string(out)), nil
+}
+
+// Stop stops a sandbox, ending every process in it while keeping its disk
+// state, and waits until it reports Stopped. It is the released way to end
+// what an exec started: an exec's processes are not expected to exit with
+// the caller (NVIDIA/OpenShell#3159).
+func Stop(ctx context.Context, name string, timeout time.Duration) error {
+	return changePhase(ctx, name, "stop", stoppedSandboxPhase, timeout)
+}
+
+// Start starts a stopped sandbox and waits until it reports Ready.
+func Start(ctx context.Context, name string, timeout time.Duration) error {
+	return changePhase(ctx, name, "start", readySandboxPhase, timeout)
+}
+
+// changePhase runs `openshell sandbox <verb> <name>` and polls the anchored
+// Phase field until it reads want. A terminal phase fails at once rather
+// than burning the budget.
+func changePhase(ctx context.Context, name, verb, want string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "openshell", "sandbox", verb, name).CombinedOutput(); err != nil {
+		return fmt.Errorf("sandbox %s %q failed: %w: %s", verb, name, err, strings.TrimSpace(string(out)))
+	}
+	var last string
+	for {
+		out, err := exec.CommandContext(ctx, "openshell", "sandbox", "get", name).Output()
+		if err == nil {
+			last = sandboxPhase(string(out))
+			if last == want {
+				return nil
+			}
+			if phase := terminalSandboxPhase(string(out)); phase != "" {
+				return fmt.Errorf("sandbox %s %q: entered terminal phase %q", verb, name, phase)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("sandbox %s %q: phase is %q, not %q, after %s: %w", verb, name, last, want, timeout, ctx.Err())
+		case <-time.After(stopStartPoll):
+		}
+	}
+}
+
 // Delete deletes a sandbox, returning any error for the caller to log.
 func Delete(name string) error {
 	out, err := exec.Command("openshell", "sandbox", "delete", name).CombinedOutput()
