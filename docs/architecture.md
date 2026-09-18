@@ -329,8 +329,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   interface is an optional runtime capability, `runtime.Steerer`, fed through a
   mailbox the agent's own stdin is tailing, with delivery acknowledged by the
   agent's echo of that specific message
-  ([ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md)). Steering is off
-  by default; a harness opts in with `steer: {enabled: true}`.
+  ([ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md)). Steering is on
+  by default; a harness opts out with `steer: {enabled: false}` and gets ADR 0106
+  alone
+  ([ADR 0121](ADRs/0121-steering-on-by-default-per-harness-opt-out.md)).
 - A steer delivered to a run in flight is authorized once, by the follow-up
   run's `Route` job; the runner verifies only provenance, from run records the
   sender cannot write. Text from an actor that job authorized is an amendment

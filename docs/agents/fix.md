@@ -98,6 +98,13 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   not cancel it: that run finishes, and the new dispatch waits as the single
   pending run (normally but not necessarily the newest event), then works from
   the PR's current state ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  That run also absorbs the comment
+  ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md)),
+  and the run the comment queued exits rather than repeating the work. That
+  absorb is GitHub Actions only; a GitLab pipeline queues either way. A harness
+  that opts out with `steer: {enabled: false}` keeps the ADR 0106 path alone —
+  the run in flight still finishes and the queued run does the work, without
+  the absorb or the exit.
 
 ## How it helps
 
