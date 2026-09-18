@@ -671,6 +671,28 @@ func TestRunAgentUpdate_LocalPathBaseNoSHAInURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not find a commit SHA in the existing URL")
 }
 
+func TestRunAgentUpdate_LocalPathSymlinkEscape(t *testing.T) {
+	outerDir := t.TempDir()
+	targetPath := filepath.Join(outerDir, "outside.yaml")
+	require.NoError(t, os.WriteFile(targetPath, []byte("base: https://example.com/old.yaml\nrole: coder\n"), 0o644))
+
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+`)
+	require.NoError(t, os.Symlink(targetPath, filepath.Join(dir, "code.yaml")))
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", "", dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes")
+
+	got, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "https://example.com/old.yaml", "file outside the fullsend directory must not be modified")
+}
+
 func TestRunAgentUpdate_BaseLayerURLAgentGetsOverlayEntry(t *testing.T) {
 	oldSHA := testCommitSHA
 	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
@@ -749,6 +771,28 @@ func TestRewriteHarnessBaseURL_MissingFile(t *testing.T) {
 	err := rewriteHarnessBaseURL("/nonexistent/code.yaml", "https://example.com/old.yaml", "https://example.com/new.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading harness file")
+}
+
+func TestRewriteHarnessBaseURL_WrongOccurrenceDetected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "code.yaml")
+	oldURL := "https://example.com/old.yaml"
+	newURL := "https://example.com/new.yaml"
+	// oldURL appears first in a comment, before the actual base: field. A
+	// naive first-match byte replace rewrites the comment instead of the
+	// base: value.
+	content := "# see " + oldURL + " for reference\nbase: " + oldURL + "\nrole: coder\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	err := rewriteHarnessBaseURL(path, oldURL, newURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "was not updated")
+
+	// The actual base: field must remain unchanged since the wrong
+	// occurrence was the one that got rewritten.
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "base: "+oldURL)
 }
 
 func TestRunAgentUpdate_NotFound(t *testing.T) {

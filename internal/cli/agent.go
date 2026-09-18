@@ -536,7 +536,14 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	if err := validateLocalPath(absDir, entry.Source); err != nil {
 		return err
 	}
-	harnessPath := filepath.Join(absDir, entry.Source)
+	// Resolve symlinks and re-check containment: validateLocalPath only
+	// rejects absolute paths and ".." segments, so a symlink at the
+	// source path (or an intermediate directory) could otherwise point
+	// the write below outside the fullsend directory.
+	harnessPath, err := containedLocalPath(absDir, entry.Source)
+	if err != nil {
+		return err
+	}
 	h, err := harness.LoadRaw(harnessPath)
 	if err != nil {
 		return fmt.Errorf("loading local harness: %w", err)
@@ -642,6 +649,17 @@ func rewriteHarnessBaseURL(path, oldURL, newURL string) error {
 	updated := bytes.Replace(data, []byte(oldURL), []byte(newURL), 1)
 	if err := os.WriteFile(path, updated, 0o644); err != nil {
 		return fmt.Errorf("writing harness file: %w", err)
+	}
+	// The replace above is a first-match, file-wide byte substitution, so
+	// oldURL appearing earlier in the file (e.g. in a comment) could mean
+	// the wrong occurrence was rewritten. Re-load and confirm the parsed
+	// base: field actually changed to newURL before reporting success.
+	h, err := harness.LoadRaw(path)
+	if err != nil {
+		return fmt.Errorf("verifying rewritten harness file: %w", err)
+	}
+	if h.Base != newURL {
+		return fmt.Errorf("base URL in %s was not updated to the new value; a matching URL may have been replaced elsewhere in the file", path)
 	}
 	return nil
 }
