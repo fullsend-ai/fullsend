@@ -9878,7 +9878,7 @@ model: opus
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 	assert.Nil(t, h.Steer)
-	assert.False(t, h.SteerEnabled(), "steering is off when neither harness says anything")
+	assert.True(t, h.SteerEnabled(), "steering is on when neither harness says anything")
 }
 
 func TestLoadWithBase_SteerChildInheritsBaseOptOut(t *testing.T) {
