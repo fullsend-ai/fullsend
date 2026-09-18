@@ -298,7 +298,9 @@ func (r *recorder) settleCount() int {
 func newWatcher(t *testing.T, api *fakeAPI, items ItemReader, rec *recorder, mutate func(*Config)) *Watcher {
 	t.Helper()
 	if api.myRun == nil {
-		api.myRun = runJSON(runOpts{id: myRunID, created: runStart})
+		// Titled by a shim that declares run-name, as RunName below says;
+		// Start turns title binding off when the two disagree.
+		api.myRun = runJSON(runOpts{id: myRunID, created: runStart, title: "org/repo#7"})
 	}
 	if api.myJobs == nil {
 		api.myJobs = jobsJSON(routeJob("success"), stageJob(stageName, "in_progress", ""))
