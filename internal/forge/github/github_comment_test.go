@@ -519,6 +519,7 @@ func TestListPullRequestReviews(t *testing.T) {
 				"state":        "APPROVED",
 				"body":         "LGTM",
 				"submitted_at": "2026-01-01T00:00:00Z",
+				"commit_id":    "abc123",
 			},
 		})
 	}))
@@ -533,6 +534,7 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "reviewer", reviews[0].User)
 	assert.Equal(t, "APPROVED", reviews[0].State)
 	assert.Equal(t, "LGTM", reviews[0].Body)
+	assert.Equal(t, "abc123", reviews[0].CommitID)
 }
 
 func TestAddIssueReaction(t *testing.T) {
