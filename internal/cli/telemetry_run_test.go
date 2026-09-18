@@ -1596,3 +1596,18 @@ func TestHarnessIdentityAttrs_OmitsSHAWhenUnreadable(t *testing.T) {
 func TestHarnessIdentityAttrs_Empty(t *testing.T) {
 	assert.Empty(t, harnessIdentityAttrs("", ""))
 }
+
+// TestIterationEventHandler_NilCollectorStillRenders guards the invariant
+// the handler's doc states: supplying any OnEvent replaces the runtime's
+// default renderer, so the handler must render even with the content gate
+// off. A steered run depends on it — steerTurnEndHandler wraps the result,
+// and a nil inner would become a non-nil closure that rendered nothing,
+// silencing the console for the whole run.
+func TestIterationEventHandler_NilCollectorStillRenders(t *testing.T) {
+	var rendered []agentruntime.AgentEvent
+	handler := iterationEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, nil, nil)
+	require.NotNil(t, handler, "the gate being off must not cost the renderer")
+
+	handler(agentruntime.TextEvent{Text: "hello"})
+	assert.Len(t, rendered, 1)
+}

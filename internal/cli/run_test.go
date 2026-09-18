@@ -4192,14 +4192,14 @@ func TestIterationEnvCommand(t *testing.T) {
 	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
 	const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
 	want := func(traceparent string) string {
-		return fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix(), traceparent)
+		return fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\nunset FULLSEND_STEER_ACTIVE\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix(), traceparent)
 	}
-	assert.Equal(t, want(tp), iterationEnvCommand(20, deadline, tp))
-	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, ""),
+	assert.Equal(t, want(tp), iterationEnvCommand(20, deadline, tp, false))
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "", false),
 		"empty TRACEPARENT is still exported so a harness value cannot linger")
-	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "abc"),
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "abc", false),
 		"non-W3C TRACEPARENT is dropped rather than interpolated")
-	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "'; rm -rf /; echo '"),
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "'; rm -rf /; echo '", false),
 		"shell metacharacters must not reach the printf")
 }
 
@@ -4216,8 +4216,8 @@ func TestWriteIterationEnv(t *testing.T) {
 			got = cmd
 			return "", "", 0, nil
 		}
-		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, ""))
-		assert.Equal(t, iterationEnvCommand(20, deadline, ""), got)
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, "", false))
+		assert.Equal(t, iterationEnvCommand(20, deadline, "", false), got)
 	})
 	t.Run("with traceparent", func(t *testing.T) {
 		t.Parallel()
@@ -4227,8 +4227,8 @@ func TestWriteIterationEnv(t *testing.T) {
 			got = cmd
 			return "", "", 0, nil
 		}
-		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, tp))
-		assert.Equal(t, iterationEnvCommand(20, deadline, tp), got)
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, tp, false))
+		assert.Equal(t, iterationEnvCommand(20, deadline, tp, false), got)
 		assert.Contains(t, got, "export TRACEPARENT="+tp)
 	})
 	t.Run("non-zero exit", func(t *testing.T) {
@@ -4236,7 +4236,7 @@ func TestWriteIterationEnv(t *testing.T) {
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "sh: read-only file system\n", 1, nil
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "", false)
 		require.Error(t, err)
 		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
 	})
@@ -4245,7 +4245,7 @@ func TestWriteIterationEnv(t *testing.T) {
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "", 124, fmt.Errorf("command timed out after 10s")
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "", false)
 		require.EqualError(t, err, "command timed out after 10s")
 	})
 	t.Run("clear", func(t *testing.T) {

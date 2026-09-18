@@ -50,10 +50,10 @@ const maxRetryPolls = 4
 // context and the runtime never learns the run is over.
 const settleTimeout = 30 * time.Second
 
-// defaultMinRemaining is Config.MinRemaining when unset: a steered turn on
+// DefaultMinRemaining is Config.MinRemaining when unset: a steered turn on
 // a large diff re-reads the delta and re-runs tools, so a few minutes is the
 // least it can need before the exec timeout would cut it off.
-const defaultMinRemaining = 5 * time.Minute
+const DefaultMinRemaining = 5 * time.Minute
 
 // Config is everything the watcher needs that it cannot discover itself.
 type Config struct {
@@ -188,7 +188,7 @@ func New(cfg Config, actions ActionsReader, items ItemReader, deliver Deliver, s
 		cfg.MaxSteers = defaultMaxSteers
 	}
 	if cfg.MinRemaining <= 0 {
-		cfg.MinRemaining = defaultMinRemaining
+		cfg.MinRemaining = DefaultMinRemaining
 	}
 	seen := make(map[int64]bool, len(cfg.AlreadySeen))
 	for _, id := range cfg.AlreadySeen {

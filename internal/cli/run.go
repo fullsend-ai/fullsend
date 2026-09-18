@@ -519,6 +519,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// inside this process can reach it. The gap runs one way: an agent
 	// re-checking against this value sees a narrower window than the run
 	// spans, never a wider one.
+	// The follow-up run watcher reached the same conclusion and uses the
+	// run record's created_at.
 	runStartedAt := time.Now().UTC()
 
 	printer.Banner(Version())
@@ -923,6 +925,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
+	// The JOB token, captured before minting swaps GH_TOKEN for the role
+	// token. The steer watcher reads the Actions API with it: that is the
+	// token every stage job already grants `actions: write`, and os.Setenv
+	// is not goroutine-safe, so the value has to be taken here rather than
+	// read from the watcher's goroutine. The workflow token is wanted here on
+	// purpose; the role token is read after minting.
+	steerJobToken := envGHToken()
+
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
@@ -1241,6 +1251,65 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declared here so the status-notification defer (below) can read the
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
+
+	// The head this run started on. runStartedAt is captured at the top of
+	// runAgent by the base change; the watcher computes its delta against
+	// that same pair, so the two never disagree about when the run began.
+	runStartHeadSHA := runHeadSHA(forgePlatform)
+
+	// steerActive records that at least one iteration ran with a steer
+	// session, which is what makes the run's real budget steerBudget rather
+	// than the harness timeout.
+	var steerActive bool
+	// terminalElapsed and terminalBudget are the pair the timeout detection
+	// compared, kept so the terminal error reports the same figures rather
+	// than recomputing them against a clock that has moved on. The budget is
+	// seeded from the harness timeout once it is known, so a run that never
+	// reaches the loop cannot read as timed out on a zero budget.
+	var terminalElapsed, terminalBudget time.Duration
+	// steerSeen and steerBaseline carry the judged follow-up run ids and the
+	// delta window across validation loop iterations, so a retry neither
+	// re-examines them nor re-sends content already delivered.
+	var steerSeen []int64
+	// steerObserved carries the issue_comment runs the previous iteration saw
+	// bound to this work item, judged or not. Ids alone are not enough: a run
+	// an earlier watcher refused still occupies its pairing slot, and one that
+	// has left the listing window would otherwise be invisible to the new
+	// watcher — leaving its comment free for the next accepted run to claim.
+	var steerObserved []forge.WorkflowRun
+	var steerBaseline time.Time
+	// steerSpent carries the steer count the same way, because max_steers is
+	// a cap on the run and not on each of its iterations (ADR 0113).
+	var steerSpent int
+
+	// The runtime, sandbox name and timeout are not resolved yet; the
+	// iteration loop fills them in before starting the watcher. The skip
+	// check below needs none of them.
+	baseSteerOpts := steerOpts{
+		harness:       h,
+		forgePlatform: forgePlatform,
+		statusRepo:    sOpts.statusRepo,
+		statusNum:     sOpts.statusNum,
+		jobToken:      steerJobToken,
+		roleToken:     envGHToken(),
+		runStart:      runStartedAt,
+		headSHA:       runStartHeadSHA,
+		printer:       printer,
+	}
+
+	// The logins this run's own output appears under, resolved here — before
+	// bootstrap, and long before the watcher starts — because a run that
+	// cannot name its own output must decline steering rather than watch
+	// without it, and because FULLSEND_STEER_ACTIVE must never be exported
+	// for a run that will not steer (ADR 0119). Gated on the environment
+	// preflight so an ordinary local or GitLab run spends no API call on it.
+	if h.SteerEnabled() && steerPreflight(baseSteerOpts).ok() {
+		logins, err := resolveSteerSelfLogins(ctx, baseSteerOpts.roleToken, baseSteerOpts.statusRepo)
+		if err != nil {
+			printer.StepWarn("Steering unavailable: " + err.Error())
+		}
+		baseSteerOpts.selfLogins = logins
+	}
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -2001,7 +2070,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(),
-		runFacts{headSHA: runHeadSHA(forgePlatform), startedAt: runStartedAt}, fetchEnvVal); err != nil {
+		runFacts{headSHA: runStartHeadSHA, startedAt: runStartedAt}, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2197,6 +2266,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
+	terminalBudget = timeout
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -2231,6 +2301,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			printer.StepWarn("OIDC token refresh disabled: " + err.Error())
 		} else {
+			// A codex steer refreshes the token itself before it interrupts
+			// the turn (see steerDeliver).
+			baseSteerOpts.oidcURL, baseSteerOpts.oidcAuth = oidcURL, oidcAuth
 			// GHA OIDC tokens expire after 5 min; sandbox setup can exceed that.
 			if err := refreshOIDCToken(oidcCtx, sandboxName, oidcURL, oidcAuth); err != nil {
 				printer.StepWarn("Initial OIDC refresh failed (will retry): " + err.Error())
@@ -2324,20 +2397,71 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
 
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentTraceparent); err != nil {
-			// The deadline is advisory; a stale one from the previous
-			// iteration is the only harmful state, so clear it and go on.
-			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
-			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
-				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
-					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
-				}
-				endAgentSpanOnSetupError(agentSpan, rmErr)
-				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
+
+		// The follow-up run watcher runs beside the heartbeat: it absorbs
+		// work-item updates into this run instead of letting the run queued
+		// behind it redo the work (ADR 0113). Nil when steering is off or
+		// the runtime cannot take a message into a running session, in
+		// which case Steerable stays false and Run is single-turn as today.
+		//
+		// It starts before the iteration env is written because that env
+		// advertises the deadline, and whether this iteration is steered
+		// decides which deadline is true.
+		iterSteerOpts := baseSteerOpts
+		iterSteerOpts.runtime = rt
+		iterSteerOpts.sandboxName = sandboxName
+		iterSteerOpts.timeout = timeout
+		iterSteerOpts.seen = steerSeen
+		iterSteerOpts.observed = steerObserved
+		iterSteerOpts.baseline = steerBaseline
+		iterSteerOpts.priorSteers = steerSpent
+		steerSess := startSteerWatcher(ctx, iterSteerOpts)
+
+		// The deadline the sandbox is told must be the one the run is
+		// actually killed at. A steered run is bounded by steerBudget from
+		// runStartedAt — earlier than the harness timeout whenever the
+		// forge token's life clips it — so advertising agentStart+timeout
+		// would promise the agent time it will not get. Both values come
+		// off the same helpers the run context and the timeout detection
+		// use, so the three cannot drift apart.
+		//
+		// Keyed on steerActive, not on this iteration's watcher. Once any
+		// iteration has steered, the whole run is bounded from runStartedAt
+		// by a forge token that expires at a fixed instant — an iteration
+		// that starts no watcher of its own is bounded by it too. Keying
+		// this on steerSess would advertise, and the context below would
+		// enforce, a budget the timeout detection does not use.
+		var envDeadline time.Time
+		var clearErr error
+		steerSess, steerActive, envDeadline, clearErr = exportIterationEnv(execCtx, sandboxName, steerSess, steerActive,
+			effectiveTimeoutMinutes(h), runStartedAt, agentStart, timeout, agentTraceparent, printer)
+		if clearErr != nil {
+			if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
+				printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
 			}
+			endAgentSpanOnSetupError(agentSpan, clearErr)
+			return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, clearErr)
 		}
 		heartbeatDone := make(chan struct{})
-		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
+		// Off the same deadline the sandbox was just told, so what the
+		// console counts down to and what the run is killed at cannot
+		// drift apart.
+		go runHeartbeat(printer, agentStart, heartbeatBudget(agentStart, envDeadline), heartbeatDone)
+
+		// A steered run outlives a single-turn budget, and params.Timeout
+		// bounds one exec — on Codex that is each exec in the resume loop,
+		// not the loop. So the whole-run budget rides on the context, which
+		// every runtime already honours. Settle is what normally ends the
+		// run; this is the backstop if the watcher never gets there. It is
+		// layered onto the agent span's context rather than parenting it,
+		// because the span has to exist before the iteration env is written
+		// for TRACEPARENT to name it.
+		if steerActive {
+			var cancelRun context.CancelFunc
+			agentCtx, cancelRun = context.WithDeadline(agentCtx, steerDeadline(runStartedAt, timeout))
+			defer cancelRun()
+		}
+
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
@@ -2367,9 +2491,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
-			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
+			Steerable:         steerSess != nil,
+			OnEvent: steerTurnEndHandler(
+				iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), steerSess),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+		if steerSess != nil {
+			// After rt.Run returns, so metrics.Steers is complete and has
+			// a single writer: the marker records only what the runtime
+			// acknowledged the agent received.
+			steerSess.stop()
+			steerSeen = steerSess.seenRunIDs()
+			steerObserved = steerSess.observedRuns()
+			steerBaseline = steerSess.baseline()
+			steerSpent = steerSess.steers()
+		}
 		lastIterElapsed = time.Since(agentStart)
 
 		// The stream is over: end unanswered calls now, ahead of content
@@ -2461,7 +2597,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
-		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed, timeout)
+		// Measured against the budget that actually bounded the run, on the
+		// clock that bound would have used: a steered run is killed at a
+		// whole-run deadline anchored at runStartedAt, so a per-iteration
+		// elapsed would be compared against the wrong clock. See
+		// steerAwareBudget.
+		terminalElapsed, terminalBudget = steerAwareBudget(
+			steerActive, runStartedAt, time.Now(), lastIterElapsed, timeout)
+		lastIterTimedOut = iterationTimedOut(lastExitCode, terminalElapsed, terminalBudget)
 		if lastIterTimedOut {
 			// The exec ended at the budget but the agent's processes did
 			// not (OpenShell has no per-exec kill). Terminate them before
@@ -2709,7 +2852,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
+	// The same pair the detection used, so the reported figures are the ones
+	// the run was actually judged on rather than a limit it never reached or
+	// a clock that has moved on since.
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount,
+		terminalElapsed, terminalBudget)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -2951,6 +3098,7 @@ func harnessEnvLookup(key string) (string, bool) {
 // are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
+	"FULLSEND_STEER_ACTIVE":       true,
 	"PATH":                        true,
 	"HOME":                        true,
 	"SHELL":                       true,
@@ -3123,11 +3271,28 @@ func endAgentSpanOnSetupError(span trace.Span, err error) {
 }
 
 // iterationEnvCommand rewrites iterationEnvFile with the budget in minutes,
-// the Unix time at which the running iteration is killed, and the agent
-// span's W3C TRACEPARENT so in-sandbox runtimes can join Fullsend traces.
-func iterationEnvCommand(timeoutMinutes int, deadline time.Time, traceparent string) string {
-	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > %s",
-		iterationEnvDir, timeoutMinutes, deadline.Unix(), sanitizeTraceparent(traceparent), iterationEnvFile)
+// the Unix time at which the running iteration is killed, the agent span's
+// W3C TRACEPARENT so in-sandbox runtimes can join Fullsend traces, and
+// whether this iteration is watched for steers.
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time, traceparent string, steerActive bool) string {
+	// FULLSEND_STEER_ACTIVE is absent by default and present only for an
+	// iteration whose watcher is already running. The agent definitions read
+	// the runner-update opening line as an injection attempt while it is
+	// unset, and that line is public, so exporting it without a watcher would
+	// tell the agent to trust text any author can write. Hence here and not
+	// in bootstrapEnv, which runs before the watcher's live API calls, and
+	// hence per iteration, since each iteration builds its own watcher.
+	//
+	// An unwatched iteration clears it rather than staying silent. .env
+	// sources this file last, after .env.d, which the sandbox can write to;
+	// silence would let a value planted there survive into an iteration
+	// nobody is watching.
+	steer := "unset FULLSEND_STEER_ACTIVE\\n"
+	if steerActive {
+		steer = "export FULLSEND_STEER_ACTIVE=1\\n"
+	}
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n%s' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), sanitizeTraceparent(traceparent), steer, iterationEnvFile)
 }
 
 // runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
@@ -3144,8 +3309,8 @@ func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) e
 }
 
 // writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
-func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, traceparent string) error {
-	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, traceparent))
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, traceparent string, steerActive bool) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, traceparent, steerActive))
 }
 
 // clearIterationEnv removes a previous iteration's file so a stale deadline
@@ -4498,10 +4663,27 @@ var oidcRefreshInterval = 4 * time.Minute
 // token life. Raising either timeout, or adding a third exec to
 // ClearIterationArtifacts, has to be checked against that margin: once the
 // worst-case hold approaches the tick interval a refresh can miss its slot
-// and the token can expire before the next one lands. Take the lock through
-// withSandboxLock rather than directly, so a panic inside the critical
-// section cannot leave it held — the deferred oidcWg/refreshWg waits would
-// then hang the run instead of surfacing the panic.
+// and the token can expire before the next one lands.
+//
+// A codex steer is the longer holder when steering is on: it holds the lock
+// across the interrupt's sandbox stop and start, about 46 s typical and
+// sandbox.StopTimeout + sandbox.StartTimeout (120 s) at its bound. That is
+// more than the OIDC token's 60 s of slack, so the steer fetches a fresh token
+// before taking the lock and uploads it inside the same hold, immediately
+// before the stop (steerDeliver). The interrupt then starts on a token aged
+// at most the lock wait, and even a bound-length one ends well inside the
+// token's 5 minutes. The OpenAI
+// refresher needs no such step: it rotates at least openAIRefreshMargin (5
+// minutes) before expiry — its jitter only moves the rotation earlier — so
+// a bound-length hold still leaves it 3 minutes
+// (TestSteerHoldFitsTheOpenAIRefreshMargin). A token living under twice the
+// margin is rotated at half its remaining life instead, which this does not
+// cover.
+//
+// Take the lock through withSandboxLock rather than directly, so a panic
+// inside the critical section cannot leave it held — the deferred
+// oidcWg/refreshWg waits would then hang the run instead of surfacing the
+// panic.
 var sandboxMu sync.Mutex
 
 // sandboxLockWarnAfter is how long withSandboxLock waits for the lock
@@ -4576,55 +4758,75 @@ func runOIDCRefresh(ctx context.Context, sandboxName, oidcURL, oidcAuth string, 
 var oidcHTTPClient = &http.Client{Timeout: 120 * time.Second} // matches pre-refactor shared httpClient timeout
 
 func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string) error {
+	token, err := fetchOIDCToken(ctx, oidcURL, oidcAuth)
+	if err != nil {
+		return err
+	}
+	// The upload's in-sandbox tar truncates the token on open; hold the
+	// sandbox lock so the between-iteration sweep cannot kill it mid-write.
+	return withSandboxLock(ctx, nil, func() error {
+		return uploadOIDCToken(sandboxName, token)
+	})
+}
+
+// fetchOIDCToken fetches a fresh GHA OIDC token. It touches only the network,
+// so it runs outside sandboxMu.
+func fetchOIDCToken(ctx context.Context, oidcURL, oidcAuth string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", oidcURL, nil)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Authorization", oidcAuth)
 
 	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetching OIDC token: %w", err)
+		return nil, fmt.Errorf("fetching OIDC token: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("OIDC endpoint returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("OIDC endpoint returned HTTP %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return fmt.Errorf("reading OIDC token response: %w", err)
+		return nil, fmt.Errorf("reading OIDC token response: %w", err)
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("OIDC endpoint returned empty token")
+		return nil, fmt.Errorf("OIDC endpoint returned empty token")
 	}
 	if !json.Valid(body) {
-		return fmt.Errorf("OIDC endpoint returned non-JSON response")
+		return nil, fmt.Errorf("OIDC endpoint returned non-JSON response")
 	}
 
+	return body, nil
+}
+
+// oidcUploadFile is sandbox.UploadFile; a variable so tests can record the
+// upload without a sandbox.
+var oidcUploadFile = sandbox.UploadFile
+
+// uploadOIDCToken writes token into the sandbox. The caller MUST hold
+// sandboxMu, and it does not take the lock itself, so a caller already
+// holding it (a codex steer, see steerDeliver) can call it without
+// deadlocking.
+func uploadOIDCToken(sandboxName string, token []byte) error {
 	tmpFile, err := os.CreateTemp("", "fullsend-oidc-*.token")
 	if err != nil {
 		return fmt.Errorf("creating temp token file: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.Write(body); err != nil {
+	if _, err := tmpFile.Write(token); err != nil {
 		tmpFile.Close()
 		return fmt.Errorf("writing temp token file: %w", err)
 	}
 	tmpFile.Close()
 
 	remotePath := sandbox.SandboxWorkspace + "/.gcp-oidc-token"
-	// The upload's in-sandbox tar truncates the token on open; hold the
-	// sandbox lock so the between-iteration sweep cannot kill it mid-write.
-	uploadErr := withSandboxLock(ctx, nil, func() error {
-		return sandbox.UploadFile(sandboxName, tmpFile.Name(), remotePath)
-	})
-	if uploadErr != nil {
-		return fmt.Errorf("copying token to sandbox: %w", uploadErr)
+	if err := oidcUploadFile(sandboxName, tmpFile.Name(), remotePath); err != nil {
+		return fmt.Errorf("copying token to sandbox: %w", err)
 	}
-
 	return nil
 }
 
