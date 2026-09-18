@@ -25,10 +25,13 @@ Decided in [ADR 0115](../../ADRs/0115-user-owned-follow-up-workflows-after-agent
 |---|---|---|
 | Comment, label, review, open a PR | the agent's post-script | the role's minted token |
 | Re-run or cancel CI jobs, dispatch a workflow, approve a run, deploy | a follow-up workflow | the job token, with permissions you declare |
+| Keep the LLM sandbox weaker than your scripts | the harness `privilege_levels` field (`runtime: read`) | the same role's token at a lower level |
 
 The rule: anything a fullsend role does not already grant is a follow-up
 workflow, not a wider role. Roles are shared trust boundaries; your workflow's
-permissions are yours alone.
+permissions are yours alone. `privilege_levels` only narrows a token within
+the role, so it complements a follow-up workflow rather than replacing it. See
+[`privilege_levels` in the harness reference](../../reference/harness-reference.md).
 
 ## What a run publishes
 

@@ -36,7 +36,12 @@ claim any served role and a wider ceiling reaches every agent in every enrolled
 repository. The threat model asks for least privilege and separation of duties
 ([security-threat-model.md](../problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials)),
 and control-plane scopes such as `actions: write` unlock approving fork runs,
-dispatching workflows on any ref, and deleting runs and logs. GitHub Agentic
+dispatching workflows on any ref, and deleting runs and logs. Per-stage
+privilege levels ([ADR 0073](0073-named-mint-privilege-levels.md), implemented
+in fullsend-ai/fullsend#7394) let a harness hand the sandbox a narrower token
+than its scripts, but every level is still a slice of one role's App
+permissions; they cannot grant a scope the role does not carry, and any
+harness naming the role may request any of its levels. GitHub Agentic
 Workflows reaches the same conclusion: its agent job runs with read-only
 repository permissions, every write is an opt-in typed "safe output" executed
 in a separate job whose permissions are the union of the enabled output types,
