@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -362,6 +364,13 @@ const piConfigTamperedExit = 98
 // non-empty the command refuses to start pi on a manifest that no longer
 // matches it.
 func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtension, manifestSum string) string {
+	return buildPiTurnCommand(params, m, exts, manifestSum, "")
+}
+
+// buildPiTurnCommand renders the launch. sessionID is empty for the
+// ordinary single-prompt run and set for a steerable one, where the runner
+// names the session up front because rpc mode reports none.
+func buildPiTurnCommand(params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, sessionID string) string {
 	r := PiRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
@@ -392,6 +401,8 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	vertex := provider == piDefaultProvider
 	xaiVertex := provider == piXaiVertexProvider
 	openai := provider == piOpenAIProvider
+
+	steerable := params.Steerable && sessionID != ""
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	// Resolve the pi binary before the agent-writable .env is sourced and
@@ -432,6 +443,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// carries before .env can replace OPENAI_API_KEY with another
 		// provider's placeholder.
 		parts = append(parts, "&& "+piOpenAIConfigGuard(r.ConfigDir()), "&& "+PiOpenAIAuthSeed(r.ConfigDir()))
+	}
+	if steerable {
+		// Before .env, for the feeder that starts after it: .env is
+		// agent-writable, so without this a planted `tail` would own the
+		// channel steers arrive on. Only a steerable run has a feeder, so
+		// a plain run's command is unchanged.
+		parts = append(parts, "&& "+steerPathPin())
 	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
@@ -544,10 +562,33 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	for _, export := range piExtensionEnvExports(exts) {
 		parts = append(parts, "&& "+export)
 	}
+
+	if steerable {
+		// After .env and before the feeder and pi start. piLoaderEnvUnset
+		// already cleared the node and jiti loaders; the dynamic loader's
+		// variables are cleared only here, where pi's rpc ack becomes
+		// delivery proof (#7580 tracks the ordinary launch).
+		parts = append(parts, "&& "+piSteerLoaderEnvUnset)
+	}
+	launch := `&& "$` + piBinaryVar + `"`
+	if steerable {
+		// The prompt moves out of argv and into the mailbox, and stdin
+		// comes from a feeder that keeps the session open for steers.
+		launch = "&& " + steerFeederFragment(
+			r.ConfigDir()+"/"+steerMailboxName,
+			r.ConfigDir()+"/"+steerFeederPidName,
+		) + ` | "$` + piBinaryVar + `"`
+	}
+	parts = append(parts, launch)
+	if steerable {
+		// rpc takes prompts as commands on stdin rather than argv, which
+		// is what makes a second one mid-run possible at all. --print is
+		// not passed with it: it is the single-prompt mode this replaces.
+		parts = append(parts, "--mode rpc", "--session-id "+shellQuote(sessionID))
+	} else {
+		parts = append(parts, "--print", "--mode json")
+	}
 	parts = append(parts,
-		`&& "$`+piBinaryVar+`"`,
-		"--print",
-		"--mode json",
 		"--no-approve",
 		"--no-extensions",
 		"--no-prompt-templates",
@@ -609,11 +650,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// The validation loop replaces the prompt on a retry iteration to inject
 	// the previous failure (#1050/#6494); every runtime must honour it, or
 	// feedback_mode silently degrades to a blind retry.
-	prompt := DefaultAgentPrompt
-	if params.Prompt != "" {
-		prompt = params.Prompt
+	if !steerable {
+		prompt := DefaultAgentPrompt
+		if params.Prompt != "" {
+			prompt = params.Prompt
+		}
+		parts = append(parts, shellQuote(prompt), "</dev/null")
 	}
-	parts = append(parts, shellQuote(prompt), "</dev/null")
 
 	if params.Debug != "" {
 		// pi has no debug-file flag; in debug mode its stderr goes to the
@@ -666,6 +709,15 @@ var piLoaderEnvNames = []string{
 	"JITI_REQUIRE_CACHE", "JITI_INTEROP_DEFAULT", "JITI_JSX",
 	"JITI_SOURCE_MAPS", "JITI_DEBUG", "JITI_RESPECT_TMPDIR_ENV",
 }
+
+// piSteerLoaderEnvUnset clears the dynamic loader's variables on the
+// steerable launch. A .env exporting LD_PRELOAD could otherwise load a shim
+// into the feeder or the pinned pi binary and forge the rpc
+// {type:response,id} ack the runner records as delivery, which pi's id-only
+// ack cannot tell apart from the real one. Same names the codex launch
+// clears; the claude steerable launch clears them too
+// (claudeSteerLoaderEnvUnset).
+const piSteerLoaderEnvUnset = "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT"
 
 // piLoaderEnvUnset is the POSIX sh fragment that clears piLoaderEnvNames.
 // It is emitted immediately after `. .env`, next to the other post-.env
@@ -855,6 +907,12 @@ type piRunResult struct {
 	// still be abandoned for a fallback; the loop replays them when this
 	// attempt turns out to be the final one.
 	held []AgentEvent
+	// resultForwarded is true when the attempt already sent its ResultEvents
+	// to the handler, as a steered one does per turn; Run must not replay
+	// lastResult then, or the final turn renders twice.
+	resultForwarded bool
+	// sessionID is what the stream's `session` event named, if any.
+	sessionID string
 	// answered is true once the model produced output (text, thinking or a
 	// tool call). An answered attempt is never retried: the model is served,
 	// and a rerun would replay the prompt against a workspace the first
@@ -899,17 +957,25 @@ func (g *piAttemptGate) handle(evt AgentEvent) {
 // override — those are the caller's responsibility after the fallback loop
 // selects the successful attempt. timeout is what is left of the run's
 // budget, and mayFallBack holds the attempt's events back (piAttemptGate)
-// when a later model could still replace it.
-func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
+// when a later model could still replace it. feed and sessionID are set
+// for a steerable run, which never falls back (see Run).
+func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, feed *steerFeed, sessionID string, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
 	gate := &piAttemptGate{next: handler, hold: mayFallBack}
-	defer func() { res.held, res.answered = gate.held, gate.answered }()
+	// Set in the defer: every return below builds a fresh piRunResult, and
+	// the session id is recorded even on a guard exit or a failed parse.
+	var streamSessionID string
+	defer func() {
+		res.held, res.answered = gate.held, gate.answered
+		res.resultForwarded = feed != nil
+		res.sessionID = streamSessionID
+	}()
 
 	// Override the model in params for this attempt.
 	attemptParams := params
-	// buildPiRunCommand reads params.Model and translates it; we set it to
+	// buildPiTurnCommand reads params.Model and translates it; we set it to
 	// the full spec so translatePiModel passes it through unchanged.
 	attemptParams.Model = modelSpec
-	cmd := buildPiRunCommand(attemptParams, m, exts, manifestSum)
+	cmd := buildPiTurnCommand(attemptParams, m, exts, manifestSum, sessionID)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, timeout, os.Stderr)
 	if err != nil {
@@ -929,23 +995,16 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	}
 
 	var lastResult *ResultEvent
-	wrappedHandler := func(evt AgentEvent) {
-		switch e := evt.(type) {
-		case ResultEvent:
-			// Capture the result but do NOT forward it here; the
-			// fallback loop decides whether to emit the ResultEvent
-			// based on whether this attempt is final or will be
-			// retried. Forwarding eagerly renders a fully-formed
-			// error block for the failed attempt before the fallback
-			// warning, confusing the user.
-			lastResult = &e
-			return
-		default:
-		}
-		gate.handle(evt)
-	}
+	wrappedHandler := piAttemptEventHandler(ctx, feed, gate, printer, &lastResult)
 
-	if _, parseErr := parsePiStream(reader, wrappedHandler); parseErr != nil {
+	// The session event names the session file under --session-dir, which
+	// is what a later resume or steer reattaches to. Recorded even on a
+	// failed parse: the header arrives before any turn does. rpc mode
+	// emits no such event, which is why a steerable run names the session
+	// itself (Run).
+	var parseErr error
+	streamSessionID, parseErr = parsePiStreamWith(reader, wrappedHandler, feed != nil)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -980,6 +1039,53 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	}
 
 	return piRunResult{exitCode: exitCode, lastResult: lastResult, modelSpec: modelSpec}
+}
+
+// piAttemptEventHandler is what one attempt's stream feeds into. It keeps
+// the attempt's ResultEvent in *lastResult for the fallback loop instead of
+// forwarding it, except on a steered run (feed != nil), which reports one
+// result per prompt and never falls back, so each turn's result goes out
+// live and the settle decision is taken in stream order.
+func piAttemptEventHandler(ctx context.Context, feed *steerFeed, gate *piAttemptGate, printer *ui.Printer, lastResult **ResultEvent) func(AgentEvent) {
+	return func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case UserReplayEvent:
+			// pi's rpc ack: the message left the mailbox and reached the
+			// agent. Only the steer path cares.
+			if feed != nil {
+				if e.Rejected {
+					steerCloseFeedIf(ctx, feed.noteNack(e.ID), feed, printer)
+				} else {
+					steerCloseFeedIf(ctx, feed.noteEcho(e.At, e.ID, e.Content), feed, printer)
+				}
+			}
+			return
+		case ResultEvent:
+			// Capture the result but do NOT forward it here; the
+			// fallback loop decides whether to emit the ResultEvent
+			// based on whether this attempt is final or will be
+			// retried. Forwarding eagerly renders a fully-formed
+			// error block for the failed attempt before the fallback
+			// warning, confusing the user.
+			*lastResult = &e
+			if feed == nil {
+				return
+			}
+			// A steered run reports one result per prompt and never falls
+			// back, so each turn's result goes out live; pi's counters are
+			// cumulative across the stream, so the metrics assign rather
+			// than fold (see parsePiStreamWith). noteTurnEnd — the decision
+			// itself — is taken here, in stream order, ahead of any later
+			// event, and the feeder is stopped only after the turn has
+			// rendered.
+			shouldClose := feed.noteTurnEnd()
+			gate.handle(evt)
+			steerCloseFeedIf(ctx, shouldClose, feed, printer)
+			return
+		default:
+		}
+		gate.handle(evt)
+	}
 }
 
 // piAttemptFunc runs one model of the chain with the given share of the
@@ -1041,6 +1147,7 @@ func piFallbackLoop(chain []string, timeout time.Duration, now func() time.Time,
 // model already answered. Fallbacks on another pi provider are dropped
 // (piFallbackChain), and the whole chain shares params.Timeout. Pinned
 // explicit ids (provider/id or bare catalog ids) never fall back (#7026).
+// A run that can fall back is not steerable (piSteerGate).
 func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	m, err := readPiManifest(params.SandboxName, r.piManifestPath())
 	if err != nil {
@@ -1077,6 +1184,27 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return -1, err
 	}
 	manifestSum := piManifestHash(params.SandboxName)
+
+	// Model fallback wins over steering: see piSteerGate.
+	params.Steerable = piSteerGate(params.Steerable, params.SandboxName, chain, printer)
+	defer clearPiSteerDecline(params.SandboxName)
+
+	feed, sessionID, err := r.startSteerFeed(ctx, params)
+	if err != nil {
+		return -1, err
+	}
+	if feed != nil {
+		// Poison the feed before it leaves the registry, so a steer that
+		// already looked it up is refused instead of silently accepted.
+		defer func() {
+			feed.markTerminal()
+			unregisterSteerFeed(params.SandboxName)
+		}()
+		defer func() { metrics.Steers = feed.steerResults() }()
+		// rpc emits no `session` event, so the id the runner chose for
+		// --session-id is the run's session id (commit A's promise for pi).
+		metrics.SessionID = sessionID
+	}
 
 	handler := params.OnEvent
 	if handler == nil {
@@ -1122,7 +1250,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	// on a run that went on to succeed, so it is removed before the next;
 	// when that fails, the abandoned attempt's error is the run's result.
 	attempt := func(modelSpec string, timeout time.Duration, mayFallBack bool) piRunResult {
-		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, metricsHandler, printer)
+		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, feed, sessionID, metricsHandler, printer)
 	}
 	onFallback := func(prev, next string, budget time.Duration) bool {
 		// sandbox.Exec reports a command that ran and failed through its
@@ -1143,12 +1271,15 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	// Replay the final attempt's withheld events, then its ResultEvent, so
 	// metrics are captured and the renderer sees exactly one result block.
-	// piExecModel never forwards a ResultEvent itself.
+	// piExecModel forwards a ResultEvent itself only on a steered run.
 	for _, evt := range result.held {
 		metricsHandler(evt)
 	}
-	if result.lastResult != nil {
+	if result.lastResult != nil && !result.resultForwarded {
 		metricsHandler(*result.lastResult)
+	}
+	if result.sessionID != "" {
+		metrics.SessionID = result.sessionID
 	}
 
 	// Return infrastructure/security errors.
@@ -1193,6 +1324,35 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return 1, nil
 	}
 	return result.exitCode, nil
+}
+
+// startSteerFeed prepares a steerable run: it picks the session id (rpc
+// reports none), writes the opening prompt into the mailbox the launch
+// command will tail, and registers the session so Steer and Settle can
+// find it. It returns a nil feed and an empty id for a run that is not
+// steerable, which keeps the ordinary path unchanged.
+func (r PiRuntime) startSteerFeed(ctx context.Context, params RunParams) (*steerFeed, string, error) {
+	if !params.Steerable {
+		return nil, "", nil
+	}
+	prompt := DefaultAgentPrompt
+	if params.Prompt != "" {
+		prompt = params.Prompt
+	}
+	// The opening prompt carries no streamingBehavior: there is no turn to
+	// steer into yet.
+	promptID := uuid.NewString()
+	line, err := piInputLine(promptID, prompt, "")
+	if err != nil {
+		return nil, "", err
+	}
+	sessionID := newPiSessionID()
+	f := newSteerFeed(params.SandboxName, r.ConfigDir(), sandbox.ExecContext)
+	if err := f.seed(ctx, line, promptID); err != nil {
+		return nil, "", err
+	}
+	registerSteerFeed(params.SandboxName, f)
+	return f, sessionID, nil
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left
