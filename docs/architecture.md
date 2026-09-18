@@ -302,6 +302,17 @@ The existing design principle is that [the repo is the coordinator](problems/age
   current state, and the runner exporting `FULLSEND_RUN_HEAD_SHA` and
   `FULLSEND_RUN_STARTED_AT` so an agent can see what moved beneath it
   ([`fullsend run` § Run baseline](cli/run.md#run-baseline)).
+- A run already working on a work item may **steer**: absorb updates to that
+  item into the session it is already running, rather than ending on the state
+  it started with. Steering requires preserving, never the reverse, and a steer
+  is content, never capability
+  ([ADR 0113](ADRs/0113-steer-the-running-agent-on-work-item-updates.md)). The
+  interface is an optional runtime capability, `runtime.Steerer`, fed through a
+  mailbox the agent's own stdin is tailing, with delivery acknowledged by the
+  agent's echo of that specific message
+  ([ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md)). Steering is off
+  by default; a harness will opt in with `steer: {enabled: true}`, which is accepted and
+  validated but not yet consulted by any caller.
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
