@@ -96,7 +96,10 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
 ### Open questions
 
 - Can prompt injection be reliably detected? Current research suggests it's fundamentally hard.
-- Should we treat all PR content as untrusted, even from org members? (Relates to insider threat.)
+- Should we treat all PR content as untrusted, even from org members? (Relates to insider threat.
+  For an update delivered to a run in flight, [ADR 0118](../ADRs/0118-take-steer-authority-from-the-route-job.md)
+  decides: only text from the actor the follow-up run's `Route` job authorized may instruct the
+  agent, and even that is content, never capability; the general question stays open.)
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
 - What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Other blast radius dimensions remain open.)
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? Stripping at ingestion is simpler but risks breaking legitimate internationalized content. A detection pass preserves the original but requires every agent to handle invisible content correctly.

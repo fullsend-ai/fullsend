@@ -148,6 +148,9 @@ commands. How content provenance and actor authority constrain agent behavior is
 deferred to a separate ADR; existing deterministic authorization and input
 security controls remain in force.
 
+> Decided in [ADR 0118](0118-take-steer-authority-from-the-route-job.md) for
+> updates delivered to a run in flight.
+
 ## Consequences
 
 - Agent work already in progress completes, and bursts produce at most one
@@ -158,7 +161,8 @@ security controls remain in force.
 - Agents must inspect current subject state, while transient intermediate events
   that leave no durable state may be lost.
 - Trigger authorization remains deterministic, but authority over other content
-  discovered during reconciliation requires a future decision.
+  discovered during reconciliation requires a future decision (for updates
+  delivered to a run in flight, [ADR 0118](0118-take-steer-authority-from-the-route-job.md)).
 - Per-run infrastructure timeouts remain effective, but a single pending slot
   does not bound consecutive runs; sustained triggering still requires rate,
   cost, or loop circuit breakers.
