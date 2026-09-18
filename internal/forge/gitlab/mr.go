@@ -214,6 +214,12 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 	}, nil
 }
 
+// CompareChanges is not yet implemented for GitLab: its only caller, the
+// steer watcher, runs on GitHub only (ADR 0113).
+func (c *LiveClient) CompareChanges(_ context.Context, _, _, _, _ string) (*forge.CommitComparison, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a merge request.
 func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", projectPath(owner, repo), number)

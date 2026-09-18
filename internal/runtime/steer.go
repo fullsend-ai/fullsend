@@ -3,8 +3,37 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 )
+
+// amendmentEvents are the forge events whose run record's actor is, by
+// construction, the principal the Route job checked, so the envelope may
+// name that actor as authorized. It is the one definition: steerwatch binds
+// amendments from the same set (see its amendmentEvents for the per-arm
+// audit of reusable-dispatch.yml). It is unexported so that no package can
+// widen the trust boundary at run time; read it through IsAmendmentEvent or
+// AmendmentEvents.
+var amendmentEvents = map[string]bool{
+	"issue_comment": true,
+}
+
+// IsAmendmentEvent reports whether a run of this event names, as its actor,
+// the principal the Route job checked.
+func IsAmendmentEvent(event string) bool {
+	return amendmentEvents[event]
+}
+
+// AmendmentEvents returns the amendment events, sorted, as a new slice on
+// every call, so a caller cannot change the set through it.
+func AmendmentEvents() []string {
+	out := make([]string, 0, len(amendmentEvents))
+	for event := range amendmentEvents {
+		out = append(out, event)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // SteerMessage is one update the runner delivers into an in-flight agent
 // session. The runner authors every field: Text is already sanitized (the
@@ -21,7 +50,8 @@ type SteerMessage struct {
 	// Event is the forge event name that produced the run
 	// (e.g. "pull_request_target", "issue_comment").
 	Event string
-	// Actor is the forge login that triggered the event.
+	// Actor is the forge login that triggered the event. The envelope
+	// vouches for it only when IsAmendmentEvent(Event).
 	Actor string
 	// CreatedAt is when the follow-up run was created.
 	CreatedAt time.Time
