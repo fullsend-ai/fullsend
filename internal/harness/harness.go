@@ -251,9 +251,9 @@ type SteerConfig struct {
 	// run settles. 0 = default (2).
 	MaxSteers int `yaml:"max_steers,omitempty"`
 	// PollIntervalSeconds is how often the runner looks for an update to
-	// absorb. 0 = default (30). Parsed and validated here; the code that
-	// looks for updates, and so the only consumer of this value, arrives
-	// with the change that adds it.
+	// absorb. 0 = default (30). The runner reads it through
+	// SteerPollInterval when it configures the follow-up run watcher
+	// (steerWatcherConfig in internal/cli/steer.go).
 	PollIntervalSeconds int `yaml:"poll_interval_seconds,omitempty"`
 }
 
@@ -269,8 +269,7 @@ const DefaultSteerMaxSteers = 2
 const maxSteerMaxSteers = 50
 
 // DefaultSteerPollInterval is how often a steered run looks for an update
-// when poll_interval_seconds is unset. Nothing reads it yet — see
-// SteerConfig.PollIntervalSeconds.
+// when poll_interval_seconds is unset; SteerPollInterval applies it.
 const DefaultSteerPollInterval = 30 * time.Second
 
 // maxSteerPollInterval bounds poll_interval_seconds. A longer interval than
@@ -292,8 +291,8 @@ func (h *Harness) SteerEnabled() bool {
 
 // SteerExplicitlyEnabled reports whether the harness asked for steering by
 // name, as opposed to getting it from the default. It lets a caller tell an
-// unmet request apart from an absent one — for instance to report a harness
-// that asked for steering it cannot have. No caller does so yet.
+// unmet request apart from an absent one: the runner announces why it
+// declined steering to a harness that asked for it by name.
 func (h *Harness) SteerExplicitlyEnabled() bool {
 	return h.Steer != nil && h.Steer.Enabled != nil && *h.Steer.Enabled
 }

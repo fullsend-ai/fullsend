@@ -196,10 +196,13 @@ func TestCLIGitHubAuth_NoDirectCredentialReads(t *testing.T) {
 	// while every other forbidden pattern in that file still fails it.
 	allowedPattern := map[string]map[string]bool{
 		// run.go saves and restores the caller's pre-existing GH_TOKEN
-		// around minting an agent token; it does not read the credential
-		// to authenticate a GitHub client. It also calls envGHToken()
-		// for a documented token-scope diagnostic (see run.go:1155),
-		// not to authenticate a GitHub client.
+		// around minting an agent token, and calls envGHToken() for a
+		// documented token-scope diagnostic. It also calls envGHToken()
+		// to capture the job token before minting and the role token
+		// after it, which the steer watcher authenticates its GitHub
+		// clients with: the watcher needs those two specific tokens, not
+		// whatever the resolution chain would pick, and envGHToken() is
+		// chosen because it never falls back to GITHUB_TOKEN.
 		"run.go": {
 			`os.LookupEnv("GH_TOKEN")`: true,
 			`envGHToken(`:              true,
