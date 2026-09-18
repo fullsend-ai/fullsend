@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { copyMarkdownSources } from "./markdown-sources";
+import { copyMarkdownSources, relativeAssetHrefs } from "./markdown-sources";
+
+const emptyRead = () => "";
 
 describe("copyMarkdownSources", () => {
   it("copies a content page to the same relative path in outDir", () => {
@@ -16,6 +18,7 @@ describe("copyMarkdownSources", () => {
       exists: () => true,
       mkdir: (dir) => mkdirs.push(dir),
       copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: emptyRead,
     });
     expect(mkdirs).toEqual([path.join("/out", "agents")]);
     expect(copied).toEqual([
@@ -36,6 +39,7 @@ describe("copyMarkdownSources", () => {
       exists: () => true,
       mkdir: () => {},
       copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: emptyRead,
     });
     expect(copied).toEqual([
       [path.join("/src", "README.md"), path.join("/out", "index.md")],
@@ -55,6 +59,7 @@ describe("copyMarkdownSources", () => {
       exists: (file) => file.endsWith("glossary.md"),
       mkdir: () => {},
       copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: emptyRead,
     });
     expect(copied).toEqual([[path.join("/src", "glossary.md"), path.join("/out", "glossary.md")]]);
   });
@@ -69,6 +74,7 @@ describe("copyMarkdownSources", () => {
         exists: () => false,
         mkdir: () => {},
         copyFile: () => {},
+        readFile: emptyRead,
       }),
     ).toThrow(/copied 0 markdown files/);
   });
@@ -85,8 +91,68 @@ describe("copyMarkdownSources", () => {
         copyFile: () => {
           throw new Error("disk full");
         },
+        readFile: emptyRead,
       }),
     ).toThrow(/disk full/);
+  });
+
+  it("copies relative images referenced by a page, including srcExclude assets", () => {
+    const copied: Array<[string, string]> = [];
+    copyMarkdownSources({
+      pages: ["agents/triage.md"],
+      srcDir: "/src",
+      outDir: "/out",
+      rewrites: {},
+      exists: () => true,
+      mkdir: () => {},
+      copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: () => "![Triage agent icon](icons/triage.png)\n",
+    });
+    expect(copied).toEqual([
+      [path.join("/src", "agents/triage.md"), path.join("/out", "agents/triage.md")],
+      [path.join("/src", "agents/icons/triage.png"), path.join("/out", "agents/icons/triage.png")],
+    ]);
+  });
+
+  it("copies a shared image once when multiple pages reference it", () => {
+    const copied: Array<[string, string]> = [];
+    copyMarkdownSources({
+      pages: ["agents/code.md", "agents/fix.md"],
+      srcDir: "/src",
+      outDir: "/out",
+      rewrites: {},
+      exists: () => true,
+      mkdir: () => {},
+      copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: () => "![Code agent icon](icons/coder.png)\n",
+    });
+    expect(copied.filter(([, dest]) => dest.endsWith("coder.png"))).toEqual([
+      [path.join("/src", "agents/icons/coder.png"), path.join("/out", "agents/icons/coder.png")],
+    ]);
+  });
+
+  it("skips remote, site-absolute, missing, and path-escaping image hrefs", () => {
+    const copied: Array<[string, string]> = [];
+    const srcDir = "/src";
+    copyMarkdownSources({
+      pages: ["agents/triage.md"],
+      srcDir,
+      outDir: "/out",
+      rewrites: {},
+      exists: (file) => file.endsWith("triage.md"),
+      mkdir: () => {},
+      copyFile: (src, dest) => copied.push([src, dest]),
+      readFile: () =>
+        [
+          "![remote](https://example.com/triage.png)",
+          "![site](/img/logo.png)",
+          "![missing](icons/missing.png)",
+          "![escape](../../secret.png)",
+        ].join("\n"),
+    });
+    expect(copied).toEqual([
+      [path.join(srcDir, "agents/triage.md"), path.join("/out", "agents/triage.md")],
+    ]);
   });
 
   it("emits README.md alongside index.md so in-document README.md links resolve", () => {
@@ -94,14 +160,16 @@ describe("copyMarkdownSources", () => {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "md-out-"));
     try {
       fs.mkdirSync(path.join(srcDir, "guides", "getting-started"), { recursive: true });
+      fs.mkdirSync(path.join(srcDir, "guides", "getting-started", "icons"), { recursive: true });
       fs.writeFileSync(
         path.join(srcDir, "guides", "README.md"),
         "- [Mint](getting-started/README.md)\n- [Hash](getting-started/README.md#setup)\n",
       );
       fs.writeFileSync(
         path.join(srcDir, "guides", "getting-started", "README.md"),
-        "# Getting started\nSee [guides](../README.md).\n",
+        "# Getting started\nSee [guides](../README.md).\n![Icon](icons/setup.png)\n",
       );
+      fs.writeFileSync(path.join(srcDir, "guides", "getting-started", "icons", "setup.png"), "png");
       copyMarkdownSources({
         pages: ["guides/README.md", "guides/getting-started/README.md"],
         srcDir,
@@ -121,10 +189,12 @@ describe("copyMarkdownSources", () => {
           "guides/README.md",
           "guides/getting-started/index.md",
           "guides/getting-started/README.md",
+          "guides/getting-started/icons/setup.png",
         ]),
       );
 
       for (const rel of emitted) {
+        if (!rel.endsWith(".md")) continue;
         const fromDir = path.dirname(path.join(outDir, rel));
         for (const href of markdownHrefs(fs.readFileSync(path.join(outDir, rel), "utf8"))) {
           const target = path.resolve(fromDir, href.split("#", 1)[0]);
@@ -135,6 +205,29 @@ describe("copyMarkdownSources", () => {
       fs.rmSync(srcDir, { recursive: true, force: true });
       fs.rmSync(outDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("relativeAssetHrefs", () => {
+  it("collects markdown images and html img src, ignoring URLs and site-absolute paths", () => {
+    expect(
+      relativeAssetHrefs(`
+![Triage](icons/triage.png)
+![Titled](icons/coder.png "Coder")
+![Bracketed](<icons/retro.png>)
+<img src="icons/review.png">
+<img src='icons/prioritize.png' alt="x">
+![remote](https://example.com/x.png)
+![site](/img/logo.png)
+![hash](#anchor)
+      `),
+    ).toEqual([
+      "icons/triage.png",
+      "icons/coder.png",
+      "icons/retro.png",
+      "icons/review.png",
+      "icons/prioritize.png",
+    ]);
   });
 });
 
