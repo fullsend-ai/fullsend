@@ -5214,12 +5214,55 @@ func extractMapString(m map[string]any, keys ...string) string {
 // report a head move on every run.
 func runHeadSHA(forgePlatform string) string {
 	if forgePlatform == "gitlab" {
-		return os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
+		return gitlabMergeRequestHeadSHA()
 	}
 	if sha := os.Getenv("PR_HEAD_SHA"); sha != "" {
 		return sha
 	}
 	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// gitlabMergeRequestHeadSHA returns the source-branch head of the merge
+// request this run was dispatched for, or "" when the run is not against one.
+//
+// CI_MERGE_REQUEST_SOURCE_BRANCH_SHA is preferred but is not always set. Of
+// it, GitLab's predefined-variables reference says: "The variable is empty in
+// merge request pipelines. The SHA is present only in merged results
+// pipelines." So on an ordinary merge request pipeline it is empty, and
+// exporting that would tell the agent this run has no head at all — the
+// signal reserved for issue runs — leaving it unable to notice the branch
+// moving underneath it.
+//
+// CI_COMMIT_SHA fills that gap, but only conditionally: in a merged results
+// pipeline it is the merge-result commit rather than the source head, so an
+// unconditional fallback would export the wrong SHA there. The guard is
+// self-correcting for that case — in a merged results pipeline the first
+// variable is populated, so the fallback is never reached.
+//
+// The guard is the presence of CI_MERGE_REQUEST_IID, not the pipeline source
+// string: only a pipeline that carries the merge request's own predefined
+// variables has CI_COMMIT_SHA pointing at the source branch, whatever its
+// CI_PIPELINE_SOURCE says.
+//
+// fullsend's own GitLab agent job does not carry them. Since #7322 removed
+// the native merge_request_event dispatch, the cron poller raises every agent
+// run as an API-triggered pipeline on the protected branch and passes the
+// merge request's IID in STATUS_IID; no CI_MERGE_REQUEST_* variable is set
+// there, and CI_COMMIT_SHA is the protected branch's commit. On that path the
+// guard is false and the head is exported empty, the same value as an issue
+// run. That is deliberate: STATUS_IID is not accepted as "a merge request is
+// known", because pairing it with CI_COMMIT_SHA would tell the agent the head
+// moved on every run. Reporting a head on the poller path needs the poller to
+// pass the source branch's SHA as a pipeline variable of its own, which this
+// function does not yet read.
+func gitlabMergeRequestHeadSHA() string {
+	if sha := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); sha != "" {
+		return sha
+	}
+	if os.Getenv("CI_MERGE_REQUEST_IID") != "" {
+		return os.Getenv("CI_COMMIT_SHA")
+	}
+	return ""
 }
 
 // buildRunFactsEnvLines exports this run's baseline into the sandbox.
