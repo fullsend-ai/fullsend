@@ -82,8 +82,10 @@ default.
 
 ## Consequences
 
-- A burst of events on one work item produces one agent run that absorbs them plus at most one short
-  follow-up, instead of a full re-run per event.
+- A burst of events on one work item produces one agent run that absorbs them plus at most one
+  queued follow-up, instead of a full re-run per event. The follow-up skips when that run absorbed
+  it and otherwise does the work in full
+  ([ADR 0120](0120-receipt-the-absorbed-update-under-the-job-token.md)).
 - Agents stop posting output computed from state the subject has already moved past.
 - A run holds its sandbox until it settles, so a steered run occupies a VM longer and can cost as
   much again per absorbed update.
