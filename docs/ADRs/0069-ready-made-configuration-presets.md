@@ -19,6 +19,9 @@ Date: 2026-06-29
 
 Accepted
 
+**Annotation (2026-09-21):** Declarative managed repository configuration in
+`repos.yaml` is defined by the follow-on [ADR 0122](0122-declarative-repo-configuration.md).
+
 ## Context
 
 `fullsend github setup` today spreads installation decisions across many CLI
