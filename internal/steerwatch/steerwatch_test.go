@@ -309,6 +309,7 @@ func newWatcher(t *testing.T, api *fakeAPI, items ItemReader, rec *recorder, mut
 		Repo:         "org/repo",
 		RunID:        myRunID,
 		RunName:      "org/repo#7",
+		SelfLogins:   append([]string{"fullsend-ai-review[bot]"}, ReviewBotLogins("org")...),
 		StartedAt:    mustTime(t, runStart),
 		MaxSteers:    2,
 		PollInterval: time.Millisecond,
