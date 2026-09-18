@@ -518,6 +518,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// inside this process can reach it. The gap runs one way: an agent
 	// re-checking against this value sees a narrower window than the run
 	// spans, never a wider one.
+	// The follow-up run watcher reached the same conclusion and uses the
+	// run record's created_at.
 	runStartedAt := time.Now().UTC()
 
 	printer.Banner(Version())
@@ -917,6 +919,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
+	// The JOB token, captured before minting swaps GH_TOKEN for the role
+	// token. The steer watcher reads the Actions API with it: that is the
+	// token every stage job already grants `actions: write`, and os.Setenv
+	// is not goroutine-safe, so the value has to be taken here rather than
+	// read from the watcher's goroutine. The workflow token is wanted here on
+	// purpose; the role token is read after minting.
+	steerJobToken := envGHToken()
+
 	runtimeLevel := h.PrivilegeLevelForStage(harness.PrivilegeStageRuntime)
 	var minted bool
 	var mintCleanup func()
@@ -1225,6 +1235,65 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declared here so the status-notification defer (below) can read the
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
+
+	// The head this run started on. runStartedAt is captured at the top of
+	// runAgent by the base change; the watcher computes its delta against
+	// that same pair, so the two never disagree about when the run began.
+	runStartHeadSHA := runHeadSHA(forgePlatform)
+
+	// steerActive records that at least one iteration ran with a steer
+	// session, which is what makes the run's real budget steerBudget rather
+	// than the harness timeout.
+	var steerActive bool
+	// terminalElapsed and terminalBudget are the pair the timeout detection
+	// compared, kept so the terminal error reports the same figures rather
+	// than recomputing them against a clock that has moved on. The budget is
+	// seeded from the harness timeout once it is known, so a run that never
+	// reaches the loop cannot read as timed out on a zero budget.
+	var terminalElapsed, terminalBudget time.Duration
+	// steerSeen and steerBaseline carry the judged follow-up run ids and the
+	// delta window across validation loop iterations, so a retry neither
+	// re-examines them nor re-sends content already delivered.
+	var steerSeen []int64
+	// steerObserved carries the issue_comment runs the previous iteration saw
+	// bound to this work item, judged or not. Ids alone are not enough: a run
+	// an earlier watcher refused still occupies its pairing slot, and one that
+	// has left the listing window would otherwise be invisible to the new
+	// watcher — leaving its comment free for the next accepted run to claim.
+	var steerObserved []forge.WorkflowRun
+	var steerBaseline time.Time
+	// steerSpent carries the steer count the same way, because max_steers is
+	// a cap on the run and not on each of its iterations (ADR 0113).
+	var steerSpent int
+
+	// The runtime, sandbox name and timeout are not resolved yet; the
+	// iteration loop fills them in before starting the watcher. The skip
+	// check below needs none of them.
+	baseSteerOpts := steerOpts{
+		harness:       h,
+		forgePlatform: forgePlatform,
+		statusRepo:    sOpts.statusRepo,
+		statusNum:     sOpts.statusNum,
+		jobToken:      steerJobToken,
+		roleToken:     envGHToken(),
+		runStart:      runStartedAt,
+		headSHA:       runStartHeadSHA,
+		printer:       printer,
+	}
+
+	// The logins this run's own output appears under, resolved here — before
+	// bootstrap, and long before the watcher starts — because a run that
+	// cannot name its own output must decline steering rather than watch
+	// without it, and because FULLSEND_STEER_ACTIVE must never be exported
+	// for a run that will not steer (ADR 0119). Gated on the environment
+	// preflight so an ordinary local or GitLab run spends no API call on it.
+	if h.SteerEnabled() && steerPreflight(baseSteerOpts).ok() {
+		logins, err := resolveSteerSelfLogins(ctx, baseSteerOpts.roleToken, baseSteerOpts.statusRepo)
+		if err != nil {
+			printer.StepWarn("Steering unavailable: " + err.Error())
+		}
+		baseSteerOpts.selfLogins = logins
+	}
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -1985,7 +2054,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(),
-		runFacts{headSHA: runHeadSHA(forgePlatform), startedAt: runStartedAt}, fetchEnvVal); err != nil {
+		runFacts{headSHA: runStartHeadSHA, startedAt: runStartedAt}, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2175,6 +2244,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
+	terminalBudget = timeout
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
@@ -2297,21 +2367,89 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.Blank()
 
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+
+		// The follow-up run watcher runs beside the heartbeat: it absorbs
+		// work-item updates into this run instead of letting the run queued
+		// behind it redo the work (ADR 0113). Nil when steering is off or
+		// the runtime cannot take a message into a running session, in
+		// which case Steerable stays false and Run is single-turn as today.
+		//
+		// It starts before the iteration env is written because that env
+		// advertises the deadline, and whether this iteration is steered
+		// decides which deadline is true.
+		iterSteerOpts := baseSteerOpts
+		iterSteerOpts.runtime = rt
+		iterSteerOpts.sandboxName = sandboxName
+		iterSteerOpts.timeout = timeout
+		iterSteerOpts.seen = steerSeen
+		iterSteerOpts.observed = steerObserved
+		iterSteerOpts.baseline = steerBaseline
+		iterSteerOpts.priorSteers = steerSpent
+		steerSess := startSteerWatcher(ctx, iterSteerOpts)
+		steerActive = steerActive || steerSess != nil
+
+		// The deadline the sandbox is told must be the one the run is
+		// actually killed at. A steered run is bounded by steerBudget from
+		// runStartedAt — earlier than the harness timeout whenever the
+		// forge token's life clips it — so advertising agentStart+timeout
+		// would promise the agent time it will not get. Both values come
+		// off the same helpers the run context and the timeout detection
+		// use, so the three cannot drift apart.
+		//
+		// Keyed on steerActive, not on this iteration's watcher. Once any
+		// iteration has steered, the whole run is bounded from runStartedAt
+		// by a forge token that expires at a fixed instant — an iteration
+		// that starts no watcher of its own is bounded by it too. Keying
+		// this on steerSess would advertise, and the context below would
+		// enforce, a budget the timeout detection does not use.
+		envTimeout, envDeadline := iterationEnvBudget(
+			steerActive, effectiveTimeoutMinutes(h), runStartedAt, agentStart, timeout)
+		if err := writeIterationEnv(execCtx, sandboxName, envTimeout, envDeadline, steerSess != nil); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
 			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
 			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
+				// Returning here would leave the watcher polling for a run
+				// that never starts.
+				if steerSess != nil {
+					steerSess.stop()
+				}
 				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
 					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
 				}
 				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
 			}
+			// FULLSEND_STEER_ACTIVE is written by that same call, so the
+			// sandbox no longer advertises it. The agent definitions treat
+			// the envelope's opening line as an injection attempt while it
+			// is unset, so a steer delivered now would be distrusted on
+			// arrival — and would still spend one of max_steers. Stop
+			// watching and let the queued run do the work.
+			if steerSess != nil {
+				printer.StepWarn("Steering disabled for this iteration: the sandbox could not be told it is being watched")
+				steerSess.stop()
+				steerSess = nil
+			}
 		}
 		heartbeatDone := make(chan struct{})
-		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
+		// Off the same deadline the sandbox was just told, so what the
+		// console counts down to and what the run is killed at cannot
+		// drift apart.
+		go runHeartbeat(printer, agentStart, heartbeatBudget(agentStart, envDeadline), heartbeatDone)
 
-		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		// A steered run outlives a single-turn budget, and params.Timeout
+		// bounds one exec — on Codex that is each exec in the resume loop,
+		// not the loop. So the whole-run budget rides on the context, which
+		// every runtime already honours. Settle is what normally ends the
+		// run; this is the backstop if the watcher never gets there.
+		runCtx := ctx
+		if steerActive {
+			var cancelRun context.CancelFunc
+			runCtx, cancelRun = context.WithDeadline(ctx, steerDeadline(runStartedAt, timeout))
+			defer cancelRun()
+		}
+
+		agentCtx, agentSpan := tracer.Start(runCtx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
@@ -2341,9 +2479,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
-			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
+			Steerable:         steerSess != nil,
+			OnEvent: steerTurnEndHandler(
+				iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), steerSess),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+		if steerSess != nil {
+			// After rt.Run returns, so metrics.Steers is complete and has
+			// a single writer: the marker records only what the runtime
+			// acknowledged the agent received.
+			steerSess.stop()
+			steerSeen = steerSess.seenRunIDs()
+			steerObserved = steerSess.observedRuns()
+			steerBaseline = steerSess.baseline()
+			steerSpent = steerSess.steers()
+		}
 		lastIterElapsed = time.Since(agentStart)
 
 		// The stream is over: end unanswered calls now, ahead of content
@@ -2435,7 +2585,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
-		lastIterTimedOut = iterationTimedOut(lastExitCode, lastIterElapsed, timeout)
+		// Measured against the budget that actually bounded the run, on the
+		// clock that bound would have used: a steered run is killed at a
+		// whole-run deadline anchored at runStartedAt, so a per-iteration
+		// elapsed would be compared against the wrong clock. See
+		// steerAwareBudget.
+		terminalElapsed, terminalBudget = steerAwareBudget(
+			steerActive, runStartedAt, time.Now(), lastIterElapsed, timeout)
+		lastIterTimedOut = iterationTimedOut(lastExitCode, terminalElapsed, terminalBudget)
 		if lastIterTimedOut {
 			// The exec ended at the budget but the agent's processes did
 			// not (OpenShell has no per-exec kill). Terminate them before
@@ -2683,7 +2840,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
+	// The same pair the detection used, so the reported figures are the ones
+	// the run was actually judged on rather than a limit it never reached or
+	// a clock that has moved on since.
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount,
+		terminalElapsed, terminalBudget)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -2885,6 +3046,7 @@ var oidcDenyKeys = map[string]bool{
 // are merged in by init() to prevent re-injection into the sandbox (#5832).
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
+	"FULLSEND_STEER_ACTIVE":       true,
 	"PATH":                        true,
 	"HOME":                        true,
 	"SHELL":                       true,
@@ -3007,9 +3169,20 @@ func iterationEnvSourceLine() string {
 
 // iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
 // and the Unix time at which the running iteration is killed.
-func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
-	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
-		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time, steerActive bool) string {
+	// FULLSEND_STEER_ACTIVE is absent by default and present only for an
+	// iteration whose watcher is already running. The agent definitions read
+	// the runner-update opening line as an injection attempt while it is
+	// unset, and that line is public, so exporting it without a watcher would
+	// tell the agent to trust text any author can write. Hence here and not
+	// in bootstrapEnv, which runs before the watcher's live API calls, and
+	// hence per iteration, since each iteration builds its own watcher.
+	steer := ""
+	if steerActive {
+		steer = "export FULLSEND_STEER_ACTIVE=1\\n"
+	}
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n%s' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), steer, iterationEnvFile)
 }
 
 // runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
@@ -3026,8 +3199,8 @@ func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) e
 }
 
 // writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
-func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
-	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, steerActive bool) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, steerActive))
 }
 
 // clearIterationEnv removes a previous iteration's file so a stale deadline

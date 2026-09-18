@@ -3992,7 +3992,7 @@ func TestIterationEnvCommand(t *testing.T) {
 	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
 	assert.Equal(t,
 		fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix()),
-		iterationEnvCommand(20, deadline))
+		iterationEnvCommand(20, deadline, false))
 }
 
 // TestWriteIterationEnv checks the exit code is not swallowed: sandbox.Exec
@@ -4008,15 +4008,15 @@ func TestWriteIterationEnv(t *testing.T) {
 			got = cmd
 			return "", "", 0, nil
 		}
-		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline))
-		assert.Equal(t, iterationEnvCommand(20, deadline), got)
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, false))
+		assert.Equal(t, iterationEnvCommand(20, deadline, false), got)
 	})
 	t.Run("non-zero exit", func(t *testing.T) {
 		t.Parallel()
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "sh: read-only file system\n", 1, nil
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, false)
 		require.Error(t, err)
 		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
 	})
@@ -4025,7 +4025,7 @@ func TestWriteIterationEnv(t *testing.T) {
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "", 124, fmt.Errorf("command timed out after 10s")
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, false)
 		require.EqualError(t, err, "command timed out after 10s")
 	})
 	t.Run("clear", func(t *testing.T) {
