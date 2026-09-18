@@ -498,7 +498,7 @@ func TestRunAgentUpdate_LocalPathWithBaseURL(t *testing.T) {
 
 	oldBase := srv.URL + "/org/repo/" + oldSHA + "/harness/code.yaml#sha256=" + oldHash
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: harness/code.yaml
 `)
@@ -544,7 +544,7 @@ func TestRunAgentUpdate_LocalPathQuotedBaseURL(t *testing.T) {
 
 	oldBase := srv.URL + "/org/repo/" + oldSHA + "/harness/code.yaml#sha256=" + oldHash
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: code.yaml
 `)
@@ -569,7 +569,7 @@ func TestRunAgentUpdate_LocalPathUsesStoredRef(t *testing.T) {
 	newSHA := "d1d2d3d4d5d6d7d8d9d0e1e2e3e4e5e6e7e8e9e0"
 	dir := t.TempDir()
 	oldHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: code.yaml
     ref: release-1.0
@@ -593,7 +593,7 @@ func TestRunAgentUpdate_LocalPathUsesStoredRef(t *testing.T) {
 
 func TestRunAgentUpdate_LocalPathNonURLBase(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: code.yaml
 `)
@@ -611,7 +611,7 @@ func TestRunAgentUpdate_LocalPathNonURLBase(t *testing.T) {
 
 func TestRunAgentUpdate_LocalPathMissingFile(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/lint.yaml
 `)
 
@@ -623,7 +623,7 @@ func TestRunAgentUpdate_LocalPathMissingFile(t *testing.T) {
 
 func TestRunAgentUpdate_LocalPathInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: code.yaml
 `)
@@ -641,7 +641,7 @@ func TestRunAgentUpdate_LocalPathInvalidYAML(t *testing.T) {
 
 func TestRunAgentUpdate_LocalPathEmptySource(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     enabled: false
 `)
@@ -654,7 +654,7 @@ func TestRunAgentUpdate_LocalPathEmptySource(t *testing.T) {
 
 func TestRunAgentUpdate_LocalPathBaseNoSHAInURL(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: code
     source: code.yaml
 `)
@@ -669,6 +669,64 @@ func TestRunAgentUpdate_LocalPathBaseNoSHAInURL(t *testing.T) {
 	err := runAgentUpdate(context.Background(), "code", newSHA, dir, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not find a commit SHA in the existing URL")
+}
+
+func TestRunAgentUpdate_BaseLayerURLAgentGetsOverlayEntry(t *testing.T) {
+	oldSHA := testCommitSHA
+	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+	oldHash := "1111111111111111111111111111111111111111111111111111111111111111"
+	newContent := []byte("role: triage\n")
+	newHash := fetch.ComputeSHA256(newContent)
+
+	srv, policy := newAgentTestServer(t, map[string][]byte{
+		"/org/repo/" + newSHA + "/harness/triage.yaml": newContent,
+	})
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	oldSource := srv.URL + "/org/repo/" + oldSHA + "/harness/triage.yaml#sha256=" + oldHash
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    source: "`+oldSource+`"
+  - name: lint
+    source: harness/lint.yaml
+allowed_remote_resources:
+  - "`+srv.URL+`/org/repo/"
+`), 0o644))
+	writePerRepoConfig(t, dir, "")
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "triage", newSHA, dir, nil, printer)
+	require.NoError(t, err)
+
+	// The base file is untouched.
+	base, err := os.ReadFile(filepath.Join(dir, "config.base.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), oldSource)
+
+	// The overlay gains a name-only entry for the updated agent only; the
+	// unrelated "lint" entry from the base layer is not materialized into
+	// config.yaml (that would freeze the parent layer's entries in on
+	// every update, per the runAgentSet pattern this mirrors).
+	overlay, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(overlay), "triage")
+	assert.NotContains(t, string(overlay), "lint")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	agents := cfg.AgentEntries()
+	require.Len(t, agents, 2)
+	triage, found := config.AgentSettingsFor(agents, "triage")
+	require.True(t, found)
+	assert.Contains(t, triage.Source, newSHA)
+	assert.Contains(t, triage.Source, "#sha256="+newHash)
+	assert.NotContains(t, triage.Source, oldSHA)
 }
 
 func TestRewriteHarnessBaseURL_NotFound(t *testing.T) {

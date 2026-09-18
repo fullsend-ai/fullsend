@@ -104,7 +104,9 @@ func newAgentUpdateCmd() *cobra.Command {
 		Long: `Re-pin a URL-based agent, or a local-path agent's base: URL, to a
 new commit SHA and recompute the integrity hash. If no SHA is provided,
 the branch ref stored at adoption time is re-resolved; if no ref was
-stored, the default branch HEAD is used.
+stored, the default branch HEAD is used. agent add never stores a ref
+for local-path sources, so update on a local harness base: URL without
+an explicit SHA always resolves the base repo's default branch.
 
 URL agents are updated in config.yaml. Local-path agents with a base:
 URL are updated in the local harness YAML; config.yaml is left unchanged.
@@ -337,6 +339,21 @@ func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
 	return cfg.AgentEntries()
 }
 
+// upsertAgentSource sets Source for name on a layer's local agent list:
+// on the entry with that name when present, else as a new override-only
+// entry. Mirrors config.UpsertAgentSettings, but for the update path's
+// Source field rather than runtime/model/effort/subagents.
+func upsertAgentSource(agents []config.AgentEntry, name, newSource string) []config.AgentEntry {
+	lower := strings.ToLower(name)
+	for i := range agents {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			agents[i].Source = newSource
+			return agents
+		}
+	}
+	return append(agents, config.AgentEntry{Name: name, Source: newSource})
+}
+
 func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeClient forge.Client, printer *ui.Printer) error {
 	absDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
@@ -483,8 +500,18 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 		if err != nil {
 			return err
 		}
-		agents[idx].Source = newSource
-		cfg.SetAgents(agents)
+
+		// Only this layer's own entries are written; an agent registered
+		// in config.base.yaml gets an overlay entry that merges onto it
+		// by name, instead of freezing the parent layer's entries into
+		// config.yaml (mirrors runAgentSet).
+		if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+			local := upsertAgentSource(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, newSource)
+			w.SetAgents(local)
+		} else {
+			agents[idx].Source = newSource
+			cfg.SetAgents(agents)
+		}
 
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("config validation failed: %w", err)
