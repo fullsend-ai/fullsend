@@ -2517,3 +2517,27 @@ func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head s
 	}
 	return "", fmt.Errorf("%w: no comparison data for %s/%s %s...%s", ErrNotFound, owner, repo, base, head)
 }
+
+// ListWorkflowRunsSince returns the ListWorkflowRuns fixtures created at or
+// after since. perPage is ignored: the fake does not paginate.
+func (f *FakeClient) ListWorkflowRunsSince(_ context.Context, owner, repo, workflowFile string, since time.Time, _ int) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunsSince"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo + "/" + workflowFile
+	runs := f.WorkflowRunsList[key]
+	if runs == nil {
+		if run, ok := f.WorkflowRuns[key]; ok {
+			runs = []WorkflowRun{*run}
+		}
+	}
+	var out []WorkflowRun
+	for _, r := range runs {
+		if atOrAfter(r.CreatedAt, since) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}

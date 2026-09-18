@@ -32,6 +32,24 @@ type Settle func(ctx context.Context) error
 // decided; this is only the floor for a caller that supplied nothing.
 const defaultMaxSteers = 2
 
+// maxRetryPolls bounds how long a run whose agent has already finished waits
+// on polls that reach no verdict. A turn end that cannot conclude leaves the
+// session open, but no further turn end is coming — the agent is done — so
+// without a cap a flaky listing would hold the run, and its VM, until the
+// steer deadline. Four consecutive retryable polls is about a minute and a
+// half at the default interval: long enough to ride out a rate limit, short
+// enough that the queued run takes over instead.
+//
+// A healthy run never reaches this cap: provenance ends every unresolvable
+// candidate with a final rejection. The cap bounds the class, so its never
+// firing is the expected state.
+const maxRetryPolls = 4
+
+// settleTimeout bounds the final Settle when the watcher is exiting on a
+// cancelled context. Without its own deadline the settle inherits a dead
+// context and the runtime never learns the run is over.
+const settleTimeout = 30 * time.Second
+
 // defaultMinRemaining is Config.MinRemaining when unset: a steered turn on
 // a large diff re-reads the delta and re-runs tools, so a few minutes is the
 // least it can need before the exec timeout would cut it off.
@@ -154,6 +172,9 @@ type Watcher struct {
 	steers   int
 	lastHead string
 	baseline time.Time
+	// steeredAt is when the last steer was delivered, so Watch can tell a
+	// turn end that predates it from one that answers it.
+	steeredAt time.Time
 
 	settleOnce sync.Once
 }
@@ -287,6 +308,14 @@ func (w *Watcher) Baseline() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.baseline
+}
+
+// lastSteerAt is when the last steer was delivered, or the zero time when
+// none has been.
+func (w *Watcher) lastSteerAt() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.steeredAt
 }
 
 // Head returns the work item head the run settled on, which is the head at
@@ -463,6 +492,301 @@ func foldJobName(s string) string {
 // which is also the file every follow-up run comes from.
 func (w *Watcher) shimFile() string { return path.Base(w.myRun.Path) }
 
+// Watch runs the poll/steer/settle loop until the run is settled, the
+// deadline passes, or ctx is done. It always settles before returning, so
+// the runtime is never left holding a session open for a watcher that has
+// stopped watching.
+//
+// turnEnd carries the instant of each agent turn end (runtime.ResultEvent). On a
+// turn end the watcher polls immediately: if something new arrived it steers
+// and the agent takes another turn, otherwise it settles and the run ends.
+// A steer consumed mid-turn produces no turn end of its own, so turn ends
+// are never counted against the steer budget.
+func (w *Watcher) Watch(ctx context.Context, turnEnd <-chan time.Time) {
+	defer w.doSettle(ctx)
+
+	ticker := time.NewTicker(w.cfg.PollInterval)
+	defer ticker.Stop()
+
+	var deadline <-chan time.Time
+	if !w.cfg.Deadline.IsZero() {
+		t := time.NewTimer(time.Until(w.cfg.Deadline))
+		defer t.Stop()
+		deadline = t.C
+	}
+
+	// awaiting is set when a turn end could not conclude: the agent has
+	// finished, so the only thing that can still end the run is a later poll
+	// reaching a verdict, or this counter running out.
+	awaiting := false
+	retries := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			w.logf("Steer deadline reached; settling the run")
+			return
+		case <-ticker.C:
+			if w.lowOnTime() {
+				w.logf("Less than %s of run budget left; settling instead of steering", w.cfg.MinRemaining)
+				return
+			}
+			switch outcome := w.pollAndSteer(ctx); {
+			case !awaiting:
+			case outcome == pollEmpty:
+				// The verdict the turn end was waiting for.
+				return
+			case outcome == pollSteered:
+				awaiting, retries = false, 0
+			default:
+				retries++
+				if retries >= maxRetryPolls {
+					w.logf("No verdict after %d polls; settling rather than holding the run", retries)
+					return
+				}
+			}
+			if w.capReached() {
+				w.logf("Steer cap of %d reached; settling the run", w.cfg.MaxSteers)
+				return
+			}
+		case at, ok := <-turnEnd:
+			if !ok {
+				return
+			}
+			// A turn end that predates the last steer describes a turn the
+			// steer has already superseded: the agent ended a turn, a poll
+			// then delivered an update, and the agent is working again. The
+			// channel is buffered and select does not order two ready cases,
+			// so that signal can arrive after the steer that answers it.
+			// Settling on it would end a run that still has budget and an
+			// agent mid-turn. A turn end stamped at the steer's own instant
+			// is treated the same way: the two clocks are read separately, and
+			// a turn cannot end at the moment the steer that restarts it lands.
+			if !at.After(w.lastSteerAt()) {
+				continue
+			}
+			if w.lowOnTime() {
+				w.logf("Less than %s of run budget left; settling instead of steering", w.cfg.MinRemaining)
+				return
+			}
+			// Settle only on a conclusive verdict. A poll that failed to
+			// reach one leaves the session open for the next tick, bounded
+			// by the deadline and the remaining-time floor above — the runs
+			// behind it are deliberately still judgeable.
+			switch w.pollAndSteer(ctx) {
+			case pollEmpty:
+				return
+			case pollRetry:
+				// No verdict, and no further turn end is coming. Wait for a
+				// later poll to conclude, bounded by maxRetryPolls.
+				awaiting, retries = true, 1
+			default:
+				awaiting, retries = false, 0
+			}
+			if w.capReached() {
+				w.logf("Steer cap of %d reached; settling the run", w.cfg.MaxSteers)
+				return
+			}
+		}
+	}
+}
+
+// lowOnTime reports whether the run budget left is below MinRemaining. A
+// zero Deadline never runs low.
+func (w *Watcher) lowOnTime() bool {
+	return !w.cfg.Deadline.IsZero() && time.Until(w.cfg.Deadline) < w.cfg.MinRemaining
+}
+
+func (w *Watcher) capReached() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.steers >= w.cfg.MaxSteers
+}
+
+// doSettle calls Settle exactly once, on a context that outlives a cancelled
+// run context so the runtime still learns the run is over.
+func (w *Watcher) doSettle(ctx context.Context) {
+	w.settleOnce.Do(func() {
+		if w.settle == nil {
+			return
+		}
+		settleCtx := ctx
+		if ctx.Err() != nil {
+			settleCtx = context.Background()
+		}
+		settleCtx, cancel := context.WithTimeout(settleCtx, settleTimeout)
+		defer cancel()
+		if err := w.settle(settleCtx); err != nil {
+			w.warnf("Settling the agent session failed: %v", err)
+		}
+	})
+}
+
+// pollOutcome is what one poll concluded. A turn end needs the distinction:
+// settling on a poll that merely failed to reach a verdict would end the run
+// while an update it could still accept is standing.
+type pollOutcome int
+
+const (
+	// pollEmpty means the poll reached a verdict and nothing is left to wait
+	// for: no candidate stands, or the ones that did carried no visible
+	// change. Every such run has been marked seen.
+	pollEmpty pollOutcome = iota
+	// pollSteered means a steer was delivered.
+	pollSteered
+	// pollRetry means the poll reached no verdict — a listing or a job read
+	// that failed transiently, or a candidate whose Route or stage job has
+	// not finished. Those runs are deliberately not marked seen, so a later
+	// poll can still accept them; settling now would throw that away.
+	pollRetry
+)
+
+// pollAndSteer runs one poll and reports what it concluded, which is what a
+// turn end reads to decide between settling and waiting for the next tick.
+//
+// Every accepted candidate in one poll folds into a single steer: the delta
+// is the work item's current state against the baseline, so two comments
+// that arrive together cost one turn, not two, and both run ids are recorded
+// as consumed.
+func (w *Watcher) pollAndSteer(ctx context.Context) pollOutcome {
+	if w.capReached() {
+		return pollEmpty
+	}
+	accepted, retry := w.poll(ctx)
+	if len(accepted) == 0 {
+		if retry {
+			return pollRetry
+		}
+		return pollEmpty
+	}
+
+	w.mu.Lock()
+	baseline := w.baseline
+	w.mu.Unlock()
+
+	authorized := authorizedActors(accepted)
+	// The instant the delta's view of the item begins. The new baseline is
+	// this, not the time delivery finished: a comment that lands while the
+	// delta is being built and delivered is not in this delta, so moving
+	// the baseline past it would filter its text out of the next one while
+	// its own run could still be accepted and receipted.
+	snapshot := time.Now().UTC()
+	d, err := w.buildDelta(ctx, baseline, authorized)
+	if err != nil {
+		w.warnf("Building the work-item delta failed: %v", err)
+		// The accepted runs were not marked seen, so a later poll re-reads
+		// them; this is a failed read, not a verdict.
+		return pollRetry
+	}
+	if d.empty() {
+		// The follow-up run was authorized and bound to my item but the
+		// item's visible state did not change (a label event the agent does
+		// not read, an edit that reverted). Consume the ids anyway so the
+		// same runs are not re-examined every poll.
+		w.markSeen(accepted...)
+		w.logf("Follow-up run(s) %s carried no visible change; not steering", runIDs(accepted))
+		// One poll judges every listed run, so an accepted candidate that
+		// carried nothing says nothing about a different candidate whose
+		// Route job has not concluded. Settling here on the strength of the
+		// empty one would discard the pending one, which poll deliberately
+		// left judgeable.
+		if retry {
+			return pollRetry
+		}
+		return pollEmpty
+	}
+
+	text, findings, excluded := w.buildText(accepted, d)
+	if findings > 0 {
+		w.warnf("Unicode sanitization altered the steer text (%d finding(s) stripped)", findings)
+	}
+
+	// An amendment the text could not carry must not be receipted: its run
+	// still has work nobody did, and the marker is what would tell that run
+	// to skip. Leave those runs out of the batch; they are marked seen only
+	// once the steer is delivered (below), so a delivery that fails and is
+	// retried still carries their context.
+	included := make([]forge.WorkflowRun, 0, len(accepted))
+	var dropped []forge.WorkflowRun
+	for _, r := range accepted {
+		if excluded[int64(r.ID)] {
+			dropped = append(dropped, r)
+			continue
+		}
+		included = append(included, r)
+	}
+
+	// The message id is the key the runtime acknowledges and the marker
+	// intersects on, so it must name a run that is actually being
+	// receipted; an excluded run's id would strand the whole batch.
+	//
+	// When every run was excluded the steer still carries the context, and
+	// the excluded run's id serves only as that acknowledgement key. It is
+	// never receipted, because the marker records the batch's runs and the
+	// batch is empty, and it cannot collide, because an excluded run is
+	// marked seen and never accepted again.
+	newest := accepted[len(accepted)-1]
+	if len(included) > 0 {
+		newest = included[len(included)-1]
+	}
+	// Actor is only set when the run's actor IS the principal the route job
+	// checked, which is the amendmentEvents rule. The envelope turns this
+	// field into an authorization claim ("activity by X, whose
+	// authorization the route job verified"), and on a
+	// pull_request_target the route job checks the PR AUTHOR while the run
+	// reports whoever pushed — so on a fork PR that claim would name
+	// someone with no permission on this repository at all. Left empty,
+	// the envelope falls back to asserting only that the update came
+	// through an authorized follow-up run, which is true for every accepted
+	// event. The Source line still carries the run id and the event.
+	actor := ""
+	if amendmentEvents[newest.Event] {
+		actor = actorLogin(newest)
+	}
+	msg := agentruntime.SteerMessage{
+		FollowUpRunID: int64(newest.ID),
+		Event:         newest.Event,
+		Actor:         actor,
+		CreatedAt:     runCreatedAt(newest),
+		HeadSHA:       d.newHead,
+		Text:          text,
+	}
+	if err := w.deliver(ctx, msg); err != nil {
+		if errors.Is(err, agentruntime.ErrSteerUnsupported) {
+			// Logged by the runner when it set up the watcher; nothing to
+			// retry, and the queued follow-up run does the work.
+			w.warnf("Runtime cannot steer; leaving the update to the queued run")
+			// A runtime that cannot steer will not start being able to, so
+			// there is nothing for a later poll to retry.
+			return pollEmpty
+		}
+		if errors.Is(err, agentruntime.ErrSteerAfterSettle) {
+			// The session is settling or closed, which is terminal: no later
+			// poll can deliver into it, so polling on would hold the run open
+			// for nothing. The batch stays unconsumed and the queued run does
+			// the work — recording it here would be a silent drop.
+			w.warnf("The agent session had already settled; leaving the update to the queued run")
+			return pollEmpty
+		}
+		w.warnf("Delivering the steer failed: %v", err)
+		// Nothing was consumed, so the batch stands for the next poll.
+		return pollRetry
+	}
+
+	// The excluded runs are judged now that their context reached the
+	// agent, so this watcher stops re-examining them.
+	if len(dropped) > 0 {
+		w.markSeen(dropped...)
+		w.warnf("Steer text was too large to carry follow-up run(s) %s; leaving them to the queued run",
+			runIDs(dropped))
+	}
+	w.markSteered(msg.FollowUpRunID, included, d, snapshot)
+	w.logf("Steered the agent with follow-up run(s) %s", runIDs(included))
+	return pollSteered
+}
+
 // markSeen records that these runs have been judged, so they are not
 // re-examined on every poll. It says nothing about whether the agent saw
 // their content.
@@ -489,6 +813,7 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 		w.seen[int64(r.ID)] = true
 	}
 	w.delivered = append(w.delivered, batch)
+	w.steeredAt = time.Now()
 	// A batch whose every amendment was dropped for size carried no
 	// authorized update to the agent — the runs are left to the queued run
 	// and none is counted as consumed — so it must not spend one of
@@ -514,4 +839,91 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 	if d.headMoved {
 		w.lastHead = d.newHead
 	}
+}
+
+// poll lists follow-up runs and returns the ones that pass every provenance
+// check, oldest first, plus whether anything is still judgeable: a listing or
+// job read that failed transiently, or a candidate whose verdict is "not yet".
+// Those runs are not marked seen, so retry reports that a later poll can still
+// reach a different answer.
+func (w *Watcher) poll(ctx context.Context) (accepted []forge.WorkflowRun, retry bool) {
+	runs, err := w.runsSince(ctx, w.shimFile(), w.freshAfter)
+	if err != nil {
+		w.warnf("Listing follow-up runs failed: %v", err)
+		// The same judgement jobChecks makes about one run's jobs, applied
+		// to the listing itself. A permanent failure — a 403, a 404, a shim
+		// path that does not resolve in this repository — reads the same way
+		// on every later poll, so there is nothing for a retry to learn and
+		// the queued run does the work. Only a transient failure is "not
+		// yet". Unlike a rejected run there is nothing to mark seen here,
+		// which is why the distinction has to be made at the call.
+		return nil, !permanentAPIError(err)
+	}
+
+	for _, run := range runs {
+		if rej := w.candidateChecks(run); rej != nil {
+			w.logf("Follow-up run %d rejected (%s)", run.ID, rej)
+			continue
+		}
+		rej, err := w.jobChecks(ctx, run)
+		if err != nil {
+			w.warnf("Reading follow-up run %d's jobs failed: %v", run.ID, err)
+			// A permanent failure is a verdict: a 403 or a 404 on this
+			// run's jobs will read the same way on every later poll, so
+			// re-fetching it for the rest of the watch spends an API call
+			// per poll to learn nothing. A transient one — a 5xx, a rate
+			// limit — is "not yet", the same as a Route job still running,
+			// and must stay judgeable. An error that cannot say which it
+			// is counts as transient: re-examining costs a call, and
+			// discarding costs an update.
+			if permanentAPIError(err) {
+				w.markSeen(run)
+			} else {
+				retry = true
+			}
+			continue
+		}
+		if rej != nil {
+			w.logf("Follow-up run %d rejected (%s)", run.ID, rej)
+			// A verdict that cannot change is final, and the run must not
+			// be re-examined every poll. "Not yet" is not such a verdict:
+			// a Route job still running, or a stage job the API has not
+			// listed, becomes an answer on a later poll, and marking it
+			// seen would discard a legitimate update for the sake of
+			// polling a moment early.
+			if rej.pending {
+				retry = true
+			} else {
+				w.markSeen(run)
+			}
+			continue
+		}
+		accepted = append(accepted, run)
+	}
+	return accepted, retry
+}
+
+// transientError is satisfied by an API error that can say whether it is
+// worth retrying; github.APIError is. It is asserted structurally so this
+// package keeps depending on the ActionsReader interface rather than on a
+// concrete client.
+type transientError interface{ IsTransient() bool }
+
+// permanentAPIError reports whether err is an API failure that will answer
+// the same way on every later poll. An error that cannot say is treated as
+// transient, which is the direction that loses nothing.
+func permanentAPIError(err error) bool {
+	var t transientError
+	if !errors.As(err, &t) {
+		return false
+	}
+	return !t.IsTransient()
+}
+
+func runIDs(runs []forge.WorkflowRun) string {
+	ids := make([]string, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, fmt.Sprintf("%d", r.ID))
+	}
+	return strings.Join(ids, ", ")
 }

@@ -2623,6 +2623,61 @@ func (r workflowRunJSON) toForge() *forge.WorkflowRun {
 	return out
 }
 
+// maxWorkflowRunPages bounds the run listing. The caller that paginates
+// deepest is the steer watcher, which re-lists on every poll, so the cap is
+// a rate-limit budget as much as a safety net: at 4 pages of 100 and a 30
+// second poll it is at most 480 requests an hour against a job token's
+// ~1000 per hour per repository, leaving room for the per-candidate job
+// reads. The listing is newest-first, so what the cap drops is the oldest
+// runs in the window — the ones a watcher is least likely to still need.
+const maxWorkflowRunPages = 4
+
+// ListWorkflowRunsSince returns runs of one workflow file created at or
+// after since, newest first as GitHub returns them, with the provenance
+// fields populated.
+//
+// The per-workflow endpoint is used rather than the repository-wide one so
+// runs of other workflows are filtered out server-side. There is no event
+// filter: the endpoint accepts a single event value, so a caller that cares
+// about several must filter client-side.
+func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]forge.WorkflowRun, error) {
+	if perPage <= 0 {
+		perPage = 50
+	}
+
+	runs := make([]forge.WorkflowRun, 0, perPage)
+	for page := 1; page <= maxWorkflowRunPages; page++ {
+		q := url.Values{}
+		q.Set("created", ">="+since.UTC().Format(time.RFC3339))
+		q.Set("per_page", strconv.Itoa(perPage))
+		q.Set("page", strconv.Itoa(page))
+
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?%s",
+			owner, repo, url.PathEscape(workflowFile), q.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("list workflow runs since %s: %w", since.UTC().Format(time.RFC3339), err)
+		}
+
+		var result struct {
+			TotalCount   int               `json:"total_count"`
+			WorkflowRuns []workflowRunJSON `json:"workflow_runs"`
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode workflow runs: %w", err)
+		}
+
+		for _, r := range result.WorkflowRuns {
+			runs = append(runs, *r.toForge())
+		}
+		// A short page is the last page. total_count is also consulted so a
+		// server that fills the final page exactly still terminates.
+		if len(result.WorkflowRuns) < perPage || (result.TotalCount > 0 && len(runs) >= result.TotalCount) {
+			break
+		}
+	}
+	return runs, nil
+}
+
 // DispatchWorkflow triggers a workflow_dispatch event on a workflow file.
 // GitHub returns 204 No Content on success (not 200 or 201).
 func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error {

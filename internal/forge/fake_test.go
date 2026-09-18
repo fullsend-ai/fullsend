@@ -2180,3 +2180,27 @@ func TestFakeClient_CompareChanges(t *testing.T) {
 	_, err = f.CompareChanges(context.Background(), "o", "r", "gone", "bbb")
 	require.ErrorIs(t, err, ErrNotFound)
 }
+
+func TestFakeClient_ListWorkflowRunsSince(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 10, CreatedAt: "2026-09-03T00:00:00Z"},
+			{ID: 20, CreatedAt: "2026-09-01T00:00:00Z"},
+		},
+	}
+	since := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+
+	runs, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since, 100)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 10, runs[0].ID)
+
+	runs, err = fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "missing.yml", since, 100)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+
+	fc.Errors["ListWorkflowRunsSince"] = errors.New("boom")
+	_, err = fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since, 100)
+	assert.EqualError(t, err, "boom")
+}
