@@ -359,7 +359,13 @@ event-driven dispatch already assumes under `cancel-in-progress`.
 > **Update (2026-09):** [ADR 0106](0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
 > replaces automatic cancellation with serialized runs and platform-native
 > pending-run coalescing. Source-native locks and agent idempotency remain
-> defense in depth for duplicate dispatch and side effects.
+> defense in depth for duplicate dispatch and side effects. On GitHub, every
+> stage job in `reusable-dispatch.yml` now carries `cancel-in-progress: false`,
+> so layer 2 above is gone, and the duplicate-poll case is where that trade is
+> least favourable, because two duplicate dispatches are the same work rather
+> than a newer state superseding an older one. The mentions below of GHA
+> concurrency as a mitigation for stale-lock races and as the primary safety net
+> for same-item re-dispatch describe the cancelling behaviour and no longer hold.
 
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:
