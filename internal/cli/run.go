@@ -3508,8 +3508,11 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
-			continue
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key := e[:i]
+			if oidcDenyKeys[key] || key == "GITHUB_TOKEN" {
+				continue
+			}
 		}
 		result = append(result, e)
 	}

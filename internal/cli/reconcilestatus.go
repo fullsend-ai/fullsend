@@ -161,8 +161,9 @@ finalized, this is a no-op.`,
 			}
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+			reviewRun := strings.EqualFold(role, "review")
 
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, reviewRun)
 		},
 	}
 
