@@ -338,7 +338,7 @@ func TestOrgConfigValidate_InvalidInferenceProvider(t *testing.T) {
 	cfg := &orgConfig{
 		Version:   "1",
 		Dispatch:  DispatchConfig{Platform: "github-actions"},
-		Inference: InferenceConfig{Provider: "openai"},
+		Inference: InferenceConfig{Provider: "bedrock"},
 		Defaults: RepoDefaults{
 			Roles:                    []string{"fullsend"},
 			MaxImplementationRetries: 2,
@@ -346,7 +346,7 @@ func TestOrgConfigValidate_InvalidInferenceProvider(t *testing.T) {
 	}
 	err := cfg.Validate()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "openai")
+	assert.Contains(t, err.Error(), "bedrock")
 }
 
 func TestOrgConfigValidate_EmptyInferenceProvider(t *testing.T) {
@@ -402,7 +402,7 @@ func TestOrgConfigMarshal_WithInference(t *testing.T) {
 
 func TestValidProviders(t *testing.T) {
 	providers := ValidProviders()
-	assert.Equal(t, []string{"vertex"}, providers)
+	assert.Equal(t, []string{"vertex", "openai"}, providers)
 }
 
 func TestValidRuntimes(t *testing.T) {

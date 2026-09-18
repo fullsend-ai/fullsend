@@ -1996,7 +1996,7 @@ func TestValidateCLISetupValues(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, validateCLISetupValues(githubSetupConfig{}))
 
-	err := validateCLISetupValues(githubSetupConfig{inferenceProvider: "openai"})
+	err := validateCLISetupValues(githubSetupConfig{inferenceProvider: "bedrock"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --inference-provider")
 
@@ -2085,4 +2085,220 @@ func TestResolveInferenceReuse_SecretCheckErrors(t *testing.T) {
 	_, _, err = resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{inferenceProject: "p"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_GCP_WIF_PROVIDER")
+}
+
+// --- inference.provider openai: GCP settings optional (#7481) ---
+
+func openAIProviderSetupClient() *forge.FakeClient {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	return client
+}
+
+func committedPerRepoConfig(t *testing.T, client *forge.FakeClient) string {
+	t.Helper()
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				return string(f.Content)
+			}
+		}
+	}
+	t.Fatal("expected .fullsend/config.yaml in committed files")
+	return ""
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_StaticKeySecret_NoGCP(t *testing.T) {
+	// A repository that runs inference on GPT through the
+	// FULLSEND_OPENAI_API_KEY secret needs no GCP project or WIF
+	// provider: setup succeeds without them, writes no GCP secret (not
+	// even an empty one), and records the provider in config.yaml.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	client.Secrets = map[string]bool{"acme/widget/FULLSEND_OPENAI_API_KEY": true}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:            "acme/widget",
+		mintURL:           "https://mint-test-abc123.run.app",
+		inferenceProvider: "openai",
+		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:      map[string]bool{"mint-url": true, "inference-provider": true},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CreatedSecrets, "no GCP secret may be written for an openai-only repository")
+	s := committedPerRepoConfig(t, client)
+	assert.Contains(t, s, "provider: openai")
+	assert.NotContains(t, s, "project:")
+	assert.NotContains(t, s, "wif_provider:")
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://mint-test-abc123.run.app", varNames["FULLSEND_MINT_URL"])
+	assert.Equal(t, "true", varNames["FULLSEND_PER_REPO_INSTALL"])
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_WIFTrio_NoSecret(t *testing.T) {
+	// The OpenAI WIF trio in the composed config is the other valid
+	// route: no FULLSEND_OPENAI_API_KEY secret is needed.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:                   "acme/widget",
+		mintURL:                  "https://mint-test-abc123.run.app",
+		inferenceProvider:        "openai",
+		openaiAudience:           "aud",
+		openaiIdentityProviderID: "idp_123",
+		openaiServiceAccountID:   "sa_123",
+		agents:                   strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{
+			"mint-url": true, "inference-provider": true,
+			"openai-audience": true, "openai-identity-provider-id": true, "openai-service-account-id": true,
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, client.CreatedSecrets)
+	s := committedPerRepoConfig(t, client)
+	assert.Contains(t, s, "provider: openai")
+	assert.Contains(t, s, "identity_provider_id: idp_123")
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_NoRoute_Refused(t *testing.T) {
+	// Provider openai with neither the trio nor the secret would only
+	// fail at the first GPT run; setup refuses and names both remedies.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:            "acme/widget",
+		mintURL:           "https://mint-test-abc123.run.app",
+		inferenceProvider: "openai",
+		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:      map[string]bool{"mint-url": true, "inference-provider": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_OPENAI_API_KEY")
+	assert.Contains(t, err.Error(), "--openai-audience")
+	assert.Empty(t, client.CommittedFilesToBranch, "nothing may be committed when setup is refused")
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_PartialGCP_StillRefused(t *testing.T) {
+	// Opting into Vertex as well under provider openai keeps the
+	// partial-pair rule: a project without a WIF provider is an error,
+	// not a silently GCP-less install.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	client.Secrets = map[string]bool{"acme/widget/FULLSEND_OPENAI_API_KEY": true}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:            "acme/widget",
+		mintURL:           "https://mint-test-abc123.run.app",
+		inferenceProvider: "openai",
+		inferenceProject:  "my-project",
+		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:      map[string]bool{"mint-url": true, "inference-provider": true, "inference-project": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider")
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_FromExistingConfig(t *testing.T) {
+	// A re-run on a repository whose committed config.yaml already says
+	// provider openai needs no flags at all: the provider comes from the
+	// existing layer, the route from the secret.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	client.Secrets = map[string]bool{"acme/widget/FULLSEND_OPENAI_API_KEY": true}
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte("version: \"1\"\ninference:\n  provider: openai\n"),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		mintURL:      "https://mint-test-abc123.run.app",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{"mint-url": true},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, client.CreatedSecrets)
+}
+
+func TestGitHubSetupCmd_VertexDefaultStillRequiresGCP(t *testing.T) {
+	// The default provider is unchanged: with no provider flag and no
+	// GCP values, setup still demands --inference-project, and the
+	// message now points at the openai alternative.
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		mintURL:      "https://mint-test-abc123.run.app",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{"mint-url": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-project is required")
+	assert.Contains(t, err.Error(), "--inference-provider openai")
+}
+
+func TestValidateCLISetupValues_AcceptsOpenAIProvider(t *testing.T) {
+	require.NoError(t, validateCLISetupValues(githubSetupConfig{inferenceProvider: "openai"}))
+	err := validateCLISetupValues(githubSetupConfig{inferenceProvider: "bedrock"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vertex, openai")
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_SecretCheckError(t *testing.T) {
+	// An API failure while looking for the OpenAI secret is surfaced, not
+	// read as "no route" or as "route present".
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	client.Errors = map[string]error{"RepoSecretExists": fmt.Errorf("API rate limit exceeded")}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:            "acme/widget",
+		mintURL:           "https://mint-test-abc123.run.app",
+		inferenceProvider: "openai",
+		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:      map[string]bool{"mint-url": true, "inference-provider": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_OPENAI_API_KEY")
+	assert.Contains(t, err.Error(), "API rate limit exceeded")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_OpenAIProvider_PartialTrioRefused(t *testing.T) {
+	// A partial trio in an existing config layer plus the static-key
+	// secret is not a route: the runner errors on the partial block
+	// instead of falling back, so setup must refuse it too.
+	t.Setenv("GH_TOKEN", "test-token")
+	client := openAIProviderSetupClient()
+	client.Secrets = map[string]bool{"acme/widget/FULLSEND_OPENAI_API_KEY": true}
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte("version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n"),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		mintURL:      "https://mint-test-abc123.run.app",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{"mint-url": true},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "partially configured")
+	assert.Contains(t, err.Error(), "identity_provider_id")
+	assert.Empty(t, client.CommittedFilesToBranch)
 }
