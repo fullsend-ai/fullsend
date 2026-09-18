@@ -33,6 +33,17 @@ permissions are yours alone. `privilege_levels` only narrows a token within
 the role, so it complements a follow-up workflow rather than replacing it. See
 [`privilege_levels` in the harness reference](../../reference/harness-reference.md).
 
+Why not a stage level that carries the extra scope instead? Three reasons:
+
+- Extra levels exist only on custom roles the mint operator defines. A level
+  the mint does not serve is a 403 at run time, after the agent has run.
+- One stage, one token. A post-script that comments and re-runs needs both
+  scopes in that token, so nothing is separated.
+- The scope lands on the App, so every adopting repository needs the App
+  installed, and any harness naming the role can request the level.
+
+The follow-up workflow keeps each permission in a file you own and can read.
+
 ## What a run publishes
 
 Every agent run uploads the artifact **`fullsend-<agent>`**, where `<agent>`

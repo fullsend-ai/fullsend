@@ -74,6 +74,25 @@ Rejected: agent-specific logic lands in the shared workflow, fullsend becomes
 the executor of every user's control-plane action, and each new follow-up
 needs a fullsend release.
 
+### Per-stage privilege levels on a custom multi-level role
+
+The mint operator adds a level carrying `actions: write` to the agent's custom
+role and the harness maps `post_script` to it
+([ADR 0073](0073-named-mint-privilege-levels.md), fullsend-ai/fullsend#7394).
+Rejected on three facts and their cost to the user. Extra levels exist only on
+operator-defined custom roles, so the harness author depends on the mint
+operator for every new scope and learns of a mismatch as a 403 that aborts the
+run after the agent has spent its budget. One stage receives one token, and
+the post-script both comments and re-runs, so its level must hold
+`pull_requests: write` and `actions: write` together; the field separates
+sandbox from scripts, not one write from another. The App installation still
+carries `actions: write`, so every adopting repository needs that App and any
+harness naming the role may request the level; custom levels are not
+enforced to nest (fullsend-ai/fullsend#7446), so a stage may receive a
+different token rather than a narrower one. The author would reason about
+three tokens across three stages plus the App ceiling, against one read-only
+artifact and one job token in the alternative.
+
 ### Hand the workflow token to the post-script
 
 The post-script receives the job token next to the minted token. Rejected: one
@@ -84,7 +103,10 @@ token out of every pre- and post-script child.
 ### A user-owned follow-up workflow
 
 The user's own workflow subscribes to the run and acts with the permissions it
-declares for itself. Chosen.
+declares for itself. Chosen: it is the only option where the user sees one
+identity per place (the App in the post-script, `github-actions[bot]` in the
+follow-up), needs no coordination with the mint operator or an org admin, and
+can read every permission involved in the two files they own.
 
 ## Decision
 
