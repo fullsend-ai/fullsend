@@ -19,7 +19,7 @@ No agent trusts another agent's output because of who (or what) produced it. Tru
 - A code agent treats feedback from all reviewers the same way — it doesn't give special weight to a comment because it appears to come from a system agent
 - Every agent treats every input as potentially adversarial, regardless of apparent source
 
-**The one exception:** if a reviewer has approval rights in the repo (via CODEOWNERS or branch protection), the code agent can recognize that reviewer's authority to raise *blocking* concerns. It still must take defensive measures when processing that reviewer's comments — authorized identity doesn't mean safe content.
+**The one exception:** if a reviewer has approval rights in the repo (via CODEOWNERS or branch protection), the code agent can recognize that reviewer's authority to raise *blocking* concerns. It still must take defensive measures when processing that reviewer's comments — authorized identity doesn't mean safe content. The same rule governs an update delivered to a run in flight: [ADR 0118](../ADRs/0118-take-steer-authority-from-the-route-job.md) lets only text from the actor the follow-up run's `Route` job authorized amend the task, and even that is content, never capability.
 
 This mirrors how humans work today. You don't trust a code reviewer because they claim to be senior. You trust their authority to block because GitHub shows they have approval rights on that path.
 
