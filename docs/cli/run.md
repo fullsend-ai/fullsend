@@ -277,6 +277,34 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always source it; a custom command must do the same. |
 
+## Run baseline
+
+Alongside the budget, the runner tells the agent what the work item looked like when the run
+began. Two more environment variables, set on every runtime (claude, pi, codex):
+
+| Variable | Value |
+|---|---|
+| `FULLSEND_RUN_HEAD_SHA` | The work item's head as the event that dispatched the run carried it. Empty on an issue run, which has no head, and today on GitLab, where the poller-raised agent pipeline does not carry the merge request's head |
+| `FULLSEND_RUN_STARTED_AT` | When the run started, RFC 3339 UTC |
+
+The two are not sampled at the same instant. The head is frozen when the run is dispatched, before
+it queues; the start is the runner's own clock at the top of `fullsend run`, after the
+concurrency-group wait, which can now last a whole predecessor run, and after the job steps that
+precede the command. The gap runs one way. An agent re-checking against the start looks at a
+narrower window than the run spans, never a wider one, so it can miss activity that landed while the
+run queued or the job was starting but cannot invent any; a head comparison has no such gap.
+
+The head is empty rather than absent on an issue run — an agent that re-checks it skips the check
+on an empty value, which it cannot do for a variable that is not there at all.
+
+Both are written after the harness's `.env.d` files are sourced and after `env.sandbox` is
+applied, so a harness cannot shadow the baseline its own agent's re-check depends on. Position is
+what protects them: the reserved-key check drops an `env.sandbox` entry with either name, but says
+nothing about `.env.d`.
+
+Both are captured once, at run start, and are not rewritten between validation-loop iterations,
+unlike the deadline above.
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)

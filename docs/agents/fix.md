@@ -94,8 +94,10 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - When the cap is exceeded, the run fails before the sandbox starts and the
   status comment shows the escalation message (a human can still `/fs-fix`).
-- Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
-  starts a new one.
+- A `/fs-fix` comment while a fix run is already in flight for the same PR does
+  not cancel it: that run finishes, and the new dispatch waits as the single
+  pending run (normally but not necessarily the newest event), then works from
+  the PR's current state ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
 
 ## How it helps
 
