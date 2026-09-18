@@ -200,7 +200,24 @@ type convergeDiscovery struct {
 	repo       ResolvedRepo
 	resolved   ResolvedConfig
 	components []ComponentStatus
-	err        error
+	// route is the repository's inference route: from its committed
+	// config when one exists, otherwise the manifest's resolved provider
+	// (#7481).
+	route InferenceRoute
+	err   error
+}
+
+// installInferenceProvider returns the inference.provider to write into
+// a (re)generated config.yaml: the manifest's resolved value, except that
+// a committed openai route is preserved when a repair regenerates the
+// file for a repository whose manifest entry predates inference_provider
+// — otherwise the repair would silently revert it to vertex. A vertex
+// route adds nothing, so vertex repositories keep their exact output.
+func installInferenceProvider(d convergeDiscovery) string {
+	if d.route.FromConfig && d.route.OpenAI() {
+		return config.InferenceProviderOpenAI
+	}
+	return d.resolved.InferenceProvider
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -435,7 +452,16 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
+			route, routeErr := ProbeInferenceRoute(ctx, fc.Client, rr.Owner, rr.Repo)
+			if routeErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: routeErr}
+				return
+			}
+			if !route.FromConfig && resolved.InferenceProvider != "" {
+				route.Provider = resolved.InferenceProvider
+			}
+			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars,
+				WithInferenceRoute(route))
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
@@ -445,6 +471,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				repo:       rr,
 				resolved:   resolved,
 				components: probed,
+				route:      route,
 			}
 		}(i, r)
 	}
@@ -477,10 +504,25 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			continue
 		}
 
+		// An openai-route repo with no GCP flags gets no GCP secrets at
+		// all (#7481): skip WIF derivation and the project requirement,
+		// but insist on an OpenAI route, the way github setup does — a
+		// missing route would only surface at the first GPT run.
+		openAIOnly := d.route.OpenAI() && cfg.InferenceProject == "" && cfg.WIFProvider == ""
+		if openAIOnly && !d.route.OpenAIWIF && !hasComponent(d.components, "secret:"+openAIRouteSecret(d.resolved.Forge)) {
+			repoFullName := d.repo.Owner + "/" + d.repo.Repo
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("inference provider openai needs an OpenAI route for %s: set the %s secret (or inference.openai in the committed config) before installing", repoFullName, openAIRouteSecret(d.resolved.Forge)),
+			}
+			continue
+		}
+
 		// Compute WIF for repos that need secrets written.
 		hasSecrets := secretsPresent(d.components)
 		var wif string
-		if !hasSecrets {
+		if !hasSecrets && !openAIOnly {
 			switch {
 			case cfg.WIFProvider != "":
 				// Explicit WIF provider — use it verbatim for all repos.
@@ -664,6 +706,7 @@ func convergeRepo(ctx context.Context,
 			MintURL:           resolved.MintURL,
 			InferenceProject:  cfg.InferenceProject,
 			InferenceRegion:   cfg.InferenceRegion,
+			InferenceProvider: installInferenceProvider(d),
 			UpstreamRef:       ref,
 			UpstreamTag:       tag,
 			WIFProvider:       wifProvider,
@@ -1597,6 +1640,9 @@ func convergeScaffoldFiles(ctx context.Context,
 		RunnerTags:   gitlabRunnerTags(cfg.Manifest),
 		Runtime:      resolved.Runtime,
 		VendorBinary: repairVendor,
+		// A repair that regenerates config.yaml must not drop a
+		// committed openai route (#7481).
+		InferenceProvider: installInferenceProvider(d),
 	}
 
 	// When vendored, the running binary's embedded templates match the

@@ -16,9 +16,10 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 
 // uninstallSecrets deletes every required secret plus the opt-in
 // FULLSEND_OPENAI_API_KEY if present. It must not become requiredSecrets
-// itself (or be added to it) — probe/converge use requiredSecretsForForge
-// to decide whether an installation is healthy, and the opt-in key's
-// absence is not a health problem, only its presence after uninstall is.
+// itself (or be added to it) — that list defines the vertex route, on
+// which the opt-in key's absence is not a health problem, only its
+// presence after uninstall is. On the openai route the key is required
+// through requiredSecretsForRoute instead (#7481).
 var uninstallSecrets = slices.Concat(requiredSecrets, []string{forge.SecretOpenAIAPIKey})
 
 var gitlabUninstallVars = []string{
