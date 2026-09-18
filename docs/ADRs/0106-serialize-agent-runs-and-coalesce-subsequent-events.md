@@ -155,3 +155,11 @@ security controls remain in force.
 - Per-run infrastructure timeouts remain effective, but a single pending slot
   does not bound consecutive runs; sustained triggering still requires rate,
   cost, or loop circuit breakers.
+
+**Note (ADR 0113):** the clause above stating that `fullsend run` does not poll
+for later events is revisited in
+[ADR 0113](0113-steer-the-running-agent-on-work-item-updates.md), which lets a
+run in flight absorb updates to its own work item. It still invokes no run of
+its own, every event still creates its pending run, and a steered run does not
+extend its timeout window. The deferral of content provenance and actor
+authority to a separate ADR stands.
