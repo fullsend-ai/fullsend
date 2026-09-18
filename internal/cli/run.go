@@ -5430,12 +5430,33 @@ func extractMapString(m map[string]any, keys ...string) string {
 // report a head move on every run.
 func runHeadSHA(forgePlatform string) string {
 	if forgePlatform == "gitlab" {
-		return os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA")
+		return gitlabMergeRequestHeadSHA()
 	}
 	if sha := os.Getenv("PR_HEAD_SHA"); sha != "" {
 		return sha
 	}
 	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// gitlabMergeRequestHeadSHA returns the source-branch head of the merge
+// request this run was dispatched for, or "" when the run is not against one.
+//
+//   - Merged results pipeline: CI_MERGE_REQUEST_SOURCE_BRANCH_SHA is the head.
+//     CI_COMMIT_SHA there is the merge-result commit, so it is never used.
+//   - Ordinary merge request pipeline: that variable is empty, and
+//     CI_COMMIT_SHA is the source head. CI_MERGE_REQUEST_IID marks this case,
+//     whatever CI_PIPELINE_SOURCE says.
+//   - fullsend's poller pipelines (#7322): no CI_MERGE_REQUEST_* variable, and
+//     CI_COMMIT_SHA is the protected branch. The head is left empty, as for an
+//     issue run, rather than reported as moving on every run.
+func gitlabMergeRequestHeadSHA() string {
+	if sha := os.Getenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA"); sha != "" {
+		return sha
+	}
+	if os.Getenv("CI_MERGE_REQUEST_IID") != "" {
+		return os.Getenv("CI_COMMIT_SHA")
+	}
+	return ""
 }
 
 // buildRunFactsEnvLines exports this run's baseline into the sandbox.

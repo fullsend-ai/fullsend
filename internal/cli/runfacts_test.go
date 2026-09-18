@@ -44,9 +44,53 @@ func TestBuildRunFactsEnvLines(t *testing.T) {
 }
 
 func TestRunHeadSHA(t *testing.T) {
-	t.Run("gitlab reads the merge request source sha", func(t *testing.T) {
+	// The source-branch SHA is set only in merged results pipelines, so the
+	// CI_COMMIT_SHA fallback carries the ordinary merge request pipeline where
+	// it is empty. What gates that fallback is CI_MERGE_REQUEST_IID rather
+	// than the pipeline source: only a pipeline carrying the merge request's
+	// own variables has CI_COMMIT_SHA on the source branch. fullsend's
+	// poller-raised agent pipeline carries none of them and knows the merge
+	// request through STATUS_IID alone, so it reports no head at all.
+	t.Run("gitlab prefers the merge request source sha", func(t *testing.T) {
 		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "gl123")
+		// Present too, and must lose: in a merged results pipeline this is
+		// the merge-result commit, not the source head.
+		t.Setenv("CI_COMMIT_SHA", "merge-result-sha")
+		t.Setenv("CI_MERGE_REQUEST_IID", "42")
+		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
 		assert.Equal(t, "gl123", runHeadSHA("gitlab"))
+	})
+
+	t.Run("gitlab falls back on an ordinary merge request pipeline", func(t *testing.T) {
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "42")
+		t.Setenv("CI_PIPELINE_SOURCE", "merge_request_event")
+		t.Setenv("CI_COMMIT_SHA", "gl456")
+		assert.Equal(t, "gl456", runHeadSHA("gitlab"),
+			"an empty source-branch SHA must not be reported as no head at all")
+	})
+
+	t.Run("gitlab reports no head when only the poller knows the merge request", func(t *testing.T) {
+		// The shape fullsend produces since #7322: an API pipeline on the
+		// protected branch with the MR IID passed as STATUS_IID and no
+		// CI_MERGE_REQUEST_* variable. CI_COMMIT_SHA is that branch, not the
+		// merge request's head, so there is no head to report.
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "")
+		t.Setenv("STATUS_IID", "42")
+		t.Setenv("CI_PIPELINE_SOURCE", "api")
+		t.Setenv("CI_COMMIT_SHA", "main-sha")
+		assert.Empty(t, runHeadSHA("gitlab"),
+			"the protected branch's commit is not the merge request's head")
+	})
+
+	t.Run("gitlab reports no head off a merge request", func(t *testing.T) {
+		t.Setenv("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "")
+		t.Setenv("CI_MERGE_REQUEST_IID", "")
+		t.Setenv("CI_PIPELINE_SOURCE", "push")
+		t.Setenv("CI_COMMIT_SHA", "branch-sha")
+		assert.Empty(t, runHeadSHA("gitlab"),
+			"a branch pipeline has no merge request head, and its commit sha is not one")
 	})
 
 	t.Run("github prefers the explicit PR_HEAD_SHA", func(t *testing.T) {
