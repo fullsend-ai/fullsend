@@ -1055,7 +1055,7 @@ func TestReconcileOrphaned_CancelledReviewIdentifiesCancelledCommit(t *testing.T
 		}},
 	}
 
-	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review")
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review", true)
 	require.NoError(t, err)
 	require.Len(t, fc.UpdatedComments, 1)
 	body := fc.UpdatedComments[0].Body
@@ -1065,20 +1065,21 @@ func TestReconcileOrphaned_CancelledReviewIdentifiesCancelledCommit(t *testing.T
 	assert.Contains(t, body, "`/fs-review`")
 }
 
-func TestReconcileOrphaned_CancelledNonReviewUsesGenericComment(t *testing.T) {
+func TestReconcileOrphaned_CancelledNonReviewDoesNotUseDescriptionAsRole(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{
 		"org/repo/7": {{
 			ID:     42,
-			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 2:34 PM UTC",
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Review · Started 2:34 PM UTC",
 			Author: "fullsend-bot[bot]",
 		}},
 	}
 
-	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Code")
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review")
 	require.NoError(t, err)
 	require.Len(t, fc.UpdatedComments, 1)
-	assert.NotContains(t, fc.UpdatedComments[0].Body, "Do not merge")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Automated review did not complete")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "`/fs-review`")
 }
 
 func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
