@@ -109,6 +109,16 @@ type resultEvent struct {
 // system events, stream_event deltas (thinking, text, tool input JSON),
 // result events, errors, and assistant message fallback.
 func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
+	return parseClaudeStreamLines(r, onEvent, nil)
+}
+
+// parseClaudeStreamLines is parseClaudeStream with a per-line liveness hook:
+// onLine (nil ok) is called for every well-formed JSON line — including lines
+// that map to no AgentEvent, `user` tool_result messages among them — and for
+// every fully consumed line too large to parse (> streamBufSize). Any stream
+// activity is proof of life, so the stall watchdog counts lines, not just the
+// sparser semantic events.
+func parseClaudeStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) error {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -167,6 +177,12 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
 			}
+			// A fully consumed oversized line is excluded from semantic
+			// parsing but is still stream activity: the runtime that wrote a
+			// megabyte is alive, so it must feed the watchdog.
+			if err == nil && onLine != nil {
+				onLine()
+			}
 			continue
 		}
 		if len(line) == 0 {
@@ -176,6 +192,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		var evt streamEvent
 		if jsonErr := json.Unmarshal(line, &evt); jsonErr != nil {
 			continue
+		}
+		if onLine != nil {
+			onLine()
 		}
 
 		switch evt.Type {
