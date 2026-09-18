@@ -295,6 +295,44 @@ not change: the key never enters the sandbox, only the endpoint-bound placeholde
 **GitLab CI.** A masked `OPENAI_API_KEY` CI/CD variable already works on the same runner path — GitLab
 injects CI variables into the job environment, so no extra forwarding is required.
 
+## D. A repository with no GCP project at all
+
+On any of the routes above, a repository that runs every agent on GPT does not need a GCP project or
+a Vertex WIF provider. Declare it with `inference.provider: openai` and the GCP settings become
+optional everywhere fullsend checks them:
+
+```bash
+fullsend github setup <your-github-org>/<repo> --inference-provider openai \
+  --openai-audience "<audience>" --openai-identity-provider-id "<id>" --openai-service-account-id "<id>"
+# or, on route C, set the secret first and then:
+fullsend github set <your-github-org>/<repo> FULLSEND_OPENAI_API_KEY <value>
+fullsend github setup <your-github-org>/<repo> --inference-provider openai
+```
+
+- `--inference-project` and `--inference-wif-provider` are no longer required, and no GCP secret is
+  written. Passing one of them still requires the other: a repository that wants Vertex as well
+  configures it completely.
+- Setup refuses a repository with neither the WIF trio nor the `FULLSEND_OPENAI_API_KEY` secret,
+  because every GPT run would otherwise fail at the first model call. Set the secret before
+  re-running setup on route C.
+- `fullsend repos probe`, `status` and `install` judge the install by its route: an `openai`
+  repository is complete when the secret (or the committed trio) exists, and its jobs skip the
+  Google Cloud authentication step. Manifest-managed repositories declare the route with
+  `inference_provider: openai` in `repos.yaml` or `repos install --inference-provider openai` for
+  repositories the command adds.
+- The runner still selects the provider per model. `inference.provider` only says what the
+  install must provision, so an `openai` repository that also carries GCP secrets can run Vertex
+  models too.
+
+What does not change: `vertex` remains the default, so existing repositories are untouched.
+
+**Known gap, harness side.** The default fleet harnesses copy `${GOOGLE_APPLICATION_CREDENTIALS}`
+into the sandbox as a required host file, and that variable is unset when the Google Cloud step is
+skipped, so the run stops at sandbox creation with `host_files: src ... expanded to empty string`.
+Until [fullsend-ai/agents#1383](https://github.com/fullsend-ai/agents/issues/1383) marks that entry
+optional, an `openai`-only repository needs a harness whose `host_files` do not reference the GCP
+credentials file.
+
 ## 4. Tell fullsend the three identifiers
 
 > **Shortcut.** `fullsend inference openai import` writes the same block from a reply JSON file or
