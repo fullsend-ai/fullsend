@@ -274,6 +274,8 @@ skills:
 
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
+steer:
+  enabled: true  # absorbed updates skip pre_script; set false if it gates each event
 
 validation_loop:
   script: scripts/validate-output-schema.sh

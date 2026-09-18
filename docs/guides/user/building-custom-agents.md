@@ -189,6 +189,8 @@ skills:
   - skills/my-skill
 
 pre_script: scripts/pre-my-agent.sh
+steer:
+  enabled: true  # absorbed updates skip pre_script; set false if it gates each event
 
 validation_loop:
   script: scripts/validate-output-schema.sh
