@@ -393,6 +393,7 @@ fullsend agent add harness/my-agent.yaml --name my-agent --fullsend-dir .fullsen
 # List / update / remove:
 fullsend agent list --fullsend-dir .fullsend
 fullsend agent update triage <sha> --fullsend-dir .fullsend
+fullsend agent update code --fullsend-dir .fullsend   # re-pins base: in a local harness
 fullsend agent remove triage --fullsend-dir .fullsend
 ```
 

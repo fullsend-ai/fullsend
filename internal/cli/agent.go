@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -99,12 +100,15 @@ func newAgentUpdateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update <name> [sha]",
-		Short: "Update a URL agent to a new commit SHA",
-		Long: `Re-pin a URL-based agent to a new commit SHA and recompute the
-integrity hash. If no SHA is provided, the branch ref stored at adoption
-time is re-resolved; if no ref was stored, the default branch HEAD is used.
+		Short: "Update a URL agent or local harness base to a new commit SHA",
+		Long: `Re-pin a URL-based agent, or a local-path agent's base: URL, to a
+new commit SHA and recompute the integrity hash. If no SHA is provided,
+the branch ref stored at adoption time is re-resolved; if no ref was
+stored, the default branch HEAD is used.
 
-Only URL agents can be updated — local path agents have nothing to pin.`,
+URL agents are updated in config.yaml. Local-path agents with a base:
+URL are updated in the local harness YAML; config.yaml is left unchanged.
+Local-path agents without a base: URL have nothing to pin.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var sha string
@@ -474,49 +478,100 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	}
 
 	entry := agents[idx]
-	if !urlutil.IsURL(entry.Source) {
+	if urlutil.IsURL(entry.Source) {
+		newSource, newSHA, err := repinSourceURL(ctx, entry.Source, explicitSHA, entry.Ref, forgeClient, printer)
+		if err != nil {
+			return err
+		}
+		agents[idx].Source = newSource
+		cfg.SetAgents(agents)
+
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("config validation failed: %w", err)
+		}
+
+		data, err := cfg.Marshal()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(configPath, data, 0o644); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+
+		printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+		return nil
+	}
+
+	// Local-path source: re-pin a base: URL in the harness YAML, if present.
+	if entry.Source == "" {
+		return fmt.Errorf("agent %q is a local path — nothing to update", agentName)
+	}
+	if err := validateLocalPath(absDir, entry.Source); err != nil {
+		return err
+	}
+	harnessPath := filepath.Join(absDir, entry.Source)
+	h, err := harness.LoadRaw(harnessPath)
+	if err != nil {
+		return fmt.Errorf("loading local harness: %w", err)
+	}
+	if !urlutil.IsURL(h.Base) {
 		return fmt.Errorf("agent %q is a local path — nothing to update", agentName)
 	}
 
-	info, err := parseAgentSourceURL(entry.Source)
+	newBase, newSHA, err := repinSourceURL(ctx, h.Base, explicitSHA, entry.Ref, forgeClient, printer)
 	if err != nil {
-		return fmt.Errorf("parsing agent URL: %w", err)
+		return err
+	}
+	if err := rewriteHarnessBaseURL(harnessPath, h.Base, newBase); err != nil {
+		return err
 	}
 
-	cleanURL, _, _ := urlutil.ParseIntegrityHash(entry.Source)
+	printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+	return nil
+}
+
+// repinSourceURL re-pins source to explicitSHA (or a resolved branch HEAD)
+// and returns the new URL with a recomputed integrity hash plus the SHA.
+func repinSourceURL(ctx context.Context, source, explicitSHA, storedRef string, forgeClient forge.Client, printer *ui.Printer) (string, string, error) {
+	info, err := parseAgentSourceURL(source)
+	if err != nil {
+		return "", "", fmt.Errorf("parsing agent URL: %w", err)
+	}
+
+	cleanURL, _, _ := urlutil.ParseIntegrityHash(source)
 	isGH := isGitHubURL(cleanURL)
 
 	var newSHA string
 	if explicitSHA != "" {
 		if !commitSHAPattern.MatchString(explicitSHA) {
-			return fmt.Errorf("invalid commit SHA %q: must be a 40-character lowercase hex string", explicitSHA)
+			return "", "", fmt.Errorf("invalid commit SHA %q: must be a 40-character lowercase hex string", explicitSHA)
 		}
 		newSHA = explicitSHA
 	} else {
 		if !isGH {
-			return fmt.Errorf("non-GitHub URL agents require an explicit SHA to update")
+			return "", "", fmt.Errorf("non-GitHub URL agents require an explicit SHA to update")
 		}
 		if forgeClient == nil {
-			return fmt.Errorf("URL agents require a forge client for branch resolution")
+			return "", "", fmt.Errorf("URL agents require a forge client for branch resolution")
 		}
 		// Use the stored ref from adoption when available; fall back to
 		// the repo's default branch for backward compatibility with
 		// entries that predate the Ref field.
-		branch := entry.Ref
+		branch := storedRef
 		if branch == "" {
 			repo, err := forgeClient.GetRepo(ctx, info.Owner, info.Repo)
 			if err != nil {
-				return fmt.Errorf("looking up repo %s/%s: %w", info.Owner, info.Repo, err)
+				return "", "", fmt.Errorf("looking up repo %s/%s: %w", info.Owner, info.Repo, err)
 			}
 			branch = repo.DefaultBranch
 		}
 		printer.StepStart(fmt.Sprintf("Resolving %s/%s@%s", info.Owner, info.Repo, branch))
 		newSHA, err = forgeClient.GetBranchRef(ctx, info.Owner, info.Repo, branch)
 		if err != nil {
-			return fmt.Errorf("resolving branch ref: %w", err)
+			return "", "", fmt.Errorf("resolving branch ref: %w", err)
 		}
 		if !commitSHAPattern.MatchString(newSHA) {
-			return fmt.Errorf("resolved ref is not a valid commit SHA: %q", newSHA)
+			return "", "", fmt.Errorf("resolved ref is not a valid commit SHA: %q", newSHA)
 		}
 		printer.StepDone("Resolved to " + newSHA[:12])
 	}
@@ -527,7 +582,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	} else {
 		oldSHA := findSHAInURL(cleanURL)
 		if oldSHA == "" {
-			return fmt.Errorf("could not find a commit SHA in the existing URL")
+			return "", "", fmt.Errorf("could not find a commit SHA in the existing URL")
 		}
 		newURL = strings.Replace(cleanURL, oldSHA, newSHA, 1)
 	}
@@ -536,27 +591,31 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	content, err := fetch.FetchURL(ctx, newURL, fetch.DefaultPolicy)
 	if err != nil {
 		printer.StepFail("Failed to fetch content")
-		return fmt.Errorf("fetching content: %w", err)
+		return "", "", fmt.Errorf("fetching content: %w", err)
 	}
 	hash := fetch.ComputeSHA256(content)
 	printer.StepDone("Computed integrity hash")
 
-	agents[idx].Source = newURL + "#sha256=" + hash
-	cfg.SetAgents(agents)
+	return newURL + "#sha256=" + hash, newSHA, nil
+}
 
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("config validation failed: %w", err)
+// rewriteHarnessBaseURL replaces the first occurrence of oldURL with newURL
+// in the harness file, preserving comments and unrelated fields.
+func rewriteHarnessBaseURL(path, oldURL, newURL string) error {
+	if oldURL == "" {
+		return fmt.Errorf("empty base URL")
 	}
-
-	data, err := cfg.Marshal()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading harness file: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	if !bytes.Contains(data, []byte(oldURL)) {
+		return fmt.Errorf("base URL not found in %s", path)
 	}
-
-	printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
+	updated := bytes.Replace(data, []byte(oldURL), []byte(newURL), 1)
+	if err := os.WriteFile(path, updated, 0o644); err != nil {
+		return fmt.Errorf("writing harness file: %w", err)
+	}
 	return nil
 }
 

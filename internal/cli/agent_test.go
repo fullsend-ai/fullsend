@@ -468,11 +468,229 @@ func TestRunAgentUpdate_LocalPathRejected(t *testing.T) {
 	writeOrgConfig(t, dir, `agents:
   - harness/lint.yaml
 `)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "lint.yaml"),
+		[]byte("role: coder\n"),
+		0o644,
+	))
 
 	printer := ui.New(os.Stdout)
 	err := runAgentUpdate(context.Background(), "lint", "", dir, nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "local path")
+}
+
+func TestRunAgentUpdate_LocalPathWithBaseURL(t *testing.T) {
+	oldSHA := testCommitSHA
+	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+	oldHash := "1111111111111111111111111111111111111111111111111111111111111111"
+	newContent := []byte("role: coder\nupdated: true\n")
+	newHash := fetch.ComputeSHA256(newContent)
+
+	srv, policy := newAgentTestServer(t, map[string][]byte{
+		"/org/repo/" + newSHA + "/harness/code.yaml": newContent,
+	})
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	oldBase := srv.URL + "/org/repo/" + oldSHA + "/harness/code.yaml#sha256=" + oldHash
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: harness/code.yaml
+`)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	harnessYAML := "# keep this comment\nbase: " + oldBase + "\nimage: ghcr.io/example/fullsend-code:540b27f\nrole: coder\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", newSHA, dir, nil, printer)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(filepath.Join(dir, "harness", "code.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), newSHA)
+	assert.Contains(t, string(got), "#sha256="+newHash)
+	assert.NotContains(t, string(got), oldSHA)
+	assert.Contains(t, string(got), "# keep this comment")
+	assert.Contains(t, string(got), "image: ghcr.io/example/fullsend-code:540b27f")
+	assert.Contains(t, string(got), "role: coder")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	agents := cfg.AgentEntries()
+	require.Len(t, agents, 1)
+	assert.Equal(t, "harness/code.yaml", agents[0].Source)
+}
+
+func TestRunAgentUpdate_LocalPathQuotedBaseURL(t *testing.T) {
+	oldSHA := testCommitSHA
+	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+	oldHash := "1111111111111111111111111111111111111111111111111111111111111111"
+	newContent := []byte("role: coder\n")
+	newHash := fetch.ComputeSHA256(newContent)
+
+	srv, policy := newAgentTestServer(t, map[string][]byte{
+		"/org/repo/" + newSHA + "/harness/code.yaml": newContent,
+	})
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	oldBase := srv.URL + "/org/repo/" + oldSHA + "/harness/code.yaml#sha256=" + oldHash
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+`)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "code.yaml"),
+		[]byte("base: \""+oldBase+"\"\nrole: coder\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", newSHA, dir, nil, printer)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(filepath.Join(dir, "code.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), newSHA)
+	assert.Contains(t, string(got), "#sha256="+newHash)
+	assert.Contains(t, string(got), "base: \"")
+}
+
+func TestRunAgentUpdate_LocalPathUsesStoredRef(t *testing.T) {
+	newSHA := "d1d2d3d4d5d6d7d8d9d0e1e2e3e4e5e6e7e8e9e0"
+	dir := t.TempDir()
+	oldHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+    ref: release-1.0
+`)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "code.yaml"),
+		[]byte("base: https://raw.githubusercontent.com/org/repo/"+testCommitSHA+"/harness/code.yaml#sha256="+oldHash+"\nrole: coder\n"),
+		0o644,
+	))
+
+	client := forge.NewFakeClient()
+	client.BranchRefs["org/repo/release-1.0"] = newSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runAgentUpdate(context.Background(), "code", "", dir, client, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching content")
+	assert.Contains(t, buf.String(), "org/repo@release-1.0", "should resolve against stored ref")
+}
+
+func TestRunAgentUpdate_LocalPathNonURLBase(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+`)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "code.yaml"),
+		[]byte("base: common.yaml\nrole: coder\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", "", dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local path")
+}
+
+func TestRunAgentUpdate_LocalPathMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - harness/lint.yaml
+`)
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "lint", "", dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local path does not exist")
+}
+
+func TestRunAgentUpdate_LocalPathInvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+`)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "code.yaml"),
+		[]byte("[[[not yaml"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", "", dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading local harness")
+}
+
+func TestRunAgentUpdate_LocalPathEmptySource(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    enabled: false
+`)
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", "", dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local path")
+}
+
+func TestRunAgentUpdate_LocalPathBaseNoSHAInURL(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: code
+    source: code.yaml
+`)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "code.yaml"),
+		[]byte("base: https://example.com/org/repo/main/harness/code.yaml#sha256=abcd\nrole: coder\n"),
+		0o644,
+	))
+
+	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "code", newSHA, dir, nil, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not find a commit SHA in the existing URL")
+}
+
+func TestRewriteHarnessBaseURL_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "code.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("role: coder\n"), 0o644))
+
+	err := rewriteHarnessBaseURL(path, "https://example.com/missing.yaml", "https://example.com/new.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base URL not found")
+}
+
+func TestRewriteHarnessBaseURL_EmptyOldURL(t *testing.T) {
+	err := rewriteHarnessBaseURL("code.yaml", "", "https://example.com/new.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty base URL")
+}
+
+func TestRewriteHarnessBaseURL_MissingFile(t *testing.T) {
+	err := rewriteHarnessBaseURL("/nonexistent/code.yaml", "https://example.com/old.yaml", "https://example.com/new.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading harness file")
 }
 
 func TestRunAgentUpdate_NotFound(t *testing.T) {
