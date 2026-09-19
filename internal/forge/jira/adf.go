@@ -13,18 +13,20 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
 
-// MarkdownToADF parses source as CommonMark and returns an Atlassian
-// Document Format (ADF) "doc" node, since Jira's comment/description
-// fields don't accept markdown directly. It supports the block/inline
-// vocabulary ADFToPlainText (and the read-side walker it mirrors in
-// internal/jirapoll) already recognizes: paragraphs, headings,
+// MarkdownToADF parses source as CommonMark (plus GFM tables) and returns
+// an Atlassian Document Format (ADF) "doc" node, since Jira's
+// comment/description fields don't accept markdown directly. It supports
+// the block/inline vocabulary ADFToPlainText (and the read-side walker it
+// mirrors in internal/jirapoll) already recognizes: paragraphs, headings,
 // bullet/ordered lists, blockquotes, fenced/indented code blocks,
-// thematic breaks, and the strong/em/code/link/hardBreak inline marks.
-// Block-level constructs outside that vocabulary (raw HTML, tables, ...)
+// thematic breaks, GFM tables, and the strong/em/code/link/hardBreak
+// inline marks. Block-level constructs outside that vocabulary (raw HTML)
 // fall back to a plain-text paragraph of their raw source rather than
 // vanishing outright — ADF has no equivalent node for most of them, but
 // dropping the content entirely would silently lose whatever a caller
@@ -41,7 +43,7 @@ func MarkdownToADF(source string) (map[string]any, error) {
 	if len(src) > maxMarkdownParseBytes {
 		return nil, fmt.Errorf("markdown body is %d bytes, over the %d byte limit", len(src), maxMarkdownParseBytes)
 	}
-	doc := goldmark.DefaultParser().Parse(text.NewReader(src))
+	doc := parseMarkdown(src)
 	content := adfBlockContent(doc, src, 0, false)
 	if len(content) == 0 {
 		return nil, fmt.Errorf("markdown body converted to no ADF content")
@@ -51,6 +53,20 @@ func MarkdownToADF(source string) (map[string]any, error) {
 		"type":    "doc",
 		"content": content,
 	}, nil
+}
+
+// markdownParser is the goldmark parser MarkdownToADF (and the
+// <details>-body reparse in tryDetailsExpand) uses. It is DefaultParser's
+// CommonMark vocabulary plus GFM tables, so pipe tables become Table AST
+// nodes rather than a single paragraph of pipe-separated text.
+// Constructed once: Parser.Parse allocates a fresh context per call and
+// is safe for concurrent use.
+var markdownParser = goldmark.New(
+	goldmark.WithExtensions(extension.Table),
+).Parser()
+
+func parseMarkdown(src []byte) ast.Node {
+	return markdownParser.Parse(text.NewReader(src))
 }
 
 // maxADFWriteDepth caps how deep adfBlockContent/convertBlockNode/
@@ -172,7 +188,7 @@ func tryDetailsExpand(c ast.Node, source []byte, depth int) (map[string]any, ast
 		var adfContent []any
 		if body != "" {
 			src := []byte(body)
-			doc := goldmark.DefaultParser().Parse(text.NewReader(src))
+			doc := parseMarkdown(src)
 			adfContent = adfBlockContent(doc, src, depth+1, false)
 		}
 		// When the body is empty (or becomes empty after sentinel
@@ -318,9 +334,9 @@ func detailsInnerBody(raw string) string {
 // content. depth is n's own nesting depth. restricted indicates n is a
 // direct child of a blockquote or listItem: ADF restricts both to
 // paragraph/bulletList/orderedList/codeBlock/media content, so heading,
-// thematic break, and nested blockquote — all valid at the top level or
-// inside a list item's ordinary flow — must be degraded rather than
-// emitted as-is, or Jira Cloud rejects the whole write with a 400.
+// thematic break, nested blockquote, and table — all valid at the top
+// level or inside a list item's ordinary flow — must be degraded rather
+// than emitted as-is, or Jira Cloud rejects the whole write with a 400.
 func convertBlockNode(n ast.Node, source []byte, depth int, restricted bool) []any {
 	switch v := n.(type) {
 	case *ast.Paragraph:
@@ -384,6 +400,8 @@ func convertBlockNode(n ast.Node, source []byte, depth int, restricted bool) []a
 		return containerNode(listType, adfBlockContent(n, source, depth+1, false), attrs)
 	case *ast.ListItem:
 		return containerNode("listItem", adfBlockContent(n, source, depth+1, true), nil)
+	case *east.Table:
+		return convertTable(v, source, depth, restricted)
 	default:
 		// Node types without ADF-specific handling (e.g. HTMLBlock) fall
 		// back to a plain-text paragraph of their raw source, mirroring
@@ -396,6 +414,98 @@ func convertBlockNode(n ast.Node, source []byte, depth int, restricted bool) []a
 	}
 }
 
+// convertTable maps a goldmark GFM Table to an ADF table, or flattens it
+// to paragraphs when restricted: ADF's blockquote/listItem schema has no
+// table node. The goldmark TableHeader row becomes a tableRow of
+// tableHeader cells; subsequent TableRows become tableRow of tableCell.
+func convertTable(n *east.Table, source []byte, depth int, restricted bool) []any {
+	if restricted {
+		return flattenTable(n, source, depth)
+	}
+	var rows []any
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		header := false
+		switch c.(type) {
+		case *east.TableHeader:
+			header = true
+		case *east.TableRow:
+			header = false
+		default:
+			continue
+		}
+		if row := convertTableRow(c, source, depth+1, header); row != nil {
+			rows = append(rows, row)
+		}
+	}
+	return containerNode("table", rows, nil)
+}
+
+// convertTableRow maps a goldmark TableHeader or TableRow to an ADF
+// tableRow. Returns nil if the row has no cells, so the parent table
+// isn't left with an empty (schema-invalid) row.
+func convertTableRow(n ast.Node, source []byte, depth int, header bool) map[string]any {
+	cellType := "tableCell"
+	if header {
+		cellType = "tableHeader"
+	}
+	var cells []any
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		cell, ok := c.(*east.TableCell)
+		if !ok {
+			continue
+		}
+		cells = append(cells, convertTableCell(cell, source, depth+1, cellType))
+	}
+	if len(cells) == 0 {
+		return nil
+	}
+	return map[string]any{"type": "tableRow", "content": cells}
+}
+
+// convertTableCell wraps a goldmark TableCell's inlines in an ADF
+// paragraph. ADF tableCell/tableHeader content is block-level and
+// requires at least one child, so an empty cell still gets an empty
+// paragraph rather than omitted content.
+func convertTableCell(n *east.TableCell, source []byte, depth int, cellType string) map[string]any {
+	return map[string]any{
+		"type": cellType,
+		"content": []any{
+			map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth, nil)},
+		},
+	}
+}
+
+// flattenTable degrades a table in restricted context (blockquote or
+// listItem) to one paragraph per row, with cells joined by " | " so the
+// readable content isn't lost and the ADF stays schema-valid.
+func flattenTable(n *east.Table, source []byte, depth int) []any {
+	var out []any
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		content := []any{}
+		first := true
+		for cell := c.FirstChild(); cell != nil; cell = cell.NextSibling() {
+			if _, ok := cell.(*east.TableCell); !ok {
+				continue
+			}
+			cellOut := []any{}
+			walkInline(cell, source, nil, &cellOut, depth+1)
+			if len(cellOut) == 0 {
+				continue
+			}
+			if !first {
+				appendADFText(&content, " | ", nil)
+			}
+			first = false
+			content = append(content, cellOut...)
+		}
+		if len(content) == 0 {
+			continue
+		}
+		out = append(out, map[string]any{"type": "paragraph", "content": content})
+	}
+	return out
+}
+
 // oneNode wraps a single ADF node for convertBlockNode's []any return
 // type.
 func oneNode(node map[string]any) []any {
@@ -403,7 +513,7 @@ func oneNode(node map[string]any) []any {
 }
 
 // containerNode builds an ADF container node (blockquote, bulletList,
-// orderedList, listItem) of the given type, or returns no nodes at all if
+// orderedList, listItem, table) of the given type, or returns no nodes at all if
 // content is empty: ADF requires these types to have at least one child
 // (minItems: 1), and an empty one — e.g. from a maxADFWriteDepth cutoff,
 // or a listItem whose only child was dropped — would make Jira reject the
@@ -798,7 +908,7 @@ func isBlockType(nodeType string) bool {
 	switch nodeType {
 	case "doc", "paragraph", "heading", "blockquote", "codeBlock",
 		"bulletList", "orderedList", "listItem", "panel", "rule",
-		"expand":
+		"expand", "table", "tableRow", "tableHeader", "tableCell":
 		return true
 	default:
 		return false
@@ -812,7 +922,7 @@ func isBlockType(nodeType string) bool {
 // yields "".
 //
 // Unlike ADFToPlainText, this preserves formatting (bold/italic/code/
-// links, headings, lists, blockquotes, code blocks) rather than
+// links, headings, lists, blockquotes, code blocks, tables) rather than
 // discarding it: tracker.Body is documented as Markdown-formatted text,
 // so a Jira-backed tracker.Client returning plain text there would
 // silently drop content GitHub- and GitLab-backed implementations
@@ -865,13 +975,12 @@ func adfMarkdownBlocks(node map[string]any, depth int) []string {
 }
 
 // adfMarkdownBlock renders a single ADF block-level node as Markdown.
-// Unrecognized types (e.g. "panel", "table", "taskList") fall back to
-// recursing into their block-level children (e.g. a panel's paragraphs,
-// a table's rows) so content isn't silently dropped; if that yields
-// nothing, e.g. a taskItem whose own children are inline text nodes
-// rather than blocks, it falls back further to rendering any direct
-// inline text content flat, mirroring MarkdownToADF's own
-// fallback-to-plain-text convention.
+// Unrecognized types (e.g. "panel", "taskList") fall back to recursing
+// into their block-level children (e.g. a panel's paragraphs) so content
+// isn't silently dropped; if that yields nothing, e.g. a taskItem whose
+// own children are inline text nodes rather than blocks, it falls back
+// further to rendering any direct inline text content flat, mirroring
+// MarkdownToADF's own fallback-to-plain-text convention.
 func adfMarkdownBlock(node map[string]any, depth int) string {
 	nodeType, _ := node["type"].(string)
 	switch nodeType {
@@ -929,6 +1038,8 @@ func adfMarkdownBlock(node map[string]any, depth int) string {
 		// produce a marker a Markdown parser would reject.
 		start = clampInt(start, 0, 999999999)
 		return adfMarkdownList(node, depth, func(i int) string { return fmt.Sprintf("%d. ", start+i) })
+	case "table":
+		return adfMarkdownTable(node, depth)
 	case "expand":
 		title := ""
 		if attrs, ok := node["attrs"].(map[string]any); ok {
@@ -1023,6 +1134,95 @@ func adfMarkdownList(node map[string]any, depth int, marker func(i int) string) 
 		lines = append(lines, prefix+indented)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// adfMarkdownTable renders an ADF table as a GFM pipe table. GFM requires
+// a header row, so the first tableRow is always emitted as the header
+// (matching Jira-authored tables, whose first row is tableHeader cells)
+// followed by a separator and any remaining rows. Cell content is
+// flattened to a single line: GFM tables cannot contain raw newlines.
+func adfMarkdownTable(node map[string]any, depth int) string {
+	if depth > maxADFDepth {
+		return ""
+	}
+	rows := asADFNodes(node["content"])
+	if len(rows) == 0 {
+		return ""
+	}
+	rendered := make([][]string, 0, len(rows))
+	cols := 0
+	for _, row := range rows {
+		cells := asADFNodes(row["content"])
+		texts := make([]string, 0, len(cells))
+		for _, cell := range cells {
+			texts = append(texts, adfMarkdownTableCell(cell, depth+1))
+		}
+		if len(texts) > cols {
+			cols = len(texts)
+		}
+		rendered = append(rendered, texts)
+	}
+	if cols == 0 {
+		return ""
+	}
+	for i := range rendered {
+		for len(rendered[i]) < cols {
+			rendered[i] = append(rendered[i], "")
+		}
+	}
+	var b strings.Builder
+	writeGFMTableRow(&b, rendered[0])
+	b.WriteByte('\n')
+	writeGFMTableSep(&b, cols)
+	for _, row := range rendered[1:] {
+		b.WriteByte('\n')
+		writeGFMTableRow(&b, row)
+	}
+	return b.String()
+}
+
+// lineEndingReplacer flattens every CommonMark line ending (LF, CR, and
+// CRLF) to a single space. "\r\n" must be listed before "\n" and "\r" so
+// a CRLF pair collapses to one space rather than leaving a bare CR behind.
+var lineEndingReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
+// hardBreakReplacer collapses the "\<LF>" sequence adfMarkdownInline emits
+// for an ADF hardBreak (see its case below) into a single space. It must
+// run before lineEndingReplacer: flattening the LF alone would leave the
+// escaping backslash behind as a stray literal character in the cell text,
+// e.g. "a<hardBreak>b" would render as "a\ b" instead of "a b".
+var hardBreakReplacer = strings.NewReplacer("\\\n", " ")
+
+// adfMarkdownTableCell renders one ADF tableHeader/tableCell as a single
+// GFM table-cell string: block children joined with spaces, hard breaks
+// and newlines flattened, and pipes escaped so they cannot split the cell.
+func adfMarkdownTableCell(cell map[string]any, depth int) string {
+	var text string
+	if blocks := adfMarkdownBlocks(cell, depth); len(blocks) > 0 {
+		text = strings.Join(blocks, " ")
+	} else {
+		text = adfMarkdownInline(cell)
+	}
+	text = hardBreakReplacer.Replace(text)
+	text = lineEndingReplacer.Replace(text)
+	text = strings.ReplaceAll(text, "|", `\|`)
+	return text
+}
+
+func writeGFMTableRow(b *strings.Builder, cells []string) {
+	b.WriteByte('|')
+	for _, c := range cells {
+		b.WriteByte(' ')
+		b.WriteString(c)
+		b.WriteString(" |")
+	}
+}
+
+func writeGFMTableSep(b *strings.Builder, cols int) {
+	b.WriteByte('|')
+	for range cols {
+		b.WriteString(" --- |")
+	}
 }
 
 // clampInt returns n bounded to [min, max].
