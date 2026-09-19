@@ -1005,3 +1005,87 @@ func TestIssuesPostCommentCmd_TrackerNotRequired(t *testing.T) {
 	assert.NotContains(t, err.Error(), `required flag(s) "tracker"`)
 	assert.Contains(t, err.Error(), "--tracker is required")
 }
+
+func TestRunIssuesPostComment_OnlyIfExists_SkipsCreate(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName:  trackerGitHub,
+		project:      "acme/widgets",
+		number:       42,
+		marker:       "<!-- test:agent -->",
+		onlyIfExists: true,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "all clear",
+	}
+
+	require.NoError(t, runIssuesPostComment(context.Background(), cfg))
+
+	comments, err := tc.ListComments(context.Background(), "acme/widgets", 42)
+	require.NoError(t, err)
+	assert.Empty(t, comments, "only-if-exists must not create a first comment")
+}
+
+func TestRunIssuesPostComment_OnlyIfExists_ReplacesEarlierFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerGitHub,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      "<!-- test:agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "2 broken links",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	cfg.onlyIfExists = true
+	cfg.testBody = "all clear"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "all clear")
+}
+
+func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		trackerName:  trackerJira,
+		project:      "PROJ",
+		number:       42,
+		marker:       "<!-- test:agent -->",
+		onlyIfExists: true,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "all clear",
+	}
+	// No earlier comment: nothing is created.
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	assert.Empty(t, comments)
+
+	// An earlier findings comment exists: it is replaced.
+	cfg.onlyIfExists = false
+	cfg.testBody = "2 broken links"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	cfg.onlyIfExists = true
+	cfg.testBody = "all clear"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	comments, err = tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "all clear")
+}
