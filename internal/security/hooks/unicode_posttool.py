@@ -198,7 +198,7 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
             total_chars = sum(len(m) for m in matches)
             findings.append(
                 {
-                    "name": name,
+                    "name": "nfkc_escape_reassembly",
                     "severity": severity,
                     "detail": (
                         f"{total_chars} {name.replace('_', ' ')} character(s) "
