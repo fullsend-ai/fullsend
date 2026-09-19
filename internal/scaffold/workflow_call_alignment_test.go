@@ -921,6 +921,31 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
+func TestPerRepoShimReviewEventFilter(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{name: "live", content: loadRepoFile(".github/workflows/fullsend.yaml")},
+		{name: "template", content: loadScaffoldFile("templates/shim-per-repo.yaml")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok)
+			assert.Contains(t, job.If, "github.event_name != 'pull_request_review'")
+			assert.Contains(t, job.If, "github.event.action == 'submitted'")
+			assert.Contains(t, job.If, "github.event.review.state != 'commented'")
+			assert.Contains(t, job.If, "github.event.review.body != ''")
+			assert.NotContains(t, job.If, "github.event.review.user.login",
+				"shim must preserve review events used by custom harness triggers")
+		})
+	}
+}
+
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive
@@ -1022,6 +1047,21 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"fullsend run step must pass PR_HEAD_SHA env from input")
 	assert.Contains(t, s, "PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}",
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
+}
+
+func TestActionRunDoesNotExposeWorkflowTokens(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+
+	s := string(content)
+	runStart := strings.Index(s, "    - name: Run fullsend\n")
+	require.NotEqual(t, -1, runStart)
+	runStep := s[runStart:]
+	if nextStep := strings.Index(runStep[1:], "\n    - name: "); nextStep >= 0 {
+		runStep = runStep[:nextStep+1]
+	}
+	assert.Contains(t, runStep, "GH_TOKEN: \"\"")
+	assert.Contains(t, runStep, "GITHUB_TOKEN: \"\"")
 }
 
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in

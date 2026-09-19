@@ -744,6 +744,9 @@ func statusEmoji(status string) string {
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
 // agent failed when multiple agents run against the same issue/PR.
+// Cancelled review runs also receive commit-specific guidance to review the
+// current HEAD before merging. reviewRun is an explicit signal from the raw
+// agent role; agentDescription is presentation-only.
 //
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
@@ -756,7 +759,7 @@ func statusEmoji(status string) string {
 // hard-killed run can leave a stray 👀 reaction behind indefinitely.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, reviewRun bool) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -790,7 +793,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, reviewRun)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -827,7 +830,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, reviewRun)
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
@@ -848,7 +851,7 @@ func parseStartBody(body string) (description, startTime string) {
 
 // buildInterruptedBody constructs the comment body for an orphaned status
 // comment that was interrupted by a hard process kill or job cancellation.
-func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
+func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason, reviewRun bool) string {
 	statusLabel, heading := reasonLabel(reason, description)
 
 	var b strings.Builder
@@ -872,6 +875,9 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 	if len(parts) > 0 {
 		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
+	}
+	if reason == ReasonCancelled && reviewRun {
+		b.WriteString("\n\n**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
 	}
 	return b.String()
 }
