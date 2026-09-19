@@ -221,7 +221,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{})
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", nil, false, gcf.StatusGitHubAuth{}, gcf.StatusCFAccessAuth{})
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -429,6 +429,54 @@ func TestMintDeployCmd_StatusAuthGitHubInvalidGroup(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ORG/TEAM format")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessMissingAud(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-team=myteam"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-aud is required")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessMissingTeam(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-aud=some-aud"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-team is required")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessAudWhitespace(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-aud=bad value", "--status-cfaccess-team=myteam"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-aud must contain only alphanumeric")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessAudURLChars(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-aud=bad/aud#value", "--status-cfaccess-team=myteam"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-aud must contain only alphanumeric")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessTeamWhitespace(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-aud=some-aud", "--status-cfaccess-team=bad team"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-team must be a valid subdomain")
+}
+
+func TestMintDeployCmd_StatusAuthCFAccessTeamURLChars(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--status-auth=cfaccess", "--status-cfaccess-aud=some-aud", "--status-cfaccess-team=bad/team@evil"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--status-cfaccess-team must be a valid subdomain")
 }
 
 func TestMintDeployCmd_StatusAuthOIDCOnly(t *testing.T) {
@@ -649,7 +697,7 @@ func withFakeWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := cf.BuildWASMFn
 	origCopy := cf.CopyWASMExecFn
-	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth) error {
+	cf.BuildWASMFn = func(outPath, _, _ string, _ cf.StatusGitHubAuth, _ cf.StatusCFAccessAuth) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	cf.CopyWASMExecFn = func(destPath string) error {
