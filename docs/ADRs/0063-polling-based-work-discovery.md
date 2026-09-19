@@ -526,9 +526,9 @@ questions* for recommended resolution path.
 ## References
 
 - [ADR 0002 — Initial Fullsend Design](0002-initial-fullsend-design.md)
-- [ADR 0016 — Unidirectional control flow](0016-unidirectional-control-flow.md)
+- [ADR 0016 — Unidirectional control flow through the execution stack](0016-unidirectional-control-flow.md)
 - [ADR 0033 — Per-repo installation mode](0033-per-repo-installation-mode.md)
-- [ADR 0041 — Synchronous workflow_call for event-driven dispatch](0041-synchronous-workflow-call-event-dispatch.md)
+- [ADR 0041 — Synchronous workflow_call for event-driven agent dispatch](0041-synchronous-workflow-call-event-dispatch.md)
 - [ADR 0045 — Forge-portable harness schema](0045-forge-portable-harness-schema.md)
 - [ADR 0054 — Require authorization on all agent dispatch paths](0054-require-authorization-on-all-agent-dispatch-paths.md)
 - [ADR 0058 — Agent registration](0058-agent-registration.md)
