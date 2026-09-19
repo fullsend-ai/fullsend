@@ -144,23 +144,38 @@ See [bugfix workflow](bugfix-workflow.md) for the full agent-driven flow from is
 
 **Two dimensions of Fly:**
 
-### Progressive Auto-Merge
+### Dedicated Auto-Merge
 
-The code agent supports auto-merge via the `CODE_AUTO_MERGE` environment variable. Set it to `"true"` to enable GitHub auto-merge on code agent PRs. Use `CODE_AUTO_MERGE_METHOD` to control the merge method (`squash`, `rebase`, or `merge` — defaults to squash).
+> **Planned:** The dedicated Auto-Merge stage is not yet available. The
+> architecture is decided ([ADR 0110](../../ADRs/0110-dedicated-auto-merge-authority-boundary.md))
+> and the implementation contract is defined
+> ([Auto-Merge Contract v1](../../normative/auto-merge/v1/)), but no runtime
+> behavior exists yet. Track progress in
+> [agents#1132](https://github.com/fullsend-ai/agents/issues/1132).
 
-For path-scoped auto-merge, you can use GitHub's native CODEOWNERS mechanism:
+The Code agent creates and updates PRs; it does not autonomously merge them.
+The legacy `CODE_AUTO_MERGE` and `CODE_AUTO_MERGE_METHOD` variables are being
+removed ([agents#1219](https://github.com/fullsend-ai/agents/pull/1219)) and
+must not be used as an enablement mechanism.
 
-1. Add the fullsend review bot as a CODEOWNER for specific low-risk paths (e.g., `docs/**`).
-2. Enable GitHub auto-merge on the repo.
-3. Configure branch protection to require CODEOWNERS approval and CI passing.
+When the dedicated stage ships, it will be opt-in per repository, disabled by
+default, and subject to a host-side authorization gate that revalidates policy,
+checks, reviews, human-intent signals, head SHA, base branch, and base SHA before requesting the normal
+merge or queue path. The model is advisory — it evaluates semantic eligibility
+but never holds a merge-capable credential. Every decision is bound to one exact
+revision tuple and recorded in a write-ahead receipt before mutation. The
+authority boundary and fail-closed behavior have been validated in a private
+integration lab with 27 adversarial test cases.
 
-When a PR only touches paths where the bot is a CODEOWNER, its approval satisfies the required review. CI passes, and GitHub auto-merges — no human approval needed for that scope.
+See the [Auto-Merge Contract v1](../../normative/auto-merge/v1/) for the full
+authority boundary, invariants, and rollout plan. The Review agent's
+[risk assessment](../../ADRs/0089-pr-risk-assessment-scoring.md) will inform
+cohort eligibility. See the [autonomy spectrum](../../problems/autonomy-spectrum.md)
+for the remaining graduation questions.
 
-Start small — docs-only paths, or dependency update paths already covered by Renovate / Dependabot. Expand gradually by adding more paths to the bot's CODEOWNERS entries as trust builds.
-
-The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time by editing CODEOWNERS.
-
-For more granular control, the review agent includes a [PR-level risk assessment](../../ADRs/0089-pr-risk-assessment-scoring.md) sub-agent that produces a composite risk score based on blast radius, path sensitivity, CI impact, dependency risk, test coverage, and author context. This score can further gate auto-merge eligibility beyond file-path matching. The team is still gathering evidence on graduation criteria for autonomous merging — see the [autonomy spectrum](../../problems/autonomy-spectrum.md) for the open questions.
+Forge-native or third-party automation, such as Renovate / Dependabot, is a
+separate integration and must be governed by its own policy; it is not a second
+Fullsend-owned autonomous-merge path.
 
 ### Bring Your Own Agents
 
