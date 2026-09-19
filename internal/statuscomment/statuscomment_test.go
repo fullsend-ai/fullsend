@@ -456,7 +456,7 @@ func setNow(t *testing.T, fixed time.Time) {
 func TestReconcileOrphaned_InvalidRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "-->bad", "", "", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "-->bad", "", "", ReasonTerminated, "", "", false, "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid run ID")
 }
@@ -637,7 +637,7 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -666,7 +666,7 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
@@ -676,7 +676,7 @@ func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.UpdatedComments)
 }
@@ -686,7 +686,7 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenNoMarker(t *testing.T) {
 	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -714,7 +714,7 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -726,7 +726,7 @@ func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenNoMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize for enabled mode")
 	assert.Empty(t, fc.UpdatedComments)
@@ -736,7 +736,7 @@ func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenJobSucceeded(t *testing.T)
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "enabled", "success", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "enabled", "success", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments)
 	assert.Empty(t, fc.UpdatedComments)
@@ -752,7 +752,7 @@ func TestReconcileOrphaned_EnabledMode_SynthesizesOnFailureWithNoMarker(t *testi
 	// process crashed before it could post anything at all (e.g. during
 	// environment validation), leaving maintainers unable to tell "no review
 	// was triggered" from "review was attempted and failed silently." See #3635.
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "Review")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "Review", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -766,7 +766,7 @@ func TestReconcileOrphaned_EnabledMode_SynthesizesOnCancelledWithNoMarker(t *tes
 	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "enabled", "cancelled", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "enabled", "cancelled", false, "", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -778,7 +778,7 @@ func TestReconcileOrphaned_DisabledMode_NoSynthesisEvenOnFailure(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "disabled", "failure", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "disabled", "failure", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "disabled completion mode must never synthesize a comment")
 	assert.Empty(t, fc.UpdatedComments)
@@ -788,7 +788,7 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobSucceeded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when job succeeded")
 	assert.Empty(t, fc.UpdatedComments)
@@ -798,7 +798,7 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobStatusEmpty(t *testing.T)
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "", false, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when job status is unknown")
 	assert.Empty(t, fc.UpdatedComments)
@@ -809,7 +809,7 @@ func TestReconcileOrphaned_OnFailure_SynthesizesWhenSkippedEvenIfJobSucceeded(t 
 	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "success", true, "", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -829,7 +829,7 @@ func TestReconcileOrphaned_OnFailure_SkippedWithRealCancellationKeepsReason(t *t
 	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "on_failure", "cancelled", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "on_failure", "cancelled", true, "", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -842,7 +842,7 @@ func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenSkippedButNotOnFailure(t *
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", true, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", true, "", false)
 	require.NoError(t, err)
 	assert.Empty(t, fc.IssueComments, "should not synthesize when completionMode isn't on_failure")
 }
@@ -852,7 +852,7 @@ func TestReconcileOrphaned_SynthesizedComment_UsesAgentDescription(t *testing.T)
 	tc := tracker.NewForgeClient(fc)
 	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
 
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "Triage")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "failure", false, "Triage", false)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["org/repo/7"]
@@ -873,7 +873,7 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not touch comment from different run")
@@ -884,7 +884,7 @@ func TestReconcileOrphaned_ListError(t *testing.T) {
 	fc.Errors = map[string]error{"ListIssueComments": fmt.Errorf("api error")}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing comments")
 }
@@ -903,7 +903,7 @@ func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "", "", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -929,7 +929,7 @@ func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not re-update already-interrupted comment")
@@ -950,7 +950,7 @@ func TestReconcileOrphaned_UpdateError(t *testing.T) {
 	fc.Errors = map[string]error{"UpdateIssueComment": fmt.Errorf("api rate limited")}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating orphaned comment")
 }
@@ -1033,7 +1033,7 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1075,7 +1075,7 @@ func TestReconcileOrphaned_CancelledNonReviewDoesNotUseDescriptionAsRole(t *test
 		}},
 	}
 
-	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review")
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review", false)
 	require.NoError(t, err)
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.NotContains(t, fc.UpdatedComments[0].Body, "Automated review did not complete")
@@ -1096,7 +1096,7 @@ func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1169,7 +1169,7 @@ func TestReconcileOrphaned_UnknownReasonDefaultsToTerminated(t *testing.T) {
 	}
 
 	tc := tracker.NewForgeClient(fc)
-	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"), "", "", false, "")
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"), "", "", false, "", false)
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1638,7 +1638,7 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 		}
 
 		tc := tracker.NewForgeClient(fc)
-		err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "")
+		err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "", false, "", false)
 		require.NoError(t, err)
 
 		require.Len(t, fc.UpdatedComments, 1)
@@ -1995,7 +1995,7 @@ func TestJiraMarkerMatchesAcrossCreationAndReconciliation(t *testing.T) {
 	reconcileTime := fixedTime().Add(10 * time.Minute)
 	setNow(t, reconcileTime)
 
-	err = ReconcileOrphaned(ctx, jiraFake, "PROJ", 42, runID, "https://ci/run/98765", "", ReasonTerminated, "", "", false, "Triage")
+	err = ReconcileOrphaned(ctx, jiraFake, "PROJ", 42, runID, "https://ci/run/98765", "", ReasonTerminated, "", "", false, "Triage", false)
 	require.NoError(t, err)
 
 	// The comment should have been updated to a terminated state.

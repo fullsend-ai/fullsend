@@ -759,8 +759,7 @@ func statusEmoji(status string) string {
 // hard-killed run can leave a stray 👀 reaction behind indefinitely.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, reviewRun ...bool) error {
-	isReviewRun := len(reviewRun) > 0 && reviewRun[0]
+func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, reviewRun bool) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -794,7 +793,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, isReviewRun)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, reviewRun)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -831,7 +830,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, isReviewRun)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, reviewRun)
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
