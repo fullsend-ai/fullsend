@@ -393,7 +393,11 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
 - **Event debouncing and deduplication** — preserve one active invocation and
   coalesce rapid-fire events for the same harness and entity into at most one
   newest pending invocation; this bounds queued work, not consecutive runs
-  ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)). A run that
+  absorbs an update instead receipts it, and the queued run exits on that receipt, so the receipt
+  is authenticated by an author the sandbox cannot post as — a forged one would drop an update
+  rather than waste one
+  ([ADR 0120](../ADRs/0120-receipt-the-absorbed-update-under-the-job-token.md)).
 - **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
