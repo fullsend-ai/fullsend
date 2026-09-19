@@ -132,21 +132,22 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.Empty(t, wc.Permissions,
 		"workflow-level permissions must be empty (least-privilege default)")
 
-	// Dispatch job: intentionally narrower than per-repo mode
+	// Dispatch job: must cover the callee dispatch.yml, which clears stale
+	// merge labels as a step of its single job (ADR 0096 §4) and so needs
+	// issues: write and pull-requests: write. A workflow_call caller may only
+	// downgrade the callee's grant, so a narrower shim fails validation
+	// (#6587 review). Still narrower than per-repo mode on contents/packages.
 	assert.Equal(t, map[string]string{
 		"actions":       "write",
 		"id-token":      "write",
 		"contents":      "read",
-		"pull-requests": "read",
+		"issues":        "write",
+		"pull-requests": "write",
 	}, wc.Jobs.Dispatch.Permissions, "dispatch job permissions")
 
-	// Negative assertions: workflow-call dispatch must NOT have write
-	// access to contents or pull-requests (intentionally narrower than
-	// per-repo mode).
+	// Contents stays read — the dispatch job never writes repo contents.
 	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["contents"],
 		"workflow-call dispatch must not have contents: write")
-	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["pull-requests"],
-		"workflow-call dispatch must not have pull-requests: write")
 
 	// Stop-fix job permissions
 	assert.Equal(t, map[string]string{
