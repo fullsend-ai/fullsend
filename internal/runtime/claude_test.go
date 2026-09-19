@@ -615,18 +615,19 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	agentDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+	agentFile := filepath.Join(agentDir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("test"), 0o644))
 
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "test-sandbox",
-		agentPath:   agentDir,
+		agentPath:   agentFile,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
 }
 
 // TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
-// agentDestName to derive the destination filename and calls UploadFile
+// agentDestName to derive the destination filename and calls uploadBytes
 // with the correct path. A stub openshell binary is placed on PATH so
 // sandbox operations succeed without a real sandbox.
 func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
@@ -646,7 +647,7 @@ func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
 	})
 	// The stub openshell succeeds for all sandbox calls, so Bootstrap
 	// should complete without error, exercising agentDestName and the
-	// UploadFile call path.
+	// uploadBytes call path.
 	assert.NoError(t, err)
 }
 
