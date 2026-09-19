@@ -296,6 +296,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   over other comments and content discovered during reconciliation remains a
   separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  On GitHub this is every stage job in `reusable-dispatch.yml` running with
+  `cancel-in-progress: false`, so the last run to queue, normally but not
+  necessarily the newest event, waits as the single pending run and works from
+  current state, and the runner exporting `FULLSEND_RUN_HEAD_SHA` and
+  `FULLSEND_RUN_STARTED_AT` so an agent can see what moved beneath it
+  ([`fullsend run` § Run baseline](cli/run.md#run-baseline)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
