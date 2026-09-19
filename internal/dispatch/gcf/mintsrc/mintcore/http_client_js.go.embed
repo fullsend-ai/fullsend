@@ -57,9 +57,18 @@ func mintHTTP(req *http.Request) (*http.Response, error) {
 		bodyStr = string(bodyBytes)
 	}
 
-	// Call the JS fetch callback synchronously via Await.
-	// The callback returns a Promise; we block until it resolves.
-	result, err := awaitPromise(registeredFetchFn.Invoke(
+	// Check context before invoking fetch — no point starting a
+	// network call if the deadline has already expired.
+	if err := req.Context().Err(); err != nil {
+		return nil, fmt.Errorf("request context already done: %w", err)
+	}
+
+	// Call the JS fetch callback and block until it resolves or the
+	// request context is canceled. Using the context-aware variant
+	// ensures that a per-request deadline (e.g., the 20s timeout set
+	// by the WASM handler) aborts the wait before the JS-side
+	// HANDLE_FETCH_TIMEOUT_MS fires, preventing isolate poisoning.
+	result, err := awaitPromiseWithContext(req.Context(), registeredFetchFn.Invoke(
 		req.Method,
 		req.URL.String(),
 		string(headersJSON),
