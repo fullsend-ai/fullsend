@@ -133,6 +133,10 @@ var canonicalRolePermissions = map[string]map[string]map[string]string{
 			"pull_requests": "read", "secrets": "read",
 		},
 	},
+	"ci-watch": {
+		LevelWrite: {"actions": "write", "pull_requests": "write"},
+		LevelRead:  {"checks": "read", "metadata": "read", "actions": "read", "pull_requests": "read"},
+	},
 }
 
 // customRoleLevels stores user-defined role permissions organized by level.
