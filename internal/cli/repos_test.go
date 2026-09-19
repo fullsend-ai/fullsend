@@ -2509,3 +2509,59 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRunReposInstall_AddsNewRepos_InferenceProvider(t *testing.T) {
+	// --inference-provider openai records the provider on the added
+	// manifest entry and installs without any GCP flag (#7481).
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+	fc.Secrets = map[string]bool{"acme/web/FULLSEND_OPENAI_API_KEY": true}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:          manifestPath,
+		concurrency:       4,
+		repoFilter:        []string{"acme/web"},
+		forge:             repos.ForgeGitHub,
+		roles:             []string{"triage"},
+		direct:            true,
+		inferenceProvider: "openai",
+		testClient:        fc,
+	})
+	require.NoError(t, err)
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	var web *repos.RepoEntry
+	for i := range m.GitHub.Repos {
+		if m.GitHub.Repos[i].Name == "acme/web" {
+			web = &m.GitHub.Repos[i]
+		}
+	}
+	require.NotNil(t, web, "acme/web should have been added to the manifest")
+	assert.Equal(t, "openai", web.InferenceProvider)
+	for _, s := range fc.CreatedSecrets {
+		assert.NotContains(t, []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}, s.Name)
+	}
+}
+
+func TestRunReposInstall_InvalidInferenceProvider(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:          manifestPath,
+		concurrency:       4,
+		repoFilter:        []string{"acme/web"},
+		forge:             repos.ForgeGitHub,
+		inferenceProvider: "bedrock",
+		testClient:        fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-provider: invalid provider")
+}
+
+func TestReposInstallCmd_InferenceProviderFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	require.NotNil(t, cmd.Flags().Lookup("inference-provider"), "expected --inference-provider flag")
+}

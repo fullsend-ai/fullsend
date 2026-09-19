@@ -1513,3 +1513,58 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 		})
 	}
 }
+
+// TestGCPSecretsOptionalForOpenAIRepos pins the callee side of #7481: a
+// repository whose inference runs on OpenAI has no GCP secrets, so every
+// reusable workflow must declare the GCP pair optional and the setup-gcp
+// action must skip Google auth (and everything that reads its output)
+// when the provider input is empty. A single `required: true` or an
+// unguarded step would fail such a repository's jobs before the agent
+// starts.
+func TestGCPSecretsOptionalForOpenAIRepos(t *testing.T) {
+	stages := []string{"dispatch", "triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range stages {
+		t.Run("reusable-"+stage, func(t *testing.T) {
+			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var wf reusableWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			for _, name := range []string{"FULLSEND_GCP_WIF_PROVIDER", "FULLSEND_GCP_PROJECT_ID"} {
+				decl, ok := wf.On.WorkflowCall.Secrets[name]
+				require.True(t, ok, "%s must still declare secret %s", path, name)
+				assert.False(t, decl.Required, "%s: secret %s must be optional (#7481)", path, name)
+			}
+		})
+	}
+
+	t.Run("setup-gcp action", func(t *testing.T) {
+		path := filepath.Join("..", "..", ".github", "actions", "setup-gcp", "action.yml")
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var action struct {
+			Inputs map[string]struct {
+				Required bool `yaml:"required"`
+			} `yaml:"inputs"`
+			Runs struct {
+				Steps []struct {
+					Name string `yaml:"name"`
+					If   string `yaml:"if"`
+				} `yaml:"steps"`
+			} `yaml:"runs"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &action))
+		assert.False(t, action.Inputs["gcp_wif_provider"].Required, "gcp_wif_provider must be optional (#7481)")
+		require.Greater(t, len(action.Runs.Steps), 1)
+		// The first step is the fail-fast for exactly one GCP input set;
+		// it must run when the pair is inconsistent and only then.
+		assert.Equal(t, "Check GCP inputs", action.Runs.Steps[0].Name)
+		assert.Equal(t,
+			"(inputs.gcp_wif_provider == '' && inputs.gcp_project_id != '') || (inputs.gcp_wif_provider != '' && inputs.gcp_project_id == '')",
+			action.Runs.Steps[0].If)
+		for _, step := range action.Runs.Steps[1:] {
+			assert.Equal(t, "inputs.gcp_wif_provider != ''", step.If,
+				"step %q must be skipped when no GCP provider is configured", step.Name)
+		}
+	})
+}

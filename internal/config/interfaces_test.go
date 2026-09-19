@@ -858,11 +858,21 @@ func TestPerRepoConfig_Validate_InferenceProvider(t *testing.T) {
 		assert.NoError(t, cfg.Validate())
 	})
 
-	t.Run("invalid provider fails", func(t *testing.T) {
+	t.Run("openai provider is valid (#7481)", func(t *testing.T) {
 		cfg := &perRepoConfig{
 			Version:   "1",
 			Roles:     []string{"triage"},
 			Inference: &PerRepoInferenceConfig{Provider: "openai"},
+			parent:    &perRepoDefaults{},
+		}
+		assert.NoError(t, cfg.Validate())
+	})
+
+	t.Run("invalid provider fails", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Version:   "1",
+			Roles:     []string{"triage"},
+			Inference: &PerRepoInferenceConfig{Provider: "bedrock"},
 			parent:    &perRepoDefaults{},
 		}
 		err := cfg.Validate()

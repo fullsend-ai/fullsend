@@ -57,6 +57,30 @@ func DriftFieldName(componentName string) string {
 	return componentName
 }
 
+// ProbeOption adjusts how ProbeComponents evaluates a repository.
+type ProbeOption func(*probeOptions)
+
+type probeOptions struct {
+	defaultProvider string
+	route           *InferenceRoute
+}
+
+// WithInferenceRoute supplies an already-probed route so ProbeComponents
+// does not read the config layers a second time: converge resolves the
+// route once and uses the same value for its own decisions and for the
+// component probe, so the two cannot disagree.
+func WithInferenceRoute(route InferenceRoute) ProbeOption {
+	return func(o *probeOptions) { o.route = &route }
+}
+
+// WithDefaultProvider sets the inference provider to assume for a
+// repository that has no committed config layer yet (a fresh install):
+// converge passes the manifest's resolved provider so the required
+// secrets match what install is about to provision.
+func WithDefaultProvider(provider string) ProbeOption {
+	return func(o *probeOptions) { o.defaultProvider = provider }
+}
+
 // ProbeComponents checks all per-repo installation components and
 // returns their status.
 //
@@ -69,7 +93,17 @@ func DriftFieldName(componentName string) string {
 //
 // expectedVarValues maps variable names to their expected values for
 // value-level drift detection. Pass nil for presence-only checking.
-func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+//
+// Which secrets count as required depends on the repository's inference
+// route (#7481): the GCP pair for vertex, an OpenAI credential for
+// openai. The route is read from the committed config layers; a repo
+// with no config yet uses the provider given by WithDefaultProvider (the
+// manifest's, on a fresh install) or else vertex.
+func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string, opts ...ProbeOption) ([]ComponentStatus, error) {
+	var po probeOptions
+	for _, o := range opts {
+		o(&po)
+	}
 	var results []ComponentStatus
 
 	// Workflow file (try forge-appropriate extensions).
@@ -195,7 +229,20 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 
 	// Required secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecretsForForge(forgeName) {
+	var route InferenceRoute
+	if po.route != nil {
+		route = *po.route
+	} else {
+		var err error
+		route, err = ProbeInferenceRoute(ctx, client, owner, repo)
+		if err != nil {
+			return nil, err
+		}
+		if !route.FromConfig && po.defaultProvider != "" {
+			route.Provider = po.defaultProvider
+		}
+	}
+	for _, secretName := range requiredSecretsForRoute(forgeName, route) {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", secretName, err)

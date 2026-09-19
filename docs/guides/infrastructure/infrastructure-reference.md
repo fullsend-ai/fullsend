@@ -344,9 +344,9 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitHub
 
 **Target repo secrets:**
-- `FULLSEND_GCP_PROJECT_ID`
-- `FULLSEND_GCP_WIF_PROVIDER`
-- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
+- `FULLSEND_GCP_PROJECT_ID` — not written when `inference.provider` is `openai`
+- `FULLSEND_GCP_WIF_PROVIDER` — not written when `inference.provider` is `openai`
+- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`; required for a repository whose `inference.provider` is `openai` unless it commits the `inference.openai` block)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`

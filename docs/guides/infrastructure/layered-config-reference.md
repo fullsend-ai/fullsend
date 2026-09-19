@@ -175,8 +175,13 @@ unset (`""`) falls through to parent, then to code default
 (`provider`, `project`, `region`, `wif_provider`, and the three under
 `openai`) resolves independently through scalar override semantics:
 
-- **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
-  Unset (`""`) falls through to parent, then to code default `"vertex"`.
+- **`inference.provider`**: Inference provider identifier, `"vertex"` or
+  `"openai"`. Unset (`""`) falls through to parent, then to code default
+  `"vertex"`. `"openai"` declares a repository that runs inference on GPT:
+  the GCP project and WIF provider become optional at setup and probe time,
+  and the install is complete when `FULLSEND_OPENAI_API_KEY` exists or the
+  `inference.openai` block is complete. The runner still selects the
+  provider per model.
 - **`inference.project`**: GCP project ID for inference. Unset (`""`) falls
   through to parent (no code default — must be provided by the installer).
 - **`inference.region`**: GCP region for inference. Unset (`""`) falls

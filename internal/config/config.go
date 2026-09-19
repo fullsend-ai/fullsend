@@ -324,9 +324,13 @@ func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
 
-// ValidProviders returns the set of recognized inference providers.
+// ValidProviders returns the set of recognized inference providers:
+// "vertex" (the default: Claude and Grok on Vertex AI, GCP WIF) and
+// "openai" (GPT through OpenAI WIF or FULLSEND_OPENAI_API_KEY, #7481).
+// The value declares what a per-repo install must provision; the runner
+// picks the provider from each model spec regardless.
 func ValidProviders() []string {
-	return []string{"vertex"}
+	return []string{DefaultPerRepoInferenceProvider, InferenceProviderOpenAI}
 }
 
 // ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464)

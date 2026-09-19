@@ -13,6 +13,14 @@ const (
 	// DefaultPerRepoInferenceProvider is the default inference backend.
 	DefaultPerRepoInferenceProvider = "vertex"
 
+	// InferenceProviderOpenAI declares a repository whose agents run on
+	// GPT — through OpenAI Workload Identity Federation or the
+	// FULLSEND_OPENAI_API_KEY secret (ADR 0092) — so the GCP inference
+	// settings are optional at setup and probe time (#7481). The runner
+	// still selects the provider per model; this value only drives
+	// install-time requirements.
+	InferenceProviderOpenAI = "openai"
+
 	// DefaultPerRepoInferenceRegion is the default GCP region for
 	// inference requests.
 	DefaultPerRepoInferenceRegion = "global"
