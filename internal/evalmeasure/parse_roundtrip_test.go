@@ -32,7 +32,7 @@ func TestParseTelemetryFile_RoundTripFromExporter(t *testing.T) {
 		attribute.Int64("exit_code", 0),
 		attribute.Int64("fullsend.num_turns", 1),
 		attribute.Float64("fullsend.cost_usd", 0.01),
-		attribute.Int64("fullsend.tool_calls", 0),
+		attribute.Int64("fullsend.tool_calls", 5),
 		attribute.Int64("fullsend.iterations", 1),
 		attribute.String("gen_ai.request.model", "test-model"),
 		attribute.Int64("gen_ai.usage.input_tokens", 1),
@@ -48,7 +48,7 @@ func TestParseTelemetryFile_RoundTripFromExporter(t *testing.T) {
 		attribute.Int64("gen_ai.usage.input_tokens", 1),
 		attribute.Int64("gen_ai.usage.output_tokens", 1),
 		attribute.Float64("fullsend.cost_usd", 0.01),
-		attribute.Int64("fullsend.tool_calls", 0),
+		attribute.Int64("fullsend.tool_calls", 5),
 	)
 	agent.End()
 	run.End()
