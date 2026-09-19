@@ -385,7 +385,7 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 		return tracker.NewForgeClient(fc)
 	}
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ ...bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ bool) error {
 		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
@@ -635,7 +635,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ ...bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
 		gotProject = project
 		gotNumber = number
 		return nil
@@ -722,7 +722,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ ...bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
 		gotProject = project
 		gotNumber = number
 		return nil
