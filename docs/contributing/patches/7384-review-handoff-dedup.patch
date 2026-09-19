@@ -1,0 +1,93 @@
+# Maintainer patch for #7384 — skip automatic ready-for-review handoff.
+#
+# Apply from the repository root AFTER this PR is merged (or on this
+# branch, with a token that has the workflows permission):
+#
+#   git apply --check docs/contributing/patches/7384-review-handoff-dedup.patch
+#   git apply docs/contributing/patches/7384-review-handoff-dedup.patch
+#
+# Then run:
+#   go test ./internal/scaffold/ ./internal/dispatch/
+#   bash .github/scripts/review-handoff-test.sh
+#   pre-commit run --files .github/workflows/reusable-dispatch.yml \
+#     internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml
+#
+# See docs/contributing/review-handoff-dedup.md for rollout order and,
+# under "Known limitations", the residual risk this patch accepts: a
+# lost/failed `opened` delivery combined with a `labeled` event that
+# still carries `fullsend-auto-review-handoff` will not dispatch any
+# automatic review of that revision (recover with `/fs-review` or a new
+# push).
+#
+--- a/.github/workflows/reusable-dispatch.yml
++++ b/.github/workflows/reusable-dispatch.yml
+@@ -274,7 +274,11 @@
+                   fi
+                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+-                    STAGE="review"
++                    if has_label "fullsend-auto-review-handoff" "${ISSUE_LABELS}"; then
++                      echo "Skipping automatic ready-for-review handoff"
++                    else
++                      STAGE="review"
++                    fi
+                   fi
+                 fi
+               fi
+@@ -283,13 +287,19 @@
+             pull_request_target)
+               case "${EVENT_ACTION}" in
+                 opened|synchronize|ready_for_review)
++                  # [bot] exemption is collaborator-API authorization for GitHub
++                  # Apps, not duplicate suppression. See review-handoff-dedup.md.
+                   if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                     STAGE="review"
+                   fi
+                   ;;
+                 labeled)
+                   if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+-                    STAGE="review"
++                    if has_label "fullsend-auto-review-handoff" "${PR_LABELS}"; then
++                      echo "Skipping automatic ready-for-review handoff"
++                    else
++                      STAGE="review"
++                    fi
+                   fi
+                   ;;
+                 closed)
+--- a/internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml
++++ b/internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml
+@@ -176,7 +176,11 @@
+                   fi
+                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+-                    STAGE="review"
++                    if has_label "fullsend-auto-review-handoff" "${ISSUE_LABELS}"; then
++                      echo "Skipping automatic ready-for-review handoff"
++                    else
++                      STAGE="review"
++                    fi
+                   fi
+                 fi
+               fi
+@@ -185,13 +189,19 @@
+             pull_request_target)
+               case "${EVENT_ACTION}" in
+                 opened|synchronize|ready_for_review)
++                  # [bot] exemption is collaborator-API authorization for GitHub
++                  # Apps, not duplicate suppression. See review-handoff-dedup.md.
+                   if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                     STAGE="review"
+                   fi
+                   ;;
+                 labeled)
+                   if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+-                    STAGE="review"
++                    if has_label "fullsend-auto-review-handoff" "${PR_LABELS}"; then
++                      echo "Skipping automatic ready-for-review handoff"
++                    else
++                      STAGE="review"
++                    fi
+                   fi
+                   ;;
+                 closed)

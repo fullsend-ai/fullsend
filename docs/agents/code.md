@@ -43,7 +43,7 @@ on issues (not PRs). The code agent is also triggered automatically when the
 | Label | Meaning |
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. |
-| `ready-for-review` | Applied by the code agent's post-script after pushing a PR. In per-repo installs, triggers review when applied to a PR; also marks workflow state for humans and the retro agent. |
+| `ready-for-review` | Applied by the code agent's post-script after pushing a PR. Marks workflow state for humans and the retro agent. In per-repo installs, an explicit application still triggers review; the automatic code-agent application is paired with `fullsend-auto-review-handoff` so it does not start a second review of the same revision. See [Review handoff dedup](../contributing/review-handoff-dedup.md). |
 
 ## Configuration and extension
 

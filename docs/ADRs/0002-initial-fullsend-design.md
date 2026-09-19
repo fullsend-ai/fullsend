@@ -164,6 +164,10 @@ It **does not** read the **issue comment thread** for intake decisions—no scan
 > label, `/fs-review` slash command) dispatch only when the issue has an
 > associated pull request (`issue.pull_request` present). Per-org `dispatch.yml`
 > is unchanged pending follow-up.
+>
+> **Note (2026-09):** Automatic code-agent `ready-for-review` on PR creation is a
+> state handoff, not a second review trigger. See
+> [Review handoff dedup](../contributing/review-handoff-dedup.md) (#7384).
 
 **When a review run starts** (initial review, **`/review`**, or **push-triggered re-review**): **remove** **`ready-for-review`** **and** **`ready-for-merge`**. A new round **supersedes** any prior merge verdict until the coordinator finishes this round—otherwise **`ready-for-merge`** could describe an **old** head after the author **pushed** new commits, which is **unsafe** for bots and humans. Reviewers evaluate the **current** PR head; the coordinator applies outcomes using the algorithm below. (**`requires-manual-review`** is **not** removed here by default—humans may still need to resolve an earlier split verdict unless **repo policy** clears it when enqueueing a new round.)
 
