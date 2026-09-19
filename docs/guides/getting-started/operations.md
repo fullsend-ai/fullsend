@@ -54,6 +54,11 @@ fullsend github setup "$OWNER/$REPO" \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
+The synced shim sets a `run-name`, so every Actions run in the repository is titled
+`<owner>/<repo>#<number>` instead of GitHub's per-event default — and a comment-triggered run
+adds ` comment:<id>`, as in `acme/widgets#7 comment:2551234567`. Update any dashboards, saved
+filters or scripts that match runs by their title.
+
 For manifest-managed installations (including GitLab repos), use `repos install` to converge all repos (including workflow ref upgrades):
 
 ```bash
