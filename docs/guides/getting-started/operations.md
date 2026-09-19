@@ -123,7 +123,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent set <name>` | Set an agent's runtime, model or effort |
-| Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
+| Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent or a local harness `base:` URL to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
 
 The typical handoff for self-managed mints: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. For the hosted community mint, enrollment is automatic — install the shared Apps and use the CLI defaults.

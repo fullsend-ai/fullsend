@@ -107,7 +107,7 @@ fullsend
 │   │   ├── --runtime <claude|pi>            #   Runtime for this agent
 │   │   ├── --model <alias|id|provider/id>   #   Model for this agent
 │   │   └── --effort <level>                 #   Effort level for this agent
-│   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
+│   ├── update       <name> [sha]             # Re-pin URL agent or local harness base
 │   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory

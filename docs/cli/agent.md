@@ -15,7 +15,7 @@ Manage agents in fullsend config. Generate a new agent, add, list, set (runtime,
 | `fullsend agent new <name>` | Generate a complete custom agent and register it |
 | `fullsend agent add <url-or-path>` | Register an agent in config |
 | `fullsend agent list` | List registered agents |
-| `fullsend agent update <name> [sha]` | Update a URL agent to a new commit SHA |
+| `fullsend agent update <name> [sha]` | Update a URL agent or a local harness `base:` URL to a new commit SHA |
 | `fullsend agent set <name>` | Set an agent's runtime, model or effort |
 | `fullsend agent remove <name>` | Remove an agent from config |
 
@@ -414,11 +414,12 @@ my-lint  harness/my-lint.yaml
 
 ## `agent update`
 
-Update a URL-based agent to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored (backward-compatible entries), the default branch HEAD is used.
+Update a URL-based agent, or a local-path agent's `base:` URL, to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored, the default branch HEAD is used. `agent add` never stores a ref for local-path sources, so an `agent update` on a local-path agent's `base:` URL without an explicit SHA always resolves the base repo's default branch — pass an explicit SHA if the `base:` URL was originally pinned to a different branch.
 
 ```bash
 fullsend agent update triage --fullsend-dir .fullsend
 fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend-dir .fullsend
+fullsend agent update code --fullsend-dir .fullsend
 ```
 
 ### Flags
@@ -427,7 +428,7 @@ fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend
 |------|---------|-------------|
 | `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
-Only URL agents can be updated — local path agents have nothing to pin. Non-GitHub URL agents require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
+URL agents are re-pinned in `config.yaml`. Local-path agents whose harness YAML has a `base:` URL are re-pinned in that YAML file; `config.yaml` is left unchanged. Local-path agents without a `base:` URL have nothing to pin. Non-GitHub URLs require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
 
 ## `agent set`
 
