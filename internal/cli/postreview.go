@@ -440,9 +440,13 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // postFileLevelComments submits file-level review comments in their own
 // COMMENT review, isolated from the main review batch. It is best-effort:
 // every failure path logs and returns so the caller's main review still
-// proceeds. On a 422 the comment bodies are retried inside a plain review
-// body — mirroring the main review's fallback — so the findings stay
-// visible on the review itself rather than only in the sticky comment.
+// proceeds. On a 422 for a single comment, the comment body is retried
+// inside a plain review body — mirroring the main review's fallback — so
+// the finding stays visible on the review itself rather than only in the
+// sticky comment. For a multi-comment batch the retry is skipped instead:
+// the forge implementation posts comments sequentially and stops at the
+// first error, so some may already be live on the PR, and re-embedding
+// the whole original batch would duplicate them.
 func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo string, pr int, commitSHA string, comments []forge.ReviewComment, printer *ui.Printer) {
 	err := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", "", commitSHA, comments)
 	if err == nil {
@@ -453,6 +457,22 @@ func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo
 	if is422Error(err) {
 		printer.StepWarn(fmt.Sprintf("File-level comments failed with 422 (%d comment(s)), retrying without comments", len(comments)))
 		logRejectedComments(comments, err, printer)
+
+		// postFileLevelReviewComments (the forge implementation) posts
+		// each file-level comment sequentially and stops at the first
+		// error, so when there is more than one comment some may
+		// already be live on the PR as real comments by the time this
+		// 422 is observed. Embedding the original, unfiltered comments
+		// slice in a prose fallback would duplicate those already-
+		// posted comments. There is no way from this error alone to
+		// tell which comments succeeded, so skip the prose fallback for
+		// multi-comment batches; the findings remain visible in the
+		// sticky comment. A single-comment batch can't have partially
+		// succeeded, so it is still safe to embed it below.
+		if len(comments) > 1 {
+			printer.StepWarn("Multiple file-level comments were in this batch; skipping the review-body fallback to avoid duplicating already-posted comments (findings remain in sticky comment)")
+			return
+		}
 
 		fallbackBody := buildFallbackReviewBody("", comments)
 		if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", fallbackBody, commitSHA, nil); retryErr != nil {
@@ -542,27 +562,34 @@ func is422Error(err error) bool {
 }
 
 // logAPIErrorDetails logs GitHub API error details when a non-inline-comment
-// 422 (or other error) occurs. This surfaces the validation error fields that
-// would otherwise be lost in the wrapped error message.
+// 422 (or other error) occurs. This surfaces the validation error fields and
+// the raw response body that would otherwise be lost in the wrapped error.
 func logAPIErrorDetails(err error, printer *ui.Printer) {
 	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) {
-		for _, d := range apiErr.Errors {
-			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
-		}
+	if !errors.As(err, &apiErr) {
+		return
+	}
+	if compact := compactForLog(apiErr.Body); compact != "" {
+		printer.StepInfo("  API error body: " + compact)
+	} else if apiErr.Message != "" {
+		printer.StepInfo("  API error message: " + apiErr.Message)
+	}
+	for _, d := range apiErr.Errors {
+		printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
 	}
 }
 
+// compactForLog collapses whitespace so a JSON error body logs as one line.
+func compactForLog(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // logRejectedComments logs structured details about inline comments that
-// triggered a 422 response, including GitHub's error details when available.
-// This captures which specific comment caused the failure to aid debugging.
+// triggered a 422 response, including GitHub's error details and raw body
+// when available. This captures which specific comment caused the failure
+// and the exact API rejection so a follow-up fix is not guessing.
 func logRejectedComments(comments []forge.ReviewComment, err error, printer *ui.Printer) {
-	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) {
-		for _, d := range apiErr.Errors {
-			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
-		}
-	}
+	logAPIErrorDetails(err, printer)
 	for _, c := range comments {
 		if c.Line > 0 {
 			printer.StepInfo(fmt.Sprintf("  Rejected comment: %s:%d", c.Path, c.Line))

@@ -124,6 +124,11 @@ type APIError struct {
 	StatusCode int
 	Message    string
 	Errors     []APIErrorDetail
+	// Body is the raw response body GitHub returned, truncated.
+	// It is not included in Error() so wrapped errors stay short;
+	// callers that need the payload (e.g. 422 diagnostics) read it
+	// directly.
+	Body string
 }
 
 // APIErrorDetail is one validation error entry returned by GitHub.
@@ -438,20 +443,25 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
+	rawBody := string(data)
+	if runes := []rune(rawBody); len(runes) > 8192 {
+		rawBody = string(runes[:8192]) + "..."
+	}
 
 	var msg struct {
-		Message string           `json:"message"`
-		Errors  []APIErrorDetail `json:"errors"`
+		Message string          `json:"message"`
+		Errors  json.RawMessage `json:"errors"`
 	}
 	if json.Unmarshal(data, &msg) == nil {
+		details := parseAPIErrorDetails(msg.Errors)
 		if msg.Message != "" {
-			return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+			return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: details, Body: rawBody}
 		}
 		// Unmarshal succeeded but top-level message is empty. Preserve
 		// any error details GitHub included and fall back to the raw
 		// response body so callers see the full server response.
-		if len(msg.Errors) > 0 {
-			return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Errors: msg.Errors}
+		if len(details) > 0 {
+			return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Errors: details, Body: rawBody}
 		}
 	}
 	// Unmarshal failed or yielded no useful fields — use raw body when
@@ -463,9 +473,34 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 		if len(runes) > maxLen {
 			body = string(runes[:maxLen]) + "..."
 		}
-		return &APIError{StatusCode: resp.StatusCode, Message: body}
+		return &APIError{StatusCode: resp.StatusCode, Message: body, Body: rawBody}
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
+}
+
+// parseAPIErrorDetails accepts GitHub's two 422 error shapes: an array of
+// objects ({resource, field, code, message}) or an array of strings
+// (e.g. "Position can't be blank").
+func parseAPIErrorDetails(raw json.RawMessage) []APIErrorDetail {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var details []APIErrorDetail
+	if err := json.Unmarshal(raw, &details); err == nil {
+		return details
+	}
+	var strs []string
+	if err := json.Unmarshal(raw, &strs); err != nil {
+		return nil
+	}
+	out := make([]APIErrorDetail, 0, len(strs))
+	for _, s := range strs {
+		if s == "" {
+			continue
+		}
+		out = append(out, APIErrorDetail{Message: s})
+	}
+	return out
 }
 
 // get performs a GET request and checks for success.
@@ -3113,9 +3148,17 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 // When commitSHA is non-empty it is sent as commit_id, pinning the
 // review to that commit. GitHub rejects the request if the commit is
 // not the PR's current HEAD, closing the TOCTOU gap between the
-// stale-head check and review submission.
-// When comments is non-nil, inline diff comments are attached to the
-// review via the GitHub "comments" field.
+// stale-head check and review submission — but that HEAD pinning is
+// only enforced by the POST /reviews call. When comments is non-nil,
+// inline diff comments (Line > 0) are attached to the review via the
+// GitHub "comments" field. File-level comments (Line == 0) are posted
+// separately via POST /pulls/{n}/comments with subject_type: "file".
+// GitHub's create-review comments[] schema has no subject_type and
+// rejects comments that omit both line and position with 422.
+// A COMMENT event whose only content is file-level comments skips the
+// POST /reviews call entirely (see below), so that case relies solely
+// on the caller's own stale-head check rather than GitHub-side HEAD
+// pinning for commitSHA.
 func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []forge.ReviewComment) error {
 	switch event {
 	case "APPROVE", "REQUEST_CHANGES", "COMMENT":
@@ -3123,15 +3166,35 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 		return fmt.Errorf("create review on #%d: invalid event %q", number, event)
 	}
 
-	type reviewComment struct {
-		Path        string `json:"path"`
-		Line        int    `json:"line,omitempty"`
-		Body        string `json:"body"`
-		SubjectType string `json:"subject_type,omitempty"`
+	var inline, fileLevel []forge.ReviewComment
+	for _, rc := range comments {
+		if rc.Line == 0 {
+			fileLevel = append(fileLevel, rc)
+		} else {
+			inline = append(inline, rc)
+		}
 	}
 
-	// GitHub's subject_type: "file" is inferred from Line==0 so forge
-	// callers don't need to know about this GitHub-specific field.
+	if len(fileLevel) > 0 {
+		if err := c.postFileLevelReviewComments(ctx, owner, repo, number, commitSHA, fileLevel); err != nil {
+			return err
+		}
+	}
+
+	// GitHub requires a body for COMMENT reviews. File-level comments
+	// have already been posted via the comments API, so an empty COMMENT
+	// review would 422 and is skipped. Only skip when we actually posted
+	// file-level comments; an empty COMMENT with no comments at all keeps
+	// the previous POST so callers observe the same GitHub response.
+	if event == "COMMENT" && body == "" && len(inline) == 0 && len(fileLevel) > 0 {
+		return nil
+	}
+
+	type reviewComment struct {
+		Path string `json:"path"`
+		Line int    `json:"line,omitempty"`
+		Body string `json:"body"`
+	}
 
 	type reviewPayload struct {
 		Event    string          `json:"event"`
@@ -3145,16 +3208,12 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 		Body:     body,
 		CommitID: commitSHA,
 	}
-	for _, rc := range comments {
-		c := reviewComment{
+	for _, rc := range inline {
+		payload.Comments = append(payload.Comments, reviewComment{
 			Path: rc.Path,
 			Line: rc.Line,
 			Body: rc.Body,
-		}
-		if rc.Line == 0 {
-			c.SubjectType = "file"
-		}
-		payload.Comments = append(payload.Comments, c)
+		})
 	}
 
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload)
@@ -3162,6 +3221,45 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 		return fmt.Errorf("create pull request review on #%d: %w", number, err)
 	}
 	resp.Body.Close()
+	return nil
+}
+
+// postFileLevelReviewComments posts each comment via
+// POST /repos/{owner}/{repo}/pulls/{number}/comments with
+// subject_type: "file". The payload struct has no line or position
+// fields so they cannot leak into a file-level request; GitHub 422s
+// if those are present alongside subject_type: "file".
+func (c *LiveClient) postFileLevelReviewComments(ctx context.Context, owner, repo string, number int, commitSHA string, comments []forge.ReviewComment) error {
+	// The comments API requires commit_id. Create-review does not (it
+	// defaults to HEAD), so callers that omitted SHA for a review still
+	// need a commit for file-level comments.
+	if commitSHA == "" {
+		sha, err := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
+		if err != nil {
+			return fmt.Errorf("create file-level review comment on #%d: resolving HEAD: %w", number, err)
+		}
+		commitSHA = sha
+	}
+
+	type fileComment struct {
+		Path        string `json:"path"`
+		Body        string `json:"body"`
+		CommitID    string `json:"commit_id"`
+		SubjectType string `json:"subject_type"`
+	}
+	for _, rc := range comments {
+		payload := fileComment{
+			Path:        rc.Path,
+			Body:        rc.Body,
+			CommitID:    commitSHA,
+			SubjectType: "file",
+		}
+		resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, repo, number), payload)
+		if err != nil {
+			return fmt.Errorf("create file-level review comment on #%d (%s): %w", number, rc.Path, err)
+		}
+		resp.Body.Close()
+	}
 	return nil
 }
 
