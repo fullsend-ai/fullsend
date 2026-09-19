@@ -264,6 +264,11 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `HasRole`, `RolePermissionsForLevel`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. Both the standalone and GCF mints call `ParseCustomRolePermissions` + `RegisterCustomRoleLevels` when `CUSTOM_ROLE_PERMISSIONS` is set. See the [standalone mint guide](guides/infrastructure/standalone-mint.md). For mintcore internals (platform accessors, load-site construction, WASM constraints), see the [mintcore contributor guide](contributing/mintcore.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
 - Named privilege levels: each role defines named levels as keys — `read` and `write` are mandatory, extra named levels are allowed on custom roles. The mint looks up the requested level on the role and returns the stored permission map, or fails if the level is missing. Built-in roles statically define both `read` (all values `"read"`) and `write` (the canonical ceiling) in the permission table. The mint API accepts an optional `level` field (default `write` — temporary compatibility default; a future release will change to `read`). Flat-format `CUSTOM_ROLE_PERMISSIONS` entries are stored as both `read` and `write` (same permissions for either level). Multi-level format uses a `levels` key for distinct per-level maps; extra named levels beyond read/write are permitted. The harness `privilege_levels` flag maps run-stages to levels; omitting it defaults to `write`, preserving backward compatibility for existing harness configurations ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
+- Control-plane follow-ups (re-running, dispatching, approving or cancelling
+  workflow runs) after an agent run are not minted roles. They live in a
+  user-owned `workflow_run` workflow in the same repository, using the job
+  token and the permissions that workflow declares
+  ([ADR 0115](ADRs/0115-user-owned-follow-up-workflows-after-agent-runs.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -296,6 +301,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   over other comments and content discovered during reconciliation remains a
   separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+- Dispatch runs no follow-up stage after an agent. Every run publishes the
+  `fullsend-<agent>` artifact with the validated result, and users chain their
+  own workflows on the shim's `workflow_run` event
+  ([ADR 0115](ADRs/0115-user-owned-follow-up-workflows-after-agent-runs.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
