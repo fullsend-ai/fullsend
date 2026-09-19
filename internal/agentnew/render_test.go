@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -238,10 +239,108 @@ func TestSharedAssetsAreMarked(t *testing.T) {
 		if owned[f.Path] == f.Shared {
 			t.Errorf("%s: Shared = %v, want %v", f.Path, f.Shared, !owned[f.Path])
 		}
+		if f.Path == OpenAIProviderName {
+			t.Error("the openai bare name must not be copied as a scaffold file")
+		}
 	}
-	// retro is the two-forge-provider role: 3 providers + 3 profiles.
+	// retro is the two-forge-provider role: 3 path providers + 3 profiles.
+	// The openai bare name is skipped, not written.
 	if got := len(files); got != 4+1+6+1 {
 		t.Errorf("retro with --validation-loop produced %d files, want 12", got)
+	}
+}
+
+func testCodexOptions(name, role string) Options {
+	o := testOptions(name, role)
+	o.Runtime = "codex"
+	o.Model = "openai/gpt-5.6-luna"
+	return o
+}
+
+// TestCodexHarnessOmitsVertexCredentials is the #7264 pin: --runtime codex
+// must not generate GCP host_files or Vertex env, must not default model to
+// opus, and must still declare the openai provider (and the Vertex provider,
+// which the runner skips when unused).
+func TestCodexHarnessOmitsVertexCredentials(t *testing.T) {
+	dir := t.TempDir()
+	opts := testCodexOptions("lint-docs", "triage")
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	writeTree(t, dir, files)
+
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated codex harness does not load: %v", err)
+	}
+	if _, err := harness.CheckGenerated(h, dir); err != nil {
+		t.Fatalf("generated codex tree does not validate: %v", err)
+	}
+	if !slices.Contains(h.Providers, OpenAIProviderName) {
+		t.Errorf("providers = %v, want to include %q", h.Providers, OpenAIProviderName)
+	}
+	for _, hf := range h.HostFiles {
+		if strings.Contains(hf.Src, "GOOGLE_APPLICATION_CREDENTIALS") || strings.Contains(hf.Dest, "gcp") {
+			t.Errorf("codex harness must not copy GCP credentials: %+v", hf)
+		}
+	}
+	if h.Env != nil {
+		for _, banned := range []string{
+			"CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
+			"CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+		} {
+			if _, ok := h.Env.Sandbox[banned]; ok {
+				t.Errorf("codex sandbox env must not set %s", banned)
+			}
+		}
+	}
+	if h.Model != "openai/gpt-5.6-luna" {
+		t.Errorf("model = %q, want openai/gpt-5.6-luna", h.Model)
+	}
+}
+
+// TestDefaultHarnessDeclaresOpenAIAndVertex: the portable-harness pattern is
+// to declare openai on every runtime, including the Vertex default, so a
+// later `agent set --runtime codex` does not have to rewrite providers.
+func TestDefaultHarnessDeclaresOpenAIAndVertex(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	yaml := string(fileByPath(t, files, "harness/lint-docs.yaml").Data)
+	for _, want := range []string{
+		"providers/vertex-ai.yaml",
+		OpenAIProviderName,
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"CLAUDE_CODE_USE_VERTEX",
+		"model: opus",
+	} {
+		if !strings.Contains(yaml, want) {
+			t.Errorf("default harness should contain %q:\n%s", want, yaml)
+		}
+	}
+}
+
+func TestPiHarnessKeepsVertexCredentials(t *testing.T) {
+	opts := testOptions("lint-docs", "triage")
+	opts.Runtime = "pi"
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yaml := string(fileByPath(t, files, "harness/lint-docs.yaml").Data)
+	for _, want := range []string{
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"CLAUDE_CODE_USE_VERTEX",
+		OpenAIProviderName,
+	} {
+		if !strings.Contains(yaml, want) {
+			t.Errorf("pi harness should contain %q:\n%s", want, yaml)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
@@ -42,9 +43,18 @@ func TestRoleTableMatchesMint(t *testing.T) {
 			if role.Image == "" {
 				t.Error("role has no image")
 			}
-			if len(role.Providers) != len(role.Profiles) {
-				t.Errorf("each provider needs a matching profile: %d providers, %d profiles",
-					len(role.Providers), len(role.Profiles))
+			pathProviders := 0
+			for _, p := range role.Providers {
+				if harness.IsProviderPath(p) {
+					pathProviders++
+				}
+			}
+			if pathProviders != len(role.Profiles) {
+				t.Errorf("each path provider needs a matching profile: %d path providers, %d profiles",
+					pathProviders, len(role.Profiles))
+			}
+			if !slices.Contains(role.Providers, OpenAIProviderName) {
+				t.Errorf("role %q must declare the openai provider by bare name, got %v", name, role.Providers)
 			}
 		})
 	}

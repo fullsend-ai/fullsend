@@ -96,6 +96,8 @@ fullsend
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
 │   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
+│   │   ├── --runtime <claude|pi|codex>      #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
+│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id required for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
 │   │   ├── --no-register                    #   Write files without touching config.yaml

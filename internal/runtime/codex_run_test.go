@@ -38,6 +38,15 @@ func testCodexHookScripts() map[string]string {
 	return out
 }
 
+func TestValidateCodexModel(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, ValidateCodexModel("openai/gpt-5.6-luna"))
+	require.NoError(t, ValidateCodexModel("gpt-5.6-luna"))
+	require.Error(t, ValidateCodexModel(""))
+	require.Error(t, ValidateCodexModel("opus"))
+}
+
 func TestTranslateCodexModel(t *testing.T) {
 	t.Parallel()
 

@@ -88,19 +88,41 @@ func Render(opts Options) ([]File, error) {
 // Building the real struct rather than formatting text means the generator
 // cannot emit a field the validator does not know about.
 func buildHarness(opts Options, role Role) (*harness.Harness, error) {
-	h := &harness.Harness{
-		Agent:       "agents/" + opts.Name + ".md",
-		Description: opts.Description,
-		Role:        role.Name,
-		Slug:        opts.Slug,
-		Image:       opts.Image,
-		Policy:      "policies/base.yaml",
-		Providers:   append([]string(nil), role.Providers...),
-		OpenShell:   &harness.OpenShellConfig{Profiles: append([]string(nil), role.Profiles...)},
-		HostFiles: []harness.HostFile{
+	sandboxEnv := map[string]string{
+		"ISSUE_URL":      "${GITHUB_ISSUE_URL}",
+		"GH_TOKEN":       "${GH_TOKEN}",
+		"FULLSEND_FORGE": "github",
+	}
+	var hostFiles []harness.HostFile
+	// GCP credentials and the Vertex env block are load-bearing for claude
+	// and pi, and a hard failure for codex: host_files.src is validated
+	// before anything runtime-specific runs, so an unset
+	// GOOGLE_APPLICATION_CREDENTIALS refuses a codex agent that never
+	// calls Vertex (#7264).
+	if opts.UsesVertex() {
+		hostFiles = []harness.HostFile{
 			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json"},
 			{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/workspace/.gcp-oidc-token", Optional: true},
-		},
+		}
+		// The scaffold ships no env/ directory and nothing in fullsend
+		// sets CLAUDE_CODE_USE_VERTEX, so the Vertex variables the fleet
+		// delivers via host_files: env/gcp-vertex.env are set here.
+		sandboxEnv["CLAUDE_CODE_USE_VERTEX"] = "1"
+		sandboxEnv["ANTHROPIC_VERTEX_PROJECT_ID"] = "${ANTHROPIC_VERTEX_PROJECT_ID}"
+		sandboxEnv["CLOUD_ML_REGION"] = "${CLOUD_ML_REGION}"
+		sandboxEnv["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/.gcp-credentials.json"
+	}
+
+	h := &harness.Harness{
+		Agent:          "agents/" + opts.Name + ".md",
+		Description:    opts.Description,
+		Role:           role.Name,
+		Slug:           opts.Slug,
+		Image:          opts.Image,
+		Policy:         "policies/base.yaml",
+		Providers:      append([]string(nil), role.Providers...),
+		OpenShell:      &harness.OpenShellConfig{Profiles: append([]string(nil), role.Profiles...)},
+		HostFiles:      hostFiles,
 		Model:          opts.Model,
 		Effort:         opts.Effort,
 		PostScript:     "scripts/post-" + opts.Name + ".sh",
@@ -112,18 +134,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 				"GH_TOKEN":       "${GH_TOKEN}",
 				"FULLSEND_FORGE": "github",
 			},
-			// The scaffold ships no env/ directory and nothing in fullsend
-			// sets CLAUDE_CODE_USE_VERTEX, so the Vertex variables the fleet
-			// delivers via host_files: env/gcp-vertex.env are set here.
-			Sandbox: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX":         "1",
-				"ANTHROPIC_VERTEX_PROJECT_ID":    "${ANTHROPIC_VERTEX_PROJECT_ID}",
-				"CLOUD_ML_REGION":                "${CLOUD_ML_REGION}",
-				"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/.gcp-credentials.json",
-				"ISSUE_URL":                      "${GITHUB_ISSUE_URL}",
-				"GH_TOKEN":                       "${GH_TOKEN}",
-				"FULLSEND_FORGE":                 "github",
-			},
+			Sandbox: sandboxEnv,
 		},
 	}
 	if opts.ValidationLoop {

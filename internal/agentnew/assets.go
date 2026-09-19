@@ -3,6 +3,7 @@ package agentnew
 import (
 	"fmt"
 
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -29,12 +30,14 @@ func sharedAssets(role Role, validationLoop bool) ([]File, error) {
 	}
 	files = append(files, File{Path: "policies/base.yaml", Data: policy, Mode: 0o644, Shared: true})
 
-	// Providers and profiles are referenced by path rather than by bare
-	// name. A bare name with no definition on disk does not fail loudly: the
-	// embedded provider fallback fills in only the OpenAI provider, so every
-	// other name degrades to a warning and then a sandbox that cannot reach
-	// Vertex — the "agent crashes at 0s" symptom in the BYOA guide.
+	// Path-referenced providers and profiles are copied from the embedded
+	// scaffold. A bare name is skipped: the OpenAI provider is binary-only
+	// (appendEmbeddedProviderDefs fills it in at run time) and passing it to
+	// FullsendRepoFile would look for a file the scaffold does not ship.
 	for _, path := range append(append([]string{}, role.Providers...), role.Profiles...) {
+		if !harness.IsProviderPath(path) {
+			continue
+		}
 		data, err := scaffold.FullsendRepoFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s from the embedded scaffold: %w", path, err)

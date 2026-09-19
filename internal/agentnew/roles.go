@@ -12,6 +12,12 @@ import (
 // role the Bring Your Own Agent guide's examples use.
 const DefaultRole = "triage"
 
+// OpenAIProviderName is the bare provider name every generated harness
+// declares. The runner materializes the definition from the binary; a path
+// reference would pin a repo-local copy against the version-matched one.
+// Declared on every runtime so a harness is portable (#6920, #7264).
+const OpenAIProviderName = "openai"
+
 // Role describes one mint role that `fullsend agent new` will generate for,
 // together with the sandbox resources a harness needs to run under it.
 //
@@ -29,10 +35,11 @@ type Role struct {
 	// It is reproduced here so the CLI can explain what a role grants
 	// without importing the mint's internals into its help text.
 	Permissions map[string]string
-	// Providers are harness `providers:` entries, by path. Paths rather than
-	// bare names: a bare name that has no definition on disk degrades to a
-	// warning and then a sandbox that cannot reach Vertex, because the
-	// embedded provider fallback covers only the OpenAI provider.
+	// Providers are harness `providers:` entries. Path references are copied
+	// out of the embedded scaffold; the bare name OpenAIProviderName is not,
+	// because the runner fills that definition in from the binary. Declaring
+	// openai on every role is the portable-harness pattern (#6920, #7264):
+	// a run that does not call OpenAI skips it.
 	Providers []string
 	// Profiles are harness `openshell.profiles:` entries, by path.
 	Profiles []string
@@ -50,7 +57,7 @@ var roleTable = map[string]Role{
 	"triage": {
 		Name:        "triage",
 		Permissions: map[string]string{"contents": "read", "issues": "write", "metadata": "read"},
-		Providers:   []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
+		Providers:   []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", OpenAIProviderName},
 		Profiles:    []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
 		Image:       config.DefaultSandboxImage,
 	},
@@ -60,7 +67,7 @@ var roleTable = map[string]Role{
 			"contents": "read", "pull_requests": "write", "issues": "write",
 			"checks": "read", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
+		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", OpenAIProviderName},
 		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
 		Image:     config.DefaultCodeImage,
 	},
@@ -70,7 +77,7 @@ var roleTable = map[string]Role{
 			"contents": "write", "packages": "read", "pull_requests": "write",
 			"issues": "write", "checks": "read", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github.yaml"},
+		Providers: []string{"providers/vertex-ai.yaml", "providers/github.yaml", OpenAIProviderName},
 		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github.yaml"},
 		Image:     config.DefaultCodeImage,
 	},
@@ -82,7 +89,7 @@ var roleTable = map[string]Role{
 		},
 		// retro is the only role taking two forge providers: github-ro for
 		// the repository and github-artifacts for workflow run artifacts.
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", "providers/github-artifacts.yaml"},
+		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", "providers/github-artifacts.yaml", OpenAIProviderName},
 		Profiles: []string{
 			"profiles/fullsend-vertex-ai.yaml",
 			"profiles/fullsend-github-ro.yaml",
@@ -96,7 +103,7 @@ var roleTable = map[string]Role{
 			"contents": "read", "issues": "write",
 			"organization_projects": "write", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
+		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", OpenAIProviderName},
 		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
 		Image:     config.DefaultSandboxImage,
 	},

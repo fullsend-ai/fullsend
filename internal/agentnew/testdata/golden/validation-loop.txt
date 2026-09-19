@@ -70,6 +70,7 @@ policy: policies/base.yaml
 providers:
   - providers/vertex-ai.yaml
   - providers/github-ro.yaml
+  - openai
 openshell:
   profiles:
     - profiles/fullsend-vertex-ai.yaml
