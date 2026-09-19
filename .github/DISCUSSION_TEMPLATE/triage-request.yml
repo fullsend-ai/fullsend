@@ -10,6 +10,9 @@ body:
         [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md)
         for the full role definition, criteria, and approval requirements.
 
+        Maintainers: to approve this request, manually add the requester to
+        the [triagers team](https://github.com/orgs/fullsend-ai/teams/triagers).
+
         **Write in your own words.** Do not have an AI generate this request.
 
   - type: textarea
