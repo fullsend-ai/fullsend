@@ -2500,7 +2500,7 @@ func steerBool(v bool) *bool { return &v }
 func TestSteerDefaults_NilConfig(t *testing.T) {
 	h := &Harness{Agent: "agents/code.md", Role: "test"}
 	require.NoError(t, h.Validate())
-	assert.False(t, h.SteerEnabled(), "a harness with no steer block does not steer by default")
+	assert.True(t, h.SteerEnabled(), "a harness with no steer block steers by default")
 	assert.False(t, h.SteerExplicitlyEnabled(), "the default is not an explicit request")
 	assert.Equal(t, DefaultSteerMaxSteers, h.SteerMaxSteers())
 	assert.Equal(t, DefaultSteerPollInterval, h.SteerPollInterval())

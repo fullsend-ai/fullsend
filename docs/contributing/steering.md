@@ -427,31 +427,33 @@ setup; it cannot invent one.
 
 ## Configuration
 
-Per-agent, off by default while the surfaces steering depends on land. A harness opts in by name:
-
-The runner also exports `FULLSEND_STEER_ACTIVE=1` into the sandbox for an iteration whose watcher
-is running, and nothing at all otherwise. The agent definitions treat the envelope's opening line
-as an injection attempt unless it is set, so absence is the default and presence is written only
-after the watcher has actually started — a watcher that declines, or whose first API calls fail,
-leaves the variable unset. See [`fullsend run` § Run baseline](../cli/run.md#run-baseline).
+Per-agent, on by default. A harness that says nothing about `steer:` steers; so does one that
+sets only a cap or a cadence. Turning it off takes the key by name:
 
 ```yaml
 steer:
-  enabled: true          # default: false — this is the opt-in
+  enabled: false         # default: true — this is the opt-out
   max_steers: 2          # default: 2
   poll_interval_seconds: 30   # default: 30
 ```
 
-`max_steers` and `poll_interval_seconds` are parsed and validated by this change; the code that
-spends the cap and paces the interval arrives with the change that looks for updates.
+`enabled` is a pointer internally for exactly this reason: absent and `false` have to mean
+different things, so `steer: {max_steers: 3}` cannot silently opt a harness out while it is
+trying to raise the cap. A child harness that says nothing inherits its base's whole block, so a
+base opt-out is inherited rather than overwritten by the default.
 
-`enabled` is a pointer internally so that absent and `false` mean different things: a block setting
-only `max_steers` says nothing about whether steering is on, so it takes the default rather than
-being read as either an opt-in or an opt-out, and the same config keeps its meaning when the
-default changes.
+The runner exports `FULLSEND_STEER_ACTIVE=1` into the sandbox for an iteration whose watcher is
+running, and nothing at all otherwise. The agent definitions treat the envelope's opening line as
+an injection attempt unless it is set, so a watcher that declines, or whose first API calls fail,
+leaves the variable unset. See [`fullsend run` § Run baseline](../cli/run.md#run-baseline).
 
-The runner sets `RunParams.Steerable` only when the harness has opted in and the runtime implements
-`Steerer`. Otherwise `Steerable` stays false and `Run` is single-turn exactly as before.
+The runner sets `RunParams.Steerable` only when all three of: the harness has not opted out, the
+runtime implements `Steerer`, and the run is a GitHub Actions job with a work item to watch — the
+same three [harness-reference.md](../reference/harness-reference.md#field-details) states. Otherwise
+`Steerable` stays false and `Run` is single-turn exactly as before. The runner announces a declined watch only when the
+harness set `enabled: true` itself — a block that sets only a cap or a cadence stays quiet, since
+with the default on most declines are ordinary conditions rather than misconfiguration. A missing
+job token or `GITHUB_RUN_ID` is always announced.
 
 ## Known limits
 
@@ -487,3 +489,39 @@ and on GitLab it declines quietly unless the harness set `enabled: true` itself.
 **A steer needs time left.** The exec hosting a live session cannot be extended once running, so
 the watcher settles rather than steering when less than `MinRemaining` (default five minutes) of
 the run budget remains, and the update falls to the queued run.
+
+## Rollout order
+
+Steering arrives with the release that carries it rather than one harness at a time, and the
+harness `steer:` block is the only switch. A harness that opts out with `enabled: false` sits in
+the state [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
+describes, where the run in flight finishes and the queued run does the work. Nothing is
+half-enabled, so a harness can sit there indefinitely.
+
+The receipt the queued run exits on
+([ADR 0120](../ADRs/0120-receipt-the-absorbed-update-under-the-job-token.md)) is the precondition
+for enabling steering anywhere: without it steering costs more than preserving alone.
+
+A consumer that pins `reusable-dispatch.yml@main` rather than a tag adopts the new default on its
+next dispatched run — `fullsend_version` falls back to `job.workflow_sha`, so there is no version
+for such a repository to hold back on. The audit below is therefore due before this reaches main,
+not before the next tag.
+
+What remains is judged by the people cutting the release; nothing in the binary enforces it. The
+fleet agent definitions must teach the envelope, an end-to-end steer must have been observed
+inside the sandbox from a real workflow run, the receipt's identity match must have been seen on a
+live run, and every stage whose definition ignores the envelope must opt out before the default
+reaches it — an eligible run on such a definition still acknowledges the delivery and still posts
+a receipt, so the queued run skips and the update is dropped silently.
+
+Until a release carries both the `FULLSEND_STEER_ACTIVE` export and definitions that read it, the
+default changes nothing at the prompt level: the definitions treat the envelope's opening line as
+an injection attempt while the variable is unset. A run that started no watcher is not the silent
+drop above — with no watcher there are no consumed runs, and a receipt requires one, so such a run
+claims nothing.
+
+Agents that `fullsend agent new` scaffolds from here on carry the contract in their generated
+body; ones scaffolded earlier must be regenerated to gain it, and neither changes the fleet
+definitions above. An existing agent is missing it when its body does not contain the envelope's
+opening line — `grep -L "Runner update: your task inputs changed" .fullsend/agents/*.md` names
+them — and such an agent reads a delivered update as ordinary content until it is regenerated.

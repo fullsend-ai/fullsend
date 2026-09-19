@@ -54,6 +54,12 @@ func steerHarness(enabled bool) *harness.Harness {
 	}
 }
 
+// steerHarnessDefault builds a harness that says nothing about steering, which
+// is the on-by-default case.
+func steerHarnessDefault() *harness.Harness {
+	return &harness.Harness{Agent: "agents/review.md", Role: "review"}
+}
+
 func baseOpts(t *testing.T) steerOpts {
 	t.Helper()
 	t.Setenv("GITHUB_ACTIONS", "true")
@@ -156,25 +162,35 @@ func TestStartSteerWatcherAnnouncesEnvironmentDefects(t *testing.T) {
 		{"no run id", func(t *testing.T, _ *steerOpts) { t.Setenv("GITHUB_RUN_ID", "") }, "GITHUB_RUN_ID"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var out strings.Builder
-			o := baseOpts(t)
-			// Explicitly enabled: with steering off by default, that is
-			// the configuration a defect can actually reach. Whether the
-			// warning also reaches a harness that never named steering
-			// depends on the default, which a later change decides.
-			o.harness = steerHarness(true)
-			o.runtime = steerableRuntime{}
-			o.printer = ui.New(&out)
-			tt.mut(t, &o)
+	// Both harness shapes, because the announcement is the one thing that is
+	// NOT gated on the harness having named steering. With the default on,
+	// almost nobody sets enabled: true, so the second shape is the population
+	// a plumbing regression would actually be hidden from.
+	shapes := []struct {
+		name    string
+		harness func() *harness.Harness
+	}{
+		{"explicitly enabled", func() *harness.Harness { return steerHarness(true) }},
+		{"default on, never named", steerHarnessDefault},
+	}
 
-			d := steerEligible(o)
-			require.True(t, d.defect, "%s must be classed as an environment defect", tt.name)
-			assert.Nil(t, startSteerWatcher(context.Background(), o))
-			assert.Contains(t, out.String(), "Steering disabled: ")
-			assert.Contains(t, out.String(), tt.want)
-		})
+	for _, tt := range tests {
+		for _, shape := range shapes {
+			t.Run(tt.name+"/"+shape.name, func(t *testing.T) {
+				var out strings.Builder
+				o := baseOpts(t)
+				o.harness = shape.harness()
+				o.runtime = steerableRuntime{}
+				o.printer = ui.New(&out)
+				tt.mut(t, &o)
+
+				d := steerEligible(o)
+				require.True(t, d.defect, "%s must be classed as an environment defect", tt.name)
+				assert.Nil(t, startSteerWatcher(context.Background(), o))
+				assert.Contains(t, out.String(), "Steering disabled: ")
+				assert.Contains(t, out.String(), tt.want)
+			})
+		}
 	}
 }
 
@@ -392,6 +408,27 @@ func steerableOpts(t *testing.T, srv *httptest.Server) steerOpts {
 	steerItemReaderFn = func(string) steerwatch.ItemReader { return stubItemReader{} }
 	t.Cleanup(func() { steerItemReaderFn = prev })
 	return o
+}
+
+// TestStartSteerWatcher_StartsForADefaultHarness is where default-on actually
+// takes effect, as opposed to being merely readable.
+//
+// Every other success-path case here builds its harness with steerHarness(true),
+// so gating startSteerWatcher on SteerExplicitlyEnabled rather than SteerEnabled
+// would make the default a no-op — no watcher, no steer, no receipt — with the
+// whole suite still green. This case is the one that fails.
+func TestStartSteerWatcher_StartsForADefaultHarness(t *testing.T) {
+	srv := actionsStub(t, `{"jobs":[{"name":"dispatch / Route","status":"completed","conclusion":"success"},`+
+		`{"name":"dispatch / Review","status":"in_progress","conclusion":""}]}`)
+	o := steerableOpts(t, srv)
+	o.harness = steerHarnessDefault()
+	require.True(t, o.harness.SteerEnabled())
+	require.False(t, o.harness.SteerExplicitlyEnabled(),
+		"the point of this case is a harness that never named steering")
+
+	sess := startSteerWatcher(context.Background(), o)
+	require.NotNil(t, sess, "a harness with no steer block must get a watcher")
+	t.Cleanup(sess.stop)
 }
 
 func TestStartSteerWatcher_StartsAndSettles(t *testing.T) {
@@ -1586,4 +1623,37 @@ func TestMintAgentToken_NestedRemintKeepsTheJobToken(t *testing.T) {
 		"the inner restore must not forget a credential the outer mint is still hiding")
 	assert.NotContains(t, childScriptEnv(nil, ""), "CALLER_COPY_OF_JOB_TOKEN=job-token-value",
 		"a third-name copy of the job token must still be stripped after a nested remint")
+}
+
+// TestCheckSteerAlreadyHandled_RunsForADefaultHarness covers the harness shape
+// almost every consumer actually has: no `steer:` block at all.
+//
+// checkSteerAlreadyHandled gates on SteerEnabled(), which is default-aware, but
+// every other success-path case here builds its harness with steerHarness(true).
+// Without this one, flipping the default off would leave the skip check dead for
+// every harness that says nothing — the majority — with the whole file still
+// green, because each remaining case opts in explicitly.
+func TestCheckSteerAlreadyHandled_RunsForADefaultHarness(t *testing.T) {
+	o := baseOpts(t)
+	o.harness = steerHarnessDefault()
+	require.True(t, o.harness.SteerEnabled())
+	require.False(t, o.harness.SteerExplicitlyEnabled(),
+		"the point of this case is a harness that never named steering")
+
+	prev := steerMarkerClientFn
+	t.Cleanup(func() { steerMarkerClientFn = prev })
+	var read bool
+	steerMarkerClientFn = func(token string) steerMarkerReader {
+		read = true
+		if token == o.roleToken {
+			return fakeMarkerReader{login: "fullsend[bot]"}
+		}
+		return fakeMarkerReader{login: "github-actions[bot]", comments: []forge.IssueComment{
+			{Author: "github-actions[bot]", Body: "<!-- fullsend:steer consumed=33740015232 head=abc -->"},
+		}}
+	}
+
+	assert.True(t, checkSteerAlreadyHandled(context.Background(), o),
+		"a harness with no steer block must reach the marker read and skip on its own receipt")
+	assert.True(t, read, "the guard returned before the timeline was read")
 }

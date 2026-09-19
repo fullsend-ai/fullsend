@@ -129,7 +129,7 @@ security:
 
 # ── Steering (ADR 0113) ───────────────────────────────────────
 steer:
-  enabled: true                      # default: false — set true to opt in
+  enabled: false                     # default: true — set false to opt out
   max_steers: 2                      # default: 2 — updates one run absorbs
   poll_interval_seconds: 30          # default: 30 — max 600
 ```
@@ -193,11 +193,11 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`steer`** — Lets a run already in flight absorb updates to its work item rather than ending on what it started with ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md), [ADR 0117](../ADRs/0117-steer-interface-in-sandbox-mailbox.md); field-by-field in [steering.md](../contributing/steering.md#configuration)). Off by default, including when the block is absent entirely; `enabled: true` is the opt-in. A block that sets just `max_steers` or `poll_interval_seconds` says nothing about whether steering is on, so it takes the default.
+**`steer`** — Lets a run already in flight absorb updates to its work item — a push, a comment, a stage command such as `/fs-review` — rather than leaving them to the run queued behind it ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md); field-by-field in [steering.md](../contributing/steering.md#configuration)). On by default, including when the block is absent entirely; `enabled: false` is the opt-out, and it is the only spelling that turns steering off — a block that sets just `max_steers` or `poll_interval_seconds` still steers. Opting out means a run ends at its first result instead of holding its sandbox until it settles.
 
-`enabled` is accepted, validated and composed today, and — like `max_steers` and `poll_interval_seconds` — **not yet consulted by any caller**: nothing in this change reads it or asks a runtime to keep its session open, so setting `enabled: true` is inert for now. It will take effect when two things line up: the harness has opted in, and the runtime can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)). Missing either will leave the run single-turn, finishing on what it started with, and a steered run will hold its sandbox longer because the session stays open until it settles rather than ending at the first result.
+It takes effect when three things line up: the harness has not set `enabled: false`, the runtime can take a message into a running session (`claude` and `pi` live, `codex` by interrupt-and-resume — see the [runtime support matrix](../runtimes.md#choosing-a-runtime)), and the run is a GitHub Actions job with a work item to watch. Miss any and the run is single-turn: it finishes on what it started with, and the queued run does the rest. The runner prints why it declined only when the harness set `enabled: true` itself — with steering on by default most declines are ordinary conditions rather than misconfiguration, and saying so on every local run would be noise. A missing job token or `GITHUB_RUN_ID` is always printed.
 
-`max_steers` caps how many updates one run absorbs before it settles — a steered turn on a large diff can cost as much as a fresh run. `poll_interval_seconds` (1–600) paces how often the runner looks for an update. Both are accepted and validated today; the code that spends the cap and paces the interval ships with the change that looks for updates.
+`max_steers` caps how many updates one run absorbs before it settles and lets the queued run take over — a steered turn on a large diff can cost as much as a fresh run. `poll_interval_seconds` (1–600) only paces the background poll: a turn end always triggers an immediate check, so lowering it buys latency on a mid-turn update at the cost of Actions API quota.
 
 **Top level only** — `steer` is not a `ForgeConfig` field, so a `steer:` key placed under `forge:` or `overlays:` is silently ignored; only `base:` composition (see the merge table below) can override it.
 
@@ -239,7 +239,7 @@ More-specific entries go last so they override broader defaults.
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop`, `security` | Child replaces entirely |
-| `steer` | Child replaces the whole block if it sets one; otherwise inherits the base's block entire. A child block is never merged field-by-field, so it gets the defaults for every key it omits, not the base's values. Top-level only — not a `ForgeConfig` field, so this merge applies to `base:` composition alone and an `overlays:`/`forge:` entry is silently ignored |
+| `steer` | Child replaces the whole block if it sets one; otherwise inherits the base's block entire, including an `enabled: false` opt-out. A child block is never merged field-by-field, so it gets the defaults for every key it omits, not the base's values. Top-level only — not a `ForgeConfig` field, so this merge applies to `base:` composition alone and an `overlays:`/`forge:` entry is silently ignored |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote
