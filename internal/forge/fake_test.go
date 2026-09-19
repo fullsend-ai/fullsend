@@ -1513,6 +1513,36 @@ func TestFakeClient_CreateForkInOrg(t *testing.T) {
 		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
 	})
 
+	t.Run("auto-populates Repos so GetRepo finds the fork", func(t *testing.T) {
+		fc := NewFakeClient()
+		forkRepo, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+
+		// GetRepo should find the auto-populated fork immediately.
+		repo, err := fc.GetRepo(ctx, "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "target-org/my-fork", repo.FullName)
+		assert.Equal(t, "my-fork", repo.Name)
+		assert.True(t, repo.Fork, "auto-populated repo should be marked as a fork")
+		assert.Equal(t, "main", repo.DefaultBranch)
+	})
+
+	t.Run("second call is idempotent after auto-populate", func(t *testing.T) {
+		fc := NewFakeClient()
+		_, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		require.Len(t, fc.Repos, 1)
+		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+
+		forkRepo, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+		require.Len(t, fc.Repos, 1, "should not duplicate the auto-populated fork")
+		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks,
+			"should not record a second create on the idempotent path")
+	})
+
 	t.Run("existing non-fork repo returns ErrNotFork", func(t *testing.T) {
 		fc := NewFakeClient()
 		fc.Repos = []Repository{
