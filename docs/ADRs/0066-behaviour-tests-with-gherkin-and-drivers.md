@@ -45,3 +45,5 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 > **Note (2026-07):** Shared live-test infrastructure (org pool, CLI runner, cleanup) lives in `pkg/e2etest/`; the Gherkin framework lives in `pkg/behaviourtest/`. In-repo runners remain under `e2e/behaviour/` and `e2e/admin/`.
 >
 > **Note (2026-09):** Live-test infrastructure moved from `pkg/e2etest/` to `internal/e2etest/` so it is not part of the public module surface ([#7279](https://github.com/fullsend-ai/fullsend/issues/7279)).
+
+> **Note (2026-09):** [ADR 0116](0116-dummy-playback-runtime.md) adds the dummy-playback runtime for multi-agent sequential scenarios. The dummy runtime (this ADR) continues to handle single-agent sandbox verification.
