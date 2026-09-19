@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -233,6 +234,86 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
+// SteerConfig configures steering: whether a run absorbs updates to its work
+// item that arrive while it is still working, and the ceilings on doing so
+// (ADR 0113). Steering also needs a runtime that implements runtime.Steerer
+// (ADR 0117); a harness that asks for it on a runtime that cannot steer gets
+// an ordinary single-turn run.
+type SteerConfig struct {
+	// Enabled turns steering on. nil means the default, DefaultSteerEnabled.
+	// A pointer rather than a bool so that an explicit false is
+	// distinguishable from an absent key: a block setting only max_steers or
+	// poll_interval_seconds says nothing about whether steering is on, and
+	// the default can change without reinterpreting configs that were
+	// written under the old one.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// MaxSteers caps how many updates one run absorbs. Beyond the cap the
+	// run settles. 0 = default (2).
+	MaxSteers int `yaml:"max_steers,omitempty"`
+	// PollIntervalSeconds is how often the runner looks for an update to
+	// absorb. 0 = default (30). Parsed and validated here; the code that
+	// looks for updates, and so the only consumer of this value, arrives
+	// with the change that adds it.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds,omitempty"`
+}
+
+// DefaultSteerMaxSteers is the per-run steer cap when max_steers is unset.
+// Two covers the burst patterns the design was written against (#6573,
+// #4960) without letting one run absorb an indefinitely active work item.
+const DefaultSteerMaxSteers = 2
+
+// maxSteerMaxSteers bounds max_steers. Each steer can cost a full turn on
+// the work item's whole diff, so a cap this high already means a run that
+// outspends the queued run it was meant to save; beyond it the value is
+// certainly a typo rather than a choice.
+const maxSteerMaxSteers = 50
+
+// DefaultSteerPollInterval is how often a steered run looks for an update
+// when poll_interval_seconds is unset. Nothing reads it yet — see
+// SteerConfig.PollIntervalSeconds.
+const DefaultSteerPollInterval = 30 * time.Second
+
+// maxSteerPollInterval bounds poll_interval_seconds. A longer interval than
+// this makes a steer arrive after most runs have already settled.
+const maxSteerPollInterval = 10 * time.Minute
+
+// DefaultSteerEnabled is whether steering runs when the harness says nothing
+// about it. Off while the surfaces steering depends on land; a harness opts in
+// with enabled: true.
+const DefaultSteerEnabled = false
+
+// SteerEnabled reports whether steering is configured on.
+func (h *Harness) SteerEnabled() bool {
+	if h.Steer == nil {
+		return DefaultSteerEnabled
+	}
+	return BoolDefault(h.Steer.Enabled, DefaultSteerEnabled)
+}
+
+// SteerExplicitlyEnabled reports whether the harness asked for steering by
+// name, as opposed to getting it from the default. It lets a caller tell an
+// unmet request apart from an absent one — for instance to report a harness
+// that asked for steering it cannot have. No caller does so yet.
+func (h *Harness) SteerExplicitlyEnabled() bool {
+	return h.Steer != nil && h.Steer.Enabled != nil && *h.Steer.Enabled
+}
+
+// SteerMaxSteers returns the per-run steer cap, applying the default.
+func (h *Harness) SteerMaxSteers() int {
+	if h.Steer == nil || h.Steer.MaxSteers <= 0 {
+		return DefaultSteerMaxSteers
+	}
+	return h.Steer.MaxSteers
+}
+
+// SteerPollInterval returns the steer poll interval, applying the default.
+func (h *Harness) SteerPollInterval() time.Duration {
+	if h.Steer == nil || h.Steer.PollIntervalSeconds <= 0 {
+		return DefaultSteerPollInterval
+	}
+	return time.Duration(h.Steer.PollIntervalSeconds) * time.Second
+}
+
 // BoolDefault returns the value of a *bool, or the default if nil.
 func BoolDefault(b *bool, def bool) bool {
 	if b == nil {
@@ -363,6 +444,7 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // steering (ADR 0113); steer: {enabled: true} opts in
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
@@ -548,6 +630,22 @@ func (h *Harness) Validate() error {
 		}
 		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
 			return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
+		}
+	}
+	if h.Steer != nil {
+		if h.Steer.MaxSteers < 0 {
+			return fmt.Errorf("steer.max_steers must not be negative, got %d", h.Steer.MaxSteers)
+		}
+		if h.Steer.MaxSteers > maxSteerMaxSteers {
+			return fmt.Errorf("steer.max_steers must be at most %d, got %d",
+				maxSteerMaxSteers, h.Steer.MaxSteers)
+		}
+		if h.Steer.PollIntervalSeconds < 0 {
+			return fmt.Errorf("steer.poll_interval_seconds must not be negative, got %d", h.Steer.PollIntervalSeconds)
+		}
+		if h.SteerPollInterval() > maxSteerPollInterval {
+			return fmt.Errorf("steer.poll_interval_seconds must be at most %d, got %d",
+				int(maxSteerPollInterval.Seconds()), h.Steer.PollIntervalSeconds)
 		}
 	}
 	if err := h.validateForge(); err != nil {

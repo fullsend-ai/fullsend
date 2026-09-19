@@ -64,6 +64,7 @@ sequenceDiagram
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
 | Content capture (Level 3) | Text, reasoning, tool calls and tool results (correlating ids) | Text, reasoning, tool calls (no correlating ids) — pi's parser emits neither ids nor tool results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | Text, reasoning, tool calls (no correlating ids) — codex's parser emits neither ids nor tool results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
 | Tool spans (`execute_tool`) | One per id-bearing tool call (server-side tools get none), up to 1,024 per iteration, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
+| Steer (absorb a work-item update mid-run, [ADR 0113](ADRs/0113-steer-the-running-agent-on-work-item-updates.md)) | Live — the message lands at the agent's next tool boundary, same process | Live — same, over `pi --mode rpc` | Interrupt and resume — the turn is stopped and the same session continues with the message; each interrupt leaves a dangling tool call in the transcript |
 
 All three run unattended in the same sandbox, behind the same egress allowlist. Stay on `claude`
 when you need a fallback chain. Choose `pi` when you want a non-Anthropic model, several vendors

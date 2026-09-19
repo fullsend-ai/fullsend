@@ -320,6 +320,11 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 A discrete unit of work within a [stage](#stage). For example, the triage stage may include steps for duplicate detection, reproducibility checking, and label assignment. "Stages and steps" is the agreed-upon workflow hierarchy for fullsend.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 
+### Steering
+
+Delivering an update to a work item into the agent run that is already working on that item, so its next turn acts on the item's current state instead of the state the run started with. Steering builds on run preservation and never replaces it: when a steer cannot be delivered — no acknowledgement, no time left, a runtime that cannot take one — the run behaves exactly as a preserved run does and the queued run does the work. A steer is content, never capability: it cannot widen tools, role, model, scope or network policy.
+See [Steering a run in flight](contributing/steering.md), [ADR 0113](ADRs/0113-steer-the-running-agent-on-work-item-updates.md), [ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md), and the versioned envelope contract in [normative/steer-envelope/v1](normative/steer-envelope/v1/README.md).
+
 ### Slash Command
 
 A GitHub comment in the form `/fs-triage`, `/fs-code`, `/fs-review`, etc., that manually triggers an agent workflow. The `/fs-` prefix namespaces fullsend commands to avoid collisions with other AI tools. Slash commands are parsed by the entry point and gated by an ACL — not every user can invoke every command. They provide an explicit human-initiated trigger alongside the automatic label-based triggers.

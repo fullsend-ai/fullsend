@@ -125,7 +125,21 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	return installClaudeHooks(sandboxName, hooksInput.SandboxHookConfig())
 }
 
-func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
+func (rt ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
+	feed, err := rt.startSteerFeed(ctx, params)
+	if err != nil {
+		return -1, err
+	}
+	if feed != nil {
+		// Poison the feed before it leaves the registry, so a steer that
+		// already looked it up is refused instead of silently accepted.
+		defer func() {
+			feed.markTerminal()
+			unregisterSteerFeed(params.SandboxName)
+		}()
+		defer func() { metrics.Steers = feed.steerResults() }()
+	}
+
 	cmd := buildRunCommand(params)
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -151,20 +165,40 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	}
 	// Always wrap handler to capture metrics regardless of custom/default path.
 	innerHandler := handler
+	agg := &claudeSteerAggregator{}
 	handler = func(evt AgentEvent) {
 		switch e := evt.(type) {
 		case InitEvent:
 			if metrics.Model == "" {
 				metrics.Model = e.Model
 			}
+			// The session_id on the system/init event names the session a
+			// later steer or --resume continues; it is constant for the
+			// life of the process, so the first one wins.
+			if metrics.SessionID == "" {
+				metrics.SessionID = e.SessionID
+			}
 		case TokensEvent:
 			// Capture cumulative token usage from the stream so cancelled
 			// runs (no ResultEvent) retain non-zero telemetry (#6905).
+			if feed != nil {
+				agg.onTokens(e, metrics)
+				break
+			}
 			metrics.InputTokens = e.InputTokens
 			metrics.OutputTokens = e.OutputTokens
 			metrics.CacheReadInputTokens = e.CacheRead
 			metrics.CacheCreationInputTokens = e.CacheWrite
 		case ResultEvent:
+			// A steered run produces one result per turn, so its totals are
+			// folded rather than overwritten (see claudeSteerAggregator for
+			// which fields add and which replace). A single-turn run keeps
+			// today's overwrite exactly.
+			if feed != nil {
+				agg.onResult(e, metrics)
+				steerCloseFeedIf(ctx, feed.noteTurnEnd(), feed, printer)
+				break
+			}
 			// Authoritative totals from the terminal result event overwrite
 			// the incremental snapshot.
 			metrics.NumTurns = e.NumTurns
@@ -174,6 +208,12 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 			metrics.ReasoningTokens = e.ReasoningTokens
 			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 			metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		case UserReplayEvent:
+			// The agent has consumed a mailbox line: the delivery ack for
+			// the opening prompt and for every steer after it.
+			if feed != nil {
+				steerCloseFeedIf(ctx, feed.noteEcho(e.At, e.ID, e.Content), feed, printer)
+			}
 		case ToolUseEvent:
 			metrics.ToolCalls.Add(1)
 		}
@@ -197,6 +237,31 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	}
 
 	return exitCode, nil
+}
+
+// startSteerFeed prepares a steerable run: it writes the opening prompt
+// into the mailbox the launch command will tail and registers the session
+// so Steer and Settle can find it. It returns nil for a run that is not
+// steerable, which is what keeps the ordinary path unchanged.
+//
+// The mailbox must exist before the launch: `tail -f` on a missing file
+// exits immediately, which would close the agent's stdin at once and turn
+// a steerable run into a prompt-less one.
+func (r ClaudeRuntime) startSteerFeed(ctx context.Context, params RunParams) (*steerFeed, error) {
+	if !params.Steerable {
+		return nil, nil
+	}
+	prompt := claudePrompt(params)
+	line, err := claudeInputLine(prompt)
+	if err != nil {
+		return nil, err
+	}
+	f := newSteerFeed(params.SandboxName, r.ConfigDir(), sandbox.ExecContext)
+	if err := f.seed(ctx, line, prompt); err != nil {
+		return nil, err
+	}
+	registerSteerFeed(params.SandboxName, f)
+	return f, nil
 }
 
 // ClearIterationArtifacts terminates processes the previous iteration left
@@ -348,15 +413,58 @@ func remapModel(name string, aliases map[string]string) string {
 	return name
 }
 
+// claudeBinaryVar holds the claude binary resolved before the
+// agent-writable .env is sourced.
+const claudeBinaryVar = "FULLSEND_CLAUDE_BIN"
+
+// claudeBinaryPin is the POSIX sh fragment that records where claude is.
+// `command -v` is a builtin; `readonly` is a special builtin, so a later
+// assignment in a sourced file is an error: under a POSIX sh such as dash
+// it aborts the sourcing shell, and under any shell the assignment fails
+// and the pinned value stands. Same shape as piBinaryPin and
+// codexBinaryPin.
+func claudeBinaryPin() string {
+	return `readonly ` + claudeBinaryVar + `="$(command -v claude)" && test -n "$` + claudeBinaryVar + `" || { echo 'fullsend: claude not found on PATH' >&2; exit 127; }`
+}
+
 func buildRunCommand(params RunParams) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
+	launch := fmt.Sprintf("cd %s && . %s && claude", params.RepoDir, envFile)
+	if params.Steerable {
+		// The prompt moves out of argv and into the mailbox, and stdin
+		// comes from a feeder that keeps the session open for steers.
+		configDir := ClaudeRuntime{}.ConfigDir()
+		// Both pins go before .env, which is agent-writable. The PATH pin
+		// protects the feeder that carries steers in; the binary pin
+		// protects the agent that carries the acknowledgement back out.
+		// The second matters more here than it did before this change:
+		// --replay-user-messages echoes are the ONLY proof a steer reached
+		// the real agent, so a `claude` shadowed by a planted PATH entry or
+		// shell function could swallow the steer and still emit a forged
+		// echo carrying the runner's own text — a delivery the runner would
+		// record as real. pi and codex already pin their binaries for the
+		// same reason; this branch is where Claude's stream first becomes
+		// load-bearing.
+		launch = fmt.Sprintf("cd %s && %s && %s && . %s && %s | \"$%s\"",
+			params.RepoDir, steerPathPin(), claudeBinaryPin(), envFile,
+			steerFeederFragment(configDir+"/"+steerMailboxName, configDir+"/"+steerFeederPidName),
+			claudeBinaryVar)
+	}
+
 	parts := []string{
-		fmt.Sprintf("cd %s && . %s && claude", params.RepoDir, envFile),
+		launch,
 		"--print",
 		"--verbose",
 		"--output-format stream-json",
+	}
+
+	if params.Steerable {
+		// --replay-user-messages echoes every consumed stdin line back on
+		// the output stream, which is how the runner knows a steer was
+		// actually delivered rather than merely written to the mailbox.
+		parts = append(parts, "--input-format stream-json", "--replay-user-messages")
 	}
 
 	if params.HooksSettingsPath != "" {
@@ -401,17 +509,34 @@ func buildRunCommand(params RunParams) string {
 		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
 	}
 
-	prompt := DefaultAgentPrompt
-	if params.Prompt != "" {
-		prompt = params.Prompt
-	}
 	parts = append(parts,
 		fmt.Sprintf("--agent '%s'", safe),
 		"--dangerously-skip-permissions",
-		fmt.Sprintf("'%s'", strings.ReplaceAll(prompt, "'", "'\\''")),
 	)
+	if !params.Steerable {
+		// A steerable run takes its opening prompt from the mailbox
+		// instead, so a steer is the same kind of message as the prompt
+		// and neither reaches the agent CLI's argv.
+		//
+		// Precisely: the text still transits the argv of the intermediate
+		// `sh -c` that runs the mailbox `printf`, because sandbox exec
+		// wires no stdin today. What this keeps it out of is the long-lived
+		// `claude` process's own argv, which is what a `ps` during the run
+		// would show. Plumbing the exec request's stdin field is tracked as
+		// a follow-up on #6959.
+		parts = append(parts, fmt.Sprintf("'%s'", strings.ReplaceAll(claudePrompt(params), "'", "'\\''")))
+	}
 
 	return strings.Join(parts, " ")
+}
+
+// claudePrompt is the run's opening message: the validation loop's
+// feedback prompt on a retry iteration, else the content-free default.
+func claudePrompt(params RunParams) string {
+	if params.Prompt != "" {
+		return params.Prompt
+	}
+	return DefaultAgentPrompt
 }
 
 // Claude Code reads settings from two separate files in the sandbox:
