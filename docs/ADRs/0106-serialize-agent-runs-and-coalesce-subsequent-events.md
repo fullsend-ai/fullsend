@@ -20,6 +20,13 @@ Date: 2026-09-02
 
 Accepted
 
+[#6957](https://github.com/fullsend-ai/fullsend/issues/6957) is the origin
+issue for the later steering work that builds on this preserve-and-coalesce
+decision. Its validation criteria still describe `harness.steer` as off by
+default; that criterion is superseded by the default-on decision in
+[PR #7461](https://github.com/fullsend-ai/fullsend/pull/7461) (ADR 0121,
+not on `main`). This ADR's decision is unchanged.
+
 ## Context
 
 Agent execution currently uses platform-specific concurrency controls that may
