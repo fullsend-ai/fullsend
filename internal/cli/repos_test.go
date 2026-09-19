@@ -790,6 +790,15 @@ func writeTestManifest(t *testing.T, content string) string {
 	return p
 }
 
+// assertDirectPushPath fails immediately if the install/uninstall took
+// the fork path. CollaboratorPermissions key-format drift would otherwise
+// send these tests into waitForFork, which hangs for the full 5m timeout
+// (#6501 supplementary finding A / #7457).
+func assertDirectPushPath(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	assert.Empty(t, fc.CreatedForks, "install should push directly, not fork")
+}
+
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
@@ -859,6 +868,7 @@ func TestRunReposInstall_DryRun(t *testing.T) {
 		testClient:             fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_Success(t *testing.T) {
@@ -876,6 +886,7 @@ func TestRunReposInstall_Success(t *testing.T) {
 		testClient:             fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
@@ -982,6 +993,7 @@ func TestRunReposUninstall_DryRun(t *testing.T) {
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_Success(t *testing.T) {
@@ -995,6 +1007,7 @@ func TestRunReposUninstall_Success(t *testing.T) {
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
@@ -1018,6 +1031,7 @@ func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
 	assert.Empty(t, fc.CommittedFiles, "default path should not push deletions to the default branch")
 	assert.NotEmpty(t, fc.DeletedVariables, "variables should still be deleted immediately")
 	assert.NotEmpty(t, fc.DeletedSecrets, "secrets should still be deleted immediately")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_DirectPushesToDefaultBranch(t *testing.T) {
@@ -1044,6 +1058,7 @@ func TestRunReposUninstall_DirectPushesToDefaultBranch(t *testing.T) {
 		}
 	}
 	assert.True(t, hasDelete, "--direct commit should include file deletions")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_NoMatch(t *testing.T) {
@@ -1116,6 +1131,7 @@ github:
 		testClient:             fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 // --- repos install flag tests ---
@@ -1290,6 +1306,7 @@ func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
 		testClient:             fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, loadErr)
@@ -1315,6 +1332,7 @@ func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
 	require.NoError(t, loadErr)
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
@@ -1371,6 +1389,7 @@ func TestRunReposInstall_BootstrapDryRun(t *testing.T) {
 
 	_, statErr := os.Stat(manifestPath)
 	assert.True(t, os.IsNotExist(statErr), "dry-run should not create manifest file")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_NoManifestNoRepos(t *testing.T) {
@@ -1406,6 +1425,7 @@ func TestRunReposInstall_ConvergesAlreadyInstalled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "https://mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"])
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_ConvergesAlreadyInstalled_DryRun(t *testing.T) {
@@ -1422,6 +1442,7 @@ func TestRunReposInstall_ConvergesAlreadyInstalled_DryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://old-mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"],
 		"dry-run should not modify variables")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_InvalidForge(t *testing.T) {
@@ -1538,6 +1559,7 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 		"project number should be auto-derived from testProjectNumberFn")
 	assert.Equal(t, "global", opts.inferenceRegion,
 		"inference region should default to global")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
@@ -1561,6 +1583,7 @@ func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, lookupCalled,
 		"project number lookup should be skipped when --inference-wif-provider is set")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
@@ -1583,6 +1606,7 @@ func TestRunReposInstall_DefaultsInferenceRegion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "global", opts.inferenceRegion,
 		"inference region should default to global when --inference-project is set")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_ProjectNumberLookupError(t *testing.T) {
@@ -1634,6 +1658,7 @@ func TestRunReposInstall_PerRepoOverrideFlags_Applied(t *testing.T) {
 	assert.Equal(t, "acme/web", newEntry.Name)
 	assert.Equal(t, "v2.0.0", newEntry.FullsendRef)
 	assert.Equal(t, "https://custom-mint.example.com", newEntry.MintURL)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
@@ -1646,6 +1671,7 @@ func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
 		testClient:  fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_ManifestValidationFailure(t *testing.T) {
@@ -1681,6 +1707,7 @@ func TestRunReposInstall_GlobFilterSkipped(t *testing.T) {
 		testClient:  fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_ConvergesWithUpgrade(t *testing.T) {
@@ -1696,6 +1723,7 @@ func TestRunReposInstall_ConvergesWithUpgrade(t *testing.T) {
 		testClient:  fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_ConvergesWithUpgrade_DryRun(t *testing.T) {
@@ -1711,6 +1739,7 @@ func TestRunReposInstall_ConvergesWithUpgrade_DryRun(t *testing.T) {
 		testClient:  fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_SingleWordFilterSkipped(t *testing.T) {
@@ -1724,6 +1753,7 @@ func TestRunReposInstall_SingleWordFilterSkipped(t *testing.T) {
 		testClient:  fc,
 	})
 	require.NoError(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_NonGitHubForgeWarnings(t *testing.T) {
@@ -1753,6 +1783,7 @@ gitlab:
 		testClient:      fc,
 	})
 	require.Error(t, err)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
@@ -1779,6 +1810,7 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	require.Equal(t, 2, len(m.GitHub.Repos))
 	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.GitHub.Repos[1].AllowedRemoteResources)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {
@@ -1799,6 +1831,7 @@ func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "repos failed")
 	assert.Empty(t, fc.CommittedFiles, "scaffold should not be committed when variable sync fails")
+	assertDirectPushPath(t, fc)
 }
 
 // --- repos uninstall mode tests ---
@@ -1842,6 +1875,7 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 1, len(m.GitHub.Repos), "manifest should have 1 repo after removing acme/api")
 	assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_ManifestOnly(t *testing.T) {
@@ -1863,6 +1897,7 @@ func TestRunReposUninstall_ManifestOnly(t *testing.T) {
 	assert.Equal(t, 1, len(m.GitHub.Repos), "--manifest-only should remove from manifest")
 	assert.Equal(t, "true", fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"],
 		"--manifest-only should not touch forge variables")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_UninstallOnly(t *testing.T) {
@@ -1882,6 +1917,7 @@ func TestRunReposUninstall_UninstallOnly(t *testing.T) {
 	require.NoError(t, loadErr)
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 2, len(m.GitHub.Repos), "--uninstall-only should keep manifest entry")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
@@ -1901,6 +1937,7 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 	require.NoError(t, loadErr)
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 2, len(m.GitHub.Repos), "dry-run should not modify manifest")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
@@ -1924,6 +1961,7 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 1, len(m.GitHub.Repos), "only acme/web should be removed from manifest (acme/api failed)")
 	assert.Equal(t, "acme/api", m.GitHub.Repos[0].Name, "failed repo should remain in manifest")
+	assertDirectPushPath(t, fc)
 }
 
 // --- forge-aware CLI integration tests ---
@@ -2004,6 +2042,7 @@ gitlab:
 	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected the uninstall branch commit to be recorded")
 	assert.Contains(t, fc.CommittedFilesToBranch[0].Message, "[skip ci]",
 		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
@@ -2048,6 +2087,7 @@ gitlab:
 	require.NotEmpty(t, fc.CreatedProposals, "expected a scaffold PR to be created")
 	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
 		"GitLab scaffold MR title must include [skip ci] to suppress dispatch")
+	assertDirectPushPath(t, fc)
 }
 
 func gitlabInstallOpts(manifestPath string, fc *forge.FakeClient) *reposInstallConfig {
@@ -2198,6 +2238,7 @@ gitlab:
 	if len(fc.CommittedFilesToBranch) < firstCommitCount {
 		t.Fatalf("second install dropped commits: first=%d second=%d", firstCommitCount, len(fc.CommittedFilesToBranch))
 	}
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
@@ -2228,6 +2269,7 @@ func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
 	assert.Equal(t, "acme/web", newEntry.Name)
 	require.NotNil(t, newEntry.Vendor, "vendor should be persisted on new entry")
 	assert.True(t, *newEntry.Vendor)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_VendorFalsePersistsWhenDefaultTrue(t *testing.T) {
@@ -2267,6 +2309,7 @@ github:
 	assert.Equal(t, "acme/web", newEntry.Name)
 	require.NotNil(t, newEntry.Vendor, "vendor=false should be persisted when defaults.vendor=true")
 	assert.False(t, *newEntry.Vendor)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_VendorNotPersistedWhenUnchanged(t *testing.T) {
@@ -2296,6 +2339,7 @@ func TestRunReposInstall_VendorNotPersistedWhenUnchanged(t *testing.T) {
 	newEntry := m.GitHub.Repos[1]
 	assert.Equal(t, "acme/web", newEntry.Name)
 	assert.Nil(t, newEntry.Vendor, "vendor should not be set when --vendor was not passed")
+	assertDirectPushPath(t, fc)
 }
 
 func TestReposInstallCmd_GitLabURLFlag(t *testing.T) {
@@ -2328,6 +2372,7 @@ func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
 	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
 	assert.Len(t, m.GitLab.Repos, 1)
 	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_GitLabURLOverridesExisting(t *testing.T) {
@@ -2352,6 +2397,7 @@ gitlab:
 	require.NoError(t, loadErr)
 	require.NotNil(t, m.GitLab)
 	assert.Equal(t, "https://new.gitlab.example.com", m.GitLab.URL)
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
@@ -2378,6 +2424,7 @@ gitlab:
 	require.NotNil(t, m.GitLab)
 	assert.Equal(t, "https://old.gitlab.example.com", m.GitLab.URL,
 		"dry-run should not modify the manifest URL on disk")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
@@ -2402,6 +2449,7 @@ func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
 	_, statErr := os.Stat(manifestPath)
 	assert.True(t, os.IsNotExist(statErr),
 		"dry-run bootstrap should not create the manifest file on disk")
+	assertDirectPushPath(t, fc)
 }
 
 func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
@@ -2426,6 +2474,7 @@ func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
 		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
 		assert.Len(t, m.GitLab.Repos, 1)
 		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+		assertDirectPushPath(t, fc)
 	})
 
 	t.Run("manifest with existing GitHub repos", func(t *testing.T) {
@@ -2458,6 +2507,7 @@ github:
 		require.NotNil(t, m.GitHub)
 		assert.Len(t, m.GitHub.Repos, 1)
 		assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+		assertDirectPushPath(t, fc)
 	})
 }
 
