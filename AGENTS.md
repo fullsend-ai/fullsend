@@ -52,6 +52,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |
 | [Bot Identities](docs/contributing/bot-identities.md) | Referencing bot identities in code — covers GitHub App logins and shared identities |
+| [GitLab Role Credentials](docs/contributing/gitlab-role-credentials.md) | GitLab Poller/Analyst/Coder credential contract, migration gate, and selection rules — covers secret names, job-to-role mapping, and no-silent-fallback |
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |

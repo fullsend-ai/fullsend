@@ -44,3 +44,12 @@ The `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits i
 ### `gh pr view --json` format
 
 The `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
+
+## GitLab responsibility identities
+
+GitLab does not use GitHub Apps. Today's runtime is a single project
+access token (`fullsend-bot` / `FULLSEND_FORGE_TOKEN`). The three-role
+contract (Poller, Analyst, Coder) is defined in
+[gitlab-role-credentials.md](gitlab-role-credentials.md); it is not yet
+provisioned or routed. Until that rollout, do not assume GitLab jobs
+have per-role identities analogous to the GitHub App table above.

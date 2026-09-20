@@ -58,6 +58,14 @@ const (
 	// Secrets — GitLab only.
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
+	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
+	// These are not required on existing installations. Probe/converge must
+	// not treat their absence as health drift while migration mode is
+	// disabled. Provisioning is #7498; routing is #7499.
+	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
+	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
+	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
+
 	// SecretDispatch is the shared HMAC secret used to sign dispatch
 	// variables and poll-state documents. GitLab install/converge
 	// auto-provisions it as a masked, protected CI/CD variable so
@@ -89,6 +97,12 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
+
+	// VarGitLabRoleMigration is the explicit Poller/Analyst/Coder
+	// migration/rollback gate. Absent or empty means disabled: jobs use
+	// only FULLSEND_FORGE_TOKEN. Valid values: disabled, migrating,
+	// rollback, enforced. See internal/gitlabroles.
+	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 )
 
 // ErrNotFound indicates a requested resource was not found on the forge.

@@ -359,6 +359,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
 - `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
+- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_MIGRATION` — reserved names for the three-role credential contract ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Not provisioned by `repos install`; absence is not a health failure.
 
 **Poll-state branches:** `repos install` (on both fresh installs and
 re-run/convergence of already-enrolled repos) creates

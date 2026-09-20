@@ -296,6 +296,13 @@ Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
+> **See also (#7497):** The three-role Poller/Analyst/Coder credential
+> contract is specified in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> The shared `FULLSEND_FORGE_TOKEN` path remains the runtime until
+> provisioning and routing land. This ADR's single-bot identity is the
+> current implementation, not the target model.
+
 ### Credential model
 
 A Maintainer-role project access token with `api` scope, created during
