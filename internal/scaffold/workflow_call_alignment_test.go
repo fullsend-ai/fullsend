@@ -827,10 +827,15 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 	// listing call (or fails when it is empty) and, for the per-page content
 	// call, the page body from contents (a missing entry is inert prose; a
 	// value of "FAIL" is an unreadable page). Returns the step output plus
-	// whether the step set skipped=true.
+	// whether the step set skipped=true. A non-empty yqStub shadows the real
+	// yq on PATH for that run.
+	yqStub := ""
 	run := func(t *testing.T, filesJSON string, contents map[string]string) (string, bool) {
 		t.Helper()
 		dir := t.TempDir()
+		if yqStub != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "yq"), []byte(yqStub), 0o755))
+		}
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "files.json"), []byte(filesJSON), 0o600))
 		pages := filepath.Join(dir, "pages")
 		for path, body := range contents {
@@ -969,6 +974,30 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		"js-vue fence":      "# Page\n\n```js-vue\n{{ 40 + 2 }}\n```\n",
 		"spaced head key":   "---\nhead :\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
 		"include directive": "# Page\n\n<!-- @include: ../../secrets.md -->\n",
+		// #6587 review: frontmatter is YAML, so every spelling below is the
+		// `head` key VitePress reads (gray-matter + js-yaml) and none of them
+		// is the text `head:` at the start of a line. js-yaml stringifies a
+		// sequence key, so `[head]:` is the same key too.
+		"double-quoted head key": "---\n\"head\":\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"single-quoted head key": "---\n'head':\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"flow mapping head key":  "---\n{head: [[script, {src: \"https://evil.example/x.js\"}]]}\n---\n# Page\n",
+		"escaped head key":       "---\n\"\\x68ead\": [[script, {src: x}]]\n---\n# Page\n",
+		"explicit head key":      "---\n? head\n: - - script\n    - src: x\n---\n# Page\n",
+		"merged head key":        "---\nx: &x\n  head: [[script, {src: x}]]\n<<: *x\n---\n# Page\n",
+		"aliased head key":       "---\nname: &k head\n*k : [[script, {src: x}]]\n---\n# Page\n",
+		"sequence head key":      "---\n[head]: [[script, {src: x}]]\n---\n# Page\n",
+		"mixed-case head key":    "---\nHead: [[script, {src: x}]]\n---\n# Page\n",
+		"head key after a BOM":   "\ufeff---\n\"head\": [[script, {src: x}]]\n---\n# Page\n",
+		"head key with CRLF":     "---\r\n\"head\": [[script, {src: x}]]\r\n---\r\n# Page\r\n",
+		"unclosed frontmatter":   "---\n\"head\": [[script, {src: x}]]\n",
+		// gray-matter picks the engine from the text after the opening ---,
+		// and its js engine evals the block: only a bare --- is parsed here.
+		"json frontmatter": "---json\n{\"head\": [[\"script\", {\"src\": \"x\"}]]}\n---\n# Page\n",
+		"toml frontmatter": "---toml\nhead = [[\"script\", {src = \"x\"}]]\n---\n# Page\n",
+		"js frontmatter":   "---js\n{ head: [[\"script\", { src: \"x\" }]] }\n---\n# Page\n",
+		// Anything the parser cannot vouch for keeps the review.
+		"unparseable frontmatter": "---\ndescription: [never closed\n---\n# Page\n",
+		"non-mapping frontmatter": "---\n- head\n---\n# Page\n",
 	} {
 		t.Run("executable markup: "+name, func(t *testing.T) {
 			out, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
@@ -981,6 +1010,26 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		body := "# Page\n\nUse `{{ github.event }}` or `<script>` in prose.\n\n```html\n<script setup>\nimport x from 'y'\n</script>\n{{ expr }}\n```\n"
 		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
 		assert.True(t, skipped, "VitePress renders fenced and inline code verbatim — it cannot execute")
+	})
+
+	// The frontmatter gate must not end the skip for the pages it exists
+	// for: every docs/agents/ page carries a description. Only a root-level
+	// head key counts, and only in a leading block — a thematic break
+	// further down does not open frontmatter.
+	const inertFrontmatter = "---\ndescription: How the review agent works.\nsidebar_position: 2\nnav:\n  head: nested, so not the key VitePress reads\n---\n# Page\n\n---\n\nhead: of the queue\n\n---\n"
+	t.Run("inert frontmatter still skips", func(t *testing.T) {
+		if _, err := exec.LookPath("yq"); err != nil {
+			t.Skip("yq not available")
+		}
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: inertFrontmatter})
+		assert.True(t, skipped, "frontmatter without a root head key is inert")
+	})
+
+	t.Run("yq failure does not skip", func(t *testing.T) {
+		yqStub = "#!/usr/bin/env bash\nexit 1\n"
+		defer func() { yqStub = "" }()
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: inertFrontmatter})
+		assert.False(t, skipped, "frontmatter nobody could parse must fail open into a review")
 	})
 
 	t.Run("unreadable page does not skip", func(t *testing.T) {

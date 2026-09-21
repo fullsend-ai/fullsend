@@ -559,6 +559,16 @@ jobs:
             esac
             return 1
           }
+          # True when there is no frontmatter block, or yq reads it as one
+          # mapping whose every key is a plain string other than head. A parse
+          # error, a second document, any other root, a merge (<<), alias or
+          # sequence key, or no usable yq all keep the review.
+          fm_inert() {
+            [[ -z "$1" ]] && return 0
+            local bad
+            bad=$(yq '[keys[] | select(tag != "!!str" or test("(?i)^head$"))] | length' <<< "$1" 2>/dev/null) \
+              && [[ "${bad}" == "0" ]]
+          }
           if [[ -z "${PR_NUMBER}" || "${PR_NUMBER}" == "null" ]]; then
             exit 0
           fi
@@ -604,13 +614,31 @@ jobs:
             # renders verbatim, EXCEPT a fence whose info string ends in -vue,
             # which VitePress evaluates; then inline code spans are stripped.
             # Matching is case-insensitive because config.ts KNOWN_TAGS is /i,
-            # so <SCRIPT> renders too; head: tolerates spaces before the colon;
-            # and the attribute/directive pattern runs over the page with
-            # newlines flattened, so a binding wrapped onto its own line still
-            # matches. An unreadable page never skips.
+            # so <SCRIPT> renders too; and the attribute/directive pattern runs
+            # over the page with newlines flattened, so a binding wrapped onto
+            # its own line still matches. An unreadable page never skips.
+            #
+            # Frontmatter is parsed, not pattern-matched: "head":, 'head':,
+            # {head: ...}, ? head, a merged or aliased key and [head]: (js-yaml
+            # stringifies a sequence key) are all the key VitePress reads. The
+            # block is cut the way gray-matter cuts it — after an optional BOM,
+            # from an opening --- line to the next line that starts with --- —
+            # and handed to fm_inert. Text after the opening --- names another
+            # gray-matter engine (---json; ---js is eval'd), so it counts as a
+            # head key.
             BODY=$(gh api -H 'Accept: application/vnd.github.raw' "${url}") || {
               skippable=false; break
             }
+            FM=$(awk '
+              { sub(/\r$/, "") }
+              NR == 1 {
+                if ($0 !~ /^---/ || $0 ~ /^----/) exit
+                if ($0 !~ /^---[[:space:]]*$/) { print "head:"; exit }
+                next
+              }
+              /^---/ { exit }
+              { print }
+            ' <<< "${BODY#$'\xef\xbb\xbf'}")
             SCANNED=$(awk '
               /^```/ {
                 if (fence) { fence = 0 }
@@ -619,7 +647,8 @@ jobs:
               }
               !fence || vue
             ' <<< "${BODY}" | sed 's/`[^`]*`//g')
-            if grep -Eiq '<script|<style|^head[[:space:]]*:|\{\{|@include[[:space:]]*:' <<< "${SCANNED}" \
+            if ! fm_inert "${FM}" \
+                || grep -Eiq '<script|<style|\{\{|@include[[:space:]]*:' <<< "${SCANNED}" \
                 || printf '%s' "${SCANNED}" | tr '\n' ' ' \
                    | grep -Eiq '<[A-Za-z][^>]*[[:space:]](:|@|v-|on)[A-Za-z-]+='; then
               echo "::notice::${path} carries executable markup — not skipping review"
