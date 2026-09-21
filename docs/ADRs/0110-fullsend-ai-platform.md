@@ -1,5 +1,5 @@
 ---
-title: "110. Add a managed tenant platform"
+title: "110. fullsend-ai/platform"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - deployment
 ---
 
-# 110. Add a managed tenant platform
+# fullsend-ai/platform
 
 Date: 2026-09-21
 
