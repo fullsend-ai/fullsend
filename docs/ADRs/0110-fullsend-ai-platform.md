@@ -30,10 +30,10 @@ At enterprise or foundation scale, an organization may instead need to
 operate those capabilities across many repositories, forge organizations, and
 work trackers. When the organization also needs site-wide controls, the
 distributed operational responsibility of self-managed per-repository
-installations becomes an anti-feature. The [agent infrastructure problem
-document](../problems/agent-infrastructure.md) describes the broader trade-offs;
-the [security threat model](../problems/security-threat-model.md) continues to
-apply to either deployment model.
+installations becomes an anti-feature.
+
+See also the [agent infrastructure problem
+document](../problems/agent-infrastructure.md).
 
 ## Decision
 
