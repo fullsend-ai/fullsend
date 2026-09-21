@@ -474,10 +474,12 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			if !oFlags.syncWorkspace {
+			oFlags.syncWorkspaceSet = cmd.Flags().Changed("sync-workspace")
+			if !oFlags.syncWorkspaceSet {
 				if v := os.Getenv("FULLSEND_SYNC_WORKSPACE"); v != "" {
 					if b, err := strconv.ParseBool(v); err == nil {
 						oFlags.syncWorkspace = b
+						oFlags.syncWorkspaceSet = true
 					}
 				}
 			}
@@ -520,10 +522,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Header("Running agent: " + agentName)
 	printer.Blank()
 
-	if !oFlags.syncWorkspace {
+	if !oFlags.syncWorkspaceSet {
 		if v := os.Getenv("FULLSEND_SYNC_WORKSPACE"); v != "" {
 			if b, err := strconv.ParseBool(v); err == nil {
 				oFlags.syncWorkspace = b
+				oFlags.syncWorkspaceSet = true
 			}
 		}
 	}
@@ -2684,7 +2687,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		syncStart := time.Now()
 		printer.StepStart("Synchronizing sandbox changes to workspace")
 		syncExcludes := []string{".git"}
-		if rel, ok := outputDirExcludeRel(hostRepositoryDir, outputBase); ok {
+		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
 			syncExcludes = append(syncExcludes, rel)
 		}
 		if err := syncWorkspaceDir(hostRepositoryDownloadDir, hostRepositoryDir, syncExcludes); err != nil {
@@ -4648,6 +4651,29 @@ func outputDirExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 	return rel, true
 }
 
+// syncOutputExcludeRel returns the relative path from hostRepositoryDir to outputBase
+// when outputBase is safely contained inside hostRepositoryDir (including multi-segment
+// paths such as "build/output" or ".fullsend/runs"). Returns ok=false when outputBase
+// is outside the repo, identical to the repo root, or invalid.
+func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
+	if hostRepositoryDir == "" || outputBase == "" {
+		return "", false
+	}
+	absRepo, err := filepath.Abs(hostRepositoryDir)
+	if err != nil {
+		return "", false
+	}
+	absOut, err := filepath.Abs(outputBase)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absRepo, absOut)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", false
+	}
+	return filepath.Clean(rel), true
+}
+
 // syncWorkspaceDir synchronizes files from srcDir into dstDir, mirroring additions,
 // modifications, and deletions, while strictly preserving paths matching excludes
 // (such as ".git").
@@ -4767,6 +4793,9 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 
 		srcPath := filepath.Join(absSrc, rel)
 		if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
+			if d.IsDir() && isAncestorOfExcludedPath(rel, excludes) {
+				return nil
+			}
 			if err := os.RemoveAll(path); err != nil {
 				return err
 			}
@@ -4788,6 +4817,17 @@ func isExcludedPath(relPath string, excludes []string) bool {
 	for _, ex := range excludes {
 		exClean := filepath.Clean(ex)
 		if relClean == exClean || strings.HasPrefix(relClean, exClean+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAncestorOfExcludedPath(relPath string, excludes []string) bool {
+	relClean := filepath.Clean(relPath)
+	for _, ex := range excludes {
+		exClean := filepath.Clean(ex)
+		if strings.HasPrefix(exClean, relClean+string(filepath.Separator)) {
 			return true
 		}
 	}
