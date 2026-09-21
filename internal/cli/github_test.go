@@ -985,6 +985,7 @@ func TestRunGitHubSyncScaffold_CommitsFiles(t *testing.T) {
 		{Name: ".fullsend", FullName: "acme/.fullsend"},
 	}
 	client.AuthenticatedUser = "testuser"
+	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
@@ -1004,6 +1005,7 @@ func TestRunGitHubSyncScaffold_VendoredMarker(t *testing.T) {
 		"acme/.fullsend/.defaults/action.yml": []byte("marker"),
 		"acme/.fullsend/config.yaml":          []byte("repos: {}\n"),
 	}
+	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
 	printer := ui.New(&discardWriter{})
 
 	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
@@ -1031,6 +1033,7 @@ func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
 		{Name: ".fullsend", FullName: "acme/.fullsend", DefaultBranch: "main"},
 	}
 	client.AuthenticatedUser = "acme"
+	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
 	printer := ui.New(&discardWriter{})
 
 	// direct=false means PR-based delivery (the default).
@@ -1041,6 +1044,81 @@ func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
 	assert.NotEmpty(t, client.CreatedBranches, "expected a scaffold branch to be created")
 	assert.NotEmpty(t, client.CreatedProposals, "expected a scaffold PR to be created")
 	assert.Empty(t, client.CommittedFiles, "expected no direct commits when using PR delivery")
+}
+
+func TestRunGitHubSyncScaffold_MissingMintURL(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.AuthenticatedUser = "testuser"
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_MINT_URL")
+	assert.Contains(t, err.Error(), "github setup acme")
+	assert.Contains(t, buf.String(), "does not create dispatch credentials")
+	assert.Empty(t, client.CommittedFiles, "must not write workflows when mint URL is missing")
+	assert.Empty(t, client.CreatedProposals, "must not open a scaffold PR when mint URL is missing")
+}
+
+func TestRunGitHubSyncScaffold_RepoMintURLFallback(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.AuthenticatedUser = "testuser"
+	client.VariablesExist["acme/.fullsend/FULLSEND_MINT_URL"] = true
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "using .fullsend repo variable")
+	require.NotEmpty(t, client.CommittedFiles)
+}
+
+func TestRunGitHubSyncScaffold_MintURLCheckErrorContinues(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.AuthenticatedUser = "testuser"
+	client.Errors["OrgVariableExists"] = fmt.Errorf("forbidden")
+	client.Errors["RepoVariableExists"] = fmt.Errorf("forbidden")
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Could not check FULLSEND_MINT_URL")
+	assert.Contains(t, buf.String(), "github setup acme")
+	require.NotEmpty(t, client.CommittedFiles, "permission errors on the mint URL lookup must not block scaffold sync")
+}
+
+func TestRunGitHubSyncScaffold_RepoMintURLCheckErrorContinues(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.AuthenticatedUser = "testuser"
+	client.Errors["RepoVariableExists"] = fmt.Errorf("forbidden")
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Could not check FULLSEND_MINT_URL")
+	assert.Contains(t, buf.String(), "forbidden")
+	require.NotEmpty(t, client.CommittedFiles)
+}
+
+func TestGitHubSyncScaffoldCmd_LongMentionsMintURL(t *testing.T) {
+	cmd := newGitHubSyncScaffoldCmd()
+	assert.Contains(t, cmd.Long, "FULLSEND_MINT_URL")
+	assert.Contains(t, cmd.Long, "github setup")
 }
 
 func TestGitHubSyncScaffoldCmd_HasDirectFlag(t *testing.T) {

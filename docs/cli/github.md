@@ -15,7 +15,7 @@ Configure fullsend on GitHub organizations and repositories without requiring GC
 | `fullsend github unenroll <org> [repo...]` | Disable repositories from agent workflows |
 | `fullsend github set <target> <key> <value>` | Update a single config value (secret or variable) |
 | `fullsend github status <org>` | Analyze GitHub-side installation state |
-| `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
+| `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version (refuses if `FULLSEND_MINT_URL` is missing) |
 | `fullsend github uninstall <org>` | Remove fullsend GitHub configuration |
 
 ## `github setup`
@@ -135,7 +135,15 @@ fullsend github status <org>
 
 ## `github sync-scaffold`
 
-Updates workflow templates in enrolled repositories to match the current CLI version.
+Updates workflow templates in the `.fullsend` config repo to match the current CLI version. This command does **not** create or migrate dispatch credentials.
+
+Current templates require `vars.FULLSEND_MINT_URL`. If the org-level `FULLSEND_MINT_URL` variable (and the `.fullsend` repo-level copy) is missing, `sync-scaffold` refuses to write workflows and prints a remediation command. Create the variable first:
+
+```bash
+fullsend github setup <org> --mint-url=<MINT_URL> --skip-app-setup
+```
+
+Hosted community mint users can omit `--mint-url`. Then re-run:
 
 ```bash
 fullsend github sync-scaffold <org>

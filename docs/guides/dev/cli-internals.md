@@ -52,7 +52,7 @@ fullsend
 │   ├── set          <target> <key> <value>  # Update a config value
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
-│   └── sync-scaffold <org>                  # Update workflow templates
+│   └── sync-scaffold <org>                  # Update workflow templates (refuses if mint URL missing)
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
 │   ├── migrate      <org>                   # Migrate org from per-org to per-repo install

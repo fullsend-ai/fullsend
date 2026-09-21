@@ -1564,8 +1564,12 @@ func newGitHubSyncScaffoldCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync-scaffold <org>",
 		Short: "Update workflow templates in .fullsend",
-		Long:  "Re-commits scaffold files (shim and maintenance workflows) to the .fullsend repo without touching secrets, variables, or enrollment. Useful after fullsend version upgrades. Idempotent and safe to run repeatedly.\n\nBy default, changes are delivered via a pull request. Use --direct to push to the default branch instead.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Re-commits scaffold files (shim and maintenance workflows) to the .fullsend repo without touching secrets, variables, or enrollment. Useful after fullsend version upgrades. Idempotent and safe to run repeatedly.
+
+Current templates require vars.FULLSEND_MINT_URL. If that org variable (and the .fullsend repo-level copy) is missing, the command refuses to update workflows and prints a remediation command — workflow-only upgrades are not sufficient to create dispatch credentials. Re-run fullsend github setup <org> --mint-url=<MINT_URL> --skip-app-setup to create the variable, then retry. Hosted community mint users can omit --mint-url.
+
+By default, changes are delivered via a pull request. Use --direct to push to the default branch instead.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			org := args[0]
 			if err := validateOrgName(org); err != nil {
@@ -1590,7 +1594,7 @@ func newGitHubSyncScaffoldCmd() *cobra.Command {
 	return cmd
 }
 
-// runGitHubSyncScaffold runs only the WorkflowsLayer.
+// runGitHubSyncScaffold runs only the WorkflowsLayer after a mint-URL preflight.
 func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui.Printer, org string, direct bool) error {
 	printer.Banner(Version())
 	printer.Blank()
@@ -1617,6 +1621,10 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 		return fmt.Errorf("reading config.yaml: %w", cfgErr)
 	}
 
+	if err := checkScaffoldMintURL(ctx, client, printer, org); err != nil {
+		return err
+	}
+
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 	wfLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(direct).WithUpstreamRef(upstreamRef, upstreamTag)
 	if id, idErr := client.GetAuthenticatedUserIdentity(ctx); idErr == nil {
@@ -1630,6 +1638,45 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 	printer.StepDone("Scaffold sync complete for " + org)
 	return nil
+}
+
+// checkScaffoldMintURL refuses to rewrite OIDC mint workflows when neither
+// the org-level FULLSEND_MINT_URL variable nor the .fullsend repo-level copy
+// exists. sync-scaffold does not create dispatch credentials; a missing
+// variable is the PAT-to-OIDC upgrade gap. Permission errors on
+// the lookup are non-fatal so a token without admin:org can still sync.
+func checkScaffoldMintURL(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
+	const mintURLVar = "FULLSEND_MINT_URL"
+
+	orgExists, orgErr := client.OrgVariableExists(ctx, org, mintURLVar)
+	repoExists, repoErr := client.RepoVariableExists(ctx, org, forge.ConfigRepoName, mintURLVar)
+
+	if orgExists || repoExists {
+		if orgExists {
+			printer.StepDone(mintURLVar + " org variable exists")
+		} else {
+			printer.StepWarn(mintURLVar + " org variable is not set; using " + forge.ConfigRepoName + " repo variable")
+		}
+		return nil
+	}
+
+	if orgErr != nil || repoErr != nil {
+		errMsg := ""
+		if orgErr != nil {
+			errMsg = orgErr.Error()
+		} else {
+			errMsg = repoErr.Error()
+		}
+		printer.StepWarn("Could not check " + mintURLVar + ": " + errMsg)
+		printer.StepInfo("Continuing with workflow sync. If workflows fail with empty MINT_URL, run:")
+		printer.StepInfo(fmt.Sprintf("  fullsend github setup %s --mint-url=<MINT_URL> --skip-app-setup", org))
+		return nil
+	}
+
+	printer.StepFail(mintURLVar + " is not set")
+	printer.StepInfo("sync-scaffold only updates workflow templates; it does not create dispatch credentials")
+	printer.StepInfo(fmt.Sprintf("Create it with: fullsend github setup %s --mint-url=<MINT_URL> --skip-app-setup", org))
+	return fmt.Errorf("%s is not set; sync-scaffold does not create dispatch credentials. Run: fullsend github setup %s --mint-url=<MINT_URL> --skip-app-setup", mintURLVar, org)
 }
 
 // resolveReviewAppClientID attempts to look up the review agent's OAuth
