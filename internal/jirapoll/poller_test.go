@@ -2669,7 +2669,7 @@ func TestPoller_DispatchesStructuredEventPayload(t *testing.T) {
 				Role:         "code",
 				SourceRepo:   "acme/platform",
 				EventType:    "comment_added",
-				EventPayload: json.RawMessage(`{"entity":{"key":"PROJ-123"}}`),
+				EventPayload: json.RawMessage(`{"entity":{"key":"PROJ-123"},"comment":{"id":"comment-456"},"pull_request":{"head":{"sha":"abc1234"}}}`),
 				StatusRepo:   "acme/platform",
 				StatusNumber: "100",
 			},
@@ -2691,5 +2691,30 @@ func TestPoller_DispatchesStructuredEventPayload(t *testing.T) {
 	}
 	if !strings.Contains(string(content), `"event_payload": {`) {
 		t.Errorf("event_payload missing structured object format:\n%s", string(content))
+	}
+
+	// Verify unmarshaling into a matrix slice of maps (matching GitHub Actions strategy matrix)
+	var matrix []map[string]any
+	if err := json.Unmarshal(content, &matrix); err != nil {
+		t.Fatalf("unmarshal into matrix: %v", err)
+	}
+	if len(matrix) != 1 {
+		t.Fatalf("matrix len = %d, want 1", len(matrix))
+	}
+	payloadMap, ok := matrix[0]["event_payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("event_payload is type %T, want map[string]any", matrix[0]["event_payload"])
+	}
+	commentMap, ok := payloadMap["comment"].(map[string]any)
+	if !ok || commentMap["id"] != "comment-456" {
+		t.Errorf("payloadMap[comment][id] = %v, want comment-456", payloadMap["comment"])
+	}
+	prMap, ok := payloadMap["pull_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("payloadMap[pull_request] is type %T, want map[string]any", payloadMap["pull_request"])
+	}
+	headMap, ok := prMap["head"].(map[string]any)
+	if !ok || headMap["sha"] != "abc1234" {
+		t.Errorf("payloadMap[pull_request][head][sha] = %v, want abc1234", headMap["sha"])
 	}
 }
