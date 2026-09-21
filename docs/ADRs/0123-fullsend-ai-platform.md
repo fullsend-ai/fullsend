@@ -55,6 +55,17 @@ A tenant may span multiple forge organizations, repositories, and Jira
 projects. It is therefore not equivalent to Fullsend's deprecated
 per-organization installation mode.
 
+In this ADR, **tenant** names the `fullsend-ai/platform` administrative
+boundary. This is distinct from the mint ADRs' use of tenant for an org or
+mint trust boundary: [ADR 0029](0029-central-token-mint-secretless-fullsend.md)
+describes a self-managed tenant as a single organization, [ADR
+0059](0059-public-mint-mode-with-wildcard-allowlists.md) distinguishes tight
+single-tenant and public multi-tenant mint profiles, and [ADR
+0068](0068-public-community-mint-architecture.md) distinguishes self-managed
+tenant mints from the hosted community mint. Those mint boundaries remain
+relevant to credential and authorization scope; this ADR does not redefine
+them.
+
 Self-managed per-repository installation remains a first-class deployment
 model.
 

@@ -125,6 +125,6 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
-- Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership?
+- Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership? The platform ownership boundary is described in [ADR 0123](../ADRs/0123-fullsend-ai-platform.md); operational ownership and its relationship to platform or CI ownership remain open.
 - For cluster-hosted agents, how do we preserve an acceptable inner loop (fast local or sandboxed tests) without granting dangerous privilege, and how do we avoid paying for idle capacity while work waits on humans?
 - For Kubernetes-hosted agents, how do upstream lifecycle controllers (for example [SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)) fit alongside ephemeral task runners, and what stack (isolation runtime, telemetry, policy) must wrap them to meet our threat model?
