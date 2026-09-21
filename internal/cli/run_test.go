@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -5408,10 +5409,47 @@ func TestExceedsCostBudget(t *testing.T) {
 		{"exactly at cap is exhausted", 5, 5, true},
 		{"over cap", 5.01, 5, true},
 		{"zero cost never trips", 0, 5, false},
+		{"a cent under the cap does not trip", 0.79, 0.8, false},
+		// The float64 just below 0.8 — what 0.1 + 0.7 sums to.
+		{"one rounding unit under the cap is exhausted", 0.7999999999999999, 0.8, true},
+		{"just inside the tolerance is exhausted", 0.8 * (1 - 5e-10), 0.8, true},
+		{"just outside the tolerance does not trip", 0.8 * (1 - 2e-9), 0.8, false},
+		// A fixed epsilon would put the threshold below zero here.
+		{"zero cost never trips, however small the cap", 0, 1e-12, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, exceedsCostBudget(tt.totalCostUSD, tt.maxCostUSD))
+		})
+	}
+}
+
+// The cap is compared against a float64 running sum, so costs that add up to
+// exactly the cap can land a rounding unit under it. Accumulated the way
+// production accumulates them — through aggregateRunMetrics — those sums must
+// still trip the budget: "exactly spent is spent" is the normative boundary.
+func TestExceedsCostBudget_FloatSumLandsUnderAnExactlySpentCap(t *testing.T) {
+	tests := []struct {
+		name       string
+		costs      []float64
+		maxCostUSD float64
+	}{
+		{"0.1 + 0.7 against 0.8", []float64{0.1, 0.7}, 0.8},
+		{"0.3 + 0.6 against 0.9", []float64{0.3, 0.6}, 0.9},
+		// Lands 7.8e-8 USD short. A fixed 1e-9 epsilon would miss it, which
+		// is why the tolerance is relative to the cap.
+		{"10000 x 99.99 against 999900", slices.Repeat([]float64{99.99}, 10000), 999900},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var agg aggregateMetrics
+			for i, cost := range tt.costs {
+				aggregateRunMetrics(&agg, &agentruntime.RunMetrics{TotalCostUSD: cost}, i+1, 0)
+			}
+			require.Less(t, agg.TotalCostUSD, tt.maxCostUSD,
+				"precondition: the float64 sum must land under the cap, or this case pins nothing")
+			assert.True(t, exceedsCostBudget(agg.TotalCostUSD, tt.maxCostUSD),
+				"costs adding up to exactly the cap summed to %.17g and left the %v budget unspent", agg.TotalCostUSD, tt.maxCostUSD)
 		})
 	}
 }

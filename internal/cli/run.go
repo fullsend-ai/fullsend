@@ -3805,13 +3805,28 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	}
 }
 
+// costBudgetTolerance is the relative tolerance exceedsCostBudget allows at
+// the cap: one part per billion. The aggregate is a float64 running sum, so
+// costs that add up to exactly the cap can land a rounding unit under it
+// (0.1 + 0.7 is 0.7999999999999999), and a bare >= would call that budget
+// unspent. It is relative because float64 rounding is: each addition drifts
+// the sum by at most ~1.1e-16 of its value, so 1e-9 absorbs millions of
+// additions at any magnitude, where a fixed epsilon stops covering large
+// totals (10,000 additions of 99.99 land 7.8e-8 under 999,900). A billionth
+// of the cap — $0.000000005 on a $5 cap — is not spend worth distinguishing;
+// rounding to cents would be, tripping up to half a cent early.
+const costBudgetTolerance = 1e-9
+
 // exceedsCostBudget reports whether totalCostUSD has reached the harness's
 // max_cost_usd cap. The cap is a hard budget: landing exactly on it means it
 // is spent, so >= — the aggregate is known before the next iteration starts,
 // and a retry at exactly the cap would be work the budget has already refused.
-// A zero (or unset) cap means unlimited, so it never trips.
+// The comparison is made within costBudgetTolerance, so that summation error
+// in the aggregate cannot leave an exactly-spent budget unspent; the
+// threshold scales with the cap, so it stays positive and a zero total never
+// trips. A zero (or unset) cap means unlimited, so it never trips.
 func exceedsCostBudget(totalCostUSD, maxCostUSD float64) bool {
-	return maxCostUSD > 0 && totalCostUSD >= maxCostUSD
+	return maxCostUSD > 0 && totalCostUSD >= maxCostUSD*(1-costBudgetTolerance)
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work

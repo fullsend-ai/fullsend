@@ -174,6 +174,29 @@ func TestRunAgent_BudgetHaltsValidationRetries(t *testing.T) {
 	assert.Equal(t, 1, m.Iterations)
 }
 
+// "Exactly spent is spent" has to survive float64: the aggregate is a running
+// sum, and three 0.7 iterations add up to 2.0999999999999996, one rounding
+// unit under a 2.1 cap. The budget is spent all the same, so iteration 4
+// must not start and the suppressed retry must be recorded.
+func TestRunAgent_BudgetTripsWhenFloatSumLandsUnderTheCap(t *testing.T) {
+	logPath := useBudgetRunStub(t, 0.7, false)
+	dir := newBudgetHarnessDir(t, 2.1, 4)
+	outputBase := t.TempDir()
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, outputBase, t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	t.Logf("runAgent returned: %v", err)
+
+	assert.Equal(t, 3, countStubRuns(t, logPath),
+		"iteration 4 started even though three 0.7 iterations spent the 2.1 cap exactly")
+	m := readRunMetrics(t, outputBase)
+	assert.True(t, m.OverBudget, "over_budget must record the suppressed retry")
+	assert.Less(t, m.TotalCostUSD, 2.1,
+		"precondition: the float64 sum must land under the cap, or this test pins nothing")
+	assert.Equal(t, 3, m.Iterations)
+}
+
 // The flip side: when the loop ends for its own reasons (iterations
 // exhausted), crossing the cap on that final iteration suppresses nothing
 // and must NOT be recorded as over_budget. The run log must not claim
