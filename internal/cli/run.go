@@ -475,14 +475,6 @@ func newRunCmd() *cobra.Command {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
 			oFlags.syncWorkspaceSet = cmd.Flags().Changed("sync-workspace")
-			if !oFlags.syncWorkspaceSet {
-				if v := os.Getenv("FULLSEND_SYNC_WORKSPACE"); v != "" {
-					if b, err := strconv.ParseBool(v); err == nil {
-						oFlags.syncWorkspace = b
-						oFlags.syncWorkspaceSet = true
-					}
-				}
-			}
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -521,15 +513,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
 	printer.Blank()
-
-	if !oFlags.syncWorkspaceSet {
-		if v := os.Getenv("FULLSEND_SYNC_WORKSPACE"); v != "" {
-			if b, err := strconv.ParseBool(v); err == nil {
-				oFlags.syncWorkspace = b
-				oFlags.syncWorkspaceSet = true
-			}
-		}
-	}
 
 	if rFlags.maxDepth < 0 {
 		return fmt.Errorf("--max-depth must be >= 0, got %d", rFlags.maxDepth)
@@ -2683,7 +2666,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9g. Synchronize sandbox changes to workspace if requested.
-	if oFlags.syncWorkspace && repoExtractedOK && (h.ValidationLoop == nil || validationPassed) && !lastIterTimedOut {
+	if shouldSyncWorkspace(overrides.syncWorkspace, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
 		syncStart := time.Now()
 		printer.StepStart("Synchronizing sandbox changes to workspace")
 		syncExcludes := []string{".git"}
@@ -2716,8 +2699,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "failed")
 		}
 	}
-	if oFlags.syncWorkspace {
-		if repoExtractedOK && (h.ValidationLoop == nil || validationPassed) && !lastIterTimedOut {
+	if overrides.syncWorkspace {
+		if shouldSyncWorkspace(true, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
 			printer.KeyValue("Workspace sync", fmt.Sprintf("synchronized to %s", hostRepositoryDir))
 		} else {
 			printer.KeyValue("Workspace sync", "skipped (run or validation failed)")
@@ -4674,6 +4657,21 @@ func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 	return filepath.Clean(rel), true
 }
 
+// shouldSyncWorkspace returns whether sandbox changes should be synchronized
+// back to the host repository. Synchronization is strictly gated: the user must
+// have enabled it, repository extraction must have succeeded, validation must
+// have passed (if configured), and neither timeouts, transcript errors, nor
+// non-zero exit codes must have occurred.
+func shouldSyncWorkspace(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
+	if !syncEnabled || !repoExtractedOK || timedOut || transcriptErr || exitCode != 0 {
+		return false
+	}
+	if hasValidationLoop && !validationPassed {
+		return false
+	}
+	return true
+}
+
 // syncWorkspaceDir synchronizes files from srcDir into dstDir, mirroring additions,
 // modifications, and deletions, while strictly preserving paths matching excludes
 // (such as ".git").
@@ -4740,7 +4738,7 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 			return os.MkdirAll(targetPath, info.Mode().Perm())
 		}
 
-		if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.IsDir() {
+		if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.Mode().IsRegular() {
 			if err := os.RemoveAll(targetPath); err != nil {
 				return err
 			}
@@ -4761,6 +4759,9 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 			if retryErr := os.WriteFile(targetPath, data, info.Mode().Perm()); retryErr != nil {
 				return retryErr
 			}
+		}
+		if err := os.Chmod(targetPath, info.Mode().Perm()); err != nil {
+			return err
 		}
 		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
 		return nil
