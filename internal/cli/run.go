@@ -474,6 +474,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
+			oFlags.syncWorkspaceSet = cmd.Flags().Changed("sync-workspace")
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -485,6 +486,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
+	cmd.Flags().BoolVar(&oFlags.syncWorkspace, "sync-workspace", false, "synchronize sanitized modified files from the sandbox back to the target repository directory upon completion (also $FULLSEND_SYNC_WORKSPACE)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
@@ -2663,6 +2665,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// 9g. Synchronize sandbox changes to workspace if requested.
+	if shouldSyncWorkspace(overrides.syncWorkspace, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
+		syncStart := time.Now()
+		printer.StepStart("Synchronizing sandbox changes to workspace")
+		syncExcludes := []string{".git"}
+		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
+			syncExcludes = append(syncExcludes, rel)
+		}
+		if err := syncWorkspaceDir(hostRepositoryDownloadDir, hostRepositoryDir, syncExcludes); err != nil {
+			printer.StepFail("Workspace synchronization failed: " + err.Error())
+			return fmt.Errorf("syncing workspace: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Workspace synchronized to %s (%.1fs)", hostRepositoryDir, time.Since(syncStart).Seconds()))
+	}
+
 	// 10. Print results.
 	printer.Blank()
 	printer.Header("Results")
@@ -2680,6 +2697,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "passed")
 		} else {
 			printer.KeyValue("Validation", "failed")
+		}
+	}
+	if overrides.syncWorkspace {
+		if shouldSyncWorkspace(true, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
+			printer.KeyValue("Workspace sync", fmt.Sprintf("synchronized to %s", hostRepositoryDir))
+		} else {
+			printer.KeyValue("Workspace sync", "skipped (run or validation failed)")
 		}
 	}
 	printer.Blank()
@@ -4608,6 +4632,207 @@ func outputDirExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+// syncOutputExcludeRel returns the relative path from hostRepositoryDir to outputBase
+// when outputBase is safely contained inside hostRepositoryDir (including multi-segment
+// paths such as "build/output" or ".fullsend/runs"). Returns ok=false when outputBase
+// is outside the repo, identical to the repo root, or invalid.
+func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
+	if hostRepositoryDir == "" || outputBase == "" {
+		return "", false
+	}
+	absRepo, err := filepath.Abs(hostRepositoryDir)
+	if err != nil {
+		return "", false
+	}
+	absOut, err := filepath.Abs(outputBase)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(absRepo, absOut)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", false
+	}
+	return filepath.Clean(rel), true
+}
+
+// shouldSyncWorkspace returns whether sandbox changes should be synchronized
+// back to the host repository. Synchronization is strictly gated: the user must
+// have enabled it, repository extraction must have succeeded, validation must
+// have passed (if configured), and neither timeouts, transcript errors, nor
+// non-zero exit codes must have occurred.
+func shouldSyncWorkspace(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
+	if !syncEnabled || !repoExtractedOK || timedOut || transcriptErr || exitCode != 0 {
+		return false
+	}
+	if hasValidationLoop && !validationPassed {
+		return false
+	}
+	return true
+}
+
+// syncWorkspaceDir synchronizes files from srcDir into dstDir, mirroring additions,
+// modifications, and deletions, while strictly preserving paths matching excludes
+// (such as ".git").
+func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
+	absSrc, err := filepath.Abs(srcDir)
+	if err != nil {
+		return fmt.Errorf("resolving source directory: %w", err)
+	}
+	absDst, err := filepath.Abs(dstDir)
+	if err != nil {
+		return fmt.Errorf("resolving destination directory: %w", err)
+	}
+	if absSrc == absDst {
+		return nil
+	}
+
+	if err := os.MkdirAll(absDst, 0o755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+
+	// 1. Copy / update all files from srcDir to dstDir (skipping excludes).
+	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(absSrc, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if isExcludedPath(rel, excludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		targetPath := filepath.Join(absDst, rel)
+
+		if d.Type()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				return readErr
+			}
+			_ = os.RemoveAll(targetPath)
+			if err := os.Symlink(target, targetPath); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		if d.IsDir() {
+			if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.IsDir() {
+				if err := os.Remove(targetPath); err != nil {
+					return err
+				}
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			return os.MkdirAll(targetPath, info.Mode().Perm())
+		}
+
+		if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.Mode().IsRegular() {
+			if err := os.RemoveAll(targetPath); err != nil {
+				return err
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(targetPath, data, info.Mode().Perm()); err != nil {
+			_ = os.Remove(targetPath)
+			if retryErr := os.WriteFile(targetPath, data, info.Mode().Perm()); retryErr != nil {
+				return retryErr
+			}
+		}
+		if err := os.Chmod(targetPath, info.Mode().Perm()); err != nil {
+			return err
+		}
+		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("copying files to workspace: %w", err)
+	}
+
+	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes).
+	err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		rel, err := filepath.Rel(absDst, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if isExcludedPath(rel, excludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		srcPath := filepath.Join(absSrc, rel)
+		if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
+			if d.IsDir() && isAncestorOfExcludedPath(rel, excludes) {
+				return nil
+			}
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("pruning deleted files from workspace: %w", err)
+	}
+
+	return nil
+}
+
+func isExcludedPath(relPath string, excludes []string) bool {
+	relClean := filepath.Clean(relPath)
+	for _, ex := range excludes {
+		exClean := filepath.Clean(ex)
+		if relClean == exClean || strings.HasPrefix(relClean, exClean+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAncestorOfExcludedPath(relPath string, excludes []string) bool {
+	relClean := filepath.Clean(relPath)
+	for _, ex := range excludes {
+		exClean := filepath.Clean(ex)
+		if strings.HasPrefix(exClean, relClean+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // excludeAgentWorkingDirs adds agent working directory patterns to

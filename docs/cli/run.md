@@ -26,6 +26,7 @@ fullsend run <agent-name> [flags]
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
+| `--sync-workspace` | Synchronize sanitized modified files from the sandbox back to the target repository directory upon completion; also `FULLSEND_SYNC_WORKSPACE` |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (e.g. `"github"`, `"gitlab"`); auto-detected from CI env vars when omitted |
 | `--offline` | Reject network fetches; only use cached remote resources |
@@ -297,6 +298,17 @@ On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a G
 - `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
+
+## Workspace synchronization
+
+When running locally or in CI pipelines (such as GitLab CI), downstream jobs or developer workflows often expect changes made by the agent to be reflected directly in the local workspace (`--target-repo`).
+
+By default, `fullsend run` downloads the modified repository from the sandbox into a temporary directory (`/tmp/fs-*`) and deletes it on exit unless `--keep-sandbox` is set.
+
+Passing `--sync-workspace` (or setting `FULLSEND_SYNC_WORKSPACE=true`):
+- Safely copies additions, edits, and deletions from the sanitized sandbox download back to the `--target-repo` directory.
+- Strictly protects `.git/` (and any nested output directories) so local git configurations, branches, and histories are never corrupted or overwritten.
+- Only executes if the agent run and validation loop succeed, preventing broken or partially written iterations from polluting your working tree.
 
 ## Related
 

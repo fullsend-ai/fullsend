@@ -132,6 +132,23 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 			runtime: "pi",
 			want:    runOverrides{model: "opus", modelSource: envPiModel},
 		},
+		{
+			name: "FULLSEND_SYNC_WORKSPACE enables sync when flags absent",
+			env:  map[string]string{envSyncWorkspace: "true"},
+			want: runOverrides{syncWorkspace: true, syncWorkspaceSource: envSyncWorkspace},
+		},
+		{
+			name:  "--sync-workspace flag beats FULLSEND_SYNC_WORKSPACE",
+			flags: runOverrideFlags{syncWorkspace: false, syncWorkspaceSet: true},
+			env:   map[string]string{envSyncWorkspace: "true"},
+			want:  runOverrides{syncWorkspace: false, syncWorkspaceSource: sourceFlagSyncWorkspace},
+		},
+		{
+			name:  "--sync-workspace=true beats FULLSEND_SYNC_WORKSPACE=false",
+			flags: runOverrideFlags{syncWorkspace: true, syncWorkspaceSet: true},
+			env:   map[string]string{envSyncWorkspace: "false"},
+			want:  runOverrides{syncWorkspace: true, syncWorkspaceSource: sourceFlagSyncWorkspace},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
