@@ -2,12 +2,26 @@
 """Unit tests for unicode_posttool.py hook."""
 
 import json
+import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
-HOOK = str(Path(__file__).parent / "unicode_posttool.py")
+HOOKS_DIR = Path(__file__).parent
+HOOK = str(HOOKS_DIR / "unicode_posttool.py")
+sys.path.insert(0, str(HOOKS_DIR))
+from unicode_posttool import MAX_SANITIZE_PASSES, scan_text  # noqa: E402
+
+_ANSI_RE = re.compile(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]")
+_OSC_RE = re.compile(r"\x1b[\]P_^][^\x1b\x07]*(?:\x1b\\|\x07)")
+_ZERO_WIDTH_RE = re.compile(
+    "[\u00ad\u034f\u061c\u0600-\u0605\u070f\u0890-\u0891\u08e2\u180e"
+    "\u200b-\u200f\u2028\u2029\u2060-\u2064\u206a-\u206f\ufeff\ufff9-\ufffb]"
+)
+_BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069]")
+_NULL_RE = re.compile("\x00")
+_TAG_RE = re.compile("[\U000e0000-\U000e007f]")
 
 
 def run_hook(tool_result: str | None = None, stdin_raw: str | None = None) -> tuple[int, str, str]:
@@ -181,6 +195,16 @@ class TestVariationSelector(unittest.TestCase):
         self.assertIn("variation_selector", out["metadata"]["categories"])
 
 
+def assert_no_recognized_payload(test_case: unittest.TestCase, text: str) -> None:
+    """Invariant: no recognized control/invisible payload remains."""
+    test_case.assertIsNone(_ANSI_RE.search(text), f"CSI remains in {text!r}")
+    test_case.assertIsNone(_OSC_RE.search(text), f"OSC remains in {text!r}")
+    test_case.assertIsNone(_ZERO_WIDTH_RE.search(text), f"zero-width remains in {text!r}")
+    test_case.assertIsNone(_BIDI_RE.search(text), f"bidi remains in {text!r}")
+    test_case.assertIsNone(_NULL_RE.search(text), f"NUL remains in {text!r}")
+    test_case.assertIsNone(_TAG_RE.search(text), f"tag char remains in {text!r}")
+
+
 class TestNFKCEscapeBypass(unittest.TestCase):
     def test_fullwidth_bracket_csi_detected_post_nfkc(self):
         """R2-2: Fullwidth [ + ESC must be caught after NFKC normalization."""
@@ -192,6 +216,7 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         self.assertNotIn("\x1b", out["tool_result"])
         self.assertIn("ansi_escape", out["metadata"]["categories"])
         self.assertIn("fullwidth", out["metadata"]["categories"])
+        assert_no_recognized_payload(self, out["tool_result"])
 
     def test_fullwidth_bracket_osc_detected_post_nfkc(self):
         """R2-2: Fullwidth ] + ESC must be caught after NFKC normalization."""
@@ -202,6 +227,151 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         out = json.loads(stdout)
         self.assertNotIn("evil.com", out["tool_result"])
         self.assertIn("osc_escape", out["metadata"]["categories"])
+        assert_no_recognized_payload(self, out["tool_result"])
+
+    def test_reported_reconstruction_case(self):
+        """#445: two ESC + four fullwidth brackets reconstruct CSI after one pass."""
+        payload = "~\x1b\x1b\uff3b\uff3b\uff3b\uff3b"
+        result, findings = scan_text(payload)
+        self.assertEqual(result, "~")
+        self.assertNotIn("\x1b", result)
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        self.assertIn("fullwidth", names)
+        assert_no_recognized_payload(self, result)
+
+        rc, stdout, _ = run_hook(payload)
+        self.assertEqual(rc, 0)
+        out = json.loads(stdout)
+        self.assertEqual(out["tool_result"], "~")
+        self.assertIn("ansi_escape", out["metadata"]["categories"])
+        self.assertGreater(out["metadata"]["unicode_findings"], 0)
+
+    def test_adjacent_ascii_csi_fixpoint(self):
+        """Repeated adjacent ESC/CSI sequences need more than one sub() pass."""
+        payload = "~\x1b\x1b[[[["
+        result, findings = scan_text(payload)
+        self.assertEqual(result, "~")
+        self.assertNotIn("\x1b", result)
+        self.assertIn("ansi_escape", [f["name"] for f in findings])
+        assert_no_recognized_payload(self, result)
+
+    def test_esc_zero_width_csi_stripped(self):
+        """Zero-width between ESC and CSI final must not survive the fixpoint."""
+        payload = "pre\x1b\u200b[31mred"
+        result, findings = scan_text(payload)
+        self.assertEqual(result, "prered")
+        self.assertNotIn("\x1b", result)
+        names = [f["name"] for f in findings]
+        self.assertIn("zero_width", names)
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_unterminated_csi_does_not_reconstruct(self):
+        """Malformed CSI (no final byte) must not hang or create a complete sequence."""
+        payload = "ok\x1b[31"
+        result, _findings = scan_text(payload)
+        self.assertIsNone(_ANSI_RE.search(result))
+        self.assertIn("ok", result)
+
+    def test_unterminated_osc_does_not_reconstruct(self):
+        payload = "ok\x1b]8;;http://evil.com"
+        result, _findings = scan_text(payload)
+        self.assertIsNone(_OSC_RE.search(result))
+        self.assertIn("ok", result)
+
+    def test_post_nfkc_strips_all_categories(self):
+        """Post-NFKC re-check covers categories beyond ANSI/OSC."""
+        # Fullwidth brackets reconstruct CSI; a tag char in the same field
+        # is a different category that must also be gone after the rewrite.
+        payload = "\x1b\uff3b31m\U000e0048idden"
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        self.assertNotIn("\U000e0048", result)
+        names = [f["name"] for f in findings]
+        self.assertIn("tag_char", names)
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+        for f in findings:
+            if f["name"] == "tag_char":
+                self.assertIn("decoded hidden text", f["detail"])
+
+    def test_pass_cap_exceeded_fails_closed_on_ascii_bracket_run(self):
+        """#445 follow-up: the pass cap itself must not fail open.
+
+        MAX_SANITIZE_PASSES + 1 ESC bytes followed by 2 * (MAX_SANITIZE_PASSES + 1)
+        "[" bytes: "[" (0x5B) is itself a valid ECMA-48 CSI final byte, so
+        each non-overlapping sub() pass only consumes the last ESC plus two
+        brackets at the boundary. Full convergence needs one more pass than
+        the cap allows, so the naive loop returns "ESC[[" — still a live
+        CSI — after exhausting MAX_SANITIZE_PASSES.
+        """
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("[" * (2 * n))
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        # Pin the exact residual: after MAX_SANITIZE_PASSES passes the
+        # leftover is the live CSI "\x1b[[", which the fail-closed
+        # backstop reduces to "[[". Asserting only "no ESC" would also
+        # pass if the backstop's character class were mis-scoped to strip
+        # more than ESC/C1.
+        self.assertEqual(result, "[[")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_pass_cap_exceeded_fails_closed_on_fullwidth_bracket_run(self):
+        """Same shape as above, but via fullwidth "[" (U+FF3B) so only the
+        post-NFKC fixpoint (not the pre-NFKC one) hits the pass cap."""
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("［" * (2 * n))
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        self.assertEqual(result, "[[")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        self.assertIn("fullwidth", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_pass_cap_exceeded_fails_closed_with_c1_and_ascii_witness(self):
+        """#445 follow-up: pin the fail-closed backstop's character class.
+
+        Same ESC/bracket shape as the ASCII pass-cap test, plus a
+        trailing true C1 rune (U+009B) and an ordinary uppercase-letter
+        witness ("HELLO"). ``_ESC_C1_STRIP_RE`` must remove exactly the
+        ESC run and the C1 rune and nothing else: a backstop mis-scoped
+        to ASCII "@"-"_" (which overlaps "HELLO") would instead strip the
+        witness text and leave the C1 rune behind.
+        """
+        n = MAX_SANITIZE_PASSES + 1
+        payload = ("\x1b" * n) + ("[" * (2 * n)) + "HELLO"
+        result, findings = scan_text(payload)
+        self.assertNotIn("\x1b", result)
+        self.assertNotIn("", result)
+        self.assertEqual(result, "[[HELLO")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
+
+    def test_lone_c1_introducer_without_esc_is_stripped_on_happy_path(self):
+        """#445 follow-up: a bare C1 introducer must not rely on the
+        pass-cap backstop.
+
+        No ESC byte at all, well under MAX_SANITIZE_PASSES: a bare C1 CSI
+        introducer (U+009B) is itself a complete, live sequence on its
+        own. Before this fix, ``_CHECKS`` only recognized 7-bit
+        ESC-prefixed introducers, so this payload never changed across a
+        pass, "stabilized" on pass 1, and the fail-closed backstop (which
+        only runs once the pass budget is exhausted) never triggered.
+        """
+        c1_csi = chr(0x9B)
+        payload = c1_csi + "31mHELLO"
+        result, findings = scan_text(payload)
+        self.assertNotIn(c1_csi, result)
+        self.assertEqual(result, "31mHELLO")
+        names = [f["name"] for f in findings]
+        self.assertIn("ansi_escape", names)
+        assert_no_recognized_payload(self, result)
 
 
 class TestOSCPerformance(unittest.TestCase):

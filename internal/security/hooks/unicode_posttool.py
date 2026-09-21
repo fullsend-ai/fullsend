@@ -29,6 +29,20 @@ import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
+# Bound the strip fixpoint. Each pass strictly shortens on a match; this
+# caps pathological adjacent reconstructed sequences (see #445).
+MAX_SANITIZE_PASSES = 64
+
+# Fail-closed backstop for _sanitize_fixpoint. A single non-overlapping
+# `pattern.sub` pass on an adjacent-ESC run (e.g. ESC*65 + "["*130, where
+# "[" is itself a valid ECMA-48 CSI final byte) removes only one
+# reconstructed CSI per pass, so a large enough run outruns
+# MAX_SANITIZE_PASSES. Both the ANSI and OSC patterns require a leading
+# ESC (0x1B); stripping every ESC and C1 control byte (0x80-0x9F)
+# unconditionally therefore guarantees neither can remain, regardless of
+# how the surrounding bytes are shaped.
+_ESC_C1_RE = re.compile("[\x1b\x80-\x9f]")
+_ESC_C1_STRIP_RE = re.compile("[\x1b\x80-\x9f]+")
 
 # --- Unicode categories to detect ---
 # Aligned with Go UnicodeNormalizer (internal/security/unicode.go).
@@ -76,6 +90,18 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
         "high",
         re.compile("\x00+"),
     ),
+    # Bare C1 control bytes (0x80-0x9f), independent of a leading ESC.
+    # The two patterns above only recognize 7-bit ESC-prefixed
+    # introducers; an 8-bit C1 introducer (e.g. 0x9b CSI) forms a
+    # complete sequence on its own and would otherwise never change
+    # across a pass, stabilizing on pass 1 and bypassing the
+    # _ESC_C1_STRIP_RE fail-closed backstop entirely, which only runs
+    # once the pass budget is exhausted (#445).
+    (
+        "ansi_escape",
+        "high",
+        re.compile("[\x80-\x9f]+"),
+    ),
 ]
 
 
@@ -114,7 +140,8 @@ def decode_tag_chars(text: str) -> str:
     return decoded
 
 
-def scan_text(text: str) -> tuple[str, list[dict]]:
+def _sanitize_pass(text: str) -> tuple[str, list[dict]]:
+    """Apply every control/invisible category once. Does not NFKC."""
     findings: list[dict] = []
     result = text
 
@@ -166,12 +193,60 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
         )
         result = _SUPP_VS_STRIP_RE.sub("", result)
 
+    return result, findings
+
+
+def _sanitize_fixpoint(text: str) -> tuple[str, list[dict]]:
+    """Repeat _sanitize_pass until unchanged.
+
+    A single ``pattern.sub`` is non-overlapping, so ESC ESC [[[[ becomes
+    ESC [[ after one pass — itself a CSI sequence a second pass must remove.
+    """
+    findings: list[dict] = []
+    result = text
+    for _ in range(MAX_SANITIZE_PASSES):
+        nxt, extra = _sanitize_pass(result)
+        findings.extend(extra)
+        if nxt == result:
+            return result, findings
+        result = nxt
+
+    # Exhausted the pass budget without reaching a fixpoint. A pathological
+    # run of adjacent ESC bytes (optionally reconstructed from fullwidth
+    # brackets by NFKC) can make each pass remove only one CSI, outrunning
+    # any fixed cap (#445). Returning the residual text here would fail
+    # open — it can still contain a live CSI/OSC sequence. Fail closed
+    # instead: strip every remaining ESC (0x1B) and C1 control byte
+    # (0x80-0x9F) outright. ansi_escape and osc_escape both require a
+    # leading ESC byte, so this guarantees neither survives.
+    if _ESC_C1_RE.search(result):
+        stripped = _ESC_C1_STRIP_RE.sub("", result)
+        removed = len(result) - len(stripped)
+        findings.append(
+            {
+                "name": "ansi_escape",
+                "severity": "high",
+                "detail": (
+                    f"{removed} escape/control byte(s) force-stripped after exceeding "
+                    f"{MAX_SANITIZE_PASSES} sanitize passes (fail-closed)"
+                ),
+            }
+        )
+        result = stripped
+
+    return result, findings
+
+
+def scan_text(text: str) -> tuple[str, list[dict]]:
+    result, findings = _sanitize_fixpoint(text)
+
     # Compatibility characters (fullwidth, ligatures, vulgar fractions) are
     # reported but kept: NFKC-rewriting a Read result hands the agent file
     # content that is not on disk (CJK punctuation, "ﬁ" → "fi"), and every
     # Edit it then composes misses. Detection that depends on the normalized
     # form (canary, secret patterns) runs on a normalized *copy* in the chain
-    # driver. The one rewrite kept is the escape-reassembly case below.
+    # driver. The one rewrite kept is reconstructed control/invisible payload
+    # below: the fullwidth form was a delivery vehicle, not content.
     nfkc = unicodedata.normalize("NFKC", result)
     if nfkc != result:
         diff_count = sum(1 for a, b in zip(result, nfkc, strict=False) if a != b)
@@ -187,29 +262,16 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
             }
         )
 
-        # NFKC can reconstruct escape sequences from fullwidth characters
-        # (ESC + fullwidth "[" → a valid CSI once normalized downstream).
-        for name, severity, pattern in _CHECKS:
-            if name not in ("ansi_escape", "osc_escape"):
-                continue
-            matches = pattern.findall(nfkc)
-            if not matches or "\x1b" not in result:
-                continue
-            total_chars = sum(len(m) for m in matches)
-            findings.append(
-                {
-                    "name": name,
-                    "severity": severity,
-                    "detail": (
-                        f"{total_chars} {name.replace('_', ' ')} character(s) "
-                        "removed (reassembled by NFKC; field normalized)"
-                    ),
-                }
-            )
-            # Attack case only: emit the normalized field with the sequence
-            # removed (the fullwidth form was a delivery vehicle, not content).
-            result = pattern.sub("", nfkc)
-            nfkc = result
+        # NFKC can reconstruct control sequences from fullwidth characters
+        # (ESC + fullwidth "[" → a valid CSI). Re-check every category to a
+        # fixpoint so the last scan cannot leave a reconstructed payload in
+        # the emitted field.
+        nfkc_stripped, nfkc_findings = _sanitize_fixpoint(nfkc)
+        if nfkc_findings:
+            for f in nfkc_findings:
+                f["detail"] += " (reassembled by NFKC; field normalized)"
+            findings.extend(nfkc_findings)
+            result = nfkc_stripped
 
     return result, findings
 
