@@ -10,8 +10,10 @@
 // routing (#7499), and rotation/recovery (#7500). Select / SelectAgent
 // / Require are the dispatch-time entry points wired into fullsend
 // poll, fullsend run, and post-review. DiagnoseLifecycle reports
-// expiry, revocation, and overlapping tokens. When migration mode is
-// disabled (the default), Resolve selects the shared
+// expiry, revocation, and overlapping tokens. CheckBuiltinReadiness
+// is the #7501 verification for Poller, Analyst, and Coder; it does
+// not enable enforced mode or retire the shared token. When migration
+// mode is disabled (the default), Resolve selects the shared
 // FULLSEND_FORGE_TOKEN exactly as existing installations do.
 //
 // Canonical documentation: docs/contributing/gitlab-role-credentials.md.

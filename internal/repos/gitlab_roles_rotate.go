@@ -108,6 +108,9 @@ func RotateGitLabRoleCredentials(ctx context.Context, cfg RoleRotateConfig) (Rol
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role rotation requires a forge client")
 	}
+	operationLock := gitlabRoleOperationLock(cfg.Owner, cfg.Repo)
+	operationLock.Lock()
+	defer operationLock.Unlock()
 	mode := cfg.Mode
 	if mode == "" {
 		mode = gitlabroles.ModeDisabled
@@ -1084,6 +1087,13 @@ func EnrichGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	status.GitLabRolesReady = rep.Ready
 	status.GitLabRolesPartial = rep.Partial
 	status.GitLabRoleDiagnostics = rep.Diagnostics
+	lifecycle := make(map[gitlabroles.Role]gitlabroles.LifecycleState, len(rep.Roles))
+	for _, rr := range rep.Roles {
+		lifecycle[rr.Name] = rr.Lifecycle
+	}
+	builtin := appendBuiltinRoleReadiness(status, present, reg, lifecycle)
+	registered := appendRegisteredRoleReadiness(status, present, reg, lifecycle)
+	status.GitLabRolesReady = status.GitLabRolesReady && builtin.Ready && registered.Ready
 	if !mode.RequiresRoleCredentials() {
 		return false
 	}

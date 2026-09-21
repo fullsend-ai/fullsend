@@ -464,12 +464,14 @@ type reposInstallConfig struct {
 	gitlabRoleRegistry  string
 	gitlabRoleTokens    []string
 
-	gitlabRoleRegistryJSON string
-	gitlabRoleProvided     map[gitlabroles.Role]string
-	gitlabRoleModeFlag     gitlabroles.Mode
-	rotateGitLabRoles      bool
-	rotateGitLabRoleNames  []string
-	rotateGitLabRoleFilter []gitlabroles.Role
+	gitlabRoleRegistryJSON   string
+	gitlabRoleProvided       map[gitlabroles.Role]string
+	gitlabRoleModeFlag       gitlabroles.Mode
+	gitlabRoleCutover        bool
+	gitlabRoleCutoverDrained bool
+	rotateGitLabRoles        bool
+	rotateGitLabRoleNames    []string
+	rotateGitLabRoleFilter   []gitlabroles.Role
 
 	// Per-repo overrides
 	fullsendRef            string
@@ -484,8 +486,9 @@ type reposInstallConfig struct {
 	vendorChanged  bool
 
 	// Test overrides
-	testClient          forge.Client
-	testProjectNumberFn func(ctx context.Context, projectID string) (string, error)
+	testClient               forge.Client
+	testGitLabTokenInventory repos.ProjectAccessTokenClient
+	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -545,6 +548,8 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: migrating, rollback, or disabled (default: migrating on fresh install; unchanged on existing installs)")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
+	cmd.Flags().BoolVar(&opts.gitlabRoleCutover, "gitlab-role-cutover", false, "verify all GitLab roles, enable enforced mode, and retire the shared credential")
+	cmd.Flags().BoolVar(&opts.gitlabRoleCutoverDrained, "gitlab-role-cutover-drained", false, "confirm in-flight shared-token jobs are drained before GitLab role cutover")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
@@ -1130,6 +1135,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					roleFailInstalledCount++
 				}
 				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			if opts.gitlabRoleCutover {
+				if err := maybeCutoverGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role cutover failed: %v", item.r.Owner, item.r.Repo, err))
+					roleFail++
+					item.r.Error = err
+					if item.fresh {
+						roleFailInstalledCount++
+					}
+					roleFailedRepos = append(roleFailedRepos, item.r)
+				}
 			}
 		}
 	}

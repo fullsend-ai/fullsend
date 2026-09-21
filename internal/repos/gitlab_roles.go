@@ -117,6 +117,29 @@ func IsGitLabRoleManagedVar(name string) bool {
 	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
+// appendBuiltinRoleReadiness adds Poller/Analyst/Coder verification
+// lines from CheckBuiltinReadiness. Names only; never token values.
+func appendBuiltinRoleReadiness(status *RepoStatus, present map[string]bool, reg gitlabroles.Registry, lifecycle map[gitlabroles.Role]gitlabroles.LifecycleState) gitlabroles.BuiltinReadiness {
+	if status == nil {
+		return gitlabroles.BuiltinReadiness{}
+	}
+	check := gitlabroles.CheckBuiltinReadiness(present, reg).WithLifecycle(lifecycle)
+	status.GitLabRoleDiagnostics = append(status.GitLabRoleDiagnostics, check.Diagnostics...)
+	return check
+}
+
+// appendRegisteredRoleReadiness adds readiness diagnostics for every role in
+// the trusted registry, including custom roles. This keeps repos status honest
+// about the same mapping checks that cutover will enforce.
+func appendRegisteredRoleReadiness(status *RepoStatus, present map[string]bool, reg gitlabroles.Registry, lifecycle map[gitlabroles.Role]gitlabroles.LifecycleState) gitlabroles.RegisteredReadiness {
+	if status == nil {
+		return gitlabroles.RegisteredReadiness{}
+	}
+	check := gitlabroles.CheckRegisteredReadiness(present, reg).WithLifecycle(lifecycle)
+	status.GitLabRoleDiagnostics = append(status.GitLabRoleDiagnostics, check.Diagnostics...)
+	return check
+}
+
 // gitLabRoleUninstallVars is the static role-credential variable set
 // deleted on uninstall. Custom FULLSEND_GITLAB_ROLE_*_TOKEN names are
 // discovered at uninstall time from ListRepoVariables.
@@ -143,6 +166,9 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role provisioning requires a forge client")
 	}
+	operationLock := gitlabRoleOperationLock(cfg.Owner, cfg.Repo)
+	operationLock.Lock()
+	defer operationLock.Unlock()
 	mode := cfg.DesiredMode
 	if mode == "" {
 		mode = gitlabroles.ModeMigrating

@@ -518,6 +518,44 @@ func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, clien
 	return nil
 }
 
+func maybeCutoverGitLabRoles(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	if opts.gitlabRoleRegistryJSON != "" {
+		_, err := gitlabroles.ParseRegistry(opts.gitlabRoleRegistryJSON)
+		if err != nil {
+			return fmt.Errorf("parsing GitLab role registry for cutover: %w", err)
+		}
+	}
+	repoFullName := owner + "/" + repo
+	var tokens repos.ProjectAccessTokenClient
+	if opts.testGitLabTokenInventory != nil {
+		tokens = opts.testGitLabTokenInventory
+	} else if glClient, ok := client.(*gitlab.LiveClient); ok {
+		tokens = gitlabTokenAdapter{c: glClient}
+	}
+	printer.StepStart(fmt.Sprintf("[%s] Verifying and cutting over GitLab role credentials", repoFullName))
+	result, err := repos.CutoverGitLabRoleCredentials(ctx, repos.GitLabRoleCutoverConfig{
+		Owner: owner, Repo: repo, Client: client,
+		// Cutover must never silently downgrade lifecycle verification just
+		// because a forge client is wrapped or substituted. Test clients can
+		// call the repos package directly with an explicit inventory.
+		TokenInventory: tokens, RequireTokenInventory: true,
+		DrainConfirmed: opts.gitlabRoleCutoverDrained, DryRun: opts.dryRun,
+	})
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab role cutover failed", repoFullName))
+		return err
+	}
+	for _, line := range result.Diagnostics {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, line))
+	}
+	if result.DryRun {
+		printer.StepDone(fmt.Sprintf("[%s] Would enable enforced mode and retire the shared credential", repoFullName))
+	} else {
+		printer.StepDone(fmt.Sprintf("[%s] GitLab role cutover complete; enforced mode is active and shared credential is retired", repoFullName))
+	}
+	return nil
+}
+
 func printGitLabRoleRotate(printer *ui.Printer, repoFullName string, result repos.RoleRotateResult) {
 	verb := "Rotated"
 	if result.DryRun {

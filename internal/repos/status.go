@@ -358,6 +358,9 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	status.GitLabRolesReady = rep.Ready
 	status.GitLabRolesPartial = rep.Partial
 	status.GitLabRoleDiagnostics = rep.Diagnostics
+	builtin := appendBuiltinRoleReadiness(status, present, reg, nil)
+	registered := appendRegisteredRoleReadiness(status, present, reg, nil)
+	status.GitLabRolesReady = status.GitLabRolesReady && builtin.Ready && registered.Ready
 	if !mode.RequiresRoleCredentials() {
 		return
 	}

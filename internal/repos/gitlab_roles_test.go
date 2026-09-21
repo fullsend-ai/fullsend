@@ -847,6 +847,64 @@ func TestUninstall_GitLabCustomRoleTokenDeleted(t *testing.T) {
 	assert.False(t, still)
 }
 
+func TestAppendGitLabRoleStatus_BuiltinReadinessWhenSecretsMissing(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	status := &RepoStatus{}
+	appendGitLabRoleStatus(context.Background(), fc, "group", "project", status)
+	joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
+	assert.Contains(t, joined, "builtin poller: not ready")
+	assert.Contains(t, joined, "builtin analyst: not ready")
+	assert.Contains(t, joined, "builtin coder: not ready")
+	assert.Contains(t, joined, "builtin roles ready: 0/3; missing=poller,analyst,coder")
+	assert.False(t, status.GitLabRolesReady)
+	assert.Contains(t, joined, "not a substitute")
+	for _, d := range status.GitLabRoleDiagnostics {
+		assertNoLeak(t, d)
+	}
+}
+
+func TestAppendGitLabRoleStatus_BuiltinReadinessWhenSecretsPresent(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabPollerToken, "pollerXXXX"))
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabAnalystToken, "analystXXXX"))
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabCoderToken, "coderXXXX"))
+	status := &RepoStatus{}
+	appendGitLabRoleStatus(context.Background(), fc, "group", "project", status)
+	joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
+	assert.Contains(t, joined, "builtin poller: ready")
+	assert.Contains(t, joined, "builtin analyst: ready")
+	assert.Contains(t, joined, "builtin coder: ready")
+	assert.Contains(t, joined, "builtin roles ready: 3/3")
+	assert.True(t, status.GitLabRolesReady)
+	assert.NotContains(t, joined, "not a substitute")
+	for _, d := range status.GitLabRoleDiagnostics {
+		assertNoLeak(t, d)
+	}
+}
+
+func TestAppendGitLabRoleStatus_RegisteredRoleReadiness(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
+	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
+	status := &RepoStatus{}
+	appendGitLabRoleStatus(context.Background(), fc, "group", "project", status)
+	joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
+	assert.False(t, status.GitLabRolesReady)
+	assert.Contains(t, joined, "registered role scanner: not ready")
+	assert.Contains(t, joined, "no agent mapping")
+}
+
+func TestAppendBuiltinRoleReadinessNilStatus(t *testing.T) {
+	t.Parallel()
+	appendBuiltinRoleReadiness(nil, map[string]bool{forge.SecretForgeToken: true}, gitlabroles.BuiltinRegistry(), nil)
+}
+
 func TestAppendGitLabRoleStatus_EnforcedMissingIsDrift(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)

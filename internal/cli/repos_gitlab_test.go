@@ -24,6 +24,24 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+type cliCutoverTokens struct{}
+
+func (cliCutoverTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (cliCutoverTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return []repos.ProjectAccessToken{
+		{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"},
+		{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-01-01"},
+		{ID: 3, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01"},
+	}, nil
+}
+
+func (cliCutoverTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+	return nil
+}
+
 func TestSetupGitLabBotToken(t *testing.T) {
 	ctx := context.Background()
 
@@ -827,6 +845,77 @@ func TestGitLabRoleWorkNeededExistingEnforced(t *testing.T) {
 	fake.Errors["GetRepoVariable"] = fmt.Errorf("denied")
 	_, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p", false)
 	require.Error(t, err)
+}
+
+func TestMaybeCutoverGitLabRolesDryRun(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	for _, name := range []string{
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fake.Secrets["group/project/"+name] = true
+	}
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{dryRun: true, gitlabRoleCutoverDrained: true, testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Would enable enforced mode")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+}
+
+func TestMaybeCutoverGitLabRoles(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	for _, name := range []string{
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fake.Secrets["group/project/"+name] = true
+	}
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{gitlabRoleCutoverDrained: true, testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "cutover complete")
+	assert.Equal(t, "enforced", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesRequiresTokenInventory(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	for _, name := range []string{
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fake.Secrets["group/project/"+name] = true
+	}
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{gitlabRoleCutoverDrained: true}, fake, ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project-token inventory")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesInvalidRegistry(t *testing.T) {
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(context.Background(), &reposInstallConfig{
+		gitlabRoleRegistryJSON: "{",
+	}, forge.NewFakeClient(), ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing GitLab role registry")
 }
 
 func TestMaybeProvisionGitLabRoles_PreservesRollbackWithRegistryOnly(t *testing.T) {
