@@ -398,6 +398,29 @@ However, more pollers against the same Jira project means more API calls per cyc
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
+### Candidate routing: attached repository links and component fallback
+
+When multiple repositories poll a single Jira project, the poller routes candidate issues so each repository only claims issues intended for it. Routing is evaluated per candidate issue according to strict priority order:
+
+1. **Attached Git repository links (Priority 1)**: If a Jira issue has attached Web Links pointing to a Git forge (GitHub, GitLab, or Bitbucket), the poller extracts the repository slug (e.g., `owner/repo` or GitLab `group/subgroup/repo`).
+   - If any attached repository link matches `--target-repo`, this poller claims the issue.
+   - If attached repository links exist but none match `--target-repo`, the issue is skipped cleanly so the correct repository poller can claim it.
+2. **Jira Component fallback (Priority 2)**: If an issue has no recognized attached Git forge links and `--jira-component` (or the `JIRA_COMPONENT` environment variable) is configured, the poller checks whether any component on the Jira issue matches `--jira-component` (case-insensitive).
+   - If a component matches, the issue is claimed.
+   - If no component matches, the issue is skipped.
+3. **Permissive fallback (Priority 3)**: If an issue has no attached Git forge links and `--jira-component` is not configured, the candidate is kept (default behavior).
+
+#### Pagination across busy projects
+
+In busy Jira projects where recent activity from other repositories fills the top search results, candidate discovery automatically paginates through search pages (up to 5 pages / 250 issues) until up to `M` routed candidates for this repository are found or search results are exhausted.
+
+#### Configuration flags and environment variables
+
+| Flag | Environment Variable | Default | Description |
+|---|---|---|---|
+| `--target-repo` | `GITHUB_REPOSITORY` / `CI_PROJECT_PATH` | Current repo | Target repository slug (`owner/repo` or `group/subgroup/repo`) used for entity property namespacing and attached repository link routing. |
+| `--jira-component` | `JIRA_COMPONENT` | `""` | Component name filter used as a routing fallback when an issue has no attached Git forge links. |
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

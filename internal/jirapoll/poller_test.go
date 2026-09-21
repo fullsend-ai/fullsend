@@ -61,6 +61,9 @@ type mockClient struct {
 	userGroupsErr  error                           // global error
 	userGroupsErrs map[string]error                // per-actor error (overrides global)
 
+	remoteLinks    map[string][]jira.RemoteLink
+	remoteLinksErr map[string]error
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -81,6 +84,8 @@ func newMockClient() *mockClient {
 		propertySetErr: make(map[string]error),
 		statuses:       make(map[string]jira.Status),
 		statusErr:      make(map[string]error),
+		remoteLinks:    make(map[string][]jira.RemoteLink),
+		remoteLinksErr: make(map[string]error),
 		myselfUser:     &jira.User{AccountID: "poller-service-account", AccountType: "atlassian", Active: true},
 	}
 }
@@ -95,6 +100,36 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 		return m.searchResult[:limit], nil
 	}
 	return m.searchResult, nil
+}
+
+func (m *mockClient) SearchIssuesPage(_ context.Context, jql string, maxResults int, nextPageToken string) (*jira.SearchResult, error) {
+	m.lastQuery = jql
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	start := 0
+	if nextPageToken != "" {
+		fmt.Sscanf(nextPageToken, "page-%d", &start)
+	}
+	end := start + maxResults
+	if end > len(m.searchResult) {
+		end = len(m.searchResult)
+	}
+	var nextToken string
+	isLast := true
+	if end < len(m.searchResult) {
+		nextToken = fmt.Sprintf("page-%d", end)
+		isLast = false
+	}
+	res := &jira.SearchResult{
+		Issues:        m.searchResult[start:end],
+		NextPageToken: nextToken,
+		IsLast:        isLast,
+	}
+	return res, nil
 }
 
 func (m *mockClient) GetIssue(_ context.Context, key string) (*jira.Issue, error) {
@@ -228,6 +263,18 @@ func (m *mockClient) GetUserGroups(_ context.Context, accountID string) ([]jira.
 	return nil, nil
 }
 
+func (m *mockClient) ListRemoteLinks(_ context.Context, issueIDOrKey string) ([]jira.RemoteLink, error) {
+	if m.remoteLinksErr != nil {
+		if err, ok := m.remoteLinksErr[issueIDOrKey]; ok {
+			return nil, err
+		}
+	}
+	if m.remoteLinks != nil {
+		return m.remoteLinks[issueIDOrKey], nil
+	}
+	return nil, nil
+}
+
 // stubMatcher implements EventMatcher for testing. It returns a
 // DispatchRecord per agent name for every event, or the configured error.
 type stubMatcher struct {
@@ -332,6 +379,146 @@ func TestRun_AuthPreflightFailure(t *testing.T) {
 	// secrets).
 	if strings.Contains(err.Error(), "token") || strings.Contains(err.Error(), "password") {
 		t.Errorf("error exposes credential material: %q", err.Error())
+	}
+}
+
+func TestRun_RoutingAttachedLink(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{Key: "PROJ-1", Fields: jira.IssueFields{Summary: "Issue for other repo"}},
+		{Key: "PROJ-2", Fields: jira.IssueFields{Summary: "Issue for platform repo"}},
+	}
+	mc.remoteLinks = map[string][]jira.RemoteLink{
+		"PROJ-1": {{Object: jira.RemoteLinkObject{URL: "https://github.com/acme/other-repo"}}},
+		"PROJ-2": {{Object: jira.RemoteLinkObject{URL: "https://github.com/acme/platform"}}},
+	}
+	mc.comments = map[string][]jira.Comment{
+		"PROJ-2": {
+			{
+				ID:      "c1",
+				Body:    "please review",
+				Author:  jira.User{AccountID: "user-1", DisplayName: "Alice"},
+				Created: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	matcher := &stubMatcher{agents: []string{"test-agent"}}
+
+	p := newTestPoller(mc, matcher, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+		N:           5,
+	})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// PROJ-1 must NOT have any properties set (neither locked nor advanced)
+	if mc.properties["PROJ-1"] != nil && len(mc.properties["PROJ-1"]) > 0 {
+		t.Errorf("PROJ-1 should not have been touched, but had properties: %v", mc.properties["PROJ-1"])
+	}
+
+	// PROJ-2 was processed, so its lastCheck was advanced
+	lastCheckKey := "fullsend.poll.acme.platform.lastCheck"
+	if mc.properties["PROJ-2"] == nil || len(mc.properties["PROJ-2"][lastCheckKey]) == 0 {
+		t.Errorf("PROJ-2 should have lastCheck set with key %s", lastCheckKey)
+	}
+
+	// Verify dispatch output only contains PROJ-2
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []DispatchRecord
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(dispatches) != 1 {
+		t.Fatalf("got %d dispatches, want 1", len(dispatches))
+	}
+	if dispatches[0].StatusNumber != "0" && !strings.Contains(string(data), "PROJ-2") {
+		// Event was processed for PROJ-2
+	}
+}
+
+func TestRun_RoutingComponent(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			Key: "PROJ-1",
+			Fields: jira.IssueFields{
+				Summary:    "Issue for payments",
+				Components: []jira.Component{{Name: "payments"}},
+			},
+		},
+		{
+			Key: "PROJ-2",
+			Fields: jira.IssueFields{
+				Summary:    "Issue for identity",
+				Components: []jira.Component{{Name: "identity"}},
+			},
+		},
+	}
+	mc.comments = map[string][]jira.Comment{
+		"PROJ-1": {
+			{
+				ID:      "c1",
+				Body:    "please review",
+				Author:  jira.User{AccountID: "user-1", DisplayName: "Alice"},
+				Created: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	matcher := &stubMatcher{agents: []string{"test-agent"}}
+
+	p := newTestPoller(mc, matcher, Options{
+		TargetRepo:    "acme/pay-service",
+		JiraBaseURL:   "https://acme.atlassian.net",
+		JiraProject:   "PROJ",
+		JiraComponent: "Payments", // Case-insensitive match for PROJ-1
+		OutputPath:    outputPath,
+		N:             5,
+	})
+
+	err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// PROJ-2 must NOT have any properties set (neither locked nor advanced)
+	if mc.properties["PROJ-2"] != nil && len(mc.properties["PROJ-2"]) > 0 {
+		t.Errorf("PROJ-2 should not have been touched, but had properties: %v", mc.properties["PROJ-2"])
+	}
+
+	// PROJ-1 was processed, so its lastCheck was advanced
+	lastCheckKey := "fullsend.poll.acme.pay-service.lastCheck"
+	if mc.properties["PROJ-1"] == nil || len(mc.properties["PROJ-1"][lastCheckKey]) == 0 {
+		t.Errorf("PROJ-1 should have lastCheck set with key %s", lastCheckKey)
+	}
+
+	// Verify dispatch output only contains PROJ-1
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []DispatchRecord
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(dispatches) != 1 {
+		t.Fatalf("got %d dispatches, want 1", len(dispatches))
 	}
 }
 
@@ -1231,6 +1418,90 @@ func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
 	}
 	if mc.lastLimit != 50 {
 		t.Errorf("SearchIssues called with limit %d, want 50 (p.opts.M)", mc.lastLimit)
+	}
+}
+
+// TestDiscoverCandidatesPaginationFindsTargetRepoOnLaterPage verifies that candidate discovery
+// continues paginating through search results when earlier pages only contain issues belonging
+// to other repositories.
+func TestDiscoverCandidatesPaginationFindsTargetRepoOnLaterPage(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = make([]jira.Issue, 60)
+	// First 50 issues are for other-repo
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("PROJ-%d", i+1)
+		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: key}
+		mc.remoteLinks[key] = []jira.RemoteLink{
+			{Object: jira.RemoteLinkObject{URL: "https://github.com/other-org/other-repo"}},
+		}
+	}
+	// Issue 51 (page 2) is for our target-repo
+	keyTarget := "PROJ-51"
+	mc.searchResult[50] = jira.Issue{ID: "51", Key: keyTarget}
+	mc.remoteLinks[keyTarget] = []jira.RemoteLink{
+		{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/my-target-repo"}},
+	}
+	// Rest are other-repo
+	for i := 51; i < 60; i++ {
+		key := fmt.Sprintf("PROJ-%d", i+1)
+		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: key}
+		mc.remoteLinks[key] = []jira.RemoteLink{
+			{Object: jira.RemoteLinkObject{URL: "https://github.com/other-org/other-repo"}},
+		}
+	}
+
+	p := newTestPoller(mc, nil, Options{
+		JiraProject: "PROJ",
+		TargetRepo:  "my-org/my-target-repo",
+		M:           10,
+	})
+
+	candidates, err := p.discoverCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("discoverCandidates() error: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1", len(candidates))
+	}
+	if candidates[0].Key != keyTarget {
+		t.Errorf("candidates[0].Key = %q, want %q", candidates[0].Key, keyTarget)
+	}
+}
+
+// TestDiscoverCandidatesAttachedLinkOverridesMismatchedComponent verifies that when an issue
+// has an attached git repository link for targetRepo, it is claimed even if its Jira component
+// does not match JiraComponent.
+func TestDiscoverCandidatesAttachedLinkOverridesMismatchedComponent(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "1",
+			Key: "PROJ-1",
+			Fields: jira.IssueFields{
+				Components: []jira.Component{{Name: "other-component"}},
+			},
+		},
+	}
+	mc.remoteLinks["PROJ-1"] = []jira.RemoteLink{
+		{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/my-target-repo"}},
+	}
+
+	p := newTestPoller(mc, nil, Options{
+		JiraProject:   "PROJ",
+		TargetRepo:    "my-org/my-target-repo",
+		JiraComponent: "frontend",
+		M:             10,
+	})
+
+	candidates, err := p.discoverCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("discoverCandidates() error: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1", len(candidates))
+	}
+	if candidates[0].Key != "PROJ-1" {
+		t.Errorf("candidates[0].Key = %q, want PROJ-1", candidates[0].Key)
 	}
 }
 

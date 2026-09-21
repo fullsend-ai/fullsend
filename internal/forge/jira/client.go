@@ -351,7 +351,7 @@ type searchRequest struct {
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated", "components"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.
@@ -372,37 +372,45 @@ const maxSearchPages = 200
 // cycle late — per-issue checkpoints come from the strongly-consistent
 // direct comment/changelog GETs, never from search results, so no events
 // are lost. Do not "fix" ordering assumptions by trusting search freshness.
+// SearchIssuesPage executes a single-page JQL search using cursor-based pagination.
+func (c *LiveClient) SearchIssuesPage(ctx context.Context, jql string, maxResults int, nextPageToken string) (*SearchResult, error) {
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	body := searchRequest{
+		JQL:           jql,
+		MaxResults:    maxResults,
+		Fields:        searchFields,
+		NextPageToken: nextPageToken,
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal search request: %w", err)
+	}
+	var result SearchResult
+	if err := c.do(ctx, http.MethodPost, "/search/jql", bytes.NewReader(bodyJSON), &result); err != nil {
+		return nil, fmt.Errorf("search issues: %w", err)
+	}
+	return &result, nil
+}
+
 func (c *LiveClient) SearchIssues(ctx context.Context, jql string, limit int) ([]Issue, error) {
 	var all []Issue
 	var nextPageToken string
 	for page := 0; page < maxSearchPages; page++ {
-		// Changelog is deliberately not expanded here: the response types
-		// have nowhere to decode it, and the poller fetches changelog
-		// per-selected-issue via ListChangelog, so expanding it for every
-		// candidate would only inflate search payloads.
-		body := searchRequest{
-			JQL:           jql,
-			MaxResults:    50,
-			Fields:        searchFields,
-			NextPageToken: nextPageToken,
-		}
-		bodyJSON, err := json.Marshal(body)
+		res, err := c.SearchIssuesPage(ctx, jql, 50, nextPageToken)
 		if err != nil {
-			return nil, fmt.Errorf("marshal search request: %w", err)
+			return nil, err
 		}
-		var result SearchResult
-		if err := c.do(ctx, http.MethodPost, "/search/jql", bytes.NewReader(bodyJSON), &result); err != nil {
-			return nil, fmt.Errorf("search issues: %w", err)
-		}
-		all = append(all, result.Issues...)
+		all = append(all, res.Issues...)
 		if limit > 0 && len(all) >= limit {
 			all = all[:limit]
 			break
 		}
-		if result.IsLast || len(result.Issues) == 0 || result.NextPageToken == "" {
+		if res.IsLast || len(res.Issues) == 0 || res.NextPageToken == "" {
 			break
 		}
-		nextPageToken = result.NextPageToken
+		nextPageToken = res.NextPageToken
 	}
 	return all, nil
 }
@@ -716,4 +724,14 @@ func (c *LiveClient) GetMyself(ctx context.Context) (*User, error) {
 		return nil, fmt.Errorf("get myself: %w", err)
 	}
 	return &user, nil
+}
+
+// ListRemoteLinks fetches the remote issue links (web links) attached to a Jira issue.
+func (c *LiveClient) ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]RemoteLink, error) {
+	var links []RemoteLink
+	path := fmt.Sprintf("/issue/%s/remotelink", url.PathEscape(issueIDOrKey))
+	if err := c.do(ctx, http.MethodGet, path, nil, &links); err != nil {
+		return nil, fmt.Errorf("list remote links: %w", err)
+	}
+	return links, nil
 }

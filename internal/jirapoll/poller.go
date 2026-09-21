@@ -119,10 +119,10 @@ func (p *Poller) Run(ctx context.Context) error {
 		return fmt.Errorf("authentication preflight failed: account %q is inactive", myself.AccountID)
 	}
 
-	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	// Step 1: Discover and route candidate issues across pages up to M.
+	candidates, err := p.discoverCandidates(ctx)
 	if err != nil {
-		return fmt.Errorf("search candidates: %w", err)
+		return fmt.Errorf("discover candidates: %w", err)
 	}
 
 	// Step 2: Filter locked issues, clean up stale locks.
@@ -314,7 +314,54 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	return nil
 }
 
-// searchCandidates executes JQL and collects up to M results.
+const maxCandidateScanPages = 5 // Scan up to 5 pages (250 issues) to collect M routed candidates
+
+// discoverCandidates fetches candidate pages and filters them by repository routing
+// until M routed candidates are collected, or search is exhausted, or maxCandidateScanPages is reached.
+func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
+	jql := p.opts.JQL
+	if jql == "" {
+		if !validProjectKey.MatchString(p.opts.JiraProject) {
+			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
+		}
+		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
+	}
+
+	targetM := p.opts.M
+	if targetM <= 0 {
+		targetM = 50
+	}
+
+	var candidates []jira.Issue
+	var nextPageToken string
+	for page := 0; page < maxCandidateScanPages; page++ {
+		res, err := p.client.SearchIssuesPage(ctx, jql, 50, nextPageToken)
+		if err != nil {
+			return nil, fmt.Errorf("search candidates page %d: %w", page, err)
+		}
+		if len(res.Issues) == 0 {
+			break
+		}
+
+		routed, err := p.filterRouting(ctx, res.Issues)
+		if err != nil {
+			return nil, fmt.Errorf("filter routing: %w", err)
+		}
+		candidates = append(candidates, routed...)
+		if len(candidates) >= targetM {
+			candidates = candidates[:targetM]
+			break
+		}
+		if res.IsLast || res.NextPageToken == "" {
+			break
+		}
+		nextPageToken = res.NextPageToken
+	}
+
+	return candidates, nil
+}
+
+// searchCandidates executes JQL and collects up to M results without routing filters.
 func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
 	jql := p.opts.JQL
 	if jql == "" {
