@@ -116,9 +116,12 @@ fullsend inference openai request <owner/repo>[,<owner/repo>…] \
 | `--audience` | `fullsend://<owner>` | OpenAI Workload Identity audience |
 | `--project` | *(empty)* | OpenAI project name or ID for the service accounts |
 | `--service-account` | *(none)* | Map this existing service account instead of asking for `fullsend-<repo>-ci` to be created in the mapping |
-| `--ref` | *(none)* | Optional tightening. Must be a full ref (`refs/…`). When set, emits **two mappings** per repository — one asserting the given ref (e.g. `refs/heads/main`) and one asserting `refs/pull/*` — so both branch and PR-review-triggered runs work. Without `--ref`, mappings assert `iss`, `aud`, and `repository` only (no ref), matching the Vertex path's repository-scoped trust. The two-mapping cost halves the 50-mapping-per-provider budget to 25 repositories |
+| `--ref` | *(none)* | Optional tightening. Must be a full ref (`refs/…`). When set, emits **two mappings** per repository — one asserting the given ref (e.g. `refs/heads/main`) and one asserting `refs/pull/*` — so both branch and PR-review-triggered runs work. Without `--ref`, mappings assert `iss`, `aud`, and the identity claim only (no ref), matching the Vertex path's repository-scoped trust. The two-mapping cost halves the 50-mapping-per-provider budget to 25 repositories |
 | `--format` | `json` | Output format: `json` (versioned schema) or `md` (copy-paste ticket) |
 | `--out` | *(stdout)* | Write output to a file |
+| `--forge` | `github` | Forge type: `github` (GitHub Actions, asserts `repository`) or `gitlab` (GitLab CI `id_tokens`, asserts `project_path`). Use `github` for both GitHub.com and GitHub Enterprise Server |
+| `--issuer` | GitHub Actions issuer | OIDC issuer URL. Required when `--forge=gitlab` (the GitLab instance URL). For GitHub Enterprise Server, pass the GHES token endpoint |
+| `--jwks-file` | *(none)* | Path to a JWKS JSON file for a private issuer whose discovery endpoint is not publicly reachable. Sets `uploaded_jwks: true` in the generated document and embeds the key identifiers. See the [OpenAI WIF guide](../guides/infrastructure/openai-workload-identity.md#private-issuers-and-uploaded-jwks) |
 
 ### `inference openai import`
 
