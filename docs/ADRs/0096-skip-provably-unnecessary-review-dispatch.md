@@ -151,12 +151,11 @@ issues API, treating a 404 as "not present" and any other failure as a job
 failure so the stale label is visible. The clearing is suppressed while the
 kill switch is active, so a halted repo mutates no labels. It is a job of its
 own rather than a step in `route` so the route job, which parses untrusted
-event data, keeps its read-only token. The scaffold mirrors it as a last step
-of its single dispatch job, so both caller shims — `shim-per-repo.yaml` and,
-in workflow_call mode, `shim-workflow-call.yaml` — grant that job `issues:
-write` and `pull-requests: write`. A `workflow_call` caller must grant at
-least what the callee requests, so a shim narrower than the dispatch job it
-calls fails the run at validation.
+event data, keeps its read-only token. The backstop is per-repo only. The
+deprecated per-org scaffold's single job checks out its config only once a
+stage has routed, so it cannot honour the kill switch on the skip paths, and
+the write scopes would fail validation in every enrolled repo until its
+caller shim was re-reconciled.
 
 ## Consequences
 
@@ -182,16 +181,11 @@ calls fails the run at validation.
 - A push that is skipped still invalidates the previous verdict: the labels
   are cleared, but nothing re-applies them until a round runs — `/fs-review`,
   marking the PR ready, or removing `fullsend-no-review` and pushing again.
-- The prose skip is per-repo only. The rule that decides what the
-  deprecated per-org scaffold ([ADR 0044](0044-deprecate-per-org-installation-mode.md))
-  receives is *correctness parity, not optimisations*: everything that
-  decides whether an event may dispatch at all — the routing script (which
-  carries the draft and label skips, and which `TestReviewRoutingSkips` pins
-  in both files), the role/agent/PR enablement gates, payload construction,
-  secret threading, and the merge-label backstop in §4 — is mirrored, because
-  the two modes must route the same event to the same stage and leave the
-  same labels behind. `docs-lockfile-check` decides nothing about validity;
-  it declines a dispatch that would be correct to make, to save inference
-  spend, at the cost of a paginated listing and a content read per page. A
-  mode scheduled for removal does not get spend optimisations, and
-  `docs/contributing/workflow-contracts.md` now says so.
+- The prose skip and the §4 backstop are per-repo only: the deprecated
+  per-org scaffold ([ADR 0044](0044-deprecate-per-org-installation-mode.md))
+  mirrors routing — the draft and label skips, which `TestReviewRoutingSkips`
+  pins in both files — and gains no new steps or permissions, as
+  `docs/contributing/workflow-contracts.md` now says.
+- Per-org installs therefore keep a `ready-for-merge` from an earlier head
+  when a push is skipped by the draft or label rule, which is accepted
+  because the mode is deprecated.

@@ -791,8 +791,8 @@ func docsSkipStepRun(t *testing.T) string {
 // YAML text — TestReviewRoutingDocsSkipRuntime executes it instead.
 //
 // Deliberately not mirrored into the deprecated per-org scaffold/dispatch.yml:
-// the scaffold gets correctness parity (routing, gates, labels), not spend
-// optimisations — docs/contributing/workflow-contracts.md and ADR 0096.
+// the scaffold mirrors routing and gets no new steps —
+// docs/contributing/workflow-contracts.md and ADR 0096.
 func TestReviewRoutingDocsSkip(t *testing.T) {
 	s := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 
@@ -1062,13 +1062,15 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 	})
 }
 
-// staleLabelStep is the YAML shape shared by the per-repo job's step and the
-// scaffold step that clear ready-for-merge / ready-for-review when a push is
-// not reviewed.
+// staleLabelStep is the YAML shape of the steps the stale-merge-label backstop
+// is made of: the step that clears the labels and, in the route job, the
+// checkout and kill-switch steps that decide whether it may.
 type staleLabelStep struct {
-	Name string `yaml:"name"`
-	If   string `yaml:"if"`
-	Run  string `yaml:"run"`
+	Name string            `yaml:"name"`
+	ID   string            `yaml:"id"`
+	If   string            `yaml:"if"`
+	Env  map[string]string `yaml:"env"`
+	Run  string            `yaml:"run"`
 }
 
 // TestReviewSkipClearsStaleMergeLabels pins the backstop for the skips (ADR
@@ -1076,8 +1078,13 @@ type staleLabelStep struct {
 // still clear ready-for-merge and ready-for-review, which the round would
 // have cleared at start (docs/architecture.md, coordinator merge algorithm).
 // The per-repo workflow does it in a job of its own so the route job stays
-// read-only; the scaffold's single job does it as its last step. Both run
-// the same script, and the script is executed against a stub gh below.
+// read-only, and the script is executed against a stub gh below.
+//
+// Per-repo only. The deprecated per-org scaffold (ADR 0044) has no such
+// step: its single job checks the org config repo out only once a stage has
+// routed, so on the skip paths the kill switch always read false there, and
+// the write scopes the step needs would have failed validation in every
+// enrolled repo whose shim had not been re-reconciled yet.
 func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	var repo struct {
 		Jobs map[string]struct {
@@ -1096,9 +1103,11 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 		"the job must key off the composite stage output, which is empty for every skip")
 	// #6587 review: the label mutation must obey the kill switch, including on
 	// the skip paths where no stage routes and the route job's kill-switch
-	// step never fails. The switch reaches this job as a route output.
+	// step never fails. The switch travels kill-switch step -> route output ->
+	// the job `if:` and the script's KILL_SWITCH; what the script does with it
+	// is run below rather than read off the YAML.
 	assert.Contains(t, job.If, "needs.route.outputs.kill_switch != 'true'",
-		"a repo with the kill switch active must not mutate labels")
+		"a halted repo should not even start the job")
 	assert.Contains(t, string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)),
 		"kill_switch: ${{ steps.kill-switch.outputs.kill_switch }}",
 		"the route job must expose the kill switch it evaluated")
@@ -1107,32 +1116,51 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 		"the route job must stay read-only")
 	require.Len(t, job.Steps, 1)
 	script := job.Steps[0].Run
+	assert.Equal(t, "${{ needs.route.outputs.kill_switch }}", job.Steps[0].Env["KILL_SWITCH"],
+		"the script must receive the switch the route job evaluated")
+
+	// The switch is only as good as the config the step can see. Both steps
+	// must run on every path — a checkout gated on a routed stage is what
+	// made the same gate inert in the scaffold.
+	checkoutAt, killSwitchAt, killSwitchScript := -1, -1, ""
+	for i, step := range repo.Jobs["route"].Steps {
+		switch {
+		case step.Name == "Checkout caller repository":
+			checkoutAt = i
+			assert.Empty(t, step.If, "the config checkout must not be conditional")
+		case step.ID == "kill-switch":
+			killSwitchAt, killSwitchScript = i, step.Run
+			assert.Empty(t, step.If, "the kill-switch step must run even when no stage routed")
+		}
+	}
+	require.NotEqual(t, -1, checkoutAt, "route job must check out the caller's config")
+	require.Greater(t, killSwitchAt, checkoutAt, "the kill switch must be read after the config is checked out")
 
 	var scaffold struct {
 		Jobs struct {
 			Dispatch struct {
 				Permissions map[string]string `yaml:"permissions"`
-				Steps       []staleLabelStep  `yaml:"steps"`
 			} `yaml:"dispatch"`
 		} `yaml:"jobs"`
 	}
-	require.NoError(t, yaml.Unmarshal(loadScaffoldFile(".github/workflows/dispatch.yml")(t), &scaffold))
-	last := scaffold.Jobs.Dispatch.Steps[len(scaffold.Jobs.Dispatch.Steps)-1]
-	assert.Equal(t, job.Steps[0].Name, last.Name, "the scaffold mirrors the step")
-	assert.Contains(t, last.If, "github.event.action == 'synchronize'")
-	assert.Contains(t, last.If, "steps.route.outputs.stage != 'review'")
-	assert.Contains(t, last.If, "steps.kill-switch.outputs.kill_switch != 'true'",
-		"the scaffold step must obey the kill switch on skip paths too")
-	assert.Equal(t, script, last.Run, "both dispatch workflows must run the same label-clearing script")
-	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["issues"])
-	assert.Equal(t, "write", scaffold.Jobs.Dispatch.Permissions["pull-requests"])
+	scaffoldYAML := loadScaffoldFile(".github/workflows/dispatch.yml")(t)
+	require.NoError(t, yaml.Unmarshal(scaffoldYAML, &scaffold))
+	assert.NotContains(t, string(scaffoldYAML), "ready-for-merge",
+		"the deprecated per-org scaffold must not gain the label-clearing step (AGENTS.md, ADR 0044)")
+	assert.NotContains(t, scaffold.Jobs.Dispatch.Permissions, "issues",
+		"the scaffold dispatch job must not request a scope its enrolled shims do not grant")
+	assert.Equal(t, "read", scaffold.Jobs.Dispatch.Permissions["pull-requests"])
 
 	// #6587 review: a workflow_call caller may only downgrade the callee's
 	// grant — request more and the run fails validation before any job. So
-	// each caller shim's dispatch job must be a superset of the dispatch job
-	// it fronts; otherwise the label-clearing token silently never arrives.
+	// each caller shim's dispatch job must cover the job it fronts: the
+	// scaffold dispatch job for the per-org shim, and the label-clearing job
+	// (the widest-scoped addition here) for the per-repo shim.
 	rank := map[string]int{"": 0, "read": 1, "write": 2}
-	for _, shim := range []string{"templates/shim-workflow-call.yaml", "templates/shim-per-repo.yaml"} {
+	for shim, callee := range map[string]map[string]string{
+		"templates/shim-workflow-call.yaml": scaffold.Jobs.Dispatch.Permissions,
+		"templates/shim-per-repo.yaml":      job.Permissions,
+	} {
 		var caller struct {
 			Jobs struct {
 				Dispatch struct {
@@ -1141,7 +1169,7 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 			} `yaml:"jobs"`
 		}
 		require.NoError(t, yaml.Unmarshal(loadScaffoldFile(shim)(t), &caller))
-		for perm, need := range scaffold.Jobs.Dispatch.Permissions {
+		for perm, need := range callee {
 			assert.GreaterOrEqualf(t, rank[caller.Jobs.Dispatch.Permissions[perm]], rank[need],
 				"%s dispatch job must grant %s: %s to cover the callee", shim, perm, need)
 		}
@@ -1150,9 +1178,10 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	// run executes the script against a stub gh whose DELETE answers with
-	// status (an HTTP code; 200 succeeds), recording every call.
-	run := func(t *testing.T, status string) (calls string, out string, err error) {
+	// run executes the script with the given KILL_SWITCH against a stub gh
+	// whose DELETE answers with status (an HTTP code; 200 succeeds),
+	// recording every call.
+	run := func(t *testing.T, status, killSwitch string) (calls string, out string, err error) {
 		t.Helper()
 		dir := t.TempDir()
 		stub := "#!/usr/bin/env bash\n" +
@@ -1171,6 +1200,7 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 			"GH_TOKEN=stub",
 			"SOURCE_REPO=octo/repo",
 			"PR_NUMBER=7",
+			"KILL_SWITCH="+killSwitch,
 		)
 		outB, err := cmd.CombinedOutput()
 		callsB, _ := os.ReadFile(callsFile)
@@ -1178,7 +1208,7 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	}
 
 	t.Run("removes both labels", func(t *testing.T) {
-		calls, out, err := run(t, "200")
+		calls, out, err := run(t, "200", "false")
 		require.NoError(t, err, out)
 		assert.Equal(t,
 			"api --method DELETE repos/octo/repo/issues/7/labels/ready-for-merge\n"+
@@ -1189,16 +1219,66 @@ func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
 	})
 
 	t.Run("absent label is not an error", func(t *testing.T) {
-		calls, out, err := run(t, "404")
+		calls, out, err := run(t, "404", "false")
 		require.NoError(t, err, out)
 		assert.Equal(t, 2, strings.Count(calls, "DELETE"), "both labels are still attempted")
 		assert.NotContains(t, out, "::error::")
 	})
 
 	t.Run("any other failure fails the job", func(t *testing.T) {
-		_, out, err := run(t, "403")
+		_, out, err := run(t, "403", "false")
 		require.Error(t, err, "a label that could not be removed must not be silently kept")
 		assert.Contains(t, out, "::error::Could not remove ready-for-merge")
+	})
+
+	t.Run("kill switch on: no label is touched", func(t *testing.T) {
+		calls, out, err := run(t, "200", "true")
+		require.NoError(t, err, out)
+		assert.Empty(t, calls, "a halted repo must not mutate labels")
+		assert.Contains(t, out, "Kill switch is active")
+	})
+
+	// The other half of the chain: what the route job's kill-switch step
+	// publishes on a skip path (no stage routed), given the config it finds.
+	// publish returns that value and whether the step halted dispatch.
+	publish := func(t *testing.T, config, stage string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		if config != "" {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(config), 0o600))
+		}
+		scriptPath := filepath.Join(dir, "kill-switch.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(killSwitchScript), 0o644))
+		outputFile := filepath.Join(dir, "github_output")
+		require.NoError(t, os.WriteFile(outputFile, nil, 0o600))
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "STAGE="+stage, "GITHUB_OUTPUT="+outputFile)
+		_, err := cmd.CombinedOutput()
+		got, readErr := os.ReadFile(outputFile)
+		require.NoError(t, readErr)
+		return strings.TrimSpace(strings.TrimPrefix(string(got), "kill_switch=")), err
+	}
+
+	t.Run("switch is published on the skip paths", func(t *testing.T) {
+		got, err := publish(t, "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "false", got, "a repo without a config is not halted")
+
+		if _, lookErr := exec.LookPath("yq"); lookErr != nil {
+			t.Skip("yq not available")
+		}
+		got, err = publish(t, "kill_switch: true\n", "")
+		require.NoError(t, err, "with no stage routed there is no dispatch to halt — the step must still succeed so the route job publishes its outputs")
+		assert.Equal(t, "true", got)
+		calls, out, err := run(t, "200", got)
+		require.NoError(t, err, out)
+		assert.Empty(t, calls, "a push to a draft or fullsend-no-review PR in a halted repo must leave the labels alone")
+
+		got, err = publish(t, "kill_switch: true\n", "review")
+		require.Error(t, err, "a routed stage in a halted repo must still fail the route job")
+		assert.Equal(t, "true", got)
 	})
 }
 

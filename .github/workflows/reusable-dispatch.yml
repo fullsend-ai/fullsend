@@ -739,7 +739,9 @@ jobs:
     # New commits that no review round will look at: the labels the round
     # would have cleared at start are cleared here instead. Kept out of the
     # route job so that job stays read-only. Skipped while the kill switch is
-    # active — a halted repo mutates no labels.
+    # active — a halted repo mutates no labels; the script checks the switch
+    # again so that holds even if this expression is ever loosened. Per-repo
+    # only: the deprecated per-org scaffold has no such step (ADR 0096 §4).
     if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && needs.route.outputs.stage != 'review' && needs.route.outputs.kill_switch != 'true'
     runs-on: ${{ inputs.runner_image }}
     permissions:
@@ -751,8 +753,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          KILL_SWITCH: ${{ needs.route.outputs.kill_switch }}
         run: |
           set -euo pipefail
+          if [[ "${KILL_SWITCH:-}" == "true" ]]; then
+            echo "::notice::Kill switch is active — leaving labels on PR #${PR_NUMBER} untouched"
+            exit 0
+          fi
           # A push that starts no review round still supersedes the head that
           # ready-for-merge and ready-for-review described. A review run start
           # clears both (docs/architecture.md, coordinator merge algorithm); when

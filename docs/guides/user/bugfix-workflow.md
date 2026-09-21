@@ -98,7 +98,7 @@ The review stage runs N independent review agents in parallel. One is randomly s
 - **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
-Every push to a PR in the review stage triggers a new review round, unless the push lands on a draft, on a `fullsend-no-review`-labeled PR, or is documentation prose only. Either way `ready-for-merge` is never stale: a new round clears it at start, and a skipped round clears it from the dispatch workflow instead, so it only ever describes a reviewed head.
+Every push to a PR in the review stage triggers a new review round, unless the push lands on a draft, on a `fullsend-no-review`-labeled PR, or is documentation prose only. Either way `ready-for-merge` is never stale: a new round clears it at start, and a skipped round clears it from the dispatch workflow instead, so it only ever describes a reviewed head (the deprecated per-org mode is the exception — see the [review agent reference](../../agents/review.md#automatic-skips)).
 
 ## The stages in detail
 
