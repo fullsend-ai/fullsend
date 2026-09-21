@@ -37,14 +37,21 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration live in each target
-repository's **`.fullsend/`** directory. Per-repo installation is the sole
-supported deployment model ([ADR 0033](ADRs/0033-per-repo-installation-mode.md));
-the dedicated org-level `<org>/.fullsend` config repo is deprecated
+Forge-native infrastructure platform choice and configuration live in each
+target repository's **`.fullsend/`** directory. Per-repo installation is the
+sole supported forge-native deployment model
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)); the dedicated org-level
+`<org>/.fullsend` config repo is deprecated
 ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 
 **Decided:**
 
+- Managed tenant platform: Fullsend has an optional platform subsystem in the
+  separate `fullsend-ai/platform` repository. It uses a tenant as its
+  administrative boundary and owns tenant API, polling, ingress, queueing,
+  dispatch, and workload orchestration; the core runner and reusable execution
+  contracts remain in `fullsend-ai/fullsend`. Self-managed per-repository
+  installation remains a first-class model ([ADR 0110](ADRs/0110-managed-tenant-platform.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
@@ -613,7 +620,12 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 ## Multi-org deployment model
 
-Each organization that adopts fullsend operates independently. There is no shared control plane, no central service, and no relationship between orgs. Each org brings its own inference API keys and runs its own version of fullsend.
+In the self-managed deployment model, each organization that adopts fullsend
+operates independently. There is no shared control plane, no central service,
+and no relationship between orgs. Each org brings its own inference API keys
+and runs its own version of fullsend. The optional managed tenant platform is a
+separate deployment model: one tenant can span multiple forge organizations,
+repositories, and Jira projects.
 
 ```
   ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
@@ -649,7 +661,10 @@ Each organization that adopts fullsend operates independently. There is no share
                             └──────────────────────┘
 ```
 
-Each org is a fully independent instance. They choose when to upgrade. They configure their own agents, skills, plugins, and policies. They use their own model providers and API keys. The only shared element is the upstream fullsend project they all pull from.
+Each self-managed org is a fully independent instance. They choose when to
+upgrade. They configure their own agents, skills, plugins, and policies. They
+use their own model providers and API keys. The only shared element is the
+upstream fullsend project they all pull from.
 
 ## Downstream/upstream federation
 
