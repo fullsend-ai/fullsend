@@ -38,10 +38,11 @@ const (
 
 // runOverrideFlags are the per-run override flags of `fullsend run`.
 type runOverrideFlags struct {
-	runtime       string
-	model         string
-	effort        string
-	syncWorkspace bool
+	runtime          string
+	model            string
+	effort           string
+	syncWorkspace    bool
+	syncWorkspaceSet bool
 }
 
 // runOverrides is the resolved per-run override set. Empty *Source fields

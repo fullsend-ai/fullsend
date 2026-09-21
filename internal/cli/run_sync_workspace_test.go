@@ -198,3 +198,113 @@ func TestRunAgent_SyncWorkspace_SkippedOnFailure(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Equal(t, "initial", string(data))
 }
+
+func TestRunCommand_FlagOverridesEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_SYNC_WORKSPACE", "true")
+
+	// Case 1: Flag omitted -> environment fallback enables syncWorkspace
+	cmd := newRunCmd()
+	cmd.SetArgs([]string{"dummy", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	// Parse flags without executing RunE
+	err := cmd.ParseFlags([]string{"--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	require.NoError(t, err)
+	assert.False(t, cmd.Flags().Changed("sync-workspace"))
+
+	// Case 2: Flag explicitly set to false -> flagChanged is true, overrides env var
+	cmd2 := newRunCmd()
+	err = cmd2.ParseFlags([]string{"--sync-workspace=false", "--fullsend-dir", t.TempDir(), "--target-repo", t.TempDir()})
+	require.NoError(t, err)
+	assert.True(t, cmd2.Flags().Changed("sync-workspace"))
+	val, err := cmd2.Flags().GetBool("sync-workspace")
+	require.NoError(t, err)
+	assert.False(t, val)
+}
+
+func TestSyncOutputExcludeRel(t *testing.T) {
+	repo := t.TempDir()
+
+	// Top-level relative output
+	rel, ok := syncOutputExcludeRel(repo, filepath.Join(repo, "output"))
+	assert.True(t, ok)
+	assert.Equal(t, "output", rel)
+
+	// Multi-segment relative output (e.g. build/output, .fullsend/runs)
+	rel, ok = syncOutputExcludeRel(repo, filepath.Join(repo, "build", "output"))
+	assert.True(t, ok)
+	assert.Equal(t, filepath.Join("build", "output"), rel)
+
+	rel, ok = syncOutputExcludeRel(repo, filepath.Join(repo, ".fullsend", "runs"))
+	assert.True(t, ok)
+	assert.Equal(t, filepath.Join(".fullsend", "runs"), rel)
+
+	// Sibling or external output directory
+	otherDir := t.TempDir()
+	_, ok = syncOutputExcludeRel(repo, otherDir)
+	assert.False(t, ok)
+
+	// Target repo itself
+	_, ok = syncOutputExcludeRel(repo, repo)
+	assert.False(t, ok)
+
+	// Empty paths
+	_, ok = syncOutputExcludeRel("", repo)
+	assert.False(t, ok)
+	_, ok = syncOutputExcludeRel(repo, "")
+	assert.False(t, ok)
+}
+
+func TestSyncWorkspaceDir_NestedExcludesSurviveCopyAndPrune(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Destination has a nested output directory containing run artifacts
+	nestedOut := filepath.Join(dst, "build", "output")
+	require.NoError(t, os.MkdirAll(filepath.Join(nestedOut, "artifacts"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedOut, "results.json"), []byte("{\"status\":\"ok\"}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedOut, "artifacts", "trace.log"), []byte("log trace"), 0o644))
+
+	// Destination also has an obsolete sibling file under build/ that src does not have
+	require.NoError(t, os.WriteFile(filepath.Join(dst, "build", "old_scratch.txt"), []byte("prune me"), 0o644))
+
+	// Destination has an obsolete root file that should be pruned
+	require.NoError(t, os.WriteFile(filepath.Join(dst, "deprecated.txt"), []byte("remove"), 0o644))
+
+	// Source has new files, but does NOT contain the build directory at all
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "pkg"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "pkg", "lib.go"), []byte("package pkg"), 0o644))
+
+	// Source sandbox also created files under build/output (which should be skipped on copy)
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "build", "output"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "build", "output", "sandbox_extra.tmp"), []byte("ignore"), 0o644))
+
+	excludeRel := filepath.Join("build", "output")
+	err := syncWorkspaceDir(src, dst, []string{".git", excludeRel})
+	require.NoError(t, err)
+
+	// 1. New file copied
+	assert.FileExists(t, filepath.Join(dst, "pkg", "lib.go"))
+
+	// 2. Deprecated file pruned
+	assert.NoFileExists(t, filepath.Join(dst, "deprecated.txt"))
+
+	// 3. Obsolete sibling under build pruned
+	assert.NoFileExists(t, filepath.Join(dst, "build", "old_scratch.txt"))
+
+	// 4. Nested output run artifacts strictly preserved
+	assert.FileExists(t, filepath.Join(nestedOut, "results.json"))
+	assert.FileExists(t, filepath.Join(nestedOut, "artifacts", "trace.log"))
+
+	// 5. Excluded copy path was NOT copied over from src
+	assert.NoFileExists(t, filepath.Join(nestedOut, "sandbox_extra.tmp"))
+}
+
+func TestIsAncestorOfExcludedPath(t *testing.T) {
+	excludes := []string{".git", filepath.Join("build", "output"), filepath.Join(".fullsend", "runs")}
+
+	assert.True(t, isAncestorOfExcludedPath("build", excludes))
+	assert.True(t, isAncestorOfExcludedPath(".fullsend", excludes))
+
+	assert.False(t, isAncestorOfExcludedPath(filepath.Join("build", "output"), excludes))
+	assert.False(t, isAncestorOfExcludedPath("src", excludes))
+	assert.False(t, isAncestorOfExcludedPath("builder", excludes))
+}
