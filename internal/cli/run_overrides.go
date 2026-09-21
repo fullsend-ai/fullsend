@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -29,11 +30,14 @@ const (
 	// editing each harness.
 	envCodexModel = "FULLSEND_CODEX_MODEL"
 
-	sourceFlagRuntime = "--runtime flag"
-	sourceFlagModel   = "--model flag"
-	sourceFlagEffort  = "--effort flag"
-	sourceHarness     = "harness"
-	sourceDefault     = "default"
+	envSyncWorkspace = "FULLSEND_SYNC_WORKSPACE"
+
+	sourceFlagRuntime       = "--runtime flag"
+	sourceFlagModel         = "--model flag"
+	sourceFlagEffort        = "--effort flag"
+	sourceFlagSyncWorkspace = "--sync-workspace flag"
+	sourceHarness           = "harness"
+	sourceDefault           = "default"
 )
 
 // runOverrideFlags are the per-run override flags of `fullsend run`.
@@ -60,6 +64,9 @@ type runOverrides struct {
 
 	fallbackModels []string
 	fallbackSource string
+
+	syncWorkspace       bool
+	syncWorkspaceSource string
 }
 
 // runtimeModelEnv returns the runtime-scoped model override variable for a
@@ -126,6 +133,16 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 			o.fallbackSource = envFallbackModels
 		}
 	}
+	if flags.syncWorkspaceSet {
+		o.syncWorkspace = flags.syncWorkspace
+		o.syncWorkspaceSource = sourceFlagSyncWorkspace
+	} else if v := env(envSyncWorkspace); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			o.syncWorkspace = b
+			o.syncWorkspaceSource = envSyncWorkspace
+		}
+	}
+
 	return o, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -307,4 +308,95 @@ func TestIsAncestorOfExcludedPath(t *testing.T) {
 	assert.False(t, isAncestorOfExcludedPath(filepath.Join("build", "output"), excludes))
 	assert.False(t, isAncestorOfExcludedPath("src", excludes))
 	assert.False(t, isAncestorOfExcludedPath("builder", excludes))
+}
+
+func TestSyncWorkspaceDir_ExistingSymlinkNotFollowed(t *testing.T) {
+	externalDir := t.TempDir()
+	extSecretFile := filepath.Join(externalDir, "secret.txt")
+	require.NoError(t, os.WriteFile(extSecretFile, []byte("sensitive-external-data"), 0o600))
+
+	dst := t.TempDir()
+	// dst has a symlink pointing to externalDir/secret.txt
+	dstLink := filepath.Join(dst, "target.txt")
+	require.NoError(t, os.Symlink(extSecretFile, dstLink))
+
+	src := t.TempDir()
+	// src has a regular file with safe content
+	require.NoError(t, os.WriteFile(filepath.Join(src, "target.txt"), []byte("safe-sandbox-content"), 0o644))
+
+	err := syncWorkspaceDir(src, dst, []string{".git"})
+	require.NoError(t, err)
+
+	// Verify dst/target.txt is now a regular file, NOT a symlink
+	fi, err := os.Lstat(dstLink)
+	require.NoError(t, err)
+	assert.True(t, fi.Mode().IsRegular(), "destination file should be a regular file, not a symlink")
+	dstData, err := os.ReadFile(dstLink)
+	require.NoError(t, err)
+	assert.Equal(t, "safe-sandbox-content", string(dstData))
+
+	// Verify the external secret file was NOT overwritten through the symlink
+	extData, err := os.ReadFile(extSecretFile)
+	require.NoError(t, err)
+	assert.Equal(t, "sensitive-external-data", string(extData))
+}
+
+func TestSyncWorkspaceDir_PermissionUpdatesOnExistingFiles(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Initial files in dst: make_exec.sh is 0644, make_nonexec.sh is 0755
+	require.NoError(t, os.WriteFile(filepath.Join(dst, "make_exec.sh"), []byte("#!/bin/sh\necho exec"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dst, "make_nonexec.sh"), []byte("#!/bin/sh\necho nonexec"), 0o755))
+
+	// Files in src with updated permissions: make_exec.sh is 0755, make_nonexec.sh is 0644
+	require.NoError(t, os.WriteFile(filepath.Join(src, "make_exec.sh"), []byte("#!/bin/sh\necho exec"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "make_nonexec.sh"), []byte("#!/bin/sh\necho nonexec"), 0o644))
+
+	err := syncWorkspaceDir(src, dst, []string{".git"})
+	require.NoError(t, err)
+
+	// Verify permissions on existing files were updated
+	info1, err := os.Stat(filepath.Join(dst, "make_exec.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info1.Mode().Perm())
+
+	info2, err := os.Stat(filepath.Join(dst, "make_nonexec.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info2.Mode().Perm())
+}
+
+func TestShouldSyncWorkspace(t *testing.T) {
+	// Gating criteria:
+	// syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode
+	assert.True(t, shouldSyncWorkspace(true, true, false, false, false, false, 0), "all success with no validation loop")
+	assert.True(t, shouldSyncWorkspace(true, true, true, true, false, false, 0), "all success with passing validation loop")
+
+	assert.False(t, shouldSyncWorkspace(false, true, false, false, false, false, 0), "disabled sync")
+	assert.False(t, shouldSyncWorkspace(true, false, false, false, false, false, 0), "repo extraction failed")
+	assert.False(t, shouldSyncWorkspace(true, true, true, false, false, false, 0), "validation failed")
+	assert.False(t, shouldSyncWorkspace(true, true, false, false, true, false, 0), "iteration timed out")
+	assert.False(t, shouldSyncWorkspace(true, true, false, false, false, true, 0), "transcript error override")
+	assert.False(t, shouldSyncWorkspace(true, true, false, false, false, false, 1), "non-zero agent exit code")
+	assert.False(t, shouldSyncWorkspace(true, true, false, false, false, true, 1), "transcript error and non-zero exit")
+}
+
+func TestRunOverrides_EnvFileEnablesSyncWorkspace(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "test.env")
+	require.NoError(t, os.WriteFile(envFile, []byte("FULLSEND_SYNC_WORKSPACE=true\n"), 0o644))
+
+	require.NoError(t, envfile.Load(envFile))
+	t.Cleanup(func() {
+		os.Unsetenv("FULLSEND_SYNC_WORKSPACE")
+	})
+
+	overrides, err := resolveRunOverrides(runOverrideFlags{}, os.Getenv, "")
+	require.NoError(t, err)
+	assert.True(t, overrides.syncWorkspace)
+	assert.Equal(t, "FULLSEND_SYNC_WORKSPACE", overrides.syncWorkspaceSource)
+
+	overridesFlag, err := resolveRunOverrides(runOverrideFlags{syncWorkspace: false, syncWorkspaceSet: true}, os.Getenv, "")
+	require.NoError(t, err)
+	assert.False(t, overridesFlag.syncWorkspace)
+	assert.Equal(t, "--sync-workspace flag", overridesFlag.syncWorkspaceSource)
 }
