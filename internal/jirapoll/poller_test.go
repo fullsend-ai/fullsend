@@ -2658,3 +2658,38 @@ func TestRunPerActorGroupResolution_AllActorsAPIError(t *testing.T) {
 		t.Fatal("expected Run() to fail when all actor group lookups fail for all issues")
 	}
 }
+
+func TestPoller_DispatchesStructuredEventPayload(t *testing.T) {
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+	p := &Poller{
+		dispatches: []DispatchRecord{
+			{
+				Agent:        "code",
+				Role:         "code",
+				SourceRepo:   "acme/platform",
+				EventType:    "comment_added",
+				EventPayload: json.RawMessage(`{"entity":{"key":"PROJ-123"}}`),
+				StatusRepo:   "acme/platform",
+				StatusNumber: "100",
+			},
+		},
+	}
+
+	if err := p.writeDispatches(outputPath); err != nil {
+		t.Fatalf("writeDispatches: %v", err)
+	}
+
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read dispatches: %v", err)
+	}
+
+	// Ensure event_payload was marshaled as an unescaped object, not a JSON string literal.
+	if strings.Contains(string(content), `"event_payload": "{\`) {
+		t.Errorf("event_payload is string-escaped, want structured JSON object:\n%s", string(content))
+	}
+	if !strings.Contains(string(content), `"event_payload": {`) {
+		t.Errorf("event_payload missing structured object format:\n%s", string(content))
+	}
+}
