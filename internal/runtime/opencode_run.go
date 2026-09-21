@@ -139,10 +139,24 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	sandboxTranscriptDir := sandbox.SandboxWorkspace + "/" + openCodeOutputSubdir
 	rcFile := sandbox.SandboxWorkspace + "/" + openCodeRunRCFile
 
+	// Write the runner-owned opencode.json that re-attaches workspace
+	// AGENTS.md. OPENCODE_DISABLE_PROJECT_CONFIG=true (EnvExports) blocks
+	// OpenCode's project-level instruction walk to prevent a hostile repo's
+	// .opencode/opencode.json from widening permissions, but it also
+	// suppresses AGENTS.md discovery. config.instructions with an absolute
+	// path bypasses the flag (instruction.ts:140-145), so we inject the
+	// workspace path explicitly. Written before .env so it cannot be
+	// overridden by agent-writable content.
+	configJSON := openCodeInstructionsConfig(params.RepoDir)
+	configPath := r.ConfigDir() + "/" + openCodeConfigFile
 	prelude := []string{
 		"cd " + shellQuote(params.RepoDir),
 		// Ensure the transcript directory exists before tee writes into it.
 		"&& mkdir -p " + shellQuote(sandboxTranscriptDir),
+		// Inject runner-owned opencode.json with instructions pointing at
+		// workspace AGENTS.md. printf is a shell builtin — safe from PATH
+		// manipulation.
+		"&& printf '%s' " + shellQuote(configJSON) + " > " + shellQuote(configPath),
 	}
 	if hooksEnabled {
 		// Before .env: that file is agent-writable and could otherwise shadow

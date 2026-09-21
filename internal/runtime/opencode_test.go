@@ -122,11 +122,16 @@ func TestOpenCodePermissionRecord(t *testing.T) {
 	assert.Equal(t, []string{"read", "task"}, openCodeToolNamesSorted(rec))
 
 	// Skill is dropped (native discovery), unsupported names dropped, and an
-	// agent listing only those gets an explicit empty record (not nil, so
+	// agent listing only those gets all tools denied (not nil/empty, so
 	// OpenCode does not fall back to its full default set).
 	rec = openCodePermissionRecord([]string{"Skill", "NoSuchTool"})
 	assert.NotNil(t, rec)
 	assert.Empty(t, openCodeToolNamesSorted(rec))
+	// Every known tool is explicitly denied.
+	assert.Len(t, rec, len(openCodeAllToolIDs))
+	for _, id := range openCodeAllToolIDs {
+		assert.Equal(t, "deny", rec[id], "tool %q should be denied", id)
+	}
 }
 
 func TestOpenCodeAgentMarkdown(t *testing.T) {
@@ -148,6 +153,9 @@ func TestOpenCodeAgentMarkdown(t *testing.T) {
 	assert.Contains(t, s, `"model": "opus"`)
 	assert.Contains(t, s, `"bash": "allow"`)
 	assert.Contains(t, s, `"read": "allow"`)
+	// Tools not in the allowlist are explicitly denied.
+	assert.Contains(t, s, `"write": "deny"`)
+	assert.Contains(t, s, `"webfetch": "deny"`)
 	assert.Contains(t, s, "You are the triage agent.")
 	assert.True(t, strings.HasSuffix(s, "\n"))
 	// The body follows a closing fence.
@@ -163,6 +171,13 @@ func TestOpenCodeValidatedArg(t *testing.T) {
 	assert.Equal(t, "opusrm -rf", openCodeValidatedArg("opus;rm -rf"))
 	assert.Equal(t, "abc", openCodeValidatedArg("a\x00b\nc"))
 	assert.Equal(t, "safe.name-1_2@x", openCodeValidatedArg("safe.name-1_2@x"))
+}
+
+func TestOpenCodeInstructionsConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := openCodeInstructionsConfig("/sandbox/workspace/myrepo")
+	assert.Equal(t, `{"instructions":["/sandbox/workspace/myrepo/AGENTS.md"]}`, cfg)
 }
 
 func TestBuildOpenCodeRunCommand(t *testing.T) {
@@ -197,6 +212,19 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Contains(t, cmd, "exit \"$(cat "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
 	// No hooks signal → no integrity guard.
 	assert.NotContains(t, cmd, "refusing to run unhooked")
+
+	// Runner-owned opencode.json with instructions pointing at workspace
+	// AGENTS.md is written by the prelude before .env is sourced.
+	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
+	assert.Contains(t, cmd, "> "+shellQuote(configPath))
+	expectedJSON := openCodeInstructionsConfig(params.RepoDir)
+	assert.Contains(t, cmd, shellQuote(expectedJSON))
+	// The config write must appear before .env sourcing.
+	configIdx := strings.Index(cmd, shellQuote(configPath))
+	envIdx := strings.Index(cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
+	require.NotEqual(t, -1, configIdx, "config write must be present")
+	require.NotEqual(t, -1, envIdx, ".env source must be present")
+	assert.Less(t, configIdx, envIdx, "runner-owned opencode.json must be written before .env is sourced")
 }
 
 func TestBuildOpenCodeRunCommand_PromptOverride(t *testing.T) {

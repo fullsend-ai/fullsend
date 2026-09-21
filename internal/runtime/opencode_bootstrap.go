@@ -32,6 +32,14 @@ const (
 	// openCodeDebugLogFile captures OpenCode's stderr when --debug is set;
 	// ExtractDebugLog downloads it.
 	openCodeDebugLogFile = "opencode-debug.log"
+	// openCodeConfigFile is the runner-owned opencode.json written to
+	// ConfigDir by the run prelude. It carries config.instructions entries
+	// that re-attach workspace AGENTS.md after OPENCODE_DISABLE_PROJECT_CONFIG
+	// suppresses project-level discovery (instruction.ts:81-133). The file
+	// loads at config step 5 (config.ts:424-466) and its instructions array
+	// is concatenated with OPENCODE_CONFIG_CONTENT's via
+	// mergeConfigConcatArrays, so there is no conflict.
+	openCodeConfigFile = "opencode.json"
 )
 
 // openCodeAgentPath is the sandbox path of the translated agent definition.
@@ -190,28 +198,40 @@ func openCodeAgentMarkdown(agentName string, def *piAgentDef) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// openCodeAllToolIDs is the canonical set of OpenCode permission keys
+// (packages/opencode/src/cli/cmd/agent.ts AVAILABLE_PERMISSIONS plus "write"
+// from the tool registry). Keep in sync with upstream — a missing entry here
+// means that tool silently stays at its default rather than being explicitly
+// denied.
+var openCodeAllToolIDs = []string{
+	"bash", "edit", "glob", "grep", "lsp", "read", "skill",
+	"task", "todowrite", "webfetch", "websearch", "write",
+}
+
 // openCodePermissionRecord translates the Claude tool-name allowlist into
 // OpenCode's {toolID: "allow"|"deny"} permission record. A non-nil list
-// allows only the mapped tools; Claude names without an OpenCode counterpart
-// are dropped with a warning. Per-argument Bash restrictions (e.g.
-// Bash(gh,jq)) cannot be represented in OpenCode's permission model and
-// collapse to a bare bash: "allow".
+// allows only the mapped tools and explicitly denies every other known tool;
+// Claude names without an OpenCode counterpart are dropped with a warning.
+// Per-argument Bash restrictions (e.g. Bash(gh,jq)) cannot be represented in
+// OpenCode's permission model and collapse to a bare bash: "allow".
 //
-// Both nil claudeTools (no restriction in the agent frontmatter) and a
-// non-nil list whose entries all map to unsupported/Skill produce the same
+// A nil claudeTools (no restriction in the agent frontmatter) returns an
 // empty map (serialised as `"permission": {}`). OpenCode treats an empty
-// permission record as "use defaults" — every tool is available. This is
-// correct for the nil case (the agent did not restrict tools) but means an
-// agent that listed ONLY unsupported tools also gets the full default set
-// rather than an empty allowlist. In practice this is acceptable: the
-// harness's OPENCODE_CONFIG_CONTENT permission policy merges last and
-// provides the authoritative gate; the per-agent record is a documentation
-// aid, not the sole enforcement point.
+// permission record as "use defaults" — every tool is available, which is
+// the correct behaviour for unrestricted agents. The harness's
+// OPENCODE_CONFIG_CONTENT permission policy merges last and provides the
+// authoritative gate; the per-agent record is defense-in-depth.
 func openCodePermissionRecord(claudeTools []string) map[string]string {
 	if claudeTools == nil {
 		return map[string]string{}
 	}
-	rec := map[string]string{}
+
+	// Start with every known tool denied; allowed tools are overwritten below.
+	rec := make(map[string]string, len(openCodeAllToolIDs))
+	for _, id := range openCodeAllToolIDs {
+		rec[id] = "deny"
+	}
+
 	for _, ct := range claudeTools {
 		if ct == "Skill" {
 			// OpenCode has a native skill tool; skills are discovered from the
@@ -225,9 +245,6 @@ func openCodePermissionRecord(claudeTools []string) map[string]string {
 		}
 		rec[ot] = "allow"
 	}
-	// An agent that listed only unsupported/Skill tools gets the same empty
-	// record as an unrestricted agent — see the doc comment above for why
-	// this is acceptable (the harness policy is the authoritative gate).
 	return rec
 }
 
@@ -262,6 +279,17 @@ func openCodeToolNamesSorted(rec map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// openCodeInstructionsConfig returns the JSON body of a runner-owned
+// opencode.json whose only key is `instructions`. The array tells OpenCode
+// to load AGENTS.md from the workspace, restoring the project instruction
+// that OPENCODE_DISABLE_PROJECT_CONFIG=true suppressed (instruction.ts uses
+// absolute paths directly — no flag check). The resulting file merges with
+// OPENCODE_CONFIG_CONTENT at load time via mergeConfigConcatArrays
+// (config.ts:45-51) so the two sources never conflict.
+func openCodeInstructionsConfig(repoDir string) string {
+	return `{"instructions":["` + repoDir + `/AGENTS.md"]}`
 }
 
 // openCodePreflightVersion runs `opencode --version` in the sandbox. Failure
