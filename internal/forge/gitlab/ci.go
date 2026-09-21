@@ -1075,10 +1075,12 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 
 // ProjectAccessToken represents a GitLab project access token.
 type ProjectAccessToken struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Active bool   `json:"active"`
-	Token  string `json:"token"`
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Active    bool   `json:"active"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Revoked   bool   `json:"revoked,omitempty"`
 }
 
 // CreateProjectAccessToken creates a project access token with the given name,
@@ -1105,16 +1107,26 @@ func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, 
 
 // ListProjectAccessTokens lists all project access tokens.
 func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]ProjectAccessToken, error) {
-	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
-	resp, err := c.get(ctx, basePath)
-	if err != nil {
-		return nil, fmt.Errorf("list project access tokens: %w", err)
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var result []ProjectAccessToken
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/access_tokens?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list project access tokens page %d: %w", page, err)
+		}
+		var tokens []ProjectAccessToken
+		if err := decodeJSON(resp, &tokens); err != nil {
+			return nil, fmt.Errorf("decode project access tokens page %d: %w", page, err)
+		}
+		result = append(result, tokens...)
+		if len(tokens) < perPage {
+			return result, nil
+		}
 	}
-	var tokens []ProjectAccessToken
-	if err := decodeJSON(resp, &tokens); err != nil {
-		return nil, fmt.Errorf("decode project access tokens: %w", err)
-	}
-	return tokens, nil
+	return nil, fmt.Errorf("list project access tokens: pagination exceeded %d pages", maxPages)
 }
 
 // RevokeProjectAccessToken revokes (deletes) a project access token by ID.

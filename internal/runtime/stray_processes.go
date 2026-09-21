@@ -66,10 +66,11 @@ const killStrayProcessesTimeout = 15 * time.Second
 //
 // Only tools the sandbox image ships are used (procps ps, mawk, dash
 // builtins, coreutils sleep/id) — no pkill/pgrep. A failed process listing
-// exits 3 (distinct from the always-0 sweep result) so the Go side warns
-// instead of trusting a silent zero; a failing `ps -p` liveness probe takes
-// the same exit, after KILLing everything that was TERMed, because its
-// empty answer is otherwise indistinguishable from "they are all gone".
+// (ps, or the awk that turns it into targets) exits 3 (distinct from the
+// always-0 sweep result) so the Go side warns instead of trusting a silent
+// zero; a failing `ps -p` liveness probe takes the same exit, after KILLing
+// everything that was TERMed, because its empty answer is otherwise
+// indistinguishable from "they are all gone".
 const killStrayProcessesTemplate = `# shellcheck shell=sh
 # Sweep processes left behind by the previous iteration. pi's bash tool
 # spawns commands detached and kills that tree only on abort/timeout
@@ -85,10 +86,10 @@ const killStrayProcessesTemplate = `# shellcheck shell=sh
 # matched on argv with any directory stripped from the command word
 # (/usr/bin/sleep infinity counts), so an agent-started literal
 # "sleep infinity" is spared as well. TERM first, then KILL whatever is
-# still alive after 2s. The count goes to stdout; a process listing or a
-# liveness probe that fails exits 3 so the runner warns instead of
-# trusting a zero. The user is selected by numeric uid: the sandbox user
-# need not be resolvable through NSS.
+# still alive after 2s. The count goes to stdout; a process listing, the
+# awk that turns it into targets, or a liveness probe that fails exits 3
+# so the runner warns instead of trusting a zero. The user is selected by
+# numeric uid: the sandbox user need not be resolvable through NSS.
 me=$$
 listing=$(ps -o pid= -o ppid= -o stat= -o args= -u "$(id -u)" 2>/dev/null) || {
   echo 'stray processes: ps failed' >&2
@@ -131,7 +132,10 @@ targets=$(printf '%s\n' "$listing" | awk -v me="$me" -v keep=__KEEPALIVE__ '
       if (cmd[p] == keep) continue
       print p
     }
-  }')
+  }') || {
+  echo 'stray processes: awk failed' >&2
+  exit 3
+}
 count=0
 pids=""
 signalled=""
@@ -205,8 +209,9 @@ var strayProcessesKilledRe = regexp.MustCompile(`(?m)^stray processes killed: ([
 // killStrayProcesses runs the sweep snippet in the sandbox through execFn
 // (sandbox.Exec in production) and returns the number of processes it
 // signalled. Any failure — a gateway error, a timeout, a non-zero exit
-// (exit 3 is the snippet's own "ps failed"), or output the snippet never
-// produces — is returned as an error for the caller to downgrade.
+// (exit 3 is the snippet's own "ps failed" / "awk failed"), or output the
+// snippet never produces — is returned as an error for the caller to
+// downgrade.
 func killStrayProcesses(execFn sandboxExecFunc, sandboxName string) (int, error) {
 	stdout, stderr, exitCode, err := execFn(sandboxName, killStrayProcessesScript(), killStrayProcessesTimeout)
 	if err != nil {

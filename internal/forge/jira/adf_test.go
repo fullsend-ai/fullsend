@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuin/goldmark/ast"
+	east "github.com/yuin/goldmark/extension/ast"
 )
 
 // asMap is a small helper to keep test assertions terse when reaching into
@@ -580,7 +583,7 @@ func assertNoEmptyContainers(t *testing.T, node any) {
 	nodeType, _ := m["type"].(string)
 	content, hasContent := m["content"].([]any)
 	switch nodeType {
-	case "blockquote", "bulletList", "orderedList", "listItem":
+	case "blockquote", "bulletList", "orderedList", "listItem", "table", "tableRow":
 		if hasContent && len(content) == 0 {
 			t.Errorf("%s node has content: [], which violates ADF minItems: 1: %+v", nodeType, m)
 		}
@@ -802,6 +805,313 @@ func TestMarkdownToADF_HardBreak(t *testing.T) {
 	}
 }
 
+// tableCellText concatenates the text nodes of a tableHeader/tableCell's
+// first paragraph child, ignoring marks. Used to assert cell content
+// without depending on how goldmark splits inline runs.
+func tableCellText(t *testing.T, cell map[string]any) string {
+	t.Helper()
+	para := asMap(t, asSlice(t, cell["content"])[0])
+	if para["type"] != "paragraph" {
+		t.Fatalf("table cell content[0] type = %v, want paragraph", para["type"])
+	}
+	var b strings.Builder
+	for _, n := range asSlice(t, para["content"]) {
+		node := asMap(t, n)
+		if text, ok := node["text"].(string); ok {
+			b.WriteString(text)
+		}
+	}
+	return b.String()
+}
+
+func TestMarkdownToADF_GFMTable(t *testing.T) {
+	// Header + separator + two data rows, one cell with inline formatting.
+	// Without the GFM table extension this was a single flattened paragraph
+	// of pipe-separated text.
+	src := "| col1 | col2 |\n|------|------|\n| **a** | b |\n| c | d |\n"
+	doc := mustADF(t, src)
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 1 {
+		t.Fatalf("doc content len = %d, want 1 (table)", len(content))
+	}
+	table := asMap(t, content[0])
+	if table["type"] != "table" {
+		t.Fatalf("block type = %v, want %q", table["type"], "table")
+	}
+	rows := asSlice(t, table["content"])
+	if len(rows) != 3 {
+		t.Fatalf("table content len = %d, want 3 (header + 2 data rows)", len(rows))
+	}
+
+	header := asMap(t, rows[0])
+	if header["type"] != "tableRow" {
+		t.Fatalf("row 0 type = %v, want tableRow", header["type"])
+	}
+	headerCells := asSlice(t, header["content"])
+	if len(headerCells) != 2 {
+		t.Fatalf("header cell count = %d, want 2", len(headerCells))
+	}
+	for i, want := range []string{"col1", "col2"} {
+		cell := asMap(t, headerCells[i])
+		if cell["type"] != "tableHeader" {
+			t.Errorf("header cell %d type = %v, want tableHeader", i, cell["type"])
+		}
+		if got := tableCellText(t, cell); got != want {
+			t.Errorf("header cell %d text = %q, want %q", i, got, want)
+		}
+	}
+
+	data := asMap(t, rows[1])
+	dataCells := asSlice(t, data["content"])
+	if len(dataCells) != 2 {
+		t.Fatalf("data row 0 cell count = %d, want 2", len(dataCells))
+	}
+	aCell := asMap(t, dataCells[0])
+	if aCell["type"] != "tableCell" {
+		t.Errorf("data cell type = %v, want tableCell", aCell["type"])
+	}
+	if got := tableCellText(t, aCell); got != "a" {
+		t.Errorf("data cell [0][0] text = %q, want %q", got, "a")
+	}
+	para := asMap(t, asSlice(t, aCell["content"])[0])
+	var sawStrong bool
+	for _, n := range asSlice(t, para["content"]) {
+		node := asMap(t, n)
+		marks, ok := node["marks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, m := range marks {
+			if asMap(t, m)["type"] == "strong" {
+				sawStrong = true
+			}
+		}
+	}
+	if !sawStrong {
+		t.Errorf("cell **a** produced no strong mark; want inline formatting preserved")
+	}
+	if got := tableCellText(t, asMap(t, dataCells[1])); got != "b" {
+		t.Errorf("data cell [0][1] text = %q, want %q", got, "b")
+	}
+
+	row2 := asMap(t, rows[2])
+	row2Cells := asSlice(t, row2["content"])
+	for i, want := range []string{"c", "d"} {
+		if got := tableCellText(t, asMap(t, row2Cells[i])); got != want {
+			t.Errorf("data cell [1][%d] text = %q, want %q", i, got, want)
+		}
+	}
+	assertNoEmptyContainers(t, doc)
+}
+
+func TestMarkdownToADF_GFMTableEmptyCell(t *testing.T) {
+	doc := mustADF(t, "| h1 | h2 |\n|----|----|\n| a |  |\n")
+
+	table := asMap(t, asSlice(t, doc["content"])[0])
+	if table["type"] != "table" {
+		t.Fatalf("block type = %v, want table", table["type"])
+	}
+	row := asMap(t, asSlice(t, table["content"])[1])
+	cells := asSlice(t, row["content"])
+	if len(cells) != 2 {
+		t.Fatalf("data cell count = %d, want 2 (empty cell still present)", len(cells))
+	}
+	empty := asMap(t, cells[1])
+	if empty["type"] != "tableCell" {
+		t.Errorf("empty cell type = %v, want tableCell", empty["type"])
+	}
+	para := asMap(t, asSlice(t, empty["content"])[0])
+	if para["type"] != "paragraph" {
+		t.Errorf("empty cell content[0] type = %v, want paragraph (ADF minItems: 1)", para["type"])
+	}
+	if got := tableCellText(t, empty); got != "" {
+		t.Errorf("empty cell text = %q, want empty", got)
+	}
+}
+
+func TestMarkdownToADF_GFMTableOnlyBody(t *testing.T) {
+	doc := mustADF(t, "| col1 | col2 |\n|------|------|\n| a | b |\n")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 1 {
+		t.Fatalf("doc content len = %d, want 1", len(content))
+	}
+	if asMap(t, content[0])["type"] != "table" {
+		t.Errorf("sole block type = %v, want table", asMap(t, content[0])["type"])
+	}
+}
+
+func TestMarkdownToADF_GFMTablePrecededByParagraph(t *testing.T) {
+	doc := mustADF(t, "hello\n\n| col1 | col2 |\n|------|------|\n| a | b |\n")
+
+	content := asSlice(t, doc["content"])
+	if len(content) != 2 {
+		t.Fatalf("doc content len = %d, want 2 (paragraph + table)", len(content))
+	}
+	para := asMap(t, content[0])
+	if para["type"] != "paragraph" {
+		t.Errorf("block 0 type = %v, want paragraph", para["type"])
+	}
+	text := asMap(t, asSlice(t, para["content"])[0])
+	if text["text"] != "hello" {
+		t.Errorf("paragraph text = %v, want %q", text["text"], "hello")
+	}
+	if asMap(t, content[1])["type"] != "table" {
+		t.Errorf("block 1 type = %v, want table", asMap(t, content[1])["type"])
+	}
+}
+
+func TestMarkdownToADF_GFMTableInsideBlockquoteEmptyRowSkipped(t *testing.T) {
+	// An all-empty data row produces no inline text, so flattenTable
+	// skips it rather than emitting an empty paragraph.
+	doc := mustADF(t, "> | h1 | h2 |\n> |----|----|\n> |  |  |\n")
+
+	bq := asMap(t, asSlice(t, doc["content"])[0])
+	if bq["type"] != "blockquote" {
+		t.Fatalf("block type = %v, want blockquote", bq["type"])
+	}
+	var texts []string
+	for _, c := range asSlice(t, bq["content"]) {
+		block := asMap(t, c)
+		if block["type"] != "paragraph" {
+			continue
+		}
+		var b strings.Builder
+		for _, n := range asSlice(t, block["content"]) {
+			node := asMap(t, n)
+			if text, ok := node["text"].(string); ok {
+				b.WriteString(text)
+			}
+		}
+		texts = append(texts, b.String())
+	}
+	if len(texts) != 1 {
+		t.Fatalf("flattened paragraphs = %q, want only the header row (empty data row skipped)", texts)
+	}
+	if !strings.Contains(texts[0], "h1") || !strings.Contains(texts[0], "h2") {
+		t.Errorf("header paragraph = %q, want h1 and h2", texts[0])
+	}
+	assertNoEmptyContainers(t, doc)
+}
+
+func TestMarkdownToADF_GFMTableInsideBlockquoteFlattens(t *testing.T) {
+	// ADF blockquote schema has no table node; flatten to paragraphs so
+	// the write isn't rejected with a 400 and cell text isn't dropped.
+	doc := mustADF(t, "> | col1 | col2 |\n> |------|------|\n> | a | b |\n")
+
+	bq := asMap(t, asSlice(t, doc["content"])[0])
+	if bq["type"] != "blockquote" {
+		t.Fatalf("block type = %v, want blockquote", bq["type"])
+	}
+	for _, c := range asSlice(t, bq["content"]) {
+		if asMap(t, c)["type"] == "table" {
+			t.Fatalf("blockquote content = %+v, want the table flattened away", bq["content"])
+		}
+	}
+	var texts []string
+	for _, c := range asSlice(t, bq["content"]) {
+		block := asMap(t, c)
+		if block["type"] != "paragraph" {
+			continue
+		}
+		var b strings.Builder
+		for _, n := range asSlice(t, block["content"]) {
+			node := asMap(t, n)
+			if text, ok := node["text"].(string); ok {
+				b.WriteString(text)
+			}
+		}
+		texts = append(texts, b.String())
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "col1") || !strings.Contains(joined, "a") {
+		t.Errorf("flattened table text = %q, want cell contents preserved", joined)
+	}
+	assertNoEmptyContainers(t, doc)
+}
+
+func TestMarkdownToADF_GFMTableInsideListItemFlattens(t *testing.T) {
+	doc := mustADF(t, "- | col1 | col2 |\n  |------|------|\n  | a | b |\n")
+
+	list := asMap(t, asSlice(t, doc["content"])[0])
+	if list["type"] != "bulletList" {
+		t.Fatalf("block type = %v, want bulletList", list["type"])
+	}
+	item := asMap(t, asSlice(t, list["content"])[0])
+	var sawCellText bool
+	for _, c := range asSlice(t, item["content"]) {
+		block := asMap(t, c)
+		if block["type"] == "table" {
+			t.Fatalf("listItem content = %+v, want the table flattened away", item["content"])
+		}
+		if block["type"] != "paragraph" {
+			continue
+		}
+		for _, n := range asSlice(t, block["content"]) {
+			node := asMap(t, n)
+			text, _ := node["text"].(string)
+			if strings.Contains(text, "col1") || strings.Contains(text, "a") {
+				sawCellText = true
+			}
+		}
+	}
+	if !sawCellText {
+		t.Errorf("listItem content = %+v, want flattened cell text", item["content"])
+	}
+	assertNoEmptyContainers(t, doc)
+}
+
+func TestMarkdownToADF_GFMTableInsideDetails(t *testing.T) {
+	// The <details> body is re-parsed with parseMarkdown, so a GFM table
+	// inside an expand must still become an ADF table, not flattened text.
+	doc := mustADF(t, "<details><summary>T</summary>\n\n| col1 | col2 |\n|------|------|\n| a | b |\n</details>")
+
+	expand := asMap(t, asSlice(t, doc["content"])[0])
+	if expand["type"] != "expand" {
+		t.Fatalf("block type = %v, want expand", expand["type"])
+	}
+	var sawTable bool
+	for _, c := range asSlice(t, expand["content"]) {
+		if asMap(t, c)["type"] == "table" {
+			sawTable = true
+		}
+	}
+	if !sawTable {
+		t.Errorf("expand content = %+v, want a nested table", expand["content"])
+	}
+}
+
+func TestConvertTable_SkipsUnknownChildrenAndEmptyRows(t *testing.T) {
+	// goldmark never emits these shapes, but convertTable/flattenTable
+	// still have to ignore non-row/non-cell children and drop empty rows
+	// so the ADF stays schema-valid.
+	src := []byte("")
+	table := east.NewTable()
+	table.AppendChild(table, ast.NewThematicBreak())
+	table.AppendChild(table, east.NewTableRow(nil))
+
+	got := convertTable(table, src, 0, false)
+	if got != nil {
+		t.Errorf("convertTable(no cells) = %+v, want nil", got)
+	}
+
+	row := east.NewTableRow(nil)
+	row.AppendChild(row, ast.NewThematicBreak())
+	if node := convertTableRow(row, src, 0, false); node != nil {
+		t.Errorf("convertTableRow(no cells) = %+v, want nil", node)
+	}
+
+	flat := east.NewTable()
+	flatRow := east.NewTableRow(nil)
+	flatRow.AppendChild(flatRow, ast.NewThematicBreak())
+	flatRow.AppendChild(flatRow, east.NewTableCell())
+	flat.AppendChild(flat, flatRow)
+	if out := flattenTable(flat, src, 0); len(out) != 0 {
+		t.Errorf("flattenTable(empty/unknown children) = %+v, want empty", out)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ADFToPlainText
 // ---------------------------------------------------------------------------
@@ -906,6 +1216,37 @@ func TestADFToPlainText_HardBreak(t *testing.T) {
 	want := "line one\nline two"
 	if got != want {
 		t.Errorf("ADFToPlainText(hardBreak) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToPlainText_Table(t *testing.T) {
+	// table/tableRow/tableCell are block types, so cell text is separated
+	// by newlines rather than concatenated into "col1col2ab".
+	adf := map[string]any{
+		"type": "table",
+		"content": []any{
+			map[string]any{"type": "tableRow", "content": []any{
+				map[string]any{"type": "tableHeader", "content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col1"}}},
+				}},
+				map[string]any{"type": "tableHeader", "content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col2"}}},
+				}},
+			}},
+			map[string]any{"type": "tableRow", "content": []any{
+				map[string]any{"type": "tableCell", "content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
+				}},
+				map[string]any{"type": "tableCell", "content": []any{
+					map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
+				}},
+			}},
+		},
+	}
+	got := ADFToPlainText(adf)
+	want := "col1\ncol2\na\nb"
+	if got != want {
+		t.Errorf("ADFToPlainText(table) = %q, want %q", got, want)
 	}
 }
 
@@ -1341,11 +1682,11 @@ func TestADFToMarkdown_HardBreak(t *testing.T) {
 }
 
 func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.T) {
-	// Unknown ADF container types (panel, table, taskList) wrap
-	// block-level content (paragraphs, tableRows, ...), not inline text.
+	// Unknown ADF container types (panel, taskList) wrap block-level
+	// content (paragraphs, taskItems, ...), not inline text.
 	// adfMarkdownInline alone can't see any of it, since it only reads
-	// direct children's top-level "text" fields. (expand is no longer
-	// unknown — it has dedicated <details>/<summary> handling.)
+	// direct children's top-level "text" fields. (expand and table are
+	// no longer unknown — they have dedicated handlers.)
 	for _, tc := range []struct {
 		name string
 		node map[string]any
@@ -1361,23 +1702,6 @@ func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.
 				},
 			},
 			want: "important warning text",
-		},
-		{
-			name: "table",
-			node: map[string]any{
-				"type": "table",
-				"content": []any{
-					map[string]any{"type": "tableRow", "content": []any{
-						map[string]any{"type": "tableCell", "content": []any{
-							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
-						}},
-						map[string]any{"type": "tableCell", "content": []any{
-							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
-						}},
-					}},
-				},
-			},
-			want: "a\n\nb",
 		},
 		{
 			name: "taskList",
@@ -1399,6 +1723,303 @@ func TestADFToMarkdown_UnknownContainerNodeRecursesIntoBlockChildren(t *testing.
 		if got != tc.want {
 			t.Errorf("%s: ADFToMarkdown(%+v) = %q, want %q (content dropped)", tc.name, tc.node, got, tc.want)
 		}
+	}
+}
+
+func TestADFToMarkdown_Table(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col1"}}},
+						}},
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col2"}}},
+						}},
+					}},
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| col1 | col2 |\n| --- | --- |\n| a | b |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(table) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableEscapesPipesAndEmptyCells(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "h"}}},
+						}},
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "i"}}},
+						}},
+					}},
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a|b"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| h | i |\n| --- | --- |\n| a\\|b |  |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(table with pipe/empty) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableFlattensCRAndCRLF(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a\rb"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a\r\nb"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| a b | a b |\n| --- | --- |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(table with CR/CRLF cells) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableFlattensHardBreak(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{
+								map[string]any{"type": "text", "text": "a"},
+								map[string]any{"type": "hardBreak"},
+								map[string]any{"type": "text", "text": "b"},
+							}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	// A hardBreak renders as "\<LF>" outside table cells (see
+	// TestADFToMarkdown_HardBreak), but a GFM table cell can't contain a
+	// literal newline. Flattening the LF alone would strand the escaping
+	// backslash as a literal character ("a\ b"); it must collapse to a
+	// plain space instead.
+	want := "| a b |\n| --- |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(table with hardBreak cell) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableRoundTripsThroughMarkdownToADF(t *testing.T) {
+	src := "| col1 | col2 |\n| --- | --- |\n| **a** | b |\n| c | d |"
+	doc := mustADF(t, src)
+	got := ADFToMarkdown(doc)
+	if got != src {
+		t.Errorf("ADFToMarkdown(MarkdownToADF(table)) = %q, want %q", got, src)
+	}
+	doc2 := mustADF(t, got)
+	got2 := ADFToMarkdown(doc2)
+	if got2 != got {
+		t.Errorf("second round-trip = %q, want stable %q", got2, got)
+	}
+}
+
+func TestADFToMarkdown_TableHeaderOnly(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "h"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| h |\n| --- |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(header-only table) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_EmptyTable(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{"type": "table", "content": []any{}},
+			map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "after"}}},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	if got != "after" {
+		t.Errorf("ADFToMarkdown(empty table + paragraph) = %q, want %q", got, "after")
+	}
+}
+
+func TestADFToMarkdown_TablePrecededByParagraph(t *testing.T) {
+	src := "hello\n\n| col1 | col2 |\n| --- | --- |\n| a | b |"
+	doc := mustADF(t, src)
+	got := ADFToMarkdown(doc)
+	if got != src {
+		t.Errorf("ADFToMarkdown(paragraph+table) = %q, want %q", got, src)
+	}
+}
+
+func TestADFToMarkdown_TablePadsShortRows(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "h1"}}},
+						}},
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "h2"}}},
+						}},
+					}},
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "only"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| h1 | h2 |\n| --- | --- |\n| only |  |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(jagged table) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableRowWithNoCells(t *testing.T) {
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type":    "table",
+				"content": []any{map[string]any{"type": "tableRow", "content": []any{}}},
+			},
+			map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "after"}}},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	if got != "after" {
+		t.Errorf("ADFToMarkdown(cell-less table) = %q, want %q", got, "after")
+	}
+}
+
+func TestADFToMarkdown_TableCellFallsBackToInline(t *testing.T) {
+	// A malformed tableCell whose children are inline text (not blocks)
+	// still emits the text rather than an empty cell.
+	adf := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "text", "text": "h"},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	got := ADFToMarkdown(adf)
+	want := "| h |\n| --- |"
+	if got != want {
+		t.Errorf("ADFToMarkdown(inline-only cell) = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdown_TableDeepNestingIsBounded(t *testing.T) {
+	// Nested tables inside cells recurse through adfMarkdownTable; the
+	// depth cap must stop the walk the same way blockquote nesting does.
+	const depth = 10000
+	leaf := map[string]any{
+		"type":    "paragraph",
+		"content": []any{map[string]any{"type": "text", "text": "leaf"}},
+	}
+	nested := leaf
+	for i := 0; i < depth; i++ {
+		nested = map[string]any{
+			"type": "table",
+			"content": []any{
+				map[string]any{"type": "tableRow", "content": []any{
+					map[string]any{"type": "tableCell", "content": []any{nested}},
+				}},
+			},
+		}
+	}
+	doc := map[string]any{
+		"type": "doc",
+		"content": []any{
+			nested,
+			map[string]any{
+				"type":    "paragraph",
+				"content": []any{map[string]any{"type": "text", "text": "sibling"}},
+			},
+		},
+	}
+	got := ADFToMarkdown(doc)
+	if strings.Contains(got, "leaf") {
+		t.Errorf("ADFToMarkdown(%d nested tables) walked all the way to the leaf; want it capped", depth)
+	}
+	if !strings.Contains(got, "sibling") {
+		t.Errorf("ADFToMarkdown(deeply nested table + sibling) = %q, want it to still contain the sibling paragraph", got)
 	}
 }
 

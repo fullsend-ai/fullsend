@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -238,6 +240,378 @@ func healGitLabResourceGroups(ctx context.Context, glClient *gitlab.LiveClient, 
 		healed++
 	}
 	printer.StepDone(fmt.Sprintf("Healed %d resource group(s)", healed))
+}
+
+func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientFactory, result *repos.StatusResult) {
+	if result == nil || clients == nil {
+		return
+	}
+	fc, err := clients.ConfigFor(repos.ForgeGitLab)
+	if err != nil || fc.Client == nil {
+		return
+	}
+	glClient, ok := fc.Client.(*gitlab.LiveClient)
+	if !ok {
+		return
+	}
+	adapter := gitlabTokenAdapter{c: glClient}
+	now := time.Now()
+	for i := range result.Repos {
+		st := &result.Repos[i]
+		if st.GitLabRoleMode == "" && len(st.GitLabRoleDiagnostics) == 0 {
+			continue
+		}
+		toks, listErr := adapter.ListProjectAccessTokens(ctx, st.Owner, st.Repo)
+		if listErr != nil {
+			continue
+		}
+		// repos.Status already counted this repo once in Summary.Drifted
+		// if it had any drift. Only count the no-drift -> drift
+		// transition here, or a repo with pre-existing drift that also
+		// gains a GitLab-role lifecycle drift gets double-counted.
+		wasDrifted := len(st.Drifts) > 0
+		if repos.EnrichGitLabRoleStatus(ctx, fc.Client, st.Owner, st.Repo, toks, now, st) && !wasDrifted {
+			result.Summary.Drifted++
+		}
+	}
+}
+
+type gitlabTokenAdapter struct {
+	c *gitlab.LiveClient
+}
+
+func (a gitlabTokenAdapter) CreateProjectAccessToken(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string) (*repos.ProjectAccessToken, error) {
+	tok, err := a.c.CreateProjectAccessToken(ctx, owner, repo, name, scopes, accessLevel, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return &repos.ProjectAccessToken{ID: tok.ID, Name: tok.Name, Token: tok.Token}, nil
+}
+
+func (a gitlabTokenAdapter) RevokeProjectAccessToken(ctx context.Context, owner, repo string, tokenID int) error {
+	return a.c.RevokeProjectAccessToken(ctx, owner, repo, tokenID)
+}
+
+func (a gitlabTokenAdapter) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]repos.ProjectAccessToken, error) {
+	toks, err := a.c.ListProjectAccessTokens(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]repos.ProjectAccessToken, len(toks))
+	for i, t := range toks {
+		out[i] = repos.ProjectAccessToken{
+			ID: t.ID, Name: t.Name, Active: t.Active, ExpiresAt: t.ExpiresAt, Revoked: t.Revoked,
+		}
+	}
+	return out, nil
+}
+
+func prepareGitLabRoleFlags(opts *reposInstallConfig) error {
+	s := strings.ToLower(strings.TrimSpace(opts.gitlabRoleMigration))
+	if s == "enforced" {
+		return fmt.Errorf("--gitlab-role-migration=enforced is reserved for verification (see #7501); use migrating, rollback, or disabled")
+	}
+	if s != "" {
+		mode, err := gitlabroles.ParseMode(s)
+		if err != nil {
+			return fmt.Errorf("--gitlab-role-migration: %w", err)
+		}
+		opts.gitlabRoleModeFlag = mode
+	}
+	if opts.gitlabRoleRegistry != "" {
+		raw, err := os.ReadFile(opts.gitlabRoleRegistry)
+		if err != nil {
+			return fmt.Errorf("reading --gitlab-role-registry: %w", err)
+		}
+		if _, err := gitlabroles.ParseRegistry(string(raw)); err != nil {
+			return fmt.Errorf("parsing --gitlab-role-registry: %w", err)
+		}
+		opts.gitlabRoleRegistryJSON = string(raw)
+	}
+	provided, err := parseGitLabRoleTokens(opts.gitlabRoleTokens)
+	if err != nil {
+		return err
+	}
+	opts.gitlabRoleProvided = provided
+	for _, raw := range opts.rotateGitLabRoleNames {
+		name := gitlabroles.Role(strings.ToLower(strings.TrimSpace(raw)))
+		if name == "" {
+			return fmt.Errorf("invalid --rotate-gitlab-role: empty name")
+		}
+		opts.rotateGitLabRoleFilter = append(opts.rotateGitLabRoleFilter, name)
+	}
+	return nil
+}
+
+func parseGitLabRoleTokens(flags []string) (map[gitlabroles.Role]string, error) {
+	out := make(map[gitlabroles.Role]string, len(flags))
+	for _, raw := range flags {
+		role, tok, ok := strings.Cut(raw, "=")
+		role = strings.ToLower(strings.TrimSpace(role))
+		if !ok || role == "" || tok == "" {
+			return nil, fmt.Errorf("invalid --gitlab-role-token: expected role=token")
+		}
+		if strings.HasPrefix(role, "glpat-") || strings.HasPrefix(role, "glptt-") || strings.HasPrefix(role, "gldt-") {
+			return nil, fmt.Errorf("invalid --gitlab-role-token: role name is not a token value")
+		}
+		out[gitlabroles.Role(role)] = tok
+	}
+	return out, nil
+}
+
+func maybeProvisionGitLabRoles(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, fresh bool) error {
+	needed, current, err := gitLabRoleWorkNeeded(ctx, client, opts, owner, repo, fresh)
+	if err != nil {
+		return err
+	}
+	if !needed {
+		return nil
+	}
+	mode := opts.gitlabRoleModeFlag
+	if mode == "" {
+		// Preserve the live gate's mode (migrating, enforced, rollback, or
+		// disabled) unless the operator explicitly passes
+		// --gitlab-role-migration. Without this, supplying only
+		// --gitlab-role-registry or --gitlab-role-token on an install that
+		// was explicitly rolled back or disabled would silently re-enable
+		// migration.
+		mode = current
+	}
+	return setupGitLabRoleCredentials(ctx, opts, client, printer, owner, repo, mode)
+}
+
+func gitLabRoleWorkNeeded(ctx context.Context, client forge.Client, opts *reposInstallConfig, owner, repo string, fresh bool) (bool, gitlabroles.Mode, error) {
+	if opts.gitlabRoleModeFlag != "" {
+		return true, opts.gitlabRoleModeFlag, nil
+	}
+	if fresh {
+		// If FULLSEND_GITLAB_ROLE_MIGRATION fails to write on this fresh
+		// install, the failure is reported on this run, but the repo is
+		// no longer "fresh" on a later unflagged `repos install` (the
+		// workflow is now on the default branch). That later run falls
+		// through to the live-gate read below, finds the gate still
+		// missing, treats it as ModeDisabled, and reports "no work
+		// needed" instead of retrying. Recovery requires the operator to
+		// explicitly re-run with --gitlab-role-migration=migrating.
+		return true, gitlabroles.ModeMigrating, nil
+	}
+	// The mode flag is empty: always read the live gate so an operator who
+	// only passes --gitlab-role-registry or --gitlab-role-token (without
+	// --gitlab-role-migration) gets their existing rollback/disabled/
+	// enforced decision back as current, rather than an empty mode that
+	// the caller would otherwise default to migrating.
+	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleMigration)
+	if err != nil {
+		return false, "", fmt.Errorf("reading %s: %w", forge.VarGitLabRoleMigration, err)
+	}
+	current := gitlabroles.ModeDisabled
+	if exists {
+		mode, err := gitlabroles.ParseMode(raw)
+		if err != nil {
+			return false, "", err
+		}
+		current = mode
+	}
+	if opts.gitlabRoleRegistryJSON != "" || len(opts.gitlabRoleProvided) > 0 {
+		return true, current, nil
+	}
+	return current == gitlabroles.ModeMigrating || current == gitlabroles.ModeEnforced, current, nil
+}
+
+func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, mode gitlabroles.Mode) error {
+	repoFullName := owner + "/" + repo
+	registryJSON := opts.gitlabRoleRegistryJSON
+	if registryJSON == "" {
+		raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", forge.VarGitLabRoleRegistry, err)
+		}
+		if exists {
+			registryJSON = raw
+		}
+	}
+	reg, err := gitlabroles.ParseRegistry(registryJSON)
+	if err != nil {
+		return err
+	}
+	var tokens repos.ProjectAccessTokenClient
+	if glClient, ok := client.(*gitlab.LiveClient); ok {
+		tokens = gitlabTokenAdapter{c: glClient}
+	}
+	printer.StepStart(fmt.Sprintf("[%s] Provisioning GitLab role credentials", repoFullName))
+	result, err := repos.ProvisionGitLabRoleCredentials(ctx, repos.RoleProvisionConfig{
+		Owner:            owner,
+		Repo:             repo,
+		Client:           client,
+		Tokens:           tokens,
+		Registry:         reg,
+		RegistryProvided: opts.gitlabRoleRegistryJSON != "",
+		DesiredMode:      mode,
+		ProvidedTokens:   opts.gitlabRoleProvided,
+		DryRun:           opts.dryRun,
+	})
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab role provisioning failed", repoFullName))
+		return err
+	}
+	printGitLabRoleProvision(printer, repoFullName, result)
+	return nil
+}
+
+func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	force := opts.rotateGitLabRoles
+	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleMigration)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", forge.VarGitLabRoleMigration, err)
+	}
+	mode := gitlabroles.ModeDisabled
+	if exists {
+		parsed, perr := gitlabroles.ParseMode(raw)
+		if perr != nil {
+			return perr
+		}
+		mode = parsed
+	}
+	if mode.UsesSharedOnly() && !force {
+		return nil
+	}
+	if !force && mode != gitlabroles.ModeMigrating && mode != gitlabroles.ModeEnforced {
+		return nil
+	}
+	registryJSON := opts.gitlabRoleRegistryJSON
+	if registryJSON == "" {
+		live, liveExists, liveErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry)
+		if liveErr != nil {
+			return fmt.Errorf("reading %s: %w", forge.VarGitLabRoleRegistry, liveErr)
+		}
+		if liveExists {
+			registryJSON = live
+		}
+	}
+	reg, err := gitlabroles.ParseRegistry(registryJSON)
+	if err != nil {
+		return err
+	}
+	var tokens repos.ProjectAccessTokenClient
+	if glClient, ok := client.(*gitlab.LiveClient); ok {
+		tokens = gitlabTokenAdapter{c: glClient}
+	}
+	repoFullName := owner + "/" + repo
+	printer.StepStart(fmt.Sprintf("[%s] Rotating GitLab role credentials", repoFullName))
+	result, err := repos.RotateGitLabRoleCredentials(ctx, repos.RoleRotateConfig{
+		Owner:          owner,
+		Repo:           repo,
+		Client:         client,
+		Tokens:         tokens,
+		Registry:       reg,
+		Mode:           mode,
+		Roles:          opts.rotateGitLabRoleFilter,
+		Force:          opts.rotateGitLabRoles,
+		ProvidedTokens: opts.gitlabRoleProvided,
+		DryRun:         opts.dryRun,
+	})
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab role rotation failed", repoFullName))
+		return err
+	}
+	printGitLabRoleRotate(printer, repoFullName, result)
+	return nil
+}
+
+func printGitLabRoleRotate(printer *ui.Printer, repoFullName string, result repos.RoleRotateResult) {
+	verb := "Rotated"
+	if result.DryRun {
+		verb = "Would rotate"
+	}
+	for _, role := range result.Rotated {
+		printer.StepDone(fmt.Sprintf("[%s] %s %s role credential", repoFullName, verb, role))
+	}
+	for _, role := range result.Skipped {
+		printer.StepInfo(fmt.Sprintf("[%s] %s role credential not due for rotation", repoFullName, role))
+	}
+	for _, role := range result.Reused {
+		printer.StepInfo(fmt.Sprintf("[%s] %s reuses another registered role credential; rotation follows the target", repoFullName, role))
+	}
+	for _, role := range result.Overlapping {
+		printer.StepInfo(fmt.Sprintf("[%s] %s previous credential remains usable for in-flight jobs", repoFullName, role))
+	}
+	for _, role := range result.Cleaned {
+		printer.StepDone(fmt.Sprintf("[%s] Revoked previous %s role credential after grace period", repoFullName, role))
+	}
+	for _, role := range result.RolledBack {
+		printer.StepWarn(fmt.Sprintf("[%s] %s rotation rolled back; previous credential left in place", repoFullName, role))
+	}
+	for _, role := range result.InProgress {
+		printer.StepInfo(fmt.Sprintf("[%s] %s rotation already in progress", repoFullName, role))
+	}
+	for _, f := range result.Failed {
+		printer.StepWarn(fmt.Sprintf("[%s] %s role rotation pending (%s): %s", repoFullName, f.Role, f.Secret, f.Reason))
+	}
+	for _, d := range result.Diagnostics {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+	}
+}
+
+func printGitLabRoleProvision(printer *ui.Printer, repoFullName string, result repos.RoleProvisionResult) {
+	createVerb := "Created"
+	enrollVerb := "Enrolled"
+	if result.DryRun {
+		createVerb = "Would create"
+		enrollVerb = "Would enroll"
+	}
+	for _, role := range result.Created {
+		printer.StepDone(fmt.Sprintf("[%s] %s %s role credential", repoFullName, createVerb, role))
+	}
+	for _, role := range result.Enrolled {
+		printer.StepDone(fmt.Sprintf("[%s] %s %s role credential", repoFullName, enrollVerb, role))
+	}
+	for _, role := range result.Skipped {
+		printer.StepInfo(fmt.Sprintf("[%s] %s role credential already present", repoFullName, role))
+	}
+	for _, role := range result.Reused {
+		printer.StepInfo(fmt.Sprintf("[%s] %s reuses another registered role credential", repoFullName, role))
+	}
+	for _, f := range result.Failed {
+		printer.StepWarn(fmt.Sprintf("[%s] %s role credential pending (%s): %s", repoFullName, f.Role, f.Secret, f.Reason))
+	}
+	if result.GateWritten {
+		if result.DryRun {
+			printer.StepDone(fmt.Sprintf("[%s] Would set GitLab role migration gate=%s (shared credential preserved)", repoFullName, result.Mode))
+		} else {
+			printer.StepDone(fmt.Sprintf("[%s] GitLab role migration gate=%s (shared credential preserved)", repoFullName, result.Mode))
+		}
+	}
+	for _, d := range result.Diagnostics {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+	}
+}
+
+// cleanupGitLabRoleTokens revokes active built-in and custom role
+// project access tokens. The shared fullsend-bot token is left to
+// cleanupGitLabBotToken.
+func cleanupGitLabRoleTokens(ctx context.Context, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo string) error {
+	if glClient == nil {
+		return nil
+	}
+	printer.StepStart("Revoking GitLab role access tokens")
+	tokens, err := glClient.ListProjectAccessTokens(ctx, owner, repo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not list project access tokens: %v", err))
+		return nil
+	}
+	var revoked int
+	for _, tok := range tokens {
+		if !tok.Active || !gitlabroles.IsRoleProjectTokenName(tok.Name) {
+			continue
+		}
+		if err := glClient.RevokeProjectAccessToken(ctx, owner, repo, tok.ID); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to revoke token %q (ID %d): %v", tok.Name, tok.ID, err))
+			continue
+		}
+		revoked++
+	}
+	printer.StepDone(fmt.Sprintf("Revoked %d GitLab role access token(s)", revoked))
+	return nil
 }
 
 // cleanupGitLabBotToken revokes any active fullsend bot project access

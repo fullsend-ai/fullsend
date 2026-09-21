@@ -27,6 +27,10 @@ Fullsend.
 - Describe what you want to work on and why
 - Write the request yourself (not AI-generated)
 
+**How to check:** Your GitHub username is listed in
+[`.github/VOUCHED.td`](https://github.com/fullsend-ai/fullsend/blob/vouched/.github/VOUCHED.td)
+on the `vouched` branch.
+
 **How to request:** Open a
 [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request)
 discussion. A maintainer will review and comment `/vouch` if approved.
@@ -52,6 +56,9 @@ repository.
 - At least 2 merged PRs or substantive reviews demonstrating
   familiarity with the project's conventions and review etiquette
 - Responsive to feedback on your own PRs
+
+**How to check:** You are a member of
+[@fullsend-ai/triagers](https://github.com/orgs/fullsend-ai/teams/triagers).
 
 **How to request:** Open a
 [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request)
@@ -79,6 +86,9 @@ repository.
 - Demonstrated understanding of project conventions (commit messages,
   PR workflow, review etiquette)
 - Trusted not to push directly to protected branches or bypass review
+
+**How to check:** You are a member of
+[@fullsend-ai/writers](https://github.com/orgs/fullsend-ai/teams/writers).
 
 **How to request:** Open a
 [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request)

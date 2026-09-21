@@ -296,6 +296,16 @@ Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
+> **See also (#7497, #7498):** The registered-role credential contract
+> (built-in Poller/Analyst/Coder plus administrator-registered custom
+> roles) is specified in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` can provision those credentials additively without
+> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499) selects the
+> registered role credential when the migration gate is `migrating` or
+> `enforced`; this ADR's single-bot identity remains the default while
+> the gate is unset, `disabled`, or `rollback`.
+
 ### Credential model
 
 A Maintainer-role project access token with `api` scope, created during

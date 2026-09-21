@@ -532,6 +532,19 @@ Modified packages (minimized via forge.Client abstraction):
 - `WEBHOOK_TOKEN_<sha256(project_path)>` (webhook validation tokens for each enrolled repo)
 - Any GCP/Anthropic/cloud provider credentials used by agents
 
+> The per-agent token names above are the abandoned webhook-era sketch
+> (one PAT per agent). The current registered-role contract — built-in
+> Poller, Analyst, and Coder plus administrator-registered custom roles,
+> with `FULLSEND_GITLAB_*_TOKEN` identifiers, a trusted install-state
+> registry, and an explicit migration gate — is defined in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` can provision built-in and custom role credentials
+> additively without revoking the shared token. When the migration gate
+> is `migrating` or `enforced`, `fullsend poll` and `fullsend run` select
+> the registered role credential; disabled and rollback keep
+> `FULLSEND_FORGE_TOKEN`. Role registration is not accepted from
+> repository or merge-request content.
+
 **How protected variables work**: GitLab restricts protected variables to pipelines running on protected branches only. Pipelines triggered on unprotected branches cannot access these variables, regardless of how the pipeline was triggered (webhook, trigger API, manual, etc.).
 
 **Threat model**: This defends against:

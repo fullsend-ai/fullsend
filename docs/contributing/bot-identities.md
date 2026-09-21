@@ -44,3 +44,20 @@ The `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits i
 ### `gh pr view --json` format
 
 The `gh pr view --json author` CLI command uses a different schema than raw GraphQL — it exposes `.author.is_bot` (boolean) and `.author.login` (with an `app/` prefix, e.g. `app/fullsend-ai-coder`), but does **not** expose `__typename`. When using `gh pr view --json`, check `.author.is_bot == true` plus `.author.login` against the `app/`-prefixed name (see #5536).
+
+## GitLab responsibility identities
+
+GitLab does not use GitHub Apps. Today's runtime is a single project
+access token (`fullsend-bot` / `FULLSEND_FORGE_TOKEN`). The registered-
+role contract — built-in Poller, Analyst, and Coder plus optional
+administrator-registered custom roles — is defined in
+[gitlab-role-credentials.md](gitlab-role-credentials.md).
+`repos install` provisions those credentials additively (fresh installs
+and opted-in migrations) without revoking `FULLSEND_FORGE_TOKEN`.
+When `FULLSEND_GITLAB_ROLE_MIGRATION` is `migrating` or `enforced`,
+`fullsend poll` and `fullsend run` select the registered role credential
+instead of the shared token (see
+[gitlab-role-credentials.md](gitlab-role-credentials.md)). Disabled and
+rollback keep the shared `fullsend-bot` identity. Role registration is
+install-state only; repository and merge-request content cannot create
+or elevate a GitLab role.

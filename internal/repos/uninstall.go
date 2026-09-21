@@ -37,6 +37,12 @@ var gitlabUninstallVars = []string{
 	forge.VarLastPollAtFull,
 	forge.VarLegacySA,
 	forge.VarLegacyWIFProvider,
+	forge.VarGitLabRoleMigration,
+	forge.VarGitLabRoleRegistry,
+	forge.VarGitLabRoleRotation,
+	forge.SecretGitLabPollerToken,
+	forge.SecretGitLabAnalystToken,
+	forge.SecretGitLabCoderToken,
 }
 
 // gitlabUninstallSecrets intentionally does NOT include the OpenAI static
@@ -266,6 +272,9 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	progress(fullName, "workflow", "Scaffold files removed")
 
 	forgeVars := UninstallVarsForForge(cfg.Forge)
+	if cfg.Forge == ForgeGitLab {
+		forgeVars = append(forgeVars, extraGitLabRoleUninstallVars(ctx, client, owner, repo, forgeVars)...)
+	}
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
 	var varsDeleted, secretsDeleted int

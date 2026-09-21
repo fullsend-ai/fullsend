@@ -713,6 +713,12 @@ func requiredVarsForForge(forgeName string) []string {
 // secrets are stored as masked CI/CD variables and ListRepoVariables
 // returns them — excluding them from the required set would cause
 // orphan detection to flag them as false positives.
+//
+// GitLab role tokens (FULLSEND_GITLAB_*_TOKEN) and the role registry
+// stay optional in this required set so existing installations and
+// partial migrations do not fail health checks. Missing role secrets
+// under an enabled gate are reported by Diagnose / repos status, not
+// by requiredSecretsForForge. See internal/gitlabroles.
 func requiredSecretsForForge(forgeName string) []string {
 	if forgeName == ForgeGitLab {
 		return slices.Concat(requiredSecrets, []string{forge.SecretForgeToken})

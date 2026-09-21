@@ -24,6 +24,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
@@ -332,6 +333,43 @@ func TestChildScriptEnv_StripsGitHubWorkflowToken(t *testing.T) {
 		assert.NotEqual(t, "GITHUB_TOKEN", key, "workflow token must not reach child scripts")
 	}
 	assert.Contains(t, env, "SAFE_VAR=allowed")
+}
+
+// TestChildScriptEnv_PinsGitLabRoleRoutingKeys verifies the auth-bypass fix
+// from the review on PR #7510: a harness runner_env/env.runner entry for a
+// GitLab role-routing key must not shadow the value
+// applyGitLabRoleSelection already set in the process environment, since
+// exec.Cmd resolves duplicate env keys last-wins.
+func TestChildScriptEnv_PinsGitLabRoleRoutingKeys(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "process-selected-token")
+	t.Setenv(forge.SecretForgeToken, "process-shared-token")
+	t.Setenv(forge.SecretGitLabAnalystToken, "process-analyst-token")
+
+	runnerEnv := map[string]string{
+		"GITLAB_TOKEN":                 "runner-env-override",
+		forge.SecretForgeToken:         "runner-env-override",
+		forge.SecretGitLabAnalystToken: "runner-env-override",
+		"LEGIT_VAR":                    "allowed",
+	}
+
+	env := childScriptEnv(runnerEnv, "")
+
+	assert.Equal(t, "process-selected-token", envLast(env, "GITLAB_TOKEN"), "runner_env must not override GITLAB_TOKEN")
+	assert.Equal(t, "process-shared-token", envLast(env, forge.SecretForgeToken), "runner_env must not override FULLSEND_FORGE_TOKEN")
+	assert.Equal(t, "process-analyst-token", envLast(env, forge.SecretGitLabAnalystToken), "runner_env must not override a FULLSEND_GITLAB_* secret")
+	assert.Equal(t, "allowed", envLast(env, "LEGIT_VAR"), "non-pinned runner_env entries still apply")
+}
+
+// TestChildScriptEnv_DoesNotPinPushToken verifies the GitHub coder-remint
+// path (syncRunnerEnvTokens, #7231) still works: PUSH_TOKEN is deliberately
+// excluded from the GitLab role-routing pin because runner_env must be able
+// to override a stale process-env PUSH_TOKEN after a remint.
+func TestChildScriptEnv_DoesNotPinPushToken(t *testing.T) {
+	t.Setenv("PUSH_TOKEN", "stale-process-token")
+
+	env := childScriptEnv(map[string]string{"PUSH_TOKEN": "reminted-token"}, "")
+
+	assert.Equal(t, "reminted-token", envLast(env, "PUSH_TOKEN"), "runner_env must still be able to override PUSH_TOKEN (#7231)")
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {

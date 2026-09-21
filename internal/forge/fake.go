@@ -2280,6 +2280,14 @@ func (f *FakeClient) UpdateCIVariable(_ context.Context, owner, repo, name, valu
 		Value:     value,
 		Protected: protected,
 	})
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[owner+"/"+repo+"/"+name] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[owner+"/"+repo+"/"+name] = true
 	return nil
 }
 
@@ -2298,6 +2306,14 @@ func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, n
 		Value:     value,
 		Protected: true,
 	})
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[owner+"/"+repo+"/"+name] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[owner+"/"+repo+"/"+name] = true
 	return nil
 }
 

@@ -77,7 +77,12 @@ fullsend
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
-│   │   └── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
+│   │   ├── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
+│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (migrating|rollback|disabled)
+│   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
+│   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
+│   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
+│   │   └── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes

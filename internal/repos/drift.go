@@ -214,6 +214,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		for _, name := range gitlabRetiredLegacyVars {
 			managedNames[name] = true
 		}
+		for _, name := range gitLabRoleUninstallVars {
+			managedNames[name] = true
+		}
 	}
 
 	forgeVars, err := client.ListRepoVariables(ctx, owner, repo)
@@ -227,6 +230,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 			continue
 		}
 		if managedNames[name] {
+			continue
+		}
+		if cfg.Forge == ForgeGitLab && IsGitLabRoleManagedVar(name) {
 			continue
 		}
 		orphans = append(orphans, OrphanVar{Name: name})

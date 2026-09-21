@@ -38,6 +38,7 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -895,10 +896,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// privilege level (ADR 0073). Pre-script remints a different level
 	// around the script, then restores; post-script remints separately
 	// (#7231) so a full-budget run does not hand it an expired token.
-	// Minting is GitHub-only — on GitLab the bot PAT (FULLSEND_FORGE_TOKEN)
-	// serves as the push/API token, provisioned via CI/CD variables. Skip
-	// minting entirely to avoid a spurious "skipping token minting" warning
-	// and setting PUSH_TOKEN_SOURCE to a GitHub-specific value. #6865.
+	// Minting is GitHub-only. On GitLab, select the registered role
+	// credential (Poller/Analyst/Coder or a custom role) and export
+	// GITLAB_TOKEN / PUSH_TOKEN from that CI/CD variable. Disabled and
+	// rollback keep the shared FULLSEND_FORGE_TOKEN path. #6865 #7499.
 	mintURL := sOpts.mintURL
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
@@ -908,6 +909,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var mintCleanup func()
 	if forgePlatform == "gitlab" {
 		mintCleanup = func() {}
+		if roleErr := applyGitLabAgentCredentials(agentName, h.Role, os.Getenv, setFlagEnv, printer); roleErr != nil {
+			// Pre-PR, `fullsend run --forge gitlab` was a no-op here and left
+			// GITLAB_TOKEN/PUSH_TOKEN exactly as the surrounding process
+			// environment set them. Preserve that fallback when the shared
+			// credential path is the active one (disabled/rollback) and the
+			// only problem is FULLSEND_FORGE_TOKEN being unprovisioned, so a
+			// directly-set GITLAB_TOKEN — the documented local-run workflow —
+			// keeps working. Migrating/enforced modes, and any other error,
+			// still fail closed (see review on PR #7510).
+			mode, modeErr := gitlabroles.ModeFrom(os.Getenv)
+			if modeErr != nil || !mode.UsesSharedOnly() || !errors.Is(roleErr, gitlabroles.ErrSharedUnconfigured) {
+				return roleErr
+			}
+			printer.StepWarn("GitLab shared credential FULLSEND_FORGE_TOKEN is not set; leaving GITLAB_TOKEN/PUSH_TOKEN as provided by the environment")
+		}
 	} else {
 		var mintErr error
 		minted, mintCleanup, mintErr = mintAgentTokenAtLevel(ctx, h.Role, mintURL, forgePlatform, runtimeLevel, printer)
@@ -4151,8 +4167,22 @@ func stripControlChars(s string) string {
 // pre/post scripts and validation/preflight commands cannot mint their own
 // tokens or use the workflow token. The parent harness process retains OIDC
 // credentials for mintAgentToken. See #5832.
+//
+// GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
+// process environment: a runnerEnv entry for one of those keys is dropped
+// rather than allowed to shadow the value applyGitLabRoleSelection already
+// set via os.Setenv. exec.Cmd's duplicate-key handling is last-wins, so
+// without this a harness runner_env/env.runner entry could silently swap
+// the GitLab identity or credential a pre/post script observes after
+// dispatch already selected one. See #7499, review on PR #7510.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
-	merged := append(os.Environ(), envToList(runnerEnv)...)
+	merged := os.Environ()
+	for _, e := range envToList(runnerEnv) {
+		if i := strings.IndexByte(e, '='); i > 0 && isPinnedGitLabRoleRoutingKey(e[:i]) {
+			continue
+		}
+		merged = append(merged, e)
+	}
 	env := make([]string, 0, len(merged)+1)
 	for _, e := range merged {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
@@ -4173,6 +4203,34 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		env = append(env, "TRACEPARENT="+traceparent)
 	}
 	return env
+}
+
+// gitlabRoleRoutingKeyPrefix is the env var prefix used by the GitLab
+// role-credential contract's diagnostic and credential vars (#7499):
+// FULLSEND_GITLAB_ROLE, FULLSEND_GITLAB_ROLE_MIGRATION,
+// FULLSEND_GITLAB_ROLE_REGISTRY, FULLSEND_GITLAB_ROLE_SECRET,
+// FULLSEND_GITLAB_ROLE_SOURCE, the built-in FULLSEND_GITLAB_{POLLER,
+// ANALYST,CODER}_TOKEN secrets, and custom FULLSEND_GITLAB_ROLE_<NAME>_TOKEN
+// secrets.
+const gitlabRoleRoutingKeyPrefix = "FULLSEND_GITLAB_"
+
+// isPinnedGitLabRoleRoutingKey reports whether key is a GitLab
+// role-routing identity or credential var that childScriptEnv must
+// resolve from the process environment rather than from a harness
+// runner_env/env.runner override.
+//
+// PUSH_TOKEN is intentionally not pinned here even though it is one of the
+// vars applyGitLabRoleSelection sets: the GitHub coder-remint path
+// (syncRunnerEnvTokens, #7231) depends on runner_env overriding a stale
+// process-env PUSH_TOKEN for post-scripts, and GitLab never writes
+// PUSH_TOKEN through that path (remintAgentTokenForPostScript no-ops for
+// forgePlatform == "gitlab"), so pinning it here would reintroduce #7231
+// for GitHub runs without closing any GitLab-specific gap.
+func isPinnedGitLabRoleRoutingKey(key string) bool {
+	if key == "GITLAB_TOKEN" || key == forge.SecretForgeToken {
+		return true
+	}
+	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix)
 }
 
 // postScriptEnv builds the environment for post-script execution.

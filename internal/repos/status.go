@@ -2,11 +2,13 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 )
 
 // RepoState holds the installation state of a single repo as read
@@ -91,6 +93,12 @@ type RepoStatus struct {
 	Region          string  `json:"region,omitempty"`
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
+
+	// GitLab role-credential status. Names only; never token values.
+	GitLabRoleMode        string   `json:"gitlab_role_mode,omitempty"`
+	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
+	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
+	GitLabRoleDiagnostics []string `json:"gitlab_role_diagnostics,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -325,7 +333,41 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	}
 	status.Region = region
 
+	if cfg.Forge == ForgeGitLab {
+		appendGitLabRoleStatus(ctx, client, owner, repo, &status)
+	}
+
 	return status
+}
+
+func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, repo string, status *RepoStatus) {
+	mode, reg, present, err := LoadGitLabRoleState(ctx, client, owner, repo)
+	if err != nil {
+		switch {
+		case errors.Is(err, gitlabroles.ErrInvalidRegistry):
+			status.GitLabRoleDiagnostics = []string{"invalid GitLab role registry"}
+		case errors.Is(err, gitlabroles.ErrInvalidMode):
+			status.GitLabRoleDiagnostics = []string{"invalid GitLab role migration mode"}
+		default:
+			status.GitLabRoleDiagnostics = []string{"could not read GitLab role credential state"}
+		}
+		return
+	}
+	rep := gitlabroles.Diagnose(mode, present, reg)
+	status.GitLabRoleMode = string(rep.Mode)
+	status.GitLabRolesReady = rep.Ready
+	status.GitLabRolesPartial = rep.Partial
+	status.GitLabRoleDiagnostics = rep.Diagnostics
+	if !mode.RequiresRoleCredentials() {
+		return
+	}
+	for _, role := range rep.Missing {
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    "gitlab-role:" + string(role),
+			Expected: "configured",
+			Actual:   "missing",
+		})
+	}
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
