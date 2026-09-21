@@ -1,5 +1,5 @@
 ---
-title: "110. fullsend-ai/platform"
+title: "123. fullsend-ai/platform"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - deployment
 ---
 
-# fullsend-ai/platform
+# 123. fullsend-ai/platform
 
 Date: 2026-09-21
 
@@ -42,8 +42,11 @@ from the core Fullsend runner in a new
 [fullsend-ai/platform](https://github.com/fullsend-ai/platform) repository.
 
 The platform introduces a **tenant** as its primary administrative boundary.
-The platform owns the tenant API, polling, webhook ingress, queueing,
-dispatch, and workload orchestration. The existing
+For the `fullsend-ai/platform` deployment, the platform owns the tenant API,
+polling, webhook ingress, queueing, dispatch, and workload orchestration.
+Self-managed per-repository installations retain `fullsend poll` and
+`fullsend dispatch` behavior ([ADR 0063](0063-polling-based-work-discovery.md),
+[ADR 0061](0061-harness-cel-dispatch.md)). The existing
 `fullsend-ai/fullsend` repository owns `fullsend run`, configuration and
 trigger semantics, the normalized entity API, and runtime integrations
 reusable by both the platform and forge-native deployments.
@@ -60,4 +63,4 @@ model.
 - The platform implementation can evolve independently while this repository continues to define the reusable runner and core execution contracts.
 - Enterprise platform teams can reduce per-tenant and per-repository operational toil, and tenants can process repository-less entities without inventing a fake repository owner.
 - Site and tenant administrators can eventually impose configuration on repository executions, although the specific mechanism remains open.
-- Platform and tenant concepts should remain absent from the `fullsend-ai/fullsend` CLI, while its public Go API grows to support the platform, notably with `IssueTracker` and `Poller` interfaces and likely other integrations.
+- Platform and tenant concepts should remain absent from the `fullsend-ai/fullsend` CLI, while platform integration develops API boundaries around the existing `tracker.Client` and poller implementations; exact public interface names remain to be designed.

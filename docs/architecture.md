@@ -51,7 +51,7 @@ sole supported forge-native deployment model
   administrative boundary and owns tenant API, polling, ingress, queueing,
   dispatch, and workload orchestration; the core runner and reusable execution
   contracts remain in `fullsend-ai/fullsend`. Self-managed per-repository
-  installation remains a first-class model ([ADR 0110](ADRs/0110-fullsend-ai-platform.md)).
+  installation remains a first-class model ([ADR 0123](ADRs/0123-fullsend-ai-platform.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
