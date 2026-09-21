@@ -26,6 +26,7 @@ fullsend run <agent-name> [flags]
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
+| `--sync-target-repo` | Synchronize sanitized modified files from the sandbox back to the target repository directory upon completion; also `FULLSEND_SYNC_TARGET_REPO` |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
@@ -535,6 +536,17 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
 
 Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
+
+## Target repository synchronization
+
+When running locally or in CI pipelines (such as GitLab CI), downstream jobs or developer workflows often expect changes made by the agent to be reflected directly in the local workspace (`--target-repo`).
+
+By default, `fullsend run` downloads the modified repository from the sandbox into a temporary directory (`/tmp/fs-*`) and deletes it on exit unless `--keep-sandbox` is set.
+
+Passing `--sync-target-repo` (or setting `FULLSEND_SYNC_TARGET_REPO=true`):
+- Safely copies additions, edits, and deletions from the sanitized sandbox download back to the `--target-repo` directory.
+- Strictly protects `.git/` (at any depth) and output directories so local git configurations, branches, and histories are never corrupted or overwritten.
+- Only executes if the agent run and validation loop succeed, preventing broken or partially written iterations from polluting your working tree.
 
 ## Related
 
