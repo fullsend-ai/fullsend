@@ -110,14 +110,17 @@ only automated reader from a supply-chain-relevant change.
 `docs/` into a Vue component — `docs/.vitepress/config.ts`'s `srcExclude` only
 drops icons and `testing/` — so a page can carry a root-level `<script setup>`
 that runs at build time (`docs/v/index.md` already ships one, importing a
-third-party package), a `<style>` block, a `head:` frontmatter key that
-injects tags, `{{ }}` expressions evaluated during SSG, or bound attributes
-and directives (`:prop`, `@event`, `v-*`, `on*`) on raw HTML. Each
-allowlisted page is therefore read at the PR head (`contents_url`, one call
-per page, only for PRs that are already prose-only by path) and keeps its
-review if any of those appear outside fenced or inline code, where VitePress
-renders text verbatim (`v-pre`). The scan is a fail-open heuristic: a
-legitimate page that uses interpolation in prose merely stays reviewed.
+third-party package), a `<style>` block, `{{ }}` expressions evaluated during
+SSG, a build-time `<!-- @include -->`, bound attributes and directives
+(`:prop`, `@event`, `v-*`, `on*`) on raw HTML, or frontmatter VitePress acts
+on, such as a `head` key that injects tags. Each allowlisted page is therefore
+read at the PR head (`contents_url`, one call per page, only for PRs that are
+already prose-only by path) and keeps its review if one of those tokens
+appears anywhere on the raw page, or if its frontmatter is anything but a
+mapping of `title`, `description`, `sidebar_position` and `sidebar_label`.
+Code examples are not exempt: exempting them means agreeing with markdown-it
+on where every fence starts and ends, and each line-based attempt hid live
+markup from the scan.
 
 Three listing hazards are handled explicitly. A truncated listing never skips
 — GitHub caps `/pulls/{n}/files` at 3000 entries and stops paginating without
@@ -176,6 +179,9 @@ caller shim was re-reconciled.
   re-arms the review, an unreadable page or an unreadable or truncated file
   listing never skips, and `/fs-review` forces a review on a draft, a labeled
   PR, or a prose-only PR at any time.
+- A page that shows `<script>` or `{{ }}` in a code example keeps its review
+  — 9 of the 84 allowlisted pages when this was written — as does any
+  frontmatter key beyond the four listed, which no allowlisted page uses.
 - `fullsend-no-review` must be created and applied by hand until an
   `/fs-review-stop` command exists, unlike `/fs-fix-stop`.
 - A push that is skipped still invalidates the previous verdict: the labels

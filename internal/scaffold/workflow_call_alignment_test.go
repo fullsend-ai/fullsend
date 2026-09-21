@@ -956,8 +956,8 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 
 	// VitePress compiles every page under docs/ into a Vue component, so a
 	// prose path can still carry code that runs at build time (see #6587
-	// review). The page body is read at the PR head; markup inside fenced or
-	// inline code is rendered verbatim (v-pre) and does not count.
+	// review). The page is read at the PR head and scanned raw — code
+	// examples included, see the fence cases below.
 	for name, body := range map[string]string{
 		"script setup":     "# Page\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
 		"style block":      "# Page\n\n<style>\nbody { display: none }\n</style>\n",
@@ -966,9 +966,9 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		"bound attribute":  "# Page\n\n<VPLVersionLink :version=\"aliases.dev\" />\n",
 		"event handler":    "# Page\n\n<img src=x onerror=\"alert(1)\">\n",
 		// #6587 review: uppercase tags render (config.ts KNOWN_TAGS is /i),
-		// a binding wrapped onto its own line is still a live binding, a
-		// -vue fence is evaluated not verbatim, `head :` with a space is
-		// valid YAML, and <!-- @include --> splices a file at build time.
+		// a binding wrapped onto its own line is still a live binding,
+		// VitePress evaluates a -vue fence, `head :` with a space is valid
+		// YAML, and <!-- @include --> splices a file at build time.
 		"uppercase script":  "# Page\n\n<SCRIPT setup>\nimport { evil } from 'evil'\n</SCRIPT>\n",
 		"multiline v-html":  "# Page\n\n<span\n  v-html=\"payload\"\n/>\n",
 		"js-vue fence":      "# Page\n\n```js-vue\n{{ 40 + 2 }}\n```\n",
@@ -998,31 +998,52 @@ func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
 		// Anything the parser cannot vouch for keeps the review.
 		"unparseable frontmatter": "---\ndescription: [never closed\n---\n# Page\n",
 		"non-mapping frontmatter": "---\n- head\n---\n# Page\n",
+		// Frontmatter keys are an allowlist, so the keys VitePress and the
+		// theme act on keep the review without being named anywhere.
+		"layout key":  "---\nlayout: home\n---\n# Page\n",
+		"hero key":    "---\ndescription: fine\nhero:\n  tagline: <b>raw</b>\n---\n# Page\n",
+		"outline key": "---\noutline: deep\n---\n# Page\n",
+		// #6587 review: the scan used to strip fenced code first, tracking
+		// fences line by line, and each page below hid live markup from it —
+		// markdown-it (14.1.0, html: true) renders every payload here as a
+		// live html_block, not as code. The raw page is scanned instead.
+		"backtick in a fence info string":  "# Page\n\n```js `a backtick fence info string cannot contain a backtick`\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"tilde fence holding backticks":    "# Page\n\n~~~\n```\n~~~\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"longer fence holding a shorter":   "# Page\n\n````md\n```\n````\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"indented closing fence":           "# Page\n\n```js\nconst x = 1\n   ```\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"indented opening fence":           "# Page\n\n ```js\nconst x = 1\n```\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"fence inside a raw HTML block":    "# Page\n\n<div>\n```\n{{ 40 + 2 }}\n```\n</div>\n",
+		"markup in a genuine code example": "# Page\n\nUse `{{ github.event }}` or `<script>` in prose.\n\n```html\n<script setup>\nimport x from 'y'\n</script>\n{{ expr }}\n```\n",
 	} {
 		t.Run("executable markup: "+name, func(t *testing.T) {
 			out, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
-			assert.False(t, skipped, "a page carrying executable markup is not inert prose")
-			assert.Contains(t, out, "carries executable markup")
+			assert.False(t, skipped, "a page that may carry executable markup is not inert prose")
+			assert.Contains(t, out, "may carry executable markup")
 		})
 	}
 
-	t.Run("markup inside code is inert", func(t *testing.T) {
-		body := "# Page\n\nUse `{{ github.event }}` or `<script>` in prose.\n\n```html\n<script setup>\nimport x from 'y'\n</script>\n{{ expr }}\n```\n"
+	// The common case must survive the raw scan: ordinary fenced and inline
+	// code holds none of the scanned tokens.
+	t.Run("ordinary code examples still skip", func(t *testing.T) {
+		body := "# Page\n\nRun `fullsend admin install` first.\n\n```bash\nexport GH_TOKEN=\"$(gh auth token)\"\nfullsend run --agent review | tee out.log\n```\n\n```yaml\nroles:\n  review: { enabled: true }\n```\n\n~~~\nplain <b>html</b> in a tilde fence\n~~~\n"
 		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
-		assert.True(t, skipped, "VitePress renders fenced and inline code verbatim — it cannot execute")
+		assert.True(t, skipped, "a page whose code examples hold no scanned token is what the skip exists for")
 	})
 
-	// The frontmatter gate must not end the skip for the pages it exists
-	// for: every docs/agents/ page carries a description. Only a root-level
-	// head key counts, and only in a leading block — a thematic break
-	// further down does not open frontmatter.
-	const inertFrontmatter = "---\ndescription: How the review agent works.\nsidebar_position: 2\nnav:\n  head: nested, so not the key VitePress reads\n---\n# Page\n\n---\n\nhead: of the queue\n\n---\n"
-	t.Run("inert frontmatter still skips", func(t *testing.T) {
+	// Nor may the frontmatter gate end the skip for the pages it exists for:
+	// every docs/agents/ page carries a description. Only the leading block
+	// is frontmatter — a thematic break further down does not open one.
+	const inertFrontmatter = "---\ntitle: Review\ndescription: How the review agent works.\nsidebar_position: 2\nsidebar_label: Review\n---\n# Page\n\n---\n\nhead: of the queue\n\n---\n"
+	t.Run("allowlisted frontmatter still skips", func(t *testing.T) {
 		if _, err := exec.LookPath("yq"); err != nil {
 			t.Skip("yq not available")
 		}
 		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: inertFrontmatter})
-		assert.True(t, skipped, "frontmatter without a root head key is inert")
+		assert.True(t, skipped, "the four keys the site's prose pages use are inert")
+		for _, key := range []string{"title", "description", "sidebar_position", "sidebar_label"} {
+			_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: "---\n" + key + ": 2\n---\n# Page\n"})
+			assert.True(t, skipped, "%s alone must not cost a page its skip", key)
+		}
 	})
 
 	t.Run("yq failure does not skip", func(t *testing.T) {
