@@ -55,6 +55,15 @@ below). Claude Code's native per-invocation
 `--max-budget-usd` flag is not used today; it could complement this cap as a
 tighter in-flight bound for that runtime.
 
+The `>=` comparison carries a relative tolerance of one part per billion — the
+cap counts as reached once the aggregate is at least `cap × (1 − 1e-9)` —
+because the aggregate is a float64 running sum, and costs that add up to
+exactly the cap can land a rounding unit below it (`0.1 + 0.7` sums to
+`0.7999999999999999`), which would leave an exactly-spent budget unspent. The
+operator at the cap is still `>=`: a billionth of the cap ($0.000000005 on a
+$5 cap) is not spend worth distinguishing, and it absorbs the float64 rounding
+of millions of additions at any magnitude.
+
 ## Cost reporting
 
 Enforcement depends entirely on the runtime's self-reported cost — fullsend
