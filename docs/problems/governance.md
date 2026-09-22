@@ -72,12 +72,37 @@ Cost governance intersects with several existing concerns:
 
 The governance question isn't just "how much should we spend?" but "who decides how much to spend on what?" A project might reasonably decide that 80% of its token budget goes to internal implementation and review, 15% to external contribution triage and salvage, and 5% to agent testing — but those are strategic allocation decisions that belong to governance, not to individual agents or repos.
 
+## Adoption anti-patterns
+
+Deploying autonomous agents creates organizational dynamics that governance should anticipate. Oxide's [RFD 576](https://rfd.shared.oxide.computer/rfd/0576) identifies three anti-patterns in LLM adoption that map directly to governance concerns for agent autonomy:
+
+### Agent mandates
+
+Requiring repositories or teams to adopt agent autonomy undermines the voluntary participation that makes open-source collaboration work. If a project mandates agent use — or makes non-agent workflows so inconvenient that they are effectively required — contributors who prefer manual workflows are penalized.
+
+Governance should explicitly address whether repos can decline agent autonomy without penalty. The [autonomy spectrum](autonomy-spectrum.md) defines graduation criteria for increasing autonomy, but whether it should also support an opt-out path is an open question. A repo maintainer who judges that their codebase is better served by human-driven development may need a way to make that choice — but what "without organizational friction" looks like in practice, and whether it conflicts with org-wide consistency goals, is unresolved.
+
+### Agent shaming
+
+The informal counterpart of mandates. In organizations deploying fullsend, contributors who prefer manual workflows should not be treated as obstacles to productivity. This is particularly relevant when agents demonstrably increase throughput — the pressure to adopt becomes implicit even without explicit mandates.
+
+This intersects with the [human factors](human-factors.md#contributor-motivation-in-open-source) concern about contributor motivation: if the culture shifts to treat non-agent contributors as slower or less valuable, the community loses contributors who bring exactly the deep expertise that [guarded-path approval](human-factors.md#is-the-two-point-model-enough) depends on.
+
+### Agent anthropomorphization
+
+Creating personas for agents — naming them, giving them personalities, treating their output as "opinions" — risks obscuring the mechanical nature of their operation. Trust in fullsend's model derives from repository permissions, structured evidence (see [trustworthiness-evidence.md](trustworthiness-evidence.md)), and audit trails — not from agent identity or personality.
+
+However, agents do participate in communication channels: they author review comments, issue responses, and PR descriptions. Even without explicit personas, these communications risk implicit anthropomorphization — readers may attribute judgment, intent, or understanding to generated text. This is the flip side of the [trust through voice](human-factors.md#trust-erosion-from-agent-generated-voice) concern: anthropomorphization inflates trust in agent communication, while voice erosion deflates trust in community communication.
+
+Governance should consider whether agent-authored communications require attribution (making the mechanical origin transparent) and whether certain communication contexts (design discussions, architectural RFCs) should remain human-authored.
+
 ## Relationship to other problem areas
 
 - **Intent representation** defines the intent authorization tiers and authorization mechanisms. Governance defines who has authority to change those definitions.
 - **Security threat model** identifies the threats. Governance defines the policies that mitigate them and who can modify those policies.
 - **Autonomy spectrum** describes the graduation model. Governance defines who evaluates readiness and makes the graduation decision.
 - **Agent architecture** defines the agent roles and permissions. Governance defines who assigns those permissions and under what constraints.
+- **Human factors** explores what happens to the people alongside the system. The adoption anti-patterns above have direct consequences for contributor motivation and community trust.
 
 ## Open questions
 

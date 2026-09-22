@@ -4,18 +4,19 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 ## Getting started
 
-Guides for onboarding organizations and configuring GitHub — the first thing most users need.
+Guides for onboarding organizations and configuring GitHub or GitLab — the first thing most users need.
 
 - [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
+- [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, and polling
 - [Organization Mode](getting-started/org-mode.md) — _(deprecated — see [per-repo Getting Started](getting-started/configuring-github.md))_ Org-wide setup with a shared `.fullsend` config repo
 
 ## Operations & Advanced Setup
 
 Guides for organization owners and repository administrators who manage fullsend installations.
 
-- [Operations](getting-started/operations.md) — Enrollment, configuration updates, status checks, uninstall, and standalone commands
+- [Operations](getting-started/operations.md) — Enrollment, configuration updates, status checks, uninstall, standalone commands, and [private-CA GitLab trust](getting-started/operations.md#private-ca-self-hosted-gitlab)
 - [Advanced setup](infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets, and manual WIF configuration
 - [OpenAI Workload Identity](infrastructure/openai-workload-identity.md) — Run GPT models on the pi runtime without a stored OpenAI key: console setup, repository variables, local runs, troubleshooting
 

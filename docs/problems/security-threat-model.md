@@ -118,8 +118,13 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
 
 ### Defense considerations
 
-- **Agent actions are attributable** — every agent action traces back to the triggering event and the human who initiated it
-- **No self-approval** — an agent that implements a change cannot also approve it
+- **Agent actions are attributable** — every agent action traces back to the
+  triggering event and human, or, for state-only scheduled discovery, to the
+  verified platform invocation and human-reviewed policy and harness revisions
+  that authorized it (see
+  [ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md))
+- **No self-approval** — an agent that implements a change cannot also approve it. On GitHub this separation is real: the code and review stages run as distinct bot identities. On GitLab, while the role-credential migration gate is unset, `disabled`, or `rollback`, [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) uses a single shared bot PAT for both stages, so GitLab's own self-approval block (`merge_requests_author_approval=false`) would always reject the review agent's approve call on its own MRs; since that rejection is certain rather than a rare failure to recover from, the review agent checks the authenticated identity against the MR author before calling `/approve` and, only on an affirmative match, skips the call outright and records the approve verdict as an MR note instead of a formal approval, with the sticky review comment remaining the authoritative record. A post-hoc check against a 401 remains as a safety net for cases the pre-call check can't resolve, using the same identity comparison. Credential-failure 401s, non-author 401s, and any error while performing the identity check itself all fail closed (a hard error, not a note) rather than falling back — the note is posted only when the bot identity is affirmatively confirmed as the MR author. This is a documented trade-off of ADR 0067's single-shared-PAT credential model, not an independently reviewed security exception or a per-role-token gap to close. Once the gate is `migrating` or `enforced`, the [GitLab role-credential contract](../contributing/gitlab-role-credentials.md)'s `approve_merge_request` capability check applies instead: once role secrets are provisioned (always true in `enforced`; in `migrating`, only for roles whose secret is already configured — an unconfigured role may still fall back to the shared token), Analyst and Coder authenticate with distinct per-role credentials. Coder is structurally denied the approve call even during that shared-token fallback, because the capability check resolves from the role identity, not the credential backing it, rather than relying on the identity-vs-author workaround above
+- **GitLab role-credential contract** — built-in Poller/Analyst/Coder and administrator-registered custom roles share one registry and credential-selection path ([gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md)). Role registration is install-state only; repository and merge-request content cannot create or elevate roles. Runtime authentication failures do not fall back to the shared token. Provisioning of role credentials is additive and preserves the shared token (#7498). Job routing (#7499) selects the registered role credential in `migrating`/`enforced` and keeps the shared token on `disabled`/`rollback`. Rotation (#7500) replaces a due role PAT by creating a new token and distributing it to the existing CI variable while the previous PAT stays valid for in-flight jobs; a failed rotation does not drop the last known-good secret or silently broaden to the shared token
 - **Rate limiting / anomaly detection** — unusual patterns of agent activity (sudden burst of cross-repo changes, changes to security-sensitive paths) trigger alerts
 - **CODEOWNERS for agent config** — changes to agent rules, permissions, and configuration always require human approval
 - **Separation of duties** — different agents for different concerns, with no single agent having end-to-end authority
@@ -385,7 +390,10 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
 
 - **Cost budgets** — set per-repo and per-org budgets for LLM API token consumption. When a budget threshold is reached, require human approval before further agent invocations.
 - **Loop circuit breakers** — enforce hard limits on code-review cycles. The entry point script should enforce these limits deterministically, not rely on the agent's self-restraint.
-- **Event debouncing and deduplication** — collapse rapid-fire events on the same issue/PR into a single agent invocation rather than spawning one per event.
+- **Event debouncing and deduplication** — preserve one active invocation and
+  coalesce rapid-fire events for the same harness and entity into at most one
+  newest pending invocation; this bounds queued work, not consecutive runs
+  ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
 - **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
@@ -406,7 +414,10 @@ DOS has elements that touch several existing threats:
 - How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
 - How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
 - Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
-- Should the event debouncing strategy from the March 31 concurrency discussion be treated as a DOS defense or purely a correctness concern? (It serves both purposes.)
+- ~~Should the event debouncing strategy from the March 31 concurrency
+  discussion be treated as a DOS defense or purely a correctness concern?~~ It
+  serves both purposes; the finish-and-coalesce policy is decided in
+  [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md).
 
 ## Cross-cutting concern: agent self-report unreliability
 

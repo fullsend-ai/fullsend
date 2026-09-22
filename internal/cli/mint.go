@@ -161,10 +161,16 @@ var githubAPIBaseURL = "https://api.github.com"
 
 var githubHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+// lookupTokenFn resolves a GitHub token for app-ID lookups using the
+// standard resolution chain (GH_TOKEN → GITHUB_TOKEN → gh auth token).
+// Defaults to resolveToken; overridden in tests.
+var lookupTokenFn = resolveToken
+
 // lookupAppID fetches the numeric app ID for a public GitHub App by slug.
-// When GH_TOKEN or GITHUB_TOKEN is set in the environment, the request is
-// authenticated (5,000 requests/hour). Otherwise it falls back to an
-// unauthenticated request (60 requests/hour, shared by source IP).
+// When a GitHub token is available (via GH_TOKEN, GITHUB_TOKEN, or
+// gh auth token), the request is authenticated (5,000 requests/hour).
+// Otherwise it falls back to an unauthenticated request (60 requests/hour,
+// shared by source IP).
 func lookupAppID(ctx context.Context, slug string) (int, error) {
 	url := githubAPIBaseURL + "/apps/" + url.PathEscape(slug)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -175,10 +181,10 @@ func lookupAppID(ctx context.Context, slug string) (int, error) {
 
 	// Authenticate if a token is available, lifting the rate limit from
 	// 60/hour (unauthenticated, shared by IP) to 5,000/hour.
-	token := os.Getenv("GH_TOKEN")
-	if token == "" {
-		token = os.Getenv("GITHUB_TOKEN")
-	}
+	// Uses the standard token resolution chain: GH_TOKEN, GITHUB_TOKEN,
+	// then gh auth token. The /apps/{slug} endpoint is public, so a
+	// resolution error is not fatal — proceed unauthenticated.
+	token, _ := lookupTokenFn()
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -199,7 +205,7 @@ func lookupAppID(ctx context.Context, slug string) (int, error) {
 		if token != "" {
 			return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — try again later", slug)
 		}
-		return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — unauthenticated requests are limited to 60/hour; set GH_TOKEN or GITHUB_TOKEN and try again", slug)
+		return 0, fmt.Errorf("GitHub API rate limit exceeded for app %s — unauthenticated requests are limited to 60/hour; set GH_TOKEN or GITHUB_TOKEN, or run 'gh auth login', and try again", slug)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GitHub API returned %d for app %s", resp.StatusCode, slug)

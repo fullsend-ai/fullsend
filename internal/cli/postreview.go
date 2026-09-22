@@ -37,14 +37,16 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
 func newPostReviewCmd() *cobra.Command {
 	var (
-		repo      string
-		pr        int
-		result    string
-		token     string
-		headSHA   string
-		dryRun    bool
-		forgeName string
-		baseURL   string
+		repo        string
+		pr          int
+		result      string
+		token       string
+		headSHA     string
+		dryRun      bool
+		forgeName   string
+		baseURL     string
+		keepHistory bool
+		fullsendDir string
 	)
 
 	cmd := &cobra.Command{
@@ -109,13 +111,32 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 			printer.Header("Post Review")
 
+			if err := checkGitLabApprovalCapability(forgeName, parsed.Action, token, os.Getenv); err != nil {
+				return err
+			}
+
 			client, err := resolvePostReviewClient(forgeName, token, baseURL)
 			if err != nil {
 				return err
 			}
+
+			// Resolve keep_history: explicit --keep-history flag takes
+			// precedence, otherwise fall back to config.yaml via
+			// --fullsend-dir (matching the pattern in issues post-comment).
+			resolvedKeepHistory := keepHistory
+			if !cmd.Flags().Changed("keep-history") {
+				var khFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+				}
+				resolvedKeepHistory = resolved
+			}
+
 			cfg := sticky.Config{
-				Marker: reviewMarker,
-				DryRun: dryRun,
+				Marker:      reviewMarker,
+				DryRun:      dryRun,
+				KeepHistory: resolvedKeepHistory,
 			}
 
 			// Stale-head check: refuse to post a review against code
@@ -155,6 +176,8 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 	cmd.Flags().StringVar(&token, "token", "", "forge token (default: $GH_TOKEN / $GITHUB_TOKEN for GitHub, $GITLAB_TOKEN for GitLab)")
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
 	_ = cmd.MarkFlagRequired("repo")
@@ -317,12 +340,14 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		return nil
 	}
 
+	var priorReviews []forge.PullRequestReview
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
 		printer.StepInfo("Could not determine authenticated user, skipping stale review cleanup")
 	} else if reviews, err := client.ListPullRequestReviews(ctx, owner, repo, pr); err != nil {
 		printer.StepInfo("Could not list reviews, skipping stale review cleanup")
 	} else {
+		priorReviews = reviews
 		dismissStaleRequestChanges(ctx, client, owner, repo, pr, event, user, reviews, printer)
 		minimizeStaleReviews(ctx, client, user, reviews, printer)
 	}
@@ -372,6 +397,9 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// a COMMENT review is submitted so the findings appear on the
 	// relevant code lines.
 	if event == "COMMENT" && len(inlineComments) == 0 {
+		// There is no replacement formal review to succeed, so remove stale
+		// approvals after the sticky verdict has been prepared.
+		dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
 		return nil
 	}
@@ -401,12 +429,14 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 				logAPIErrorDetails(retryErr, printer)
 				return fmt.Errorf("submitting review (fallback without inline comments also failed): %w", retryErr)
 			}
+			dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 			printer.StepDone("Review submitted (inline comments omitted due to 422)")
 			return nil
 		}
 		logAPIErrorDetails(err, printer)
 		return fmt.Errorf("submitting review: %w", err)
 	}
+	dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
 	printer.StepDone("Review submitted")
 	return nil
 }
@@ -505,8 +535,8 @@ func formatFindingComment(f ReviewFinding) string {
 // is422Error reports whether err wraps a GitHub 422 Unprocessable Entity
 // API error. Used to detect inline comment validation failures.
 // NOTE: only matches *gh.APIError — GitLab errors won't trigger the
-// 422 fallback. This is acceptable because GitLab posts inline findings
-// as plain note text, not positioned diff comments.
+// 422 fallback. The GitLab client handles unpositionable findings
+// internally (positioned discussion, then note fallback).
 func is422Error(err error) bool {
 	var apiErr *gh.APIError
 	if errors.As(err, &apiErr) {
@@ -610,16 +640,9 @@ func lineInHunks(line int, hunks [][2]int) bool {
 }
 
 // resolvePostReviewClient creates a forge.Client for the post-review
-// command. It resolves the token and base URL based on the forge name,
-// reusing the existing newForgeClient factory that already supports
-// both GitHub and GitLab.
-//
-// When an explicit token is provided (via --token), GitHub short-circuits
-// to newGitHubLiveClient to skip redundant token resolution, while
-// GitLab always delegates to newForgeClient. Without an explicit token
-// the standard resolution chain runs:
-// GitHub → GH_TOKEN / GITHUB_TOKEN / gh auth token;
-// GitLab → GITLAB_TOKEN.
+// command. GitHub goes through newAuthenticatedGitHubClient so --token
+// overrides the standard GH_TOKEN / GITHUB_TOKEN / gh auth token chain.
+// GitLab delegates to newForgeClient (GITLAB_TOKEN or --token).
 func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, error) {
 	if baseURL != "" {
 		u, err := url.Parse(baseURL)
@@ -641,12 +664,12 @@ func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, er
 		}
 		return client, nil
 	case repos.ForgeGitHub, "":
-		if token != "" {
-			return newGitHubLiveClient(token, baseURL), nil
-		}
-		client, err := newForgeClient(repos.ForgeGitHub, "", baseURL)
+		client, err := newAuthenticatedGitHubClient(token, baseURL)
 		if err != nil {
-			return nil, fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or pass --token")
+			if errors.Is(err, errGitHubTokenMissing) {
+				return nil, githubTokenFlagError("--token")
+			}
+			return nil, err
 		}
 		return client, nil
 	default:
@@ -682,6 +705,24 @@ func dismissStaleRequestChanges(ctx context.Context, client forge.Client, owner,
 			printer.StepInfo(fmt.Sprintf("Warning: could not dismiss review %d: %v", r.ID, err))
 		} else {
 			printer.StepDone("Stale review dismissed")
+		}
+	}
+}
+
+// dismissStaleApprovals dismisses all APPROVED reviews by the authenticated
+// user before a new verdict is posted. This prevents an approval for an older
+// commit from remaining active when the latest verdict is comment-only or
+// requests changes.
+func dismissStaleApprovals(ctx context.Context, client forge.Client, owner, repo string, pr int, user string, reviews []forge.PullRequestReview, printer *ui.Printer) {
+	for _, r := range reviews {
+		if r.User != user || r.State != "APPROVED" {
+			continue
+		}
+		printer.StepStart(fmt.Sprintf("Dismissing stale APPROVED review %d", r.ID))
+		if err := client.DismissPullRequestReview(ctx, owner, repo, pr, r.ID, "Superseded by updated review"); err != nil {
+			printer.StepInfo(fmt.Sprintf("Warning: could not dismiss review %d: %v", r.ID, err))
+		} else {
+			printer.StepDone("Stale approval dismissed")
 		}
 	}
 }
@@ -733,9 +774,11 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 		}
 	}
 
-	// Sanitize finding fields — severity, category, description, and
+	// Sanitize finding fields — severity, category, file, description, and
 	// remediation are all interpolated into Markdown posted to the
-	// forge and could carry secrets from agent output.
+	// forge (and, for File, into a structured GitLab Discussions API
+	// position field via forge.ReviewComment.Path) and could carry
+	// secrets from agent output.
 	for i := range r.Findings {
 		if r.Findings[i].Severity != "" {
 			result := pipeline.Scan(r.Findings[i].Severity)
@@ -747,6 +790,12 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 			result := pipeline.Scan(r.Findings[i].Category)
 			if result.Sanitized != "" {
 				r.Findings[i].Category = result.Sanitized
+			}
+		}
+		if r.Findings[i].File != "" {
+			result := pipeline.Scan(r.Findings[i].File)
+			if result.Sanitized != "" {
+				r.Findings[i].File = result.Sanitized
 			}
 		}
 		if r.Findings[i].Description != "" {

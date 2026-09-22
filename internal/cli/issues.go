@@ -178,6 +178,7 @@ type issuesPostCommentConfig struct {
 	jiraURL     string
 	jiraEmail   string
 	dryRun      bool
+	keepHistory *bool // nil = resolve from config; non-nil = explicit flag
 	fullsendDir string
 
 	// Test overrides — when non-nil, used instead of creating a real
@@ -189,7 +190,10 @@ type issuesPostCommentConfig struct {
 }
 
 func newIssuesPostCommentCmd() *cobra.Command {
-	var cfg issuesPostCommentConfig
+	var (
+		cfg         issuesPostCommentConfig
+		keepHistory bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "post-comment",
@@ -222,6 +226,9 @@ pointing at the directory containing it.
 
 The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("keep-history") {
+				cfg.keepHistory = &keepHistory
+			}
 			return runIssuesPostComment(cmd.Context(), &cfg)
 		},
 	}
@@ -235,7 +242,8 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without making API calls")
-	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources a default --tracker from its config.yaml when --tracker is omitted)")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("project")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")
@@ -279,9 +287,15 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 
 	printer.Header("Post Comment")
 
+	keepHistory, err := resolveKeepHistory(cfg.keepHistory, cfg.fullsendDir, cfg.testConfigReader)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", err))
+	}
+
 	stickyCfg := sticky.Config{
-		Marker: cfg.marker,
-		DryRun: cfg.dryRun,
+		Marker:      cfg.marker,
+		DryRun:      cfg.dryRun,
+		KeepHistory: keepHistory,
 	}
 	if trackerName == trackerJira {
 		// The Jira write path routes every body through
@@ -476,6 +490,29 @@ func validateTrackerName(name string) (string, error) {
 		return "", fmt.Errorf("unsupported --tracker value %q: must be one of %s", name, strings.Join(knownTrackers, ", "))
 	}
 	return normalized, nil
+}
+
+// resolveKeepHistory returns the explicit flag value if non-nil, otherwise
+// resolves the keep_history setting from config.yaml via fullsendDir. If
+// neither source provides a value, defaults to true (current behavior).
+// Returns an error when config loading fails so callers can surface it
+// (matching the pattern in resolveTracker).
+func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.PerRepoConfigReader) (bool, error) {
+	if flag != nil {
+		return *flag, nil
+	}
+	prc := testConfigReader
+	if prc == nil && fullsendDir != "" {
+		reader, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+		if err != nil {
+			return true, fmt.Errorf("loading config for keep_history: %w", err)
+		}
+		prc, _ = reader.(config.PerRepoConfigReader)
+	}
+	if prc != nil {
+		return prc.ConfigKeepHistory(), nil
+	}
+	return true, nil
 }
 
 // findMarkedTrackerComment returns the first tracker comment whose body

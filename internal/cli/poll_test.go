@@ -19,6 +19,9 @@ func clearPollEnv(t *testing.T) {
 		forge.SecretForgeToken, "CI_PROJECT_PATH",
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
 		forge.VarPollMode,
+		forge.VarGitLabRoleMigration, forge.VarGitLabRoleRegistry,
+		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",
 	} {

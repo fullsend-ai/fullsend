@@ -16,6 +16,12 @@ what authenticates your agent, and changing it does not change identity or
 permissions. If you set a `role` the mint doesn't serve, you get a `403`, not a
 new identity.
 
+Within that ceiling, `privilege_levels` selects which named level (`read` or
+`write`, plus any extra levels on a custom role) each run-stage receives. Omit
+the field and every stage gets `write`. Set `runtime: read` so the LLM sandbox
+gets a read-only token while pre/post scripts keep `write`. See
+[`privilege_levels` in the harness reference](../../reference/harness-reference.md).
+
 So the real question is: **whose mint issues your token?**
 
 ## Two paths, one decision

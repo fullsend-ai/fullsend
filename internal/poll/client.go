@@ -33,11 +33,18 @@ type GitLabClient interface {
 	// ListResourceLabelEvents MUST return events in ascending ID order
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
-	GetCIVariable(ctx context.Context, owner, repo, name string) (string, error)
-	// UpdateCIVariable upserts a CI variable: update if it exists,
-	// create if it does not. GitLab CI/CD variable values are capped
-	// at 10,000 characters.
-	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
+	// GetFileContentAtRef retrieves a file at a specific ref (branch,
+	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
+	// not exist. Used to load the HMAC-signed poll-state document.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+	// ForceCommitFileToBranch force-updates branch to a single-file
+	// commit re-rooted on a fixed base SHA. The branch is created if
+	// it does not exist. History is pruned to base + 1 commit.
+	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
+	// DeleteRef deletes a git ref (e.g., "heads/fullsend-poll-state-slash").
+	// Returns forge.ErrNotFound if the ref does not exist. Used to
+	// discard a tampered poll-state branch.
+	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
@@ -82,7 +89,10 @@ type MergeRequest struct {
 	Author          UserRef   `json:"author"`
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`
+	ClosedBy        UserRef   `json:"closed_by"`
 	MergedAt        time.Time `json:"merged_at"`
+	ClosedAt        time.Time `json:"closed_at"`
+	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 

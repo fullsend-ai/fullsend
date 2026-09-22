@@ -159,6 +159,13 @@ const (
 	DefaultUpstreamRef = "main"
 	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
 	DefaultGHRunner = "ubuntu-24.04"
+	// DefaultSandboxImage and DefaultCodeImage are the sandbox images
+	// `fullsend agent new` writes into a generated harness. They track the
+	// fleet's pins in fullsend-ai/agents (harness/triage.yaml and
+	// harness/code.yaml) and are repinned by hand on the same cadence as the
+	// fleet repin PRs. `agent new --image` overrides them.
+	DefaultSandboxImage = "ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2"
+	DefaultCodeImage    = "ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7"
 )
 
 // DispatchConfig configures how agent work is dispatched.
@@ -305,6 +312,14 @@ type orgConfig struct {
 // mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
 // registered with `fullsend mint add-role` before scaffold/workflow wiring
 // lands, and must not silently pass config validation.
+// ValidConfigAgentName reports whether name is acceptable as an agents:
+// entry name. Exported so a caller that generates an agent can apply the
+// same rule before writing anything, rather than discovering the mismatch
+// when registration fails after the files are already on disk.
+func ValidConfigAgentName(name string) bool {
+	return validConfigAgentName.MatchString(name)
+}
+
 func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
@@ -815,11 +830,19 @@ type perRepoConfig struct {
 	// jira) for `fullsend issues` commands' --tracker flag. Distinct
 	// from Forge, which is the repo's hosting platform — a repo can be
 	// hosted on GitHub but track issues in Jira.
-	Tracker    string       `yaml:"tracker,omitempty"`
-	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
-	Runtime    string       `yaml:"runtime,omitempty"`
-	Roles      []string     `yaml:"roles,omitempty"`
-	Agents     []AgentEntry `yaml:"agents,omitempty"`
+	Tracker    string `yaml:"tracker,omitempty"`
+	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
+	Runtime    string `yaml:"runtime,omitempty"`
+
+	// KeepHistory controls whether sticky comment updates append the
+	// previous body as a collapsed "Previous run" <details> block. When
+	// nil (omitted), falls through to parent (code default true —
+	// history appended). When explicitly false, updates replace the body
+	// in-place with no history.
+	KeepHistory *bool `yaml:"keep_history,omitempty"`
+
+	Roles  []string     `yaml:"roles,omitempty"`
+	Agents []AgentEntry `yaml:"agents,omitempty"`
 	// AllowedRemoteResources holds the locally-set allowed remote
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
@@ -1022,6 +1045,7 @@ type perRepoConfigMarshal struct {
 	Tracker                string                    `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
+	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
@@ -1044,6 +1068,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Tracker:             c.Tracker,
 		KillSwitch:          c.KillSwitch,
 		Runtime:             c.Runtime,
+		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,

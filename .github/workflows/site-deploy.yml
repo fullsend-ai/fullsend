@@ -13,15 +13,51 @@ permissions:
 
 concurrency:
   group: site-deploy-${{ github.event.workflow_run.event }}-${{ github.event.workflow_run.head_repository.owner.login }}-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: true
+  # Push/main builds may complete out of order; cancelling would drop the newer deploy.
+  cancel-in-progress: ${{ github.event.workflow_run.event != 'push' }}
 
 jobs:
-  deploy:
+  # Build Site keeps overlapping main runs so a cold mvb cache save can finish.
+  # Skip production deploy when a newer successful Build Site run already exists.
+  gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.repository.full_name == github.repository &&
       contains(fromJSON('["pull_request","push"]'), github.event.workflow_run.event)
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - name: Skip stale production deploys
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          THIS_RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" != "push" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          newer=$(gh api "repos/${REPO}/actions/workflows/site-build.yml/runs?branch=${HEAD_BRANCH}&event=push&status=success&per_page=20" \
+            --jq "[.workflow_runs[] | select(.id > ${THIS_RUN_ID})] | length")
+          if [[ "$newer" != "0" ]]; then
+            echo "::notice::Skipping production deploy: a newer successful Build Site run exists"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    # npm ci + Wrangler deploy; headroom for cache misses.
+    timeout-minutes: 15
     env:
       HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}

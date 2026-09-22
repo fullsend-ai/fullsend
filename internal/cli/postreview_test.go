@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -136,7 +139,7 @@ func TestPostStaleHeadNotice(t *testing.T) {
 	fc.PullRequestHeadSHA = "new_sha_456"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	err := postStaleHeadNotice(context.Background(), fc, "o", "r", 1, "old_sha_123", "new_sha_456", cfg, printer)
 	require.Error(t, err, "should return an error indicating staleness")
 	assert.Contains(t, err.Error(), "stale")
@@ -164,7 +167,7 @@ func TestPostFailureNotice_WithBody(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Body: "Custom failure message", Reason: "tool-failure"}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -179,7 +182,7 @@ func TestPostFailureNotice_WithoutBody(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Reason: "token-limit"}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -195,7 +198,7 @@ func TestPostFailureNotice_EmptyReason(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
-	cfg := sticky.Config{Marker: "<!-- test -->"}
+	cfg := sticky.Config{Marker: "<!-- test -->", KeepHistory: true}
 	parsed := ReviewResult{Action: "failure", Reason: ""}
 	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, printer)
 	require.NoError(t, err)
@@ -241,7 +244,9 @@ func TestSubmitFormalReview_CreatesAndMinimizesStale(t *testing.T) {
 	assert.Equal(t, "PRR_300", fc.MinimizedComments[1].NodeID)
 	assert.Equal(t, "OUTDATED", fc.MinimizedComments[1].Reason)
 
-	assert.Empty(t, fc.DismissedReviews, "no CHANGES_REQUESTED reviews to dismiss")
+	require.Len(t, fc.DismissedReviews, 1, "the bot's stale approval should be dismissed")
+	assert.Equal(t, 300, fc.DismissedReviews[0].ReviewID)
+	assert.Equal(t, "Superseded by updated review", fc.DismissedReviews[0].Message)
 }
 
 func TestSubmitFormalReview_DismissesStaleRequestChanges(t *testing.T) {
@@ -279,6 +284,80 @@ func TestSubmitFormalReview_DismissesOnCommentVerdict(t *testing.T) {
 	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must still dismiss stale CHANGES_REQUESTED")
 	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
 	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
+}
+
+func TestSubmitFormalReview_DismissesStaleApproval(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+			{ID: 200, NodeID: "PRR_200", User: "someone-else", State: "APPROVED", Body: "human approval"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "", "", nil, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.DismissedReviews, 1, "COMMENT verdict must dismiss the bot's stale approval")
+	assert.Equal(t, 100, fc.DismissedReviews[0].ReviewID)
+	assert.Equal(t, "Superseded by updated review", fc.DismissedReviews[0].Message)
+	assert.Empty(t, fc.CreatedReviews, "COMMENT with no inline findings skips formal review")
+}
+
+func TestDismissStaleApprovals_ErrorTolerance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["DismissPullRequestReview"] = fmt.Errorf("API error")
+	reviews := []forge.PullRequestReview{
+		{ID: 100, User: "fullsend-bot", State: "APPROVED"},
+	}
+
+	printer := ui.New(io.Discard)
+	dismissStaleApprovals(context.Background(), fc, "acme", "repo", 1, "fullsend-bot", reviews, printer)
+
+	assert.Empty(t, fc.DismissedReviews, "dismissal errors should be non-fatal")
+}
+
+func TestSubmitFormalReview_PreservesApprovalWhenReplacementFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "", "", nil, false, printer)
+
+	assert.Error(t, err)
+	assert.Empty(t, fc.DismissedReviews, "the old approval must remain when replacement review creation fails")
+}
+
+func TestSubmitFormalReview_PreservesApprovalWhenFallbackFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "validation failed"}
+	fc.PRReviews = map[string][]forge.PullRequestReview{
+		"acme/repo/1": {
+			{ID: 100, NodeID: "PRR_100", User: "fullsend-bot", State: "APPROVED", Body: "old approval"},
+		},
+	}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -1,1 +1,1 @@"},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", []ReviewFinding{{
+		File: "internal/service.go", Line: 1, Description: "invalid change",
+	}}, false, printer)
+
+	assert.Error(t, err)
+	assert.Empty(t, fc.DismissedReviews, "the old approval must remain when the fallback review also fails")
 }
 
 func TestSubmitFormalReview_DryRun(t *testing.T) {
@@ -1244,6 +1323,27 @@ func TestSanitizeReviewResult_RedactsSecretsInSeverityAndCategory(t *testing.T) 
 	assert.NotContains(t, sanitized.Findings[0].Category, "ghp_FAKEtest", "secret should be redacted from finding category")
 }
 
+func TestSanitizeReviewResult_RedactsSecretsInFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	secret := "ghp_000000000000000000000000000000000000"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "request-changes",
+		Findings: []ReviewFinding{
+			{
+				Severity:    "high",
+				Category:    "security",
+				File:        "main.go " + secret,
+				Line:        10,
+				Description: "Clean description.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.NotContains(t, sanitized.Findings[0].File, secret, "secret should be redacted from finding file path")
+}
+
 func TestSanitizeReviewResult_ZeroWidthObfuscatedSecret(t *testing.T) {
 	printer := ui.New(io.Discard)
 	plain := "ghp_FAKEtesttoken000000000000000000000000"
@@ -1806,4 +1906,46 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		body := buildFallbackReviewBody("", nil)
 		assert.Equal(t, "", body)
 	})
+}
+
+func TestNewPostReviewCmd_FullsendDirDefaultsToEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "/path/to/.fullsend")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "/path/to/.fullsend", f.DefValue, "fullsend-dir should default to $FULLSEND_DIR")
+}
+
+func TestNewPostReviewCmd_FullsendDirDefaultsEmptyWithoutEnvVar(t *testing.T) {
+	t.Setenv("FULLSEND_DIR", "")
+	cmd := newPostReviewCmd()
+	f := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, f)
+	assert.Equal(t, "", f.DefValue, "fullsend-dir should default to empty when $FULLSEND_DIR is unset")
+}
+
+func TestPostReviewCmd_GitLabCoderCannotApprove(t *testing.T) {
+	t.Setenv(forge.VarGitLabRoleMigration, "enforced")
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
+	t.Setenv(forge.SecretForgeToken, "shared")
+	t.Setenv(forge.SecretGitLabPollerToken, "p")
+	t.Setenv(forge.SecretGitLabAnalystToken, "a")
+	t.Setenv(forge.SecretGitLabCoderToken, "c")
+	t.Setenv(envGitLabRole, "coder")
+	// GITLAB_TOKEN must match the coder secret value ("c") so the
+	// approve call authenticates as the identity the capability check
+	// evaluates; otherwise it now fails on identity mismatch first (see
+	// PR #7510).
+	t.Setenv("GITLAB_TOKEN", "c")
+
+	dir := t.TempDir()
+	result := filepath.Join(dir, "result.json")
+	require.NoError(t, os.WriteFile(result, []byte(`{"action":"approve","body":"ok"}`), 0o644))
+
+	cmd := newPostReviewCmd()
+	cmd.SetArgs([]string{"--repo", "group/project", "--pr", "1", "--forge", "gitlab", "--result", result})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gitlabroles.ErrCapabilityDenied)
+	assert.NotContains(t, err.Error(), "glpat-")
 }

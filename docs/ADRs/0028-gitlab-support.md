@@ -132,6 +132,24 @@ GitLab doesn't have an exact GitHub Apps equivalent, but Project Access Tokens (
 | review  | Developer | Read repos, create MR reviews/comments |
 | fix     | Developer | Read/write target repos, push to MR branches |
 
+> **Update (2026-09, #7343):** This table is the original per-role PAT
+> sketch from the webhook-bridge design (now superseded by
+> [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md)). It is a
+> different credential from the poller's bot PAT (`FULLSEND_FORGE_TOKEN`).
+> The poller uses a **single** project access token at Developer (30),
+> not the Maintainer-level orchestrator row above: poller *state* lives
+> on dedicated unprotected branches (`fullsend-poll-state-slash` /
+> `fullsend-poll-state-events`) rather than Maintainer-only CI/CD
+> variables. Creating pipelines on a protected default branch still
+> needs merge or push access (GitLab's default "Protected" preset
+> grants that to Developers; a stricter Maintainer-only preset does
+> not). The orchestrator row remains historical for the abandoned
+> `.fullsend` config-repo / per-role PAT model and is not the poller's
+> runtime identity. The current registered-role contract (built-in
+> Poller/Analyst/Coder plus administrator custom roles, provisioned
+> additively by `repos install`) is in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+
 **Storage**: Project Access Token values stored as CI/CD variables:
 - Project-level **masked and protected** variable in `.fullsend`: `FULLSEND_DISPATCH_TOKEN` (used to trigger child pipelines; never exposed to enrolled repos)
 - Project-level **masked and protected** variables in `.fullsend`:

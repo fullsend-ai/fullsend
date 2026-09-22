@@ -12,9 +12,12 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls, and — on Claude runs — tool results) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
-All levels produce metadata (timing, token counts, tool names, errors).
+All levels produce metadata (timing, token counts, tool names, errors),
+including up to one `execute_tool` span per id-bearing tool call under each
+`agent` span (Claude Code today; pi and codex emit no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
+capped at 1,024 per iteration.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
 
@@ -84,29 +87,61 @@ The variable name and accepted values follow the
 Fullsend records content on span attributes only, so `event_only` stays
 off. An unrecognized value disables capture; telemetry never fails a run.
 
-**Captured:** assistant text, reasoning, and tool calls (name plus short
-summary) — including any sub-agent activity, unattributed — as the
-`gen_ai.output.messages` span attribute: a JSON string following the
+**Captured:** assistant text, reasoning, tool calls (name plus short
+summary), and tool results — including any sub-agent activity,
+unattributed — as the `gen_ai.output.messages` span attribute: a JSON
+string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-with a `finish_reason` of `stop` or `error`.
+with a `finish_reason` of `stop` or `error`. Tool results, and the `id` that correlates each with its call, are captured
+only when the runtime's stream provides them: Claude runs do; the pi and
+codex parsers emit neither yet
+([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
 
 **Not captured:** model input (`gen_ai.input.messages`) and
 pre/post-script content. First-iteration runs have no meaningful
 runner-side input; retry iterations carry the injected validation
 feedback, a natural input-capture follow-up.
 
-> **Planned:** Tool results, once a parser extension adds them to the
-> normalized event stream — the next change after
-> [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
-
 **Redaction and size:** every part passes through security redaction
 (Unicode normalization, then secret masking) before reaching the span.
-Content is bounded at 256 KiB per iteration, kept as an ordered suffix;
-overflow drops the oldest content first. Truncation is marked via
-`fullsend.content.truncated`. The SDK's span attribute length cap is
+Content is bounded at 256 KiB per iteration — each tool result at 8 KiB —
+kept as an ordered suffix; overflow drops the oldest content first. Those
+bounds count raw bytes; the exported JSON string is bounded as well, at
+255,000 bytes, because encoding adds 9–11% at these bounds on real runs
+and up to six times on escape-dense content — a record over that is trimmed again,
+oldest first.
+Truncation is marked via `fullsend.content.truncated` on the span and
+`fullsend.truncated` on each cut part. A tool result whose stream line
+exceeds the parser's 1 MiB bound is kept as an empty, marked
+`tool_call_response` part — the call was answered, its content is lost and
+its `is_error` unknown — provided the line shows the call id within its
+first 1 MiB, where Claude Code normally writes it (ahead of the content; an
+id serialized after the content is not recovered, and that call closes
+`unanswered`). Two cases are absent rather than truncated: any other stream
+line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
+images) produce no part. A result that mixed text with non-text blocks keeps
+its text and is marked `fullsend.truncated`; a failed call with empty
+output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
 `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
 mid-JSON — fullsend warns on stderr at startup.
+
+**Size limits:** none of these bounds is a measured backend limit. The
+only acceptance proof is one 255,082-byte attribute, read back whole from
+the pilot MLflow backend on 2026-08-20; nothing larger was ever sent, so
+the backend's ceiling is unknown. The runner imposes nothing lower: the
+SDK cap is lifted, the exporter is OTLP over HTTP with no message limit of
+its own, and the file sink has none. The bounds stay because guessing
+wrong is costly — a backend that refuses an oversized request refuses the
+whole batch, up to 512 spans with their Level 1 metadata, and the exporter
+does not retry a refusal. On three captured review runs (117–255 tool
+results per iteration, sub-agents included) these bounds evict 28–56% of
+tool results. A 1 MiB total with the same per-result bound evicts none
+(records of 412–938 KB); raising only the per-result bound to 32 KiB
+evicts 47–91%; keeping every result whole takes 1.1–2.2 MB. So the total
+is the bound to raise first, once the size is proven on the target
+backend: send attributes of increasing size and read each back whole
+([#7415](https://github.com/fullsend-ai/fullsend/issues/7415)).
 
 **Sinks:** content rides the span to both `run-telemetry.jsonl` and the
 OTLP endpoint (when configured). Spans may contain proprietary source
@@ -124,7 +159,36 @@ of the same trace with identical span IDs.
 run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ├── sandbox_create (gen_ai.operation.name=create_agent)
 └── agent           (one per iteration; gen_ai.operation.name=invoke_agent)
+    └── execute_tool (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
 ```
+
+`execute_tool` spans are named `execute_tool <tool name>`. One starts when
+the runtime reports a tool call (its arguments complete) and ends when it
+reports the result — both are runner-side receipt times, which trail the
+sandbox by the pipe latency and the parser's decode of the line, stamped after the
+console renderer's output for the call (it prints nothing for a result) and
+before that event's Level 3 content processing. Events are handled one at a
+time, so with several calls open a time can still trail the processing of
+an earlier event, such as another call's large result. The span approximates
+execution rather than measuring it: both times trail the sandbox, and when
+the start trails by more than the end (an earlier event was still being
+processed when the call arrived) the span is shorter than the execution it
+covers. A call with no result
+by the end of the iteration is closed with `error.type=unanswered`; a
+result whose stream line exceeded the parser's 1 MiB bound ends its span on
+receipt, marked `fullsend.tool.result_oversized` with no status and no
+`error.type` — the tool answered, and whether it failed was never decoded; a
+result whose call was never reported (its stream line was skipped) is a
+near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
+emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
+do server-side tools, whose result never arrives as a `tool_result`. Tool
+names and call ids pass through the same sanitizer as span content (Unicode
+normalization, then secret redaction): a name is redacted in place and
+bounded to 256 bytes for the attribute and 128 for the span name; an id with
+any finding is dropped from the span. At most 1,024 `execute_tool`
+spans are recorded per iteration; calls past that are counted in
+`fullsend.tool_spans.dropped` on the `agent` span. Tool content never rides
+these spans — see Content capture.
 
 ### SpanKind
 
@@ -134,6 +198,7 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 | `run` | Internal | No inbound `TRACEPARENT` (local/manual invocation) |
 | `sandbox_create` | Internal | Always |
 | `agent` | Internal | Always |
+| `execute_tool` | Internal | Always |
 
 ## Span attributes
 
@@ -144,16 +209,33 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 
 | Attribute | Example | Present on |
 |-----------|---------|------------|
-| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
+| `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`; `execute_tool` on `execute_tool`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
-| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` | `agent` (model vendor; `system` deprecated in OTel GenAI semconv v1.37 — EM-001 accepts either) |
+| `gen_ai.tool.name` | `Bash` | `execute_tool` (the runtime's tool name; absent when the call was never reported) |
+| `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
+| `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
+
+Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate Fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
+
+The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
+
+> **Breaking change — Pi runtime:** `agent` spans from the Pi runtime used to
+> report the literal string `pi` under `gen_ai.system`. They now report the
+> resolved serving-endpoint provider under both `gen_ai.system` and the
+> newly emitted `gen_ai.provider.name`
+> (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`).
+> Downstream consumers that filtered or classified on
+> `gen_ai.system == "pi"` will silently stop matching Pi-runtime spans and
+> must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
+> or update their provider allowlist to include the resolved values above.
 
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
+| `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
@@ -168,9 +250,12 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
 | `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
-| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content |
-| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact content bytes removed by the size budget |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count) |
+| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, and the fixed footprint of an errored-empty or oversized stand-in part — in raw bytes whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |
 | `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
+| `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
+| `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
+| `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
 
 ### Common attributes
 
@@ -178,6 +263,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
 
 ### Resource attributes
 
@@ -280,7 +366,10 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 (`"NaN"`, `"Infinity"`, `"-Infinity"`).
 
 The file is written synchronously per span. Spans are flushed to disk as
-they complete; the file is the forensic record for crashed runs.
+they complete; the file is the forensic record for crashed runs. Every
+`execute_tool` span is one such line, so a tool-heavy iteration (a hundred
+or more id-bearing calls — Claude Code today) adds up to that many, capped
+at 1,024.
 
 ## Cross-run trace correlation
 
@@ -376,9 +465,9 @@ authentication mechanism.
 After each managed agent run, `fullsend eval-measure` scores
 `run-telemetry.jsonl` in the same job (fail-open). Scores land in
 `eval-measurements.jsonl` beside telemetry when at least one new score is
-produced (tool-agnostic artifact). Portable
-remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
-agent traces when implemented.
+produced (tool-agnostic artifact). When `OTEL_EXPORTER_OTLP_*` is set, those
+scores also export as `gen_ai.evaluation.result` span events on the same
+TraceID (fail-open; does not rewrite `run-telemetry.jsonl`).
 
 Today's scorers (starting with EM-001) read the Level 1/2 **metadata**
 contract of `run-telemetry.jsonl` — span tree and attributes, not prompt or

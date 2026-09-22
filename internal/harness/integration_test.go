@@ -144,15 +144,16 @@ forge:
 	})
 	require.NoError(t, err)
 
-	// Order: base-top + child-top + merged-forge (base-forge + child-forge).
-	// The forge blocks are merged first (base-forge + child-forge via mergeForgeBlocks),
-	// then ResolveForge appends the merged forge skills to the already-concatenated
-	// top-level skills (base-top + child-top).
+	// Order: resolved-base-top + child-top + child-forge.
+	// Base forge is resolved into base top-level before merge (#6798),
+	// so base skills become [base-s1, base-forge-s1]. Then
+	// mergeBaseIntoChild concatenates base + child top-level. Finally,
+	// ResolveForge on the child appends child's own forge skills.
 	assert.Equal(t, []string{
 		"base-s1",        // base top-level
+		"base-forge-s1",  // base forge.github (resolved into base top-level before merge)
 		"child-s1",       // child top-level
-		"base-forge-s1",  // base forge.github (merged into child forge)
-		"child-forge-s1", // child forge.github
+		"child-forge-s1", // child forge.github (resolved on child)
 	}, SkillSources(h.Skills))
 }
 

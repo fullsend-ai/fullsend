@@ -40,12 +40,57 @@ const scopeName = "github.com/fullsend-ai/fullsend/internal/telemetry"
 // newOTLPExporter is a seam over exporter construction for tests.
 // The SDK reads OTEL_EXPORTER_OTLP_*ENDPOINT from the environment.
 var newOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+	return NewOTLPExporter(ctx)
+}
+
+// OTLPEnabled reports whether an OTLP traces endpoint is configured via
+// OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT.
+func OTLPEnabled() bool {
+	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != "" ||
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) != ""
+}
+
+// NewOTLPExporter builds the HTTP OTLP span exporter from OTEL_* env
+// (same path Setup uses for agent traces). Callers must validate endpoints
+// first with ValidateOTLPEndpoints when they want fail-closed setup.
+func NewOTLPExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
 		Enabled:         true,
 		InitialInterval: 250 * time.Millisecond,
 		MaxInterval:     2 * time.Second,
 	})
 	return otlptracehttp.New(ctx, retryOption)
+}
+
+// NewOTLPExporterBounded is NewOTLPExporter with MaxElapsedTime set so
+// post-hoc exporters (eval scores) cannot retry forever on a flaky collector.
+func NewOTLPExporterBounded(ctx context.Context, maxElapsed time.Duration) (sdktrace.SpanExporter, error) {
+	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+		Enabled:         true,
+		InitialInterval: 250 * time.Millisecond,
+		MaxInterval:     2 * time.Second,
+		MaxElapsedTime:  maxElapsed,
+	})
+	return otlptracehttp.New(ctx, retryOption)
+}
+
+// BuildResource returns the fullsend OTLP resource (service.name, version,
+// plus OTEL_RESOURCE_ATTRIBUTES). Shared by agent Setup and score export so
+// backends that group by resource keep both on the same service identity.
+func BuildResource(serviceVersion string) *resource.Resource {
+	if serviceVersion == "" {
+		serviceVersion = "unknown"
+	}
+	return buildResource(serviceVersion)
+}
+
+// ValidateOTLPEndpoints checks the OTEL endpoint env vars that the SDK
+// will use for traces export.
+func ValidateOTLPEndpoints() error {
+	return validateEndpoints(
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")),
+	)
 }
 
 func validateEndpoints(endpoint, tracesEndpoint string) error {
@@ -98,6 +143,27 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 // OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT decides alone, and a parseable value
 // there, including -1 (unlimited), is honored as-is.
 const MaxSpanAttrValueLen = 8192
+
+// SpanLimits returns the SDK span limits used by Setup (default 8KiB
+// attribute value length unless OTEL_*_ATTRIBUTE_VALUE_LENGTH_LIMIT is set,
+// or unlimited when Level 3 content capture lifts the provider cap).
+func SpanLimits() sdktrace.SpanLimits {
+	return spanLimits()
+}
+
+// FreeTextAttrValueLenLimit is the call-site bound for free-text values the
+// SDK does not truncate (event attributes) or that must stay intact when
+// Level 3 content capture lifts SpanLimits. Honors an explicit operator
+// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT / OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT
+// (including -1 = unlimited); otherwise defaults to MaxSpanAttrValueLen.
+// Independent of ContentCaptureEnabled — that gate only lifts the provider
+// cap for content JSON span attrs.
+func FreeTextAttrValueLenLimit() int {
+	if n, ok := operatorAttrValueLimit(); ok {
+		return n
+	}
+	return MaxSpanAttrValueLen
+}
 
 // spanLimits returns the SDK span limits. NewSpanLimits collapses "env
 // unset" and an explicit "-1" (the OTel sentinel for unlimited) to the

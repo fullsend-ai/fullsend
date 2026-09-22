@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
 func TestCheckFileContentDrift_MatchingContent(t *testing.T) {
@@ -76,6 +77,29 @@ func TestCheckFileContentDrift_SkipsConfigYaml(t *testing.T) {
 	}
 	if len(drifted) != 0 {
 		t.Errorf("expected 0 drifted files (config.yaml skipped), got %d", len(drifted))
+	}
+}
+
+func TestCheckFileContentDrift_SkipsConfigBaseYaml(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.fullsend/config.base.yaml"] = []byte("old base")
+
+	expected := []forge.TreeFile{
+		{Path: ".fullsend/config.base.yaml", Content: []byte("new base")},
+	}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(
+		context.Background(), fc, "owner", "repo",
+		ghFC, ForgeGitHub, expected,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files (config.base.yaml skipped), got %d", len(drifted))
 	}
 }
 
@@ -308,6 +332,7 @@ func TestCheckOrphanVars_GitLabSecretsNotFlagged(t *testing.T) {
 	fc.VariableValues["owner/repo/"+forge.SecretGCPProjectID] = "my-project"
 	fc.VariableValues["owner/repo/"+forge.SecretGCPWIFProvider] = "projects/123/locations/global/workloadIdentityPools/pool/providers/prov"
 	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "glpat-secret"
+	fc.VariableValues["owner/repo/"+forge.SecretDispatch] = "dispatch-secret"
 
 	cfg := InstallConfig{Forge: ForgeGitLab}
 	orphans, err := CheckOrphanVars(
@@ -319,6 +344,47 @@ func TestCheckOrphanVars_GitLabSecretsNotFlagged(t *testing.T) {
 	}
 	if len(orphans) != 0 {
 		t.Errorf("expected 0 orphan vars, got %d: %v", len(orphans), orphans)
+	}
+}
+
+func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
+	fc := forge.NewFakeClient()
+	for _, name := range gitlabRetiredLegacyVars {
+		fc.VariableValues["owner/repo/"+name] = "leftover"
+	}
+	fc.VariableValues["owner/repo/"+forge.SecretDispatch] = "dispatch-secret"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("retired vars must not be flagged as orphans, got %d: %v", len(orphans), orphans)
+	}
+}
+
+func TestCheckOrphanFiles_GitLabPollStateBranchesNotScaffoldPaths(t *testing.T) {
+	for _, branch := range gitlabPollStateBranches {
+		for _, p := range ScaffoldPathsForForge(ForgeGitLab) {
+			if p == branch {
+				t.Errorf("poll-state branch %q must not be a managed scaffold path", branch)
+			}
+		}
+		for _, p := range GitLabForgeConfig().WorkflowPaths {
+			if p == branch {
+				t.Errorf("poll-state branch %q must not be a workflow path", branch)
+			}
+		}
+		if branch != poll.PollStateBranchSlash && branch != poll.PollStateBranchEvents {
+			t.Errorf("unexpected managed poll-state branch %q", branch)
+		}
+	}
+	if len(gitlabPollStateBranches) != 2 {
+		t.Errorf("gitlabPollStateBranches = %d, want 2", len(gitlabPollStateBranches))
 	}
 }
 

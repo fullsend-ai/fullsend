@@ -1,55 +1,39 @@
 import { defineConfig } from "@lando/vitepress-theme-default-plus/config";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getLatestPatchMatching } from "./mvb-satisfies";
 import {
   DOCS_URL_BASE,
   globalSeoHead,
   isIndexablePage,
-  isNonContentPath,
   isSitemapUrl,
   pageRobotsHead,
   pageSeoHead,
 } from "./seo";
+import { getMarkdownFiles } from "./sidebar";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
+
+/** Git glob passed to `git tag --list` and to mvb `multiVersionBuild.match`. */
+const MVB_TAG_MATCH = "v[0-9].*";
+
+/** Git tags mvb will later re-test with `semver.satisfies` (one version at a time). */
+function gitVersionTags(match: string): string[] {
+  return execFileSync("git", ["tag", "--list", match], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter(Boolean);
+}
 
 const version =
   JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf-8"))
     .version ?? "dev";
-
-function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
-  const fullDir = path.resolve(docsDir, dir);
-  if (!fs.existsSync(fullDir)) return [];
-  const items: { text: string; link: string }[] = [];
-  for (const entry of fs.readdirSync(fullDir).sort()) {
-    const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContentPath(entry)) {
-      const slug = entry.replace(/\.md$/, "");
-      const content = fs.readFileSync(entryPath, "utf-8");
-      const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-      const titleMatch = content.match(/^#\s+(.+)$/m);
-      items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` });
-    } else if (
-      fs.statSync(entryPath).isDirectory() &&
-      !entry.startsWith(".") &&
-      !isNonContentPath(entry)
-    ) {
-      const readme = path.resolve(entryPath, "README.md");
-      if (fs.existsSync(readme)) {
-        const content = fs.readFileSync(readme, "utf-8");
-        const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
-        const titleMatch = content.match(/^#\s+(.+)$/m);
-        items.push({
-          text: fmTitleMatch?.[1] || titleMatch?.[1] || entry,
-          link: `/${base}/${entry}/`,
-        });
-      }
-    }
-  }
-  return items;
-}
 
 // Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
 // before markdown-it processes it. Code fence tracking uses backtick-count
@@ -200,7 +184,8 @@ export default defineConfig({
     siteTitle: "Fullsend",
 
     multiVersionBuild: {
-      satisfies: ">=0.37.0",
+      match: MVB_TAG_MATCH,
+      satisfies: getLatestPatchMatching(gitVersionTags(MVB_TAG_MATCH), ">=0.37.0"),
       build: "stable",
     },
 
@@ -233,6 +218,7 @@ export default defineConfig({
             { text: "Getting Inference", link: "/guides/getting-started/getting-inference" },
             { text: "Choose a Runtime", link: "/guides/getting-started/choosing-a-runtime" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
+            { text: "Configuring GitLab", link: "/guides/getting-started/configuring-gitlab" },
             { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
             { text: "Repo Management", link: "/guides/getting-started/repo-management" },
             { text: "Operations", link: "/guides/getting-started/operations" },
@@ -290,6 +276,7 @@ export default defineConfig({
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
                 },
+                { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
                 {
@@ -316,7 +303,10 @@ export default defineConfig({
         {
           text: "Reference",
           collapsed: true,
-          items: [{ text: "Harness Field Reference", link: "/reference/harness-reference" }],
+          items: [
+            { text: "Config Reference", link: "/reference/config-reference" },
+            { text: "Harness Field Reference", link: "/reference/harness-reference" },
+          ],
         },
         {
           text: "Infrastructure",
@@ -365,7 +355,14 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
-            { text: "Archived roadmaps", link: "/archived-roadmap" },
+            {
+              text: "Archived roadmaps",
+              collapsed: true,
+              items: [
+                { text: "Index", link: "/archived-roadmaps/" },
+                ...getMarkdownFiles("archived-roadmaps", "archived-roadmaps").reverse(),
+              ],
+            },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
@@ -427,7 +424,13 @@ export default defineConfig({
         scopes: [
           {
             label: "Guides",
-            prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"],
+            prefixes: [
+              "/docs/guides/",
+              "/docs/agents/",
+              "/docs/cli/",
+              "/docs/runtimes",
+              "/docs/reference/",
+            ],
           },
           {
             label: "Design Docs",

@@ -793,6 +793,12 @@ func writeTestManifest(t *testing.T, content string) string {
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Set a bot identity and write permissions so commitScaffoldViaPR
+	// takes the direct-push path. Without this, an empty
+	// AuthenticatedUser causes the fork path, where CreateFork returns
+	// "" as the owner and waitForFork hangs for the full timeout (#6501).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -800,6 +806,7 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 	}
 	return fc
 }
@@ -918,6 +925,10 @@ func TestReposUninstallCmd_Flags(t *testing.T) {
 	yesFlag := cmd.Flags().Lookup("yes")
 	require.NotNil(t, yesFlag)
 
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+
 	concurrencyFlag := cmd.Flags().Lookup("concurrency")
 	require.NotNil(t, concurrencyFlag)
 }
@@ -984,6 +995,55 @@ func TestRunReposUninstall_Success(t *testing.T) {
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
+}
+
+func TestRunReposUninstall_DefaultCreatesPR(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "default uninstall should open a PR for file deletions")
+	assert.Equal(t, "chore: remove fullsend workflow", fc.CreatedProposals[0].Title)
+	// Uninstall reuses DefaultScaffoldBranch (not a distinct uninstall
+	// branch) so the already-deployed per-repo shim exclusion also covers
+	// uninstall PRs.
+	assert.Equal(t, repos.DefaultScaffoldBranch, fc.CreatedProposals[0].Head)
+	assert.Empty(t, fc.CommittedFiles, "default path should not push deletions to the default branch")
+	assert.NotEmpty(t, fc.DeletedVariables, "variables should still be deleted immediately")
+	assert.NotEmpty(t, fc.DeletedSecrets, "secrets should still be deleted immediately")
+}
+
+func TestRunReposUninstall_DirectPushesToDefaultBranch(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		direct:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.CreatedProposals, "--direct should not open a PR")
+	require.NotEmpty(t, fc.CommittedFiles, "--direct should commit deletions to the default branch")
+	hasDelete := false
+	for _, rec := range fc.CommittedFiles {
+		for _, f := range rec.Files {
+			if f.Delete {
+				hasDelete = true
+			}
+		}
+	}
+	assert.True(t, hasDelete, "--direct commit should include file deletions")
 }
 
 func TestRunReposUninstall_NoMatch(t *testing.T) {
@@ -1846,7 +1906,7 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.DeleteFilesErrors = map[string]error{
+	fc.CreateBranchErrors = map[string]error{
 		"acme/api": errors.New("simulated workflow deletion failure"),
 	}
 
@@ -1905,6 +1965,47 @@ gitlab:
 	assert.Contains(t, err.Error(), "failed to uninstall")
 }
 
+func TestRunReposUninstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, fc.CreatedProposals, "expected an uninstall PR to be created")
+	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
+		"GitLab uninstall MR title must include [skip ci]")
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected the uninstall branch commit to be recorded")
+	assert.Contains(t, fc.CommittedFilesToBranch[0].Message, "[skip ci]",
+		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
+}
+
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
 	gitlabManifest := `version: 1
 gitlab:
@@ -1947,6 +2048,157 @@ gitlab:
 	require.NotEmpty(t, fc.CreatedProposals, "expected a scaffold PR to be created")
 	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
 		"GitLab scaffold MR title must include [skip ci] to suppress dispatch")
+}
+
+func gitlabInstallOpts(manifestPath string, fc *forge.FakeClient) *reposInstallConfig {
+	return &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	}
+}
+
+func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	require.NotEmpty(t, fc.CreatedProposals, "expected an initialization MR")
+	for _, p := range fc.CreatedProposals {
+		assert.Equal(t, repos.DefaultScaffoldBranch, p.Head,
+			"expected initialization branch, got %s (title %q)", p.Head, p.Title)
+		assert.NotContains(t, p.Head, repos.ScaffoldBumpBranchPrefix,
+			"upgrade bump branch must not be created while init MR is open")
+	}
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected files committed to the init branch")
+	paths := make(map[string]bool)
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch,
+			"scaffold files must land on %s, got %s", repos.DefaultScaffoldBranch, rec.Branch)
+		for _, f := range rec.Files {
+			paths[f.Path] = true
+		}
+	}
+	for _, expected := range []string{
+		".gitlab/ci/fullsend-pipeline.yml",
+		".gitlab/ci/fullsend-agent.yml",
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".fullsend/config.yaml",
+		".gitlab-ci.yml",
+	} {
+		assert.True(t, paths[expected], "init MR branch missing %s", expected)
+	}
+}
+
+// captureStdout runs f with os.Stdout redirected to a pipe and returns
+// everything written to it. Used to observe printer.StepStart/StepWarn
+// output from code paths (like runReposInstall) that write directly to
+// os.Stdout rather than an injectable writer.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		defer close(done)
+		_, _ = buf.ReadFrom(r)
+	}()
+
+	f()
+
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	<-done
+	return buf.String()
+}
+
+// TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR reproduces
+// #7417: two consecutive installs without merging between them must keep
+// a single complete initialization MR instead of opening a bump MR.
+func TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+
+	firstOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// First run: nothing existed before it, so GitLab post-install (bot
+	// token + pipeline schedule setup) must be attempted.
+	assert.Contains(t, firstOutput, "GitLab post-install setup",
+		"first install should attempt GitLab post-install setup")
+
+	firstCommitCount := len(fc.CommittedFilesToBranch)
+
+	// FakeClient.CommitFilesToBranch also writes FileContents (the
+	// default-branch store). Strip those files so the second probe sees
+	// the unmerged-MR state: variables/secrets exist, workflow does not.
+	for path := range fc.FileContents {
+		delete(fc.FileContents, path)
+	}
+
+	// The first run's post-install step type-asserts fc.Client to
+	// *gl.LiveClient to perform the actual bot-token/schedule setup;
+	// FakeClient fails that assertion, so it never writes the resulting
+	// secret/schedules here. Seed them directly to simulate a real
+	// GitLab client completing post-install successfully on the first
+	// run, so the second run's NeedsGitLabPostInstall gate (which keys
+	// on those specific artifacts, not just "any component exists") is
+	// exercised against a realistic prior state.
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["group/project"] = []forge.PipelineSchedule{
+		{Description: "fullsend slash poll"},
+		{Description: "fullsend event poll"},
+	}
+
+	secondOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// Second run: variables/secrets/bot token already exist from the
+	// first run even though the workflow (and thus Installed) still
+	// reads as a fresh install. Re-running post-install would revoke and
+	// recreate the live fullsend-bot PAT and pipeline schedules — it
+	// must be skipped this time (#7417 follow-up: credential rotation on
+	// every re-run while the init MR is open).
+	assert.NotContains(t, secondOutput, "GitLab post-install setup",
+		"second install must not re-run GitLab post-install setup while the init MR is still open")
+
+	// FakeClient.CreateChangeProposal always records a new proposal, so
+	// the assertion is on branch identity: both runs must target the
+	// initialization branch, never a version bump branch.
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch)
+		assert.NotContains(t, rec.Branch, repos.ScaffoldBumpBranchPrefix)
+	}
+	if len(fc.CommittedFilesToBranch) < firstCommitCount {
+		t.Fatalf("second install dropped commits: first=%d second=%d", firstCommitCount, len(fc.CommittedFilesToBranch))
+	}
 }
 
 func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
@@ -2045,4 +2297,216 @@ func TestRunReposInstall_VendorNotPersistedWhenUnchanged(t *testing.T) {
 	newEntry := m.GitHub.Repos[1]
 	assert.Equal(t, "acme/web", newEntry.Name)
 	assert.Nil(t, newEntry.Vendor, "vendor should not be set when --vendor was not passed")
+}
+
+func TestReposInstallCmd_GitLabURLFlag(t *testing.T) {
+	cmd := newReposInstallCmd()
+	f := cmd.Flags().Lookup("gitlab-url")
+	require.NotNil(t, f, "expected --gitlab-url flag")
+	assert.Equal(t, "", f.DefValue)
+}
+
+func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap a new manifest with a GitLab repo and --gitlab-url.
+	// The converge phase will fail (fake client doesn't support full
+	// GitLab setup), but the manifest should be written with the URL.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/project"},
+		forge:       repos.ForgeGitLab,
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab, "expected gitlab section in manifest")
+	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+	assert.Len(t, m.GitLab.Repos, 1)
+	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+}
+
+func TestRunReposInstall_GitLabURLOverridesExisting(t *testing.T) {
+	existingManifest := `version: 1
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// The converge phase will fail but the manifest URL should be updated.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://new.gitlab.example.com", m.GitLab.URL)
+}
+
+func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
+	existingManifest := `version: 1
+gitlab:
+  url: https://old.gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, existingManifest)
+	fc := newInstallFakeClient("group/project")
+
+	// Dry-run with --gitlab-url should not modify the manifest on disk.
+	_ = runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		gitlabURL:   "https://new.gitlab.example.com",
+		testClient:  fc,
+	})
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, "https://old.gitlab.example.com", m.GitLab.URL,
+		"dry-run should not modify the manifest URL on disk")
+}
+
+func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("group/project")
+
+	// Bootstrap dry-run: new manifest + --forge gitlab + --gitlab-url + --dry-run.
+	// The function should return without error and NOT write the manifest to disk.
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		repoFilter:  []string{"group/project"},
+		forge:       repos.ForgeGitLab,
+		gitlabURL:   "https://gitlab.example.com",
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+
+	// In dry-run mode the manifest should not be written to disk.
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"dry-run bootstrap should not create the manifest file on disk")
+}
+
+func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
+	t.Run("empty manifest", func(t *testing.T) {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, "repos.yaml")
+		fc := newInstallFakeClient("group/project")
+
+		// When --gitlab-url is provided without --forge on a fresh
+		// manifest, the forge should be inferred as gitlab.
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1)
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	})
+
+	t.Run("manifest with existing GitHub repos", func(t *testing.T) {
+		// When the manifest already contains GitHub repos and --gitlab-url
+		// is passed without --forge, the new repo must land in the GitLab
+		// section, not GitHub.
+		existingManifest := `version: 1
+github:
+  repos:
+    - name: acme/web
+`
+		manifestPath := writeTestManifest(t, existingManifest)
+		fc := newInstallFakeClient("group/project")
+
+		_ = runReposInstall(context.Background(), &reposInstallConfig{
+			manifest:    manifestPath,
+			concurrency: 4,
+			repoFilter:  []string{"group/project"},
+			gitlabURL:   "https://gitlab.example.com",
+			testClient:  fc,
+		})
+
+		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+		require.NoError(t, loadErr)
+		require.NotNil(t, m.GitLab, "expected gitlab section — --gitlab-url should imply gitlab forge even with existing GitHub repos")
+		assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
+		assert.Len(t, m.GitLab.Repos, 1, "new repo should be in GitLab section")
+		assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+		// The existing GitHub repo should still be there.
+		require.NotNil(t, m.GitHub)
+		assert.Len(t, m.GitHub.Repos, 1)
+		assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+	})
+}
+
+func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		forge     string
+		wantError string
+	}{
+		{
+			name:      "non-HTTPS scheme",
+			url:       "http://gitlab.example.com",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "invalid URL",
+			url:       "not-a-url",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must be a valid HTTPS URL",
+		},
+		{
+			name:      "URL with path",
+			url:       "https://gitlab.example.com/some/path",
+			forge:     repos.ForgeGitLab,
+			wantError: "--gitlab-url must not contain a path component",
+		},
+		{
+			name:      "conflicts with --forge=github",
+			url:       "https://gitlab.example.com",
+			forge:     repos.ForgeGitHub,
+			wantError: "--gitlab-url cannot be combined with --forge=github",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), &reposInstallConfig{
+				manifest:    filepath.Join(t.TempDir(), "repos.yaml"),
+				concurrency: 4,
+				repoFilter:  []string{"group/project"},
+				forge:       tt.forge,
+				gitlabURL:   tt.url,
+				testClient:  newInstallFakeClient("group/project"),
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
 }

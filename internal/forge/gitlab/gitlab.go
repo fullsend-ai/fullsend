@@ -119,6 +119,9 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if c.noteTarget != "issues" && c.noteTarget != "merge_requests" {
 		return nil, fmt.Errorf("gitlab: invalid note target %q; must be %q or %q", c.noteTarget, "issues", "merge_requests")
 	}
+	if err := applyCIServerTLSCA(c.http); err != nil {
+		return nil, fmt.Errorf("gitlab: %w", err)
+	}
 	return c, nil
 }
 

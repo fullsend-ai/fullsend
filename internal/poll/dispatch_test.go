@@ -177,6 +177,39 @@ func TestDispatch_ActorID_MREvent(t *testing.T) {
 	}
 }
 
+func TestDispatch_OpenedMRIncludesActionInPayload(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_event",
+		Action:       "opened",
+		IID:          8,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID:   42,
+		NoteAuthorID: 42,
+		MRSource:     100,
+		MRTarget:     100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["action"] != "opened" {
+		t.Errorf("payload action: got %v, want opened", payload["action"])
+	}
+}
+
 func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})
@@ -366,7 +399,7 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
@@ -378,7 +411,7 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -388,7 +421,8 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 		t.Errorf("expected 0 pipelines created, got %d", mc.pipelineCounter)
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; ok {
+	got, ok := mc.getPollState()
+	if ok && got.LastPollAtFull != "" && got.LastPollAtFull != since.Format(time.RFC3339) {
 		t.Error("watermark should not be advanced when pipeline creation fails")
 	}
 }
@@ -397,7 +431,7 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	// Fail after 1 successful CreatePipeline call.
 	mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
 	mc.pipelineErrAfter = 1
@@ -416,7 +450,7 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -747,7 +781,7 @@ func TestDispatch_HMACCoversAllSignedKeysForMREvent(t *testing.T) {
 
 func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
+	p := newUnsignedTestPoller(mc)
 
 	event := RoutableEvent{
 		Type:         "issue_note",

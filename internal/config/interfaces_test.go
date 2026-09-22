@@ -168,6 +168,15 @@ func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	assert.False(t, cfg.IsKillSwitchActive())
 }
 
+func TestPerRepoConfig_ConfigKeepHistory(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{KeepHistory: &f}
+	assert.False(t, cfg.ConfigKeepHistory())
+	tr := true
+	cfg.KeepHistory = &tr
+	assert.True(t, cfg.ConfigKeepHistory())
+}
+
 func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	resources := []string{"https://example.com/"}
 	cfg := &perRepoConfig{AllowedRemoteResources: resources}
@@ -236,6 +245,16 @@ func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
 	cfg.SetKillSwitch(false)
 	require.NotNil(t, cfg.KillSwitch)
 	assert.False(t, *cfg.KillSwitch)
+}
+
+func TestPerRepoConfig_SetKeepHistory(t *testing.T) {
+	cfg := &perRepoConfig{}
+	cfg.SetKeepHistory(false)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.False(t, *cfg.KeepHistory)
+	cfg.SetKeepHistory(true)
+	require.NotNil(t, cfg.KeepHistory)
+	assert.True(t, *cfg.KeepHistory)
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {
@@ -468,6 +487,43 @@ func TestOrgConfigWriter_SetRepo_RoundTrip(t *testing.T) {
 	assert.True(t, w.RepoMap()["repo-a"].Enabled)
 	w.SetRepo("repo-a", RepoConfig{Enabled: false})
 	assert.False(t, w.RepoMap()["repo-a"].Enabled)
+}
+
+func TestOrgConfig_DeleteRepo(t *testing.T) {
+	cfg := &orgConfig{Repos: map[string]RepoConfig{
+		"keep": {Enabled: true},
+		"drop": {Enabled: true, Roles: []string{"triage"}},
+	}}
+	cfg.DeleteRepo("drop")
+	_, exists := cfg.RepoMap()["drop"]
+	assert.False(t, exists)
+	assert.True(t, cfg.RepoMap()["keep"].Enabled)
+
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "drop:")
+	assert.Contains(t, string(data), "keep:")
+}
+
+func TestOrgConfig_DeleteRepo_MissingAndNil(t *testing.T) {
+	cfg := &orgConfig{}
+	cfg.DeleteRepo("nope")
+	assert.Empty(t, cfg.RepoMap())
+
+	cfg.Repos = map[string]RepoConfig{"keep": {Enabled: true}}
+	cfg.DeleteRepo("nope")
+	assert.True(t, cfg.RepoMap()["keep"].Enabled)
+	assert.Len(t, cfg.RepoMap(), 1)
+}
+
+func TestOrgConfigWriter_DeleteRepo_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(
+		[]string{"repo-a", "repo-b"}, []string{"repo-a", "repo-b"}, nil, "", "",
+	)
+	w.DeleteRepo("repo-a")
+	_, exists := w.RepoMap()["repo-a"]
+	assert.False(t, exists)
+	assert.True(t, w.RepoMap()["repo-b"].Enabled)
 }
 
 func TestPerRepoConfig_ConfigForge(t *testing.T) {

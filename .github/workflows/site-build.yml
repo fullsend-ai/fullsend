@@ -32,11 +32,12 @@ permissions:
 
 concurrency:
   group: site-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
-    timeout-minutes: 10
+    # Cold multi-version doc builds (mvb) on main need headroom to finish and save the cache.
+    timeout-minutes: 30
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

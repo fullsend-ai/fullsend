@@ -10,11 +10,18 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 
 - **Schema:** [`normalized-event.schema.json`](normalized-event.schema.json)
 - **CEL context:** harness `trigger` expressions receive a single root variable
-  `event` bound to a `NormalizedEvent` object.
-- **Authorization:** `fullsend dispatch` enforces
-  [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
-  as a platform-level gate after normalization and **before** CEL evaluation.
-  Harness `trigger` expressions express routing only, not permission policy.
+  `event` bound to a `NormalizedEvent` object. This describes the currently
+  shipped event-backed path. [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
+  adopts a future entity-first context with required `entity` and nullable
+  `event`; its field-level contract remains follow-up versioned work.
+- **Authorization:** `fullsend dispatch` enforces the
+  [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
+  after normalization and **before** CEL evaluation. Harness `trigger`
+  expressions express routing only, not permission policy. This authorization
+  statement applies to the event-backed path; Authorization Contract v1 also
+  defines the trusted-origin gate for future entity discovery. The historical
+  decision is recorded in
+  [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
 ## Scope (v1)
 
@@ -92,8 +99,11 @@ payload. The input driver **must** resolve and populate `entity` (and
 or operator-specified work item before dispatch proceeds. Schedule drivers must
 not emit events with a missing or synthetic entity.
 
-**Authorization:** the platform authorization gate (ADR 0054) treats schedule and
-manual dispatch as **trusted operator actions**, not end-user webhook events.
+**Authorization:** the platform authorization gate
+([Authorization Contract v1](../../authorization/v1/);
+[ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md))
+treats schedule and manual dispatch as **trusted operator actions**, not
+end-user webhook events.
 Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
 bot or workflow `GITHUB_ACTOR`), `actor.kind` to `bot`, and `actor.role` to the
 effective permission of that identity on the target repo (typically `write` for
@@ -298,10 +308,12 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 
 | Concern | Mapping |
 |---------|---------|
-| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
-| MR events | `merge_request_event` → `entity.kind: change_proposal` |
-| MR merge | `merge_request_event` (state=merged) → `transition.kind: merged` (primary path for retro-stage dispatch; GitLab merge and close are distinct events) |
+| MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| MR opened | Cron poll (`created_at` > watermark) → `transition.kind: opened` (review) |
+| MR merge | Cron poll (`merged_at` > watermark) → `transition.kind: merged` (retro; GitLab merge and close are distinct events) |
+| MR closed (unmerged) | Cron poll (`closed_at` > watermark, `merged_at` empty) → `transition.kind: closed` (retro) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |

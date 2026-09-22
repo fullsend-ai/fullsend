@@ -6,6 +6,9 @@ func TestForeignVariableName(t *testing.T) {
 	if got := ForeignVariableName("e2e"); got != "FULLSEND_FOREIGN_E2E_REPOS" {
 		t.Fatalf("got %q", got)
 	}
+	if got := ForeignVariableName("ci-check"); got != "FULLSEND_FOREIGN_CI_CHECK_REPOS" {
+		t.Fatalf("hyphenated role: got %q", got)
+	}
 }
 
 func TestParseForeignAllowlist(t *testing.T) {

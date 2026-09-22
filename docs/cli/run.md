@@ -278,7 +278,7 @@ gets its credential from the runner, never from the harness or the sandbox:
 | Runner environment | Effect |
 |---|---|
 | `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`, `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Workload Identity Federation (GitHub Actions only): the run exchanges the job's OIDC token for a short-lived OpenAI token, refreshes it before expiry, and refuses a token whose mapping grants more than model access. All three must be set together; when unset, the `inference.openai` block of `config.yaml` (written by `fullsend github setup --openai-*`) supplies them — except on a machine without a GitHub OIDC endpoint where `OPENAI_API_KEY` is set, which then wins. |
-| `OPENAI_API_KEY` | Static key for local runs (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. |
+| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
 
 In CI the run prepares `.fullsend/providers/` from the upstream defaults, so a file there with a
 scaffold-shipped name (`openai.yaml`, `github-ro.yaml`, `vertex-ai.yaml`, …) is replaced by the
@@ -288,6 +288,15 @@ other bare names still need a file.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+## GitLab role identity
+
+On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential and exports `GITLAB_TOKEN` from that CI/CD variable:
+
+- Gate unset/`disabled`/`rollback`: shared `FULLSEND_FORGE_TOKEN` (existing installations). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged).
+- `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
+
+See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
 ## Related
 

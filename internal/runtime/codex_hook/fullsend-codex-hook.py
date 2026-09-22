@@ -373,11 +373,21 @@ def rewrite_note(output: Any, script: str) -> str:
     return f"fullsend: {script} would have rewritten this tool output"
 
 
+def _cwd(hook_input: dict[str, Any]) -> dict[str, str]:
+    """Forward codex's working directory (the checkout) as `cwd`, as Claude
+    Code and the pi adapter do; the redact stage scopes its checkout-only
+    bare-JWT skip on it. Under codex nothing skips today: apply_patch carries
+    no file path and reads are shell output."""
+    cwd = hook_input.get("cwd")
+    return {"cwd": cwd} if isinstance(cwd, str) else {}
+
+
 def run_pre_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name: str) -> None:
     tool_input = hook_input.get("tool_input")
     payload = {
         "tool_name": tool_name,
         "tool_input": tool_input if isinstance(tool_input, dict) else {},
+        **_cwd(hook_input),
     }
     for script in scripts:
         verdict = run_script(script, payload)
@@ -408,6 +418,7 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
             # `tool_result` (v1); send both, as the pi adapter does.
             "tool_response": current,
             "tool_result": current,
+            **_cwd(hook_input),
         }
         verdict = run_script(script, payload)
         if verdict["block"]:

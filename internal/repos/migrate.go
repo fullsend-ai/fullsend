@@ -86,7 +86,7 @@ type InferenceProvisioner interface {
 //  1. Checks if already per-repo installed (skips if so)
 //  2. Checks/provisions inference WIF infrastructure
 //  3. Installs per-repo (scaffold, variables, secrets)
-//  4. Unenrolls from per-org config
+//  4. Removes the repository entry from per-org config
 //
 // At the end, it generates a repos.yaml manifest from the discovered state.
 // Individual repo failures do not abort the batch.
@@ -267,10 +267,10 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		wg.Wait()
 	}
 
-	// Step 4: Unenroll successfully migrated repos from per-org config.
-	// Also unenroll skipped repos (already per-repo installed) that are
-	// still enabled in per-org config, so re-runs after unenroll failure
-	// can complete the cleanup.
+	// Step 4: Remove successfully migrated repos from per-org config.
+	// Also remove skipped repos (already per-repo installed) that are
+	// still enabled in per-org config, so re-runs after a source-config
+	// write failure can complete the cleanup without reinstalling.
 	var toUnenroll []string
 	toUnenroll = append(toUnenroll, successfulMigrations...)
 	for _, sr := range result.Skipped {
@@ -282,8 +282,7 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 		changed := 0
 		for _, repo := range toUnenroll {
 			if rc, exists := orgCfg.RepoMap()[repo]; exists && rc.Enabled {
-				rc.Enabled = false
-				orgCfg.SetRepo(repo, rc)
+				orgCfg.DeleteRepo(repo)
 				changed++
 			}
 		}
@@ -294,14 +293,14 @@ func Migrate(ctx context.Context, cfg MigrateConfig, clients ForgeClientFactory,
 				result.UnenrollError = fmt.Errorf("marshaling org config: %w", marshalErr)
 				progress(cfg.Org, "unenroll", fmt.Sprintf("error marshaling config: %v", marshalErr))
 			} else {
-				commitMsg := fmt.Sprintf("chore: disable %d repos migrated to per-repo install", changed)
+				commitMsg := fmt.Sprintf("chore: remove %d repos migrated to per-repo install", changed)
 				writeErr := client.CreateOrUpdateFile(ctx, cfg.Org, forge.ConfigRepoName, "config.yaml", commitMsg, updatedData)
 				if writeErr != nil {
 					result.UnenrollError = fmt.Errorf("writing org config: %w", writeErr)
 					progress(cfg.Org, "unenroll", fmt.Sprintf("error writing config: %v", writeErr))
 				} else {
 					result.Unenrolled = changed
-					progress(cfg.Org, "unenroll", fmt.Sprintf("disabled %d repos in per-org config", changed))
+					progress(cfg.Org, "unenroll", fmt.Sprintf("removed %d repos from per-org config", changed))
 				}
 			}
 		}

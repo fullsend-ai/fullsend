@@ -204,7 +204,8 @@ func (c *LiveGCFClient) getPollDelay() func(time.Duration) <-chan time.Time {
 	return time.After
 }
 
-// CreateServiceAccount creates a new service account.
+// CreateServiceAccount creates a new service account. Retries on HTTP 429
+// (quota exhaustion) with exponential backoff via doWIFRequestWithRetry.
 func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts",
 		url.PathEscape(projectID))
@@ -222,7 +223,7 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, payload)
 	if err != nil {
 		return fmt.Errorf("creating service account: %w", err)
 	}
@@ -259,7 +260,8 @@ func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saE
 	return nil
 }
 
-// CreateWIFPool creates a new WIF pool.
+// CreateWIFPool creates a new WIF pool. Retries on HTTP 429 (quota
+// exhaustion) with exponential backoff via doWIFRequestWithRetry.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
 		url.PathEscape(projectNumber), url.QueryEscape(poolID))
@@ -269,7 +271,7 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+	resp, err := c.doWIFRequestWithRetry(ctx, http.MethodPost, reqURL, payload)
 	if err != nil {
 		return fmt.Errorf("creating WIF pool: %w", err)
 	}

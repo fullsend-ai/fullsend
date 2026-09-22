@@ -46,9 +46,10 @@ export function textContainsPhrases(text: string, phrases: string[]): boolean {
  * result's concatenated title + text content.  Results with no text
  * content are kept (graceful degradation).
  */
-export function filterByPhrases<
-  T extends { text?: string; title?: string; titles?: string[] },
->(results: T[], phrases: string[]): T[] {
+export function filterByPhrases<T extends { text?: string; title?: string; titles?: string[] }>(
+  results: T[],
+  phrases: string[],
+): T[] {
   if (phrases.length === 0) return results;
   return results.filter((r) => {
     const content = [...(r.titles || []), r.title || "", r.text || ""].join(" ");

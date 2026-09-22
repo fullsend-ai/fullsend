@@ -29,6 +29,43 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
+## Context-variable scoping
+
+GitHub Actions contexts describe different parts of an invocation. Do not treat similarly named properties as interchangeable when moving logic between inline workflow steps, reusable workflows, and composite actions. See the [GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts) for the complete availability matrix.
+
+| Need | Use |
+|---|---|
+| Repository that triggered the workflow | `github.repository` |
+| Repository containing the action currently being executed | `github.action_repository` |
+| Ref used to invoke the action currently being executed | `github.action_ref` |
+| Repository containing the workflow file that defines the current job on GitHub.com | `job.workflow_repository` |
+| Commit containing the workflow file that defines the current job on GitHub.com | `job.workflow_sha` |
+
+In a reusable workflow, the caller-scoped subset of `github.*` — including
+`github.repository`, `github.sha`, `github.ref`, `github.workflow`, and
+`github.token` — remains associated with the caller workflow. The
+`github.action_*` properties are an exception: they identify the action
+currently executing, not the caller workflow. In a composite action, expose
+these action-identity values through the `env` context when using them in a
+`run` step.
+
+For remote actions invoked with `owner/repo@ref`, `github.action_repository`
+and `github.action_ref` identify the referenced action. For local composite
+actions invoked with `uses: ./...`, those two properties are empty; pass an
+explicit input or environment value when the action needs its repository or
+revision identity.
+
+On GitHub.com, `job.workflow_repository` and `job.workflow_sha` identify the
+repository and commit containing the workflow file that defines the current
+job. In a reusable workflow invoked through `workflow_call`, they identify the
+reusable workflow rather than the caller workflow. They are workflow-definition
+context, not action-execution context, and must never substitute for
+`github.action_repository` or `github.action_ref`. They are unavailable on
+GitHub Enterprise Server, so they cannot serve as a documented fallback across
+platforms.
+
+When refactoring between action types, audit every `job.*` and `github.*` reference for its execution context. Add an explicit input or fallback only when the action supports invocation modes where the preferred context can be absent, and validate that the fallback refers to the same repository and revision intended by the operation.
+
 ## Timeout policy
 
 - Every non-reusable workflow job must set `timeout-minutes`.
@@ -184,7 +221,7 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts on failure. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
 Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 
@@ -199,6 +236,14 @@ Redaction covers:
 - Symlinks under the artifact directory — replaced with a stub before upload
 
 **Residual limitations:** content scanning cannot catch every encoding or obfuscation of a secret in a text-classified file (base64, hex, split tokens). Same-job PR-head code could theoretically race the upload step after redaction; isolating redaction in a separate job would narrow that window further.
+
+## Scaffold-sync dispatch recursion
+
+`notify-scaffold-sync` fires on every `push` to `main`. Its job generates a GitHub App installation token for `fullsend-ai-sync[bot]` and dispatches `fullsend-updated` to `fullsend-ai/.fullsend`, which runs `sync-scaffold` to converge per-repo variables and scaffold files.
+
+Because the sync App authenticates with an App installation token (not `GITHUB_TOKEN`), GitHub's workflow-suppression rule does not apply — a sync commit pushed to `main` re-triggers `notify-scaffold-sync`, which dispatches again. Each scaffold-touching merge therefore costs ≥2 dispatch rounds: the first sync converges files, the second re-enters and converges any state that depends on the first sync's output. The chain terminates when a sync round produces no diff.
+
+This recursion is by design but interacts with the convergence non-idempotence tracked in #6553. See also [Bot Identities § App-token push recursion](bot-identities.md#app-token-push-recursion) for the observed dispatch chain and the security-relevant distinction between the coder token (no `workflows` permission) and the sync App (has `workflows` permission plus `bypass_mode: always` on the `main` ruleset).
 
 ## Additional conventions
 

@@ -263,7 +263,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 			}
 			// HTTP client timeout (Client.Timeout exceeded): retry
 			// with exponential backoff, same as transient server errors.
-			if isTimeoutError(err) {
+			if isTimeoutError(ctx, err) {
 				if attempt == maxRetries-1 {
 					return nil, fmt.Errorf("http %s %s: %w (after %d attempts)", method, path, err, maxRetries)
 				}
@@ -373,10 +373,20 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 }
 
 // isTimeoutError reports whether err is an HTTP client timeout (e.g.
-// Client.Timeout exceeded) as opposed to a caller-context cancellation.
-// Callers must check ctx.Err() first — this function only distinguishes
-// timeout transport errors from other transport errors.
-func isTimeoutError(err error) bool {
+// Client.Timeout exceeded) as opposed to a caller-context cancellation
+// or deadline. It checks ctx.Err() internally so callers do not need
+// to guard against context errors before calling this function.
+//
+// The context check is necessary because Go's net/http client timeout
+// wraps context.DeadlineExceeded internally, making error-only
+// introspection unable to distinguish caller deadlines from transport
+// timeouts. Checking the caller's context disambiguates: if ctx.Err()
+// is non-nil, the caller's context expired; otherwise, any Timeout()
+// error is a transport-level timeout worth retrying.
+func isTimeoutError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	var te interface{ Timeout() bool }
 	return errors.As(err, &te) && te.Timeout()
 }
@@ -1822,6 +1832,12 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	return nil
 }
 
+// DeleteBranch deletes a git branch. Returns forge.ErrNotFound (wrapped)
+// if the branch does not exist.
+func (c *LiveClient) DeleteBranch(ctx context.Context, owner, repo, branchName string) error {
+	return c.DeleteRef(ctx, owner, repo, "heads/"+branchName)
+}
+
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
@@ -1968,7 +1984,10 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
 			Head    struct {
-				Ref string `json:"ref"`
+				Ref  string `json:"ref"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
 				Ref string `json:"ref"`
@@ -1983,12 +2002,13 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 
 		for _, pr := range prs {
 			result = append(result, forge.ChangeProposal{
-				URL:    pr.HTMLURL,
-				Title:  pr.Title,
-				Number: pr.Number,
-				Head:   pr.Head.Ref,
-				Base:   pr.Base.Ref,
-				Author: pr.User.Login,
+				URL:      pr.HTMLURL,
+				Title:    pr.Title,
+				Number:   pr.Number,
+				Head:     pr.Head.Ref,
+				HeadRepo: pr.Head.Repo.FullName,
+				Base:     pr.Base.Ref,
+				Author:   pr.User.Login,
 			})
 		}
 
@@ -4010,6 +4030,11 @@ func (c *LiveClient) UpdateCIVariable(_ context.Context, _, _, _, _ string, _ bo
 
 // CreateProtectedCIVariable is not supported on GitHub.
 func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ string) error {
+	return forge.ErrNotSupported
+}
+
+// ForceCommitFileToBranch is not supported on GitHub.
+func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
 	return forge.ErrNotSupported
 }
 

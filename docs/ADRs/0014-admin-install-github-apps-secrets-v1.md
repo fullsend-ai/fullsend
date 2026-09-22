@@ -27,6 +27,8 @@ The admin CLI creates or reuses per-role GitHub Apps and must persist the minimu
 
 **Adopt credential surface v1**: expected app slugs and manifest/install behavior per role, and repository secrets `FULLSEND_<ROLE>_APP_PRIVATE_KEY` plus variables `FULLSEND_<ROLE>_CLIENT_ID` on the `.fullsend` repo, with uppercase role suffixes matching `internal/layers/secrets.go` and `internal/cli/admin.go`.
 
+> **Later note (hyphenated roles):** GitHub Actions secret and variable names cannot contain hyphens. Role suffixes now map hyphens to underscores (`ci-check` → `CI_CHECK`) via `mintcore.RoleIdentifier`. See [#7140](https://github.com/fullsend-ai/fullsend/issues/7140).
+
 ## Consequences
 
 - Any change to secret/variable names or install outcomes must update the implementation and this ADR together.

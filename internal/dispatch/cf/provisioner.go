@@ -663,8 +663,7 @@ func validateSourceDir(dir string) error {
 // PEM key. Follows the convention <ROLE>_APP_PEM with hyphens mapped
 // to underscores (CF secret names must be valid JS identifiers).
 func pemSecretName(role string) string {
-	mapped := mintcore.PemSecretRole(role)
-	return strings.ToUpper(strings.ReplaceAll(mapped, "-", "_")) + "_APP_PEM"
+	return mintcore.RoleIdentifier(mintcore.PemSecretRole(role)) + "_APP_PEM"
 }
 
 // ValidateWorkerName checks if a string is a valid CF Worker name.

@@ -10,7 +10,9 @@ When changing **any** non-test `.go` file in `internal/mint/`, copy it to the co
 
 **CF Worker adapter:** `internal/dispatch/cf/workersrc/` is a thin TypeScript Cloudflare Worker adapter that consumes mintcore via WASM (`cmd/mint-wasm`). The adapter handles I/O only (Worker secrets, host fetch, Fetch Request/Response mapping); all mint logic stays in Go. The Go WASM bridge registers `mintcoreInitMint` and `mintcoreHandleFetch` on `globalThis` via `syscall/js`; changes to these entry points in `cmd/mint-wasm` or to the contracts they consume in `internal/mintcore/` require updating `workersrc/src/index.ts` to match.
 
-**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements.
+**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements. It must not import `internal/mintcore` or `internal/mintcore/mintconsts` — `mintconsts` lives in the nested mintcore module even though it has no mintcore imports of its own.
+
+**Public behaviourtest graph must not import mintcore.** `internal/mintcore` is a nested module resolved in this repository by a local `replace` that downstream modules do not inherit. Packages reachable from `pkg/behaviourtest`'s public build must not import `internal/mintcore` or `internal/mintcore/mintconsts`, and must not import other in-module packages whose production graph includes mintcore (`internal/cli`, `internal/layers`, `internal/repos`). Duplicate a string or helper locally instead (see `pkg/e2etest/auth.go`, `internal/mintclient/mintclient.go`, `pkg/behaviourtest/drivers/install/validate.go`). `TestBehaviourtestDepsExcludeMintcore` asserts `go list -deps` (with and without `-tags behaviour`) never lists the nested module.
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
@@ -58,15 +60,15 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
-2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
+2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines has an **80% target** and a **75% enforced floor** (5% threshold). Codecov PR comments mark ✗ below 80% even when the `codecov/patch` status check is green. **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
 3. **Vet:** Run `make go-vet` to catch common issues.
 4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
 ## Verifying patch coverage locally
 
 `make go-test` runs tests with `-cover` but does not check whether your
-changed lines meet the **80% patch coverage** threshold from
-[`.codecov.yml`](../../.codecov.yml). You must approximate this check
+changed lines meet the **80% patch coverage** target (75% enforced floor)
+from [`.codecov.yml`](../../.codecov.yml). You must approximate this check
 yourself before committing. Skipping this step is the most common cause
 of `codecov/patch` failures on first push.
 
@@ -89,6 +91,13 @@ of `codecov/patch` failures on first push.
      | sed 's|^|./|'
    ```
 
+   Before running coverage, check each affected package for `_test.go`
+   files; if none exist, add direct unit tests for the changed code
+   first, since missing or zero coverage cannot satisfy the patch
+   coverage threshold. See the
+   [check-patch-coverage skill](../../skills/check-patch-coverage/SKILL.md#3-check-for-packages-with-no-test-files)
+   for the detection script.
+
 3. **Run tests with a cover profile** for the affected packages:
 
    ```bash
@@ -108,17 +117,20 @@ of `codecov/patch` failures on first push.
    you added or modified — these approximate Codecov's line-level patch
    metric.
 
-5. **Assess against the threshold.** If the functions you changed or
-   added show coverage well below 80%, add or extend `_test.go` files
-   to cover the missing lines. Then re-run from step 3.
+5. **Assess against the 80% target (75% floor).** If the functions you
+   changed or added show coverage well below 80%, add or extend
+   `_test.go` files to cover the missing lines. Then re-run from step 3.
 
 ### What counts as covered
 
 Codecov measures line-level coverage on the diff. Locally, `go tool
 cover -func` reports function-level coverage, which is a coarser
-approximation. Target **≥ 80%** on the functions you touched. If a
-function has complex branching, use `go tool cover -html=coverage.out`
-to visually inspect which lines are covered.
+approximation. The `codecov/patch` status check passes at **≥ 75%**
+(80% target minus 5% threshold); PR comments still mark ✗ below 80%.
+Target **≥ 80%** on the functions you touched so both signals agree and
+to leave margin for the function-vs-line approximation. If a function
+has complex branching, use `go tool cover -html=coverage.out` to
+visually inspect which lines are covered.
 
 ### When to skip
 
@@ -246,6 +258,34 @@ goroutines as a **medium-severity** finding, and recommend collecting a
 `[]error` and returning `errors.Join`. Do not flag intentional fail-fast
 cancellation patterns.
 
+## httptest handler-invocation assertions
+
+When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — an unmatched route on the `http.ServeMux` returns 404, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
+
+### Pattern: `handlerCalled` boolean
+
+Declare a `handlerCalled` boolean before the handler, set it to `true` inside the handler, and assert it after the test action:
+
+```go
+handlerCalled := false
+mux.HandleFunc("/expected/path", func(w http.ResponseWriter, r *http.Request) {
+    handlerCalled = true
+    assert.Equal(t, http.MethodGet, r.Method)
+    writeJSON(t, w, http.StatusOK, response)
+})
+
+result, err := client.DoSomething(ctx, "arg")
+require.NoError(t, err)
+assert.Equal(t, expected, result)
+assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+```
+
+This applies to every handler registration in httptest-based tests — not just error cases. A handler that is never called means the test is not exercising the code path it claims to test.
+
+### Why this matters
+
+The coincidental-pass bug class is well-understood in Go httptest usage. A real instance occurred in this repo: `TestGetCommentProperty_NotFound` registered its handler at `/rest/api/3/issue/PROJ-1/comment/10001/properties/missing`, but the production code constructed the path `/rest/api/3/comment/10001/properties/missing` (no issue prefix). The handler was never invoked, yet the test passed because the default 404 matched the expected `forge.ErrNotFound`. The fix was a one-line `handlerCalled` assertion — see [`internal/forge/jira/client_test.go`](../../internal/forge/jira/client_test.go) for the canonical example.
+
 ## Context-aware blocking
 
 Functions that accept `context.Context` must not use `time.Sleep` or other
@@ -309,7 +349,7 @@ if errors.Is(err, errGitLabTokenMissing) {
 
 **Do not** match errors by substring: `strings.Contains(err.Error(), "token")` couples error handling to message wording and breaks when messages change. Use `errors.Is` or `errors.As` for all programmatic error checks.
 
-See `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
+See `internal/cli/github_client.go` (`errGitHubTokenMissing`), `internal/cli/forge_client.go` (`errGitLabTokenMissing`), `internal/cli/admin.go` (`errMintNotFound`), and `internal/cli/lock.go` (`errHarnessNotFound`) for examples of this pattern in the codebase.
 
 ### Use `%q` for values in error messages
 

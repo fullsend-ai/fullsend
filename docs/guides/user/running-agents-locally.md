@@ -333,7 +333,7 @@ fullsend run triage \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
-For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent reads `GITLAB_TOKEN` from the environment and does not require the mint service. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables.
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. While the migration gate is unset, `disabled`, or `rollback`, `FULLSEND_FORGE_TOKEN` is preferred and exported to `GITLAB_TOKEN`; if it is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). Once the gate is `migrating`, the matching per-role secret (Poller/Analyst/Coder, or a registered custom role) is used when configured; an unconfigured role still falls back to `FULLSEND_FORGE_TOKEN` (this shared-token fallback only ceases once the gate is `enforced`, where the per-role secret is strictly required). In both `migrating` and `enforced` mode, though, the unmanaged fallback to a directly-set `GITLAB_TOKEN` (used above when `FULLSEND_FORGE_TOKEN` itself is absent) no longer applies. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
@@ -446,7 +446,7 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 
 **`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
 - The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
-- If `--fullsend-dir` contains a `profiles/` directory, its copy of the profile is imported after the harness's and is the one to fix; `fullsend run` prints a `Profile "…" is defined both in … and by the harness` warning when that happens
+- Only profiles listed in `openshell.profiles` are imported. If `--fullsend-dir` contains a `profiles/` directory, files there are **not** imported unless explicitly listed on the harness. To override a harness profile locally, add it to `openshell.profiles` (e.g., `profiles/fullsend-vertex-ai.yaml`)
 
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)

@@ -55,6 +55,19 @@ func TestRendererToolUseEvent(t *testing.T) {
 	}
 }
 
+func TestRendererToolResultEventIgnored(t *testing.T) {
+	// Tool results feed the Level 3 content collector, not the console:
+	// the renderer intentionally produces no output for them.
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ToolResultEvent{ID: "toolu_01abc", Result: "output text"})
+
+	if output := buf.String(); output != "" {
+		t.Errorf("expected no output for ToolResultEvent, got: %s", output)
+	}
+}
+
 func TestRendererToolUseEventCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 

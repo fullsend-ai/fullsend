@@ -6,11 +6,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -26,6 +26,15 @@ type ConvergeConfig struct {
 
 	// Roles is the list of agent roles to install (e.g., "triage", "coder").
 	Roles []string
+
+	// RolesExplicit is true when the caller explicitly passed --roles,
+	// as opposed to Roles carrying the flag's own default value. Fresh
+	// installs of a repo with a declared configuration preset use this
+	// to decide whether to write roles into the overlay (explicit
+	// override) or leave them unset so the preset's roles (or the
+	// code-default fallback) take effect through the layered accessor
+	// chain — see BuildScaffoldFiles.
+	RolesExplicit bool
 
 	// UpstreamRef is the git ref (SHA) used to pin scaffold workflow refs.
 	UpstreamRef string
@@ -68,7 +77,7 @@ type ConvergeConfig struct {
 // installation component during convergence.
 type ComponentAction struct {
 	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "schedule:<name>", "ref"
-	Action    string // "none", "add", "update", "upgrade", "orphan", "error"
+	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error"
 	Detail    string // human-readable detail
 }
 
@@ -81,6 +90,48 @@ type ConvergeResult struct {
 	// Installed is true when the repo was not previously installed and
 	// received a full install.
 	Installed bool
+
+	// NeedsGitLabPostInstall is true when Installed is true and the
+	// GitLab post-install artifacts (the fullsend-bot PAT secret and
+	// pipeline schedules) did not already exist on the repo before this
+	// run. GitLab post-install (bot token + pipeline schedule setup) is
+	// destructive — it revokes and recreates the live fullsend-bot
+	// project access token and deletes and recreates pipeline
+	// schedules — so it must run only when those artifacts are
+	// genuinely missing. Re-running install while the initialization MR
+	// is still open (#7417) keeps Installed true (workflow file still
+	// absent) but must not re-trigger this destructive setup once the
+	// bot token and schedules already exist from a prior run. This is
+	// deliberately narrower than "any fullsend-managed component
+	// exists" — the GCP inference secrets every Install() writes are
+	// unrelated to GitLab post-install and must not mask it having
+	// failed or never run.
+	//
+	// This is an OR of NeedsGitLabBotToken and NeedsGitLabPipelineSchedules
+	// below, kept for callers that only need to know whether GitLab
+	// post-install requires any action at all (e.g. whether to fetch a
+	// GitLab client for the repo). Callers that actually perform
+	// post-install setup must gate each action on its own specific flag
+	// instead — gating both the bot-token and schedule setup on this
+	// combined flag re-revokes an already-valid bot PAT whenever only
+	// the schedules are missing (or vice versa).
+	NeedsGitLabPostInstall bool
+
+	// NeedsGitLabBotToken is true when the fullsend-bot PAT secret
+	// (secret:FULLSEND_FORGE_TOKEN) was not already present before this
+	// run. Callers must gate bot-token setup on this field specifically,
+	// not on NeedsGitLabPostInstall, so a retry where the token already
+	// exists does not revoke and recreate the live PAT merely because a
+	// pipeline schedule is still missing.
+	NeedsGitLabBotToken bool
+
+	// NeedsGitLabPipelineSchedules is true when at least one pipeline
+	// schedule component (see PipelineScheduleSpecs) was not already
+	// present before this run. Callers must gate pipeline-schedule setup
+	// on this field specifically, not on NeedsGitLabPostInstall, so a
+	// retry where the schedules already exist does not delete and
+	// recreate them merely because the bot token is still missing.
+	NeedsGitLabPipelineSchedules bool
 
 	// Converged is true when the repo had drifted components that were
 	// repaired (variables, refs, or missing scaffold files).
@@ -159,6 +210,7 @@ type convergeDiscovery struct {
 	repo       ResolvedRepo
 	resolved   ResolvedConfig
 	components []ComponentStatus
+	preset     []byte
 	err        error
 }
 
@@ -178,8 +230,33 @@ func secretsPresent(components []ComponentStatus) bool {
 		hasComponent(components, "secret:"+forge.SecretGCPWIFProvider)
 }
 
-// anyComponentPresent returns true when at least one probed component exists,
-// indicating the repo has been at least partially installed.
+func shouldWarnRemotePreset(source, hash string, warned map[string]bool) bool {
+	if hash != "" || !preset.IsRemote(source) || warned[source] {
+		return false
+	}
+	warned[source] = true
+	return true
+}
+
+// existingSecretNames returns the drift field names (e.g.
+// "FULLSEND_GCP_PROJECT_ID") of secret components already present on the
+// repo. Install uses this to skip rewriting individual secrets that
+// already exist, even when hasSecrets/ReuseSecrets is false because only
+// some of the required secrets are present yet.
+func existingSecretNames(components []ComponentStatus) []string {
+	var names []string
+	for _, c := range components {
+		if strings.HasPrefix(c.Name, "secret:") && c.Present {
+			names = append(names, DriftFieldName(c.Name))
+		}
+	}
+	return names
+}
+
+// anyComponentPresent returns true when at least one probed component exists.
+// Used by status to report a repo as installed once any fullsend resource
+// has been written, including variables or secrets created before the
+// initialization MR merges.
 func anyComponentPresent(components []ComponentStatus) bool {
 	for _, c := range components {
 		if c.Present {
@@ -187,6 +264,48 @@ func anyComponentPresent(components []ComponentStatus) bool {
 		}
 	}
 	return false
+}
+
+// gitlabBotTokenPresent returns true when the fullsend-bot PAT secret
+// (secret:FULLSEND_FORGE_TOKEN) is already present.
+func gitlabBotTokenPresent(components []ComponentStatus) bool {
+	return hasComponent(components, "secret:"+forge.SecretForgeToken)
+}
+
+// gitlabSchedulesPresent returns true when every pipeline-schedule
+// component (see PipelineScheduleSpecs) is already present.
+func gitlabSchedulesPresent(components []ComponentStatus) bool {
+	for _, spec := range PipelineScheduleSpecs() {
+		if !hasComponent(components, spec.ComponentName) {
+			return false
+		}
+	}
+	return true
+}
+
+// gitlabPostInstallDone returns true when the GitLab-specific
+// post-install artifacts — the fullsend-bot PAT secret and every
+// pipeline schedule — are already present. Unlike anyComponentPresent,
+// this ignores unrelated components (e.g. the GCP inference secrets
+// that every Install() writes regardless of forge), so a repo whose
+// Install() succeeded but whose GitLab post-install step failed or
+// never ran is not mistaken for one that already has a bot token and
+// schedules.
+//
+// This is an AND of the two artifacts, so it does not distinguish which
+// one is missing. Callers that need to act on only the missing piece
+// (see NeedsGitLabBotToken / NeedsGitLabPipelineSchedules) must call
+// gitlabBotTokenPresent / gitlabSchedulesPresent directly instead.
+func gitlabPostInstallDone(components []ComponentStatus) bool {
+	return gitlabBotTokenPresent(components) && gitlabSchedulesPresent(components)
+}
+
+// workflowPresent returns true when the forge-specific shim workflow file
+// exists on the default branch. That file is the only component that cannot
+// land until the initialization MR merges, so it is the signal that the repo
+// is actually installed rather than mid-install.
+func workflowPresent(components []ComponentStatus) bool {
+	return hasComponent(components, "workflow")
 }
 
 // Converge processes every repo in the manifest through a single
@@ -366,6 +485,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		index        int
 	}
 	wifSeen := make(map[string]wifEntry)
+	store := newPresetCache()
+	warnedRemote := make(map[string]bool)
 
 	for i, d := range discoveries {
 		if d.err != nil {
@@ -375,6 +496,25 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				Error: fmt.Errorf("checking installation status: %w", d.err),
 			}
 			continue
+		}
+
+		// Load declared presets before any writes so a hash mismatch or
+		// invalid source fails the repo without applying changes.
+		if d.resolved.Config != "" {
+			data, loadErr := store.Load(ctx, d.resolved.Config, d.resolved.ConfigHash)
+			if loadErr != nil {
+				result.Results[i] = ConvergeResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("loading config preset: %w", loadErr),
+				}
+				continue
+			}
+			d.preset = data
+			if shouldWarnRemotePreset(d.resolved.Config, d.resolved.ConfigHash, warnedRemote) {
+				progress(d.repo.Owner+"/"+d.repo.Repo, "preset",
+					"Remote preset fetched without config_base.sha256; content integrity is not verified")
+			}
 		}
 
 		// Compute WIF for repos that need secrets written.
@@ -491,19 +631,62 @@ func convergeRepo(ctx context.Context,
 	}
 
 	hasSecrets := secretsPresent(d.components)
-	isNew := !anyComponentPresent(d.components)
+	// Treat the repo as new until the workflow file is on the default
+	// branch. Variables and secrets are written before the scaffold
+	// commit (see Install), so anyComponentPresent is true while an
+	// initialization MR is still open. Routing that state through the
+	// upgrade path selects a version-specific bump branch and leaves
+	// the original MR incomplete (#7417).
+	isNew := !workflowPresent(d.components)
+	// Snapshot "GitLab post-install has not already succeeded" ahead of
+	// Install(), which is about to write variables/secrets —
+	// gitlabPostInstallDone on d.components (probed during discovery,
+	// before any writes) reflects the pre-run state. Destructive GitLab
+	// post-install setup (bot token + pipeline schedule recreation) must
+	// gate on this, not on isNew/Installed alone, so it does not re-run
+	// on every re-install while the initialization MR is still open
+	// (#7417). It must also gate on the GitLab-specific artifacts
+	// (bot token secret, schedules) rather than any component being
+	// present — the GCP inference secrets Install() always writes are
+	// unrelated to GitLab post-install, so their presence alone must not
+	// mask a post-install step that failed or never ran.
+	//
+	// needsBotToken and needsSchedules are tracked separately (rather
+	// than only the combined needsPostInstall) so callers can run
+	// bot-token setup and pipeline-schedule setup independently: a retry
+	// where one artifact already exists must not redo that one just
+	// because the other is still missing.
+	needsBotToken := !gitlabBotTokenPresent(d.components)
+	needsSchedules := !gitlabSchedulesPresent(d.components)
+	// Computed via gitlabPostInstallDone (rather than needsBotToken ||
+	// needsSchedules, though the two are equivalent by De Morgan's law)
+	// so the existing gitlabPostInstallDone test coverage actually
+	// constrains this production value instead of only testing an
+	// otherwise-unused helper.
+	needsPostInstall := !gitlabPostInstallDone(d.components)
 
-	// Case 1: Nothing installed — perform full install via Install().
+	// Case 1: Workflow not on the default branch — full install via
+	// Install(), which always uses fresh-install PR metadata.
 	if isNew {
 		progress(repoFullName, "install", "Not installed, performing full install")
 
 		if cfg.DryRun {
 			cr.Installed = true
+			cr.NeedsGitLabPostInstall = needsPostInstall
+			cr.NeedsGitLabBotToken = needsBotToken
+			cr.NeedsGitLabPipelineSchedules = needsSchedules
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "all",
 				Action:    "add",
 				Detail:    "Would install (new)",
 			})
+			if len(d.preset) > 0 {
+				cr.Actions = append(cr.Actions, ComponentAction{
+					Component: preset.BasePath,
+					Action:    "add",
+					Detail:    "would write config preset as " + preset.BasePath,
+				})
+			}
 			progress(repoFullName, "dry-run", "Would install (new)")
 			return cr
 		}
@@ -520,11 +703,22 @@ func convergeRepo(ctx context.Context,
 				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
 		}
 
+		installRoles := defaultRoles(cfg.Roles)
+		if len(d.preset) > 0 && !cfg.RolesExplicit {
+			// A base preset is declared and the caller did not
+			// explicitly pass --roles: leave Roles unset so
+			// BuildScaffoldFiles writes a stub overlay and the
+			// preset's own roles (or its code-default fallback) take
+			// effect via the layered accessor chain, instead of the
+			// fleet-wide default roles shadowing them.
+			installRoles = nil
+		}
+
 		installCfg := InstallConfig{
 			Owner:             rr.Owner,
 			Repo:              rr.Repo,
 			Forge:             resolved.Forge,
-			Roles:             defaultRoles(cfg.Roles),
+			Roles:             installRoles,
 			MintURL:           resolved.MintURL,
 			InferenceProject:  cfg.InferenceProject,
 			InferenceRegion:   cfg.InferenceRegion,
@@ -536,7 +730,9 @@ func convergeRepo(ctx context.Context,
 			Runtime:           resolved.Runtime,
 			Direct:            cfg.Direct,
 			ReuseSecrets:      hasSecrets,
+			ExistingSecrets:   existingSecretNames(d.components),
 			VendorBinary:      vendor,
+			Preset:            d.preset,
 		}
 
 		// When vendored, the running binary's embedded templates match the
@@ -566,6 +762,9 @@ func convergeRepo(ctx context.Context,
 		}
 
 		cr.Installed = true
+		cr.NeedsGitLabPostInstall = needsPostInstall
+		cr.NeedsGitLabBotToken = needsBotToken
+		cr.NeedsGitLabPipelineSchedules = needsSchedules
 		cr.WIFProvider = installResult.WIFProvider
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
@@ -575,11 +774,20 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 
-	// Case 2: At least one component exists — converge component by component.
+	// Case 2: Workflow is on the default branch — converge component by component.
 
 	// 2a: Check for variable drift.
 	varActions := convergeVariables(ctx, resolved, d.components, cfg.DryRun, progress)
 	cr.Actions = append(cr.Actions, varActions...)
+
+	// 2a-ii: GitLab retired poll-state CI/CD vars. Migrate leftover
+	// values into poll-state branches, then delete the vars. Known-
+	// retired: CheckOrphanVars will not warn about them.
+	if resolved.Forge == ForgeGitLab {
+		retireActions := retireGitLabLegacyVars(ctx, resolved.ForgeConfig.Client,
+			resolved.Owner, resolved.Repo, cfg.DryRun, progress)
+		cr.Actions = append(cr.Actions, retireActions...)
+	}
 
 	// 2b: Converge secrets (existence-only — values cannot be read back).
 	secretActions := convergeSecrets(ctx, resolved, d.components, hasSecrets,
@@ -625,15 +833,40 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, refFiles...)
 
-	// Track paths already covered by ref upgrade to avoid duplicates.
-	refFileSet := make(map[string]bool, len(refFiles))
+	// 2d-i: Migrate obsolete GitLab root .gitlab-ci.yml entries
+	// (workflow rules from #7322, the empty dispatch stage from #7337).
+	// This is independent of ref drift — it must run even when the
+	// workflow ref is already current, since the root file is only
+	// otherwise touched by the install (fresh install) and uninstall
+	// (teardown) paths.
+	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress)
+	cr.Actions = append(cr.Actions, rootCIActions...)
+
+	var rootCIErrors []string
+	for _, a := range rootCIActions {
+		if a.Action == "error" {
+			rootCIErrors = append(rootCIErrors, a.Detail)
+		}
+	}
+	if len(rootCIErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(rootCIErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
+
+	// Track paths already covered by ref upgrade and root CI migration
+	// to avoid duplicates.
+	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
 	for _, f := range refFiles {
+		refFileSet[f.Path] = true
+	}
+	for _, f := range rootCIFiles {
 		refFileSet[f.Path] = true
 	}
 
 	scaffoldNeedsRepair := false
 	for _, c := range d.components {
-		if !c.Match && (c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:")) {
+		if !c.Match && (c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") || strings.HasPrefix(c.Name, "scaffold:")) {
 			scaffoldNeedsRepair = true
 			break
 		}
@@ -685,6 +918,24 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
+
+	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
+	// wholesale when a preset is declared and the installed bytes differ.
+	// Overlay is never rewritten. No declared preset is a no-op so an
+	// existing base file is preserved without comparison.
+	presetFiles, presetActions := convergePresetFiles(ctx, resolved, d.preset, cfg.DryRun, progress)
+	cr.Actions = append(cr.Actions, presetActions...)
+	var presetErrors []string
+	for _, a := range presetActions {
+		if a.Action == "error" {
+			presetErrors = append(presetErrors, a.Detail)
+		}
+	}
+	if len(presetErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(presetErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, presetFiles...)
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
@@ -748,12 +999,7 @@ func convergeVariables(ctx context.Context,
 		varName := DriftFieldName(c.Name)
 		expected := c.Expected
 		if expected == "" {
-			if !c.Present {
-				expected = initialVarValue(varName)
-			}
-			if expected == "" {
-				continue
-			}
+			continue
 		}
 
 		if dryRun {
@@ -792,23 +1038,6 @@ func convergeVariables(ctx context.Context,
 	}
 
 	return actions
-}
-
-// initialVarValue returns a seed value for required variables that have
-// no expected value from the probe. This handles the case where a repo
-// has pre-seeded secrets but is missing poll variables — converge needs
-// to write initial values so the poll loop can start.
-func initialVarValue(varName string) string {
-	switch varName {
-	case forge.VarLastPollAtFast, forge.VarLastPollAtFull:
-		return time.Now().UTC().Format(time.RFC3339)
-	case forge.VarLabelState,
-		forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
-		forge.VarFailedKeysFast, forge.VarFailedKeysFull:
-		return "{}"
-	default:
-		return ""
-	}
 }
 
 // convergeSecrets checks and repairs missing inference secrets.
@@ -985,6 +1214,142 @@ func convergeSchedules(ctx context.Context,
 	}
 
 	return actions
+}
+
+// convergeGitLabRootCIFiles migrates already-enrolled GitLab repos whose
+// root .gitlab-ci.yml still carries entries that fullsend no longer
+// requires: obsolete workflow:rules (the native merge_request_event
+// dispatch rule removed in #7322) and obsolete stages (the empty
+// "dispatch" stage removed in #7337). The root file is user-owned and
+// is otherwise only touched by the install merge path (fresh installs)
+// and the uninstall unmerge path (teardown) — neither runs during
+// upgrade/converge, so without this step an obsolete entry would survive
+// convergence forever. StripObsoleteGitLabWorkflowRules only rewrites
+// the file when it can prove fullsend owns the workflow block (see
+// gitlabCIWorkflowIsFullsendOwned), so merge-path enrollments without
+// the fullsend workflow.name are intentionally left for manual cleanup
+// rather than risking a user's own MR gate. StripObsoleteGitLabStages
+// gates on the fullsend pipeline include plus a current fullsend stage
+// (see that function's doc comment). It does not commit — the caller
+// batches all scaffold file changes into a single atomic commit.
+func convergeGitLabRootCIFiles(ctx context.Context,
+	resolved ResolvedConfig,
+	cfg ConvergeConfig,
+	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+
+	var actions []ComponentAction
+	if resolved.Forge != ForgeGitLab {
+		return nil, actions
+	}
+
+	owner, repo := resolved.Owner, resolved.Repo
+	client := resolved.ForgeConfig.Client
+	repoFullName := owner + "/" + repo
+
+	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return nil, actions
+		}
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error reading .gitlab-ci.yml: %v", err),
+		})
+		return nil, actions
+	}
+
+	content := existing
+	changed := false
+
+	stripped, rulesChanged, stripErr := StripObsoleteGitLabWorkflowRules(content)
+	if stripErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-rules",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for obsolete workflow rules: %v", stripErr),
+		})
+		return nil, actions
+	}
+	if rulesChanged {
+		content = stripped
+		changed = true
+		if cfg.DryRun {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml",
+			})
+			progress(repoFullName, "dry-run", "Would remove obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+		} else {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-rules",
+				Action:    "update",
+				Detail:    "removed obsolete merge_request_event workflow rule from .gitlab-ci.yml",
+			})
+			progress(repoFullName, "repair", "Removing obsolete merge_request_event workflow rule from .gitlab-ci.yml")
+		}
+	}
+
+	stripped, stagesChanged, stripErr := StripObsoleteGitLabStages(content)
+	if stripErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "gitlab-ci-stages",
+			Action:    "error",
+			Detail:    fmt.Sprintf("error checking .gitlab-ci.yml for obsolete stages: %v", stripErr),
+		})
+		return nil, actions
+	}
+	if stagesChanged {
+		// StripObsoleteGitLabStages only scanned the root file. Before
+		// trusting its verdict, confirm the on-repo pipeline wrapper it
+		// gated on doesn't itself still pull in the obsolete native-dispatch
+		// job — see gitlabPipelineWrapperStillIncludesDispatch.
+		pullsInDispatch, wrapperErr := gitlabPipelineWrapperStillIncludesDispatch(ctx, client, owner, repo)
+		if wrapperErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-stages",
+				Action:    "error",
+				Detail:    fmt.Sprintf("error checking %s for obsolete dispatch include: %v", fullsendPipelineInclude, wrapperErr),
+			})
+			return nil, actions
+		}
+		if pullsInDispatch {
+			stagesChanged = false
+		}
+	}
+	if stagesChanged {
+		content = stripped
+		changed = true
+		if cfg.DryRun {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-stages",
+				Action:    "update",
+				Detail:    "would remove obsolete dispatch stage from .gitlab-ci.yml",
+			})
+			progress(repoFullName, "dry-run", "Would remove obsolete dispatch stage from .gitlab-ci.yml")
+		} else {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-stages",
+				Action:    "update",
+				Detail:    "removed obsolete dispatch stage from .gitlab-ci.yml",
+			})
+			progress(repoFullName, "repair", "Removing obsolete dispatch stage from .gitlab-ci.yml")
+		}
+	}
+
+	if !changed {
+		return nil, actions
+	}
+	if cfg.DryRun {
+		return nil, actions
+	}
+
+	return []forge.TreeFile{{
+		Path:    ".gitlab-ci.yml",
+		Content: content,
+		Mode:    "100644",
+	}}, actions
 }
 
 // convergeRefFiles checks for ref drift and returns the scaffold files
@@ -1266,7 +1631,7 @@ func convergeScaffoldFiles(ctx context.Context,
 		if c.Match {
 			continue
 		}
-		if c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") {
+		if c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") || strings.HasPrefix(c.Name, "scaffold:") {
 			field := DriftFieldName(c.Name)
 			if !c.Present {
 				missingComponents = append(missingComponents, field)

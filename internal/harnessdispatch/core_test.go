@@ -105,6 +105,24 @@ func TestDispatch_NilEvent(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestDispatch_AllHarnessesUnresolvable(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{{Name: "code", Source: "code.yaml"}})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	// Label-added events are authorized without a write role, so we reach
+	// harness enumeration rather than returning an empty auth-deny result.
+	ev := mustEvent(t, "ready-to-code-labeled.json")
+	refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: ev})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "code")
+	assert.Empty(t, refs)
+}
+
 func TestMergedConfigAgents_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(":\n- bad"), 0o644))

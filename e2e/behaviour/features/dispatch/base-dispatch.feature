@@ -59,3 +59,28 @@ Feature: Base-composed harness dispatch
     And the agent will succeed to Prove base execution
     And the harness "remote-base-child" workflow completes successfully
     And the harness "remote-child" workflow completes successfully
+
+  Scenario: Child without trigger inherited base trigger and dispatches
+    Given a URL-sourced base harness "trigger-base" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-trigger-base
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: >
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-trigger-inherit"
+      """
+    And a custom harness "inherit-child" with URL base "trigger-base" and:
+      """
+      slug: fullsend-ai-inherit-child
+      """
+    And a dummy agent that would:
+      | description             | op            | args                                                       |
+      | Prove inherited trigger | write_fixture | output/dispatch-inherit-ok.json, fixtures/dispatch/ok.json |
+    And an issue
+    When the issue is labeled "ready-for-trigger-inherit"
+    Then the harness "inherit-child" workflow completes successfully
+    And the agent will succeed to Prove inherited trigger

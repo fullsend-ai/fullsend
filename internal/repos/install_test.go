@@ -2,12 +2,16 @@ package repos
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -37,14 +41,16 @@ func (f *fakeScaffoldCommit) fn() ScaffoldCommitFunc {
 }
 
 type spyScaffoldCommit struct {
-	mu    sync.Mutex
-	files []forge.TreeFile
+	mu        sync.Mutex
+	files     []forge.TreeFile
+	installed []bool
 }
 
 func (s *spyScaffoldCommit) fn() ScaffoldCommitFunc {
-	return func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+	return func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, installed bool) error {
 		s.mu.Lock()
 		s.files = append(s.files, files...)
+		s.installed = append(s.installed, installed)
 		s.mu.Unlock()
 		return nil
 	}
@@ -106,6 +112,28 @@ func newFakeClientWithRepo() *forge.FakeClient {
 		DefaultBranch: "main",
 	}}
 	return fc
+}
+
+func assertPollStateBranchesSeeded(t *testing.T, fc *forge.FakeClient, owner, repo string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, branch := range []string{poll.PollStateBranchSlash, poll.PollStateBranchEvents} {
+		raw, err := fc.GetFileContentAtRef(ctx, owner, repo, poll.PollStateFileName, branch)
+		if err != nil {
+			t.Errorf("poll-state branch %s missing: %v", branch, err)
+			continue
+		}
+		var state struct {
+			HMAC string `json:"hmac"`
+		}
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Errorf("unmarshal %s: %v", branch, err)
+			continue
+		}
+		if state.HMAC == "" {
+			t.Errorf("%s: seeded state.json is unsigned", branch)
+		}
+	}
 }
 
 func TestInstall_FreshInstall_Direct(t *testing.T) {
@@ -554,6 +582,95 @@ func TestBuildScaffoldFiles(t *testing.T) {
 	}
 }
 
+func TestBuildScaffoldFiles_WithPreset(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Preset = []byte(testPresetYAML)
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var hasOverlay, hasBase bool
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			hasOverlay = true
+		case ".fullsend/config.base.yaml":
+			hasBase = true
+			if string(f.Content) != testPresetYAML {
+				t.Errorf("base content = %q, want preset bytes", f.Content)
+			}
+		}
+	}
+	if !hasOverlay {
+		t.Error("expected .fullsend/config.yaml overlay")
+	}
+	if !hasBase {
+		t.Error("expected .fullsend/config.base.yaml from preset")
+	}
+}
+
+// TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles guards
+// against a fresh install with a declared preset materializing default
+// roles/allowed_remote_resources into the .fullsend/config.yaml overlay.
+// Layered accessors prefer the overlay over the base, so a fully
+// populated overlay (as NewPerRepoConfig produces) would silently shadow
+// the preset's own roles/allowed_remote_resources — the same bug
+// `github setup --config` avoids via buildPresetOverlay's stub overlay.
+// When the caller did not explicitly request roles (cfg.Roles is empty,
+// matching converge.go's fresh-install path when --roles was not
+// passed), the overlay must leave roles/allowed_remote_resources unset
+// so the preset's values take effect through the overlay -> base
+// fallback chain.
+func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Roles = nil // no explicit --roles override
+	presetYAML := "version: \"1\"\n" +
+		"roles:\n  - triage\n  - review\n" +
+		"allowed_remote_resources:\n  - https://raw.githubusercontent.com/acme/private-agents/\n"
+	cfg.Preset = []byte(presetYAML)
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var overlayYAML, baseYAML []byte
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			overlayYAML = f.Content
+		case ".fullsend/config.base.yaml":
+			baseYAML = f.Content
+		}
+	}
+	if overlayYAML == nil {
+		t.Fatal("expected .fullsend/config.yaml overlay")
+	}
+	if baseYAML == nil {
+		t.Fatal("expected .fullsend/config.base.yaml from preset")
+	}
+
+	if strings.Contains(string(overlayYAML), "roles:") {
+		t.Errorf("overlay must not set roles when the preset owns them: %s", overlayYAML)
+	}
+	if strings.Contains(string(overlayYAML), "allowed_remote_resources:") {
+		t.Errorf("overlay must not set allowed_remote_resources when the preset owns them: %s", overlayYAML)
+	}
+
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
+	if err != nil {
+		t.Fatalf("composing layered config: %v", err)
+	}
+	if got, want := effective.ConfigRoles(), []string{"triage", "review"}; !slices.Equal(got, want) {
+		t.Errorf("effective roles = %v, want preset roles %v (preset must not be shadowed by default roles)", got, want)
+	}
+	if got := effective.AllowedResources(); !slices.Contains(got, "https://raw.githubusercontent.com/acme/private-agents/") {
+		t.Errorf("effective allowed_remote_resources = %v, want it to include the preset's entry", got)
+	}
+}
+
 func TestBuildScaffoldFiles_InvalidConfig(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Roles = []string{"nonexistent-role"}
@@ -664,6 +781,11 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
+	if err != nil {
+		t.Fatalf("GitLabPerRepoFile() error = %v", err)
+	}
+	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -744,18 +866,11 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
 	}
-	requiredKeys := []string{
-		forge.VarLastPollAtFast,
-		forge.VarLastPollAtFull,
-		forge.VarLabelState,
-		forge.VarDispatchedKeysFast,
-		forge.VarDispatchedKeysFull,
-		forge.VarFailedKeysFast,
-		forge.VarFailedKeysFull,
-	}
-	for _, k := range requiredKeys {
-		if _, ok := vars[k]; !ok {
-			t.Errorf("missing required GitLab variable %q", k)
+	// The 7 poll-state CI/CD vars are retired; GitLab install seeds
+	// poll-state branches instead of these variables.
+	for _, k := range gitlabRetiredLegacyVars {
+		if _, ok := vars[k]; ok {
+			t.Errorf("GitLab vars should not include retired %q", k)
 		}
 	}
 	// GitLab vars should NOT include GitHub-specific, dead marker, or guard vars.
@@ -763,6 +878,9 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		if _, ok := vars[k]; ok {
 			t.Errorf("GitLab vars should not include %q", k)
 		}
+	}
+	if len(vars) != 0 {
+		t.Errorf("GitLab without inference should seed no variables, got %v", vars)
 	}
 }
 
@@ -885,11 +1003,8 @@ func TestRequiredVarsForForge(t *testing.T) {
 		t.Fatal("expected non-empty required vars for GitHub")
 	}
 	glVars := requiredVarsForForge(ForgeGitLab)
-	if len(glVars) == 0 {
-		t.Fatal("expected non-empty required vars for GitLab")
-	}
-	if glVars[0] == ghVars[0] {
-		t.Error("GitLab and GitHub required vars should differ")
+	if len(glVars) != 0 {
+		t.Errorf("GitLab required vars should be empty (poll state is branch-backed), got %v", glVars)
 	}
 }
 
@@ -972,9 +1087,18 @@ func TestInstall_FreshInstall_GitLab(t *testing.T) {
 			t.Errorf("GitLab should not set %s", k)
 		}
 	}
-	if len(fc.CreatedSecrets) != 0 {
-		t.Errorf("expected 0 secrets for GitLab, got %d", len(fc.CreatedSecrets))
+	for _, k := range gitlabRetiredLegacyVars {
+		if _, ok := varMap[k]; ok {
+			t.Errorf("GitLab should not seed retired variable %s", k)
+		}
 	}
+	if len(fc.CreatedSecrets) != 1 {
+		t.Fatalf("expected 1 secret (FULLSEND_DISPATCH_SECRET) for GitLab, got %d", len(fc.CreatedSecrets))
+	}
+	if fc.CreatedSecrets[0].Name != forge.SecretDispatch {
+		t.Errorf("secret = %q, want %s", fc.CreatedSecrets[0].Name, forge.SecretDispatch)
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
 }
 
 func TestInstall_GitLab_SkipsWIFValidation(t *testing.T) {
@@ -1015,9 +1139,14 @@ func TestInstall_GitLab_ReuseSecrets(t *testing.T) {
 	if !result.Success {
 		t.Error("expected Success=true")
 	}
-	if len(fc.CreatedSecrets) != 0 {
-		t.Errorf("expected 0 secrets for GitLab ReuseSecrets, got %d", len(fc.CreatedSecrets))
+	// ReuseSecrets skips inference secrets, not FULLSEND_DISPATCH_SECRET.
+	if len(fc.CreatedSecrets) != 1 {
+		t.Fatalf("expected 1 secret (FULLSEND_DISPATCH_SECRET) for GitLab ReuseSecrets, got %d", len(fc.CreatedSecrets))
 	}
+	if fc.CreatedSecrets[0].Name != forge.SecretDispatch {
+		t.Errorf("secret = %q, want %s", fc.CreatedSecrets[0].Name, forge.SecretDispatch)
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
 }
 
 func TestInstallVarsForForge_GitLab_WithInference(t *testing.T) {
@@ -1126,6 +1255,10 @@ func TestInstall_GitLab_WithInference(t *testing.T) {
 	if secretMap["FULLSEND_GCP_WIF_PROVIDER"] != fakeWIFProvider {
 		t.Errorf("FULLSEND_GCP_WIF_PROVIDER = %q, want %q", secretMap["FULLSEND_GCP_WIF_PROVIDER"], fakeWIFProvider)
 	}
+	if secretMap[forge.SecretDispatch] == "" {
+		t.Error("expected FULLSEND_DISPATCH_SECRET to be provisioned")
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
 }
 
 func TestInstall_GitLab_WithInference_EmptyWIFProvider_Rejected(t *testing.T) {
@@ -1223,5 +1356,224 @@ func TestInstallSecretsForForge_GitHub_NoInferenceProject_NoSecrets(t *testing.T
 	secrets := installSecretsForForge(cfg, "")
 	if secrets != nil {
 		t.Errorf("expected nil secrets for GitHub without InferenceProject, got %v", secrets)
+	}
+}
+
+func TestInstall_GitLab_MigratesPreExistingLegacyVars(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	// Pre-existing leftover values are folded into signed branch
+	// documents, then the retired CI/CD vars are deleted.
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	cfg := InstallConfig{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
+	}
+	sc := &fakeScaffoldCommit{}
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install(GitLab) returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
+
+	raw, err := fc.GetFileContentAtRef(context.Background(), "acme", "widgets", poll.PollStateFileName, poll.PollStateBranchSlash)
+	if err != nil {
+		t.Fatalf("slash branch: %v", err)
+	}
+	var slash struct {
+		LastPollAtFast string `json:"last_poll_at_fast"`
+	}
+	if err := json.Unmarshal(raw, &slash); err != nil {
+		t.Fatalf("unmarshal slash: %v", err)
+	}
+	if slash.LastPollAtFast != "2020-01-01T00:00:00Z" {
+		t.Errorf("slash watermark = %q, want pre-existing value", slash.LastPollAtFast)
+	}
+	if _, ok := fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast]; ok {
+		t.Error("retired FULLSEND_LAST_POLL_AT_FAST should have been deleted after migration")
+	}
+}
+
+func TestInstall_GitLab_DoesNotClobberExistingPollState(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	existing := []byte(`{"last_poll_at_fast":"2025-06-01T00:00:00Z","hmac":"keep-me"}`)
+	if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "widgets", poll.PollStateBranchSlash, poll.PollStateFileName, "prior", existing); err != nil {
+		t.Fatalf("seed existing slash: %v", err)
+	}
+	cfg := InstallConfig{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
+	}
+	sc := &fakeScaffoldCommit{}
+	if _, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Install(GitLab) returned error: %v", err)
+	}
+	got, err := fc.GetFileContentAtRef(context.Background(), "acme", "widgets", poll.PollStateFileName, poll.PollStateBranchSlash)
+	if err != nil {
+		t.Fatalf("slash: %v", err)
+	}
+	if string(got) != string(existing) {
+		t.Errorf("existing slash poll state was clobbered: %s", got)
+	}
+	if _, err := fc.GetFileContentAtRef(context.Background(), "acme", "widgets", poll.PollStateFileName, poll.PollStateBranchEvents); err != nil {
+		t.Errorf("events branch should have been created: %v", err)
+	}
+}
+
+func TestInstall_GitLab_SeedErrorFailsInstall(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.Errors["ForceCommitFileToBranch"] = fmt.Errorf("denied")
+	cfg := InstallConfig{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
+	}
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected install to fail when poll-state seeding fails")
+	}
+}
+
+func TestInstall_GitLab_DispatchSecretErrorFailsInstall(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
+	cfg := InstallConfig{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
+	}
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected install to fail when dispatch-secret provisioning fails")
+	}
+}
+
+func TestRetireGitLabLegacyVars_NoopWhenGone(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
+	if len(actions) != 0 {
+		t.Errorf("expected no actions when retired vars are absent, got %v", actions)
+	}
+}
+
+func TestRetireGitLabLegacyVars_DryRunDoesNotDelete(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	fc.VariableValues["acme/widgets/"+forge.VarLabelState] = "{}"
+
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", true, noopProgress)
+	if len(actions) != 2 {
+		t.Fatalf("expected 2 would-delete actions, got %d: %v", len(actions), actions)
+	}
+	for _, a := range actions {
+		if a.Action != "delete" {
+			t.Errorf("action = %q, want delete", a.Action)
+		}
+		if !strings.Contains(a.Detail, "would migrate then delete") {
+			t.Errorf("detail = %q, want would-migrate wording", a.Detail)
+		}
+	}
+	if fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] == "" {
+		t.Error("dry-run must not delete FULLSEND_LAST_POLL_AT_FAST")
+	}
+	if len(fc.DeletedVariables) != 0 {
+		t.Errorf("dry-run deleted %d variables, want 0", len(fc.DeletedVariables))
+	}
+}
+
+func TestRetireGitLabLegacyVars_MigrateThenDelete(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFull] = "2020-02-01T00:00:00Z"
+	fc.VariableValues["acme/widgets/"+forge.VarLabelState] = "{}"
+
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
+	deleted := 0
+	for _, a := range actions {
+		if a.Action == "error" {
+			t.Errorf("unexpected error action: %s", a.Detail)
+		}
+		if a.Action == "delete" {
+			deleted++
+		}
+	}
+	if deleted != 3 {
+		t.Errorf("deleted actions = %d, want 3", deleted)
+	}
+	for _, name := range []string{forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState} {
+		if _, ok := fc.VariableValues["acme/widgets/"+name]; ok {
+			t.Errorf("retired variable %s still present after migrate-then-delete", name)
+		}
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
+}
+
+func TestRetireGitLabLegacyVars_ListError(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
+	if len(actions) != 1 || actions[0].Action != "error" {
+		t.Fatalf("expected 1 error action, got %v", actions)
+	}
+}
+
+func TestRetireGitLabLegacyVars_SeedErrorDoesNotDelete(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	fc.Errors["ForceCommitFileToBranch"] = fmt.Errorf("denied")
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
+	if len(actions) != 1 || actions[0].Action != "error" {
+		t.Fatalf("expected 1 error action, got %v", actions)
+	}
+	if _, ok := fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast]; !ok {
+		t.Error("retired var must remain when migration into branches fails")
+	}
+	if len(fc.DeletedVariables) != 0 {
+		t.Errorf("deleted %d variables after seed failure, want 0", len(fc.DeletedVariables))
+	}
+}
+
+func TestRetireGitLabLegacyVars_DeleteError(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	fc.Errors["DeleteRepoVariable"] = fmt.Errorf("permission denied")
+	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
+	if len(actions) != 1 || actions[0].Action != "error" {
+		t.Fatalf("expected 1 error action, got %v", actions)
+	}
+	if !strings.Contains(actions[0].Detail, forge.VarLastPollAtFast) {
+		t.Errorf("error detail = %q, want variable name", actions[0].Detail)
+	}
+}
+
+func TestInstall_GitLab_RetireErrorFailsInstall(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+	fc.Errors["DeleteRepoVariable"] = fmt.Errorf("permission denied")
+	cfg := InstallConfig{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
+	}
+	sc := &fakeScaffoldCommit{}
+	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected install to fail when retiring leftover legacy vars fails")
 	}
 }

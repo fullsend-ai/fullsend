@@ -472,6 +472,51 @@ func TestExtractPlainText_DeepNestingIsBounded(t *testing.T) {
 	}
 }
 
+func TestExtractPlainText_Table(t *testing.T) {
+	// A GFM pipe table posted through jira.MarkdownToADF now round-trips as
+	// a native ADF "table" node (table/tableRow/tableHeader/tableCell)
+	// instead of the old pipe-paragraph fallback. isBlockType must treat
+	// those types as blocks too, or cell text mashes together with no
+	// separator when a comment_added event polls it back (see PR #7369
+	// review).
+	adf := map[string]any{
+		"type":    "doc",
+		"version": 1,
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col1"}}},
+						}},
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col2"}}},
+						}},
+					}},
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	got := extractPlainText(adf)
+	if strings.Contains(got, "col1col2") || strings.Contains(got, "ab") {
+		t.Errorf("extractPlainText(table ADF) = %q, cells were concatenated without separators", got)
+	}
+	want := "col1\ncol2\na\nb"
+	if got != want {
+		t.Errorf("extractPlainText(table ADF) = %q, want %q", got, want)
+	}
+}
+
 func TestExtractPlainText_String(t *testing.T) {
 	got := extractPlainText("plain text body")
 	if got != "plain text body" {

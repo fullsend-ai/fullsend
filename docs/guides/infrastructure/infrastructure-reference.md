@@ -346,6 +346,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
+- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -355,20 +356,61 @@ Secrets and variables are deployed at different scopes depending on the installa
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
-- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (stored as protected CI/CD variable)
-- `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
-- `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
+- `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
+- `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
-- `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
-- `FULLSEND_DISPATCHED_KEYS_FAST` — JSON map of recently dispatched event keys (slash-command schedule)
-- `FULLSEND_DISPATCHED_KEYS_FULL` — JSON map of recently dispatched event keys (event-discovery schedule)
-- `FULLSEND_FAILED_KEYS_FAST` — JSON map of event keys to failure counts (slash-command schedule)
-- `FULLSEND_FAILED_KEYS_FULL` — JSON map of event keys to failure counts (event-discovery schedule)
+- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs create the three built-in tokens alongside `FULLSEND_FORGE_TOKEN` without revoking the shared credential. Existing installs opt in with `--gitlab-role-migration=migrating`. When the gate is `migrating` or `enforced`, `fullsend poll` and `fullsend run` authenticate with the matching role token rather than the shared PAT. Absence is not a health failure while the gate is `disabled` or during partial `migrating`; `repos status` reports which roles are ready. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
+- `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked gate and administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
+- `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
+
+**Poll-state branches:** `repos install` (on both fresh installs and
+re-run/convergence of already-enrolled repos) creates
+`fullsend-poll-state-slash` and `fullsend-poll-state-events` (unprotected)
+with an initial HMAC-signed `state.json`. Legacy CI/CD-variable values
+are folded in when present (`*Fast` → slash, `*Full` + `LabelState` →
+events); otherwise each branch is an empty signed baseline. Existing
+branch documents are not overwritten. `repos uninstall` deletes both
+branches via `DeleteRef` (a missing branch is ignored).
+
+Every poller save force-re-roots the mode's branch on the repository's
+root commit (`force: true` + `start_sha`), so the branch stays at base +
+1 commit and history never grows. The poller **fails closed** when
+`FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
+present `state.json` has a missing/invalid HMAC (discard the branch and
+fail that cycle). A missing branch or file is **not** tampering: the
+poller starts from a fresh baseline (watermark defaults to ~1 hour ago)
+and the next save recreates the branch. Losing a state branch therefore
+causes a one-time re-scan and at-least-once re-dispatch of recent items,
+not a stall.
+
+**Retired poll-state CI/CD variables (#7343 phase 3b / #7380):** the
+following seven variables are no longer seeded at install. `repos
+converge` migrates any still-present values into the poll-state
+branches (`*Fast` → slash, `*Full` + `LabelState` → events) and then
+deletes the variables. The orphan detector treats them as known-retired,
+so already-installed repos do not emit spurious orphan-variable warnings
+during the transition. The two poll-state branches are managed git refs
+and are never reported as orphan files. The poller no longer reads or
+writes any of these variables via `GetCIVariable`/`UpdateCIVariable`.
+Poll state (watermarks, label sync state, dispatched/failed-key dedup)
+lives in a single HMAC-signed `state.json` document per poll mode on
+`fullsend-poll-state-slash` and `fullsend-poll-state-events`. The
+signature reuses `FULLSEND_DISPATCH_SECRET` with per-branch,
+per-project domain separation, so the poller can run at Developer
+access instead of Maintainer. See ADR 0067.
+- `FULLSEND_LAST_POLL_AT_FAST` — Legacy; superseded by `last_poll_at_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_LAST_POLL_AT_FULL` — Legacy; superseded by `last_poll_at_full` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_LABEL_STATE` — Legacy; superseded by `label_state` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_DISPATCHED_KEYS_FAST` — Legacy; superseded by `dispatched_keys_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_DISPATCHED_KEYS_FULL` — Legacy; superseded by `dispatched_keys_full` in `state.json` on `fullsend-poll-state-events`
+- `FULLSEND_FAILED_KEYS_FAST` — Legacy; superseded by `failed_keys_fast` in `state.json` on `fullsend-poll-state-slash`
+- `FULLSEND_FAILED_KEYS_FULL` — Legacy; superseded by `failed_keys_full` in `state.json` on `fullsend-poll-state-events`
 
 **Inference variables (required when inference is configured):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
+- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
 
 ### Secrets Layer Behavior
 

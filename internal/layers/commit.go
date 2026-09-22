@@ -60,9 +60,10 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 // knownScaffoldBranches lists all branch names that have been used to deliver
 // scaffold files across different install modes. Per-org mode uses
 // "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
-// "fullsend/scaffold-install" (via the Go CLI).
+// "fullsend/scaffold-install" (via the Go CLI) for both install and uninstall
+// delivery.
 var knownScaffoldBranches = []string{
-	"fullsend/scaffold-install",
+	repos.DefaultScaffoldBranch,
 	"fullsend/onboard",
 }
 
@@ -142,7 +143,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	if useFork {
 		return forkAndCommit(ctx, client, printer,
 			owner, repo, scaffoldBranch, defaultBranch,
-			commitMsg, prTitle, prBody, files)
+			commitMsg, prTitle, prBody, files, realClock{}, forkWaitTimeout)
 	}
 
 	// Upstream path: try to push directly, fail clearly on 403.
@@ -152,9 +153,12 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 }
 
 // forkAndCommit creates a fork, waits for it to be ready, then commits.
+// The clk and timeout parameters are threaded through to waitForFork so
+// callers (and tests) above this level can inject a fake clock and shorter
+// deadline without wall-clock delays.
 func forkAndCommit(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile) (bool, error) {
+	files []forge.TreeFile, clk clock, timeout time.Duration) (bool, error) {
 
 	printer.StepStart("Creating fork")
 	forkOwner, forkRepo, err := client.CreateFork(ctx, owner, repo)
@@ -164,7 +168,7 @@ func forkAndCommit(ctx context.Context, client forge.Client, printer *ui.Printer
 	}
 	printer.StepDone(fmt.Sprintf("Fork created: %s/%s", forkOwner, forkRepo))
 
-	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo, realClock{}, forkWaitTimeout); err != nil {
+	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo, clk, timeout); err != nil {
 		return false, err
 	}
 
@@ -259,23 +263,24 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 
 	isCrossRepo := !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo)
 
-	// Close stale scaffold PRs from a different install mode before
-	// creating or updating our own. This prevents merging a PR that
-	// references infrastructure from a mode that has been torn down.
-	//
-	// Only run in same-repo mode (target == upstream). In the fork path
-	// the caller's token likely lacks permission to close upstream PRs,
-	// which would produce unnecessary 403 warnings.
-	if !isCrossRepo {
-		user, userErr := client.GetAuthenticatedUser(ctx)
-		if userErr != nil {
-			printer.StepWarn(fmt.Sprintf("Could not identify user for stale PR cleanup: %v", userErr))
-		} else {
-			closeStaleScaffoldPRs(ctx, client, printer, upstreamOwner, upstreamRepo, scaffoldBranch, user)
-		}
+	// Identify the authenticated user once: used both for stale-PR
+	// cleanup and for ownership checks before deleting a leftover
+	// scaffold branch.
+	authenticatedUser, userErr := client.GetAuthenticatedUser(ctx)
+	if userErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not identify authenticated user: %v", userErr))
+	} else if !isCrossRepo {
+		// Close stale scaffold PRs from a different install mode before
+		// creating or updating our own. This prevents merging a PR that
+		// references infrastructure from a mode that has been torn down.
+		//
+		// Only run in same-repo mode (target == upstream). In the fork path
+		// the caller's token likely lacks permission to close upstream PRs,
+		// which would produce unnecessary 403 warnings.
+		closeStaleScaffoldPRs(ctx, client, printer, upstreamOwner, upstreamRepo, scaffoldBranch, authenticatedUser)
 	}
 
-	var branchErr error
+	var createBranch func() error
 	if isCrossRepo {
 		// Cross-fork: create the scaffold branch from the upstream's HEAD so
 		// the PR diff only contains scaffold changes, even if the fork's
@@ -286,12 +291,16 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 			return false, fmt.Errorf("getting upstream branch ref for %s/%s@%s: %w",
 				upstreamOwner, upstreamRepo, defaultBranch, shaErr)
 		}
-		branchErr = client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+		createBranch = func() error {
+			return client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+		}
 	} else {
-		branchErr = client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch)
+		createBranch = func() error {
+			return client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch)
+		}
 	}
 
-	if branchErr != nil {
+	if branchErr := createBranch(); branchErr != nil {
 		if forge.IsForbidden(branchErr) {
 			printer.StepFail("Insufficient permissions to push to repository")
 			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); re-run with the fork option or check your token scopes: %w",
@@ -300,6 +309,27 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		if !forge.IsAlreadyExists(branchErr) {
 			printer.StepFail("Failed to create scaffold branch")
 			return false, fmt.Errorf("creating scaffold branch: %w", branchErr)
+		}
+		proceed, recErr := recreateStaleScaffoldBranch(ctx, client, printer,
+			upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+			scaffoldBranch, authenticatedUser, createBranch)
+		if recErr != nil {
+			return false, recErr
+		}
+		if !proceed {
+			// Either a foreign/empty-author open PR already uses this
+			// predictable branch, or ownership could not be verified at
+			// all (no authenticated user, or listing PRs failed). Either
+			// way the fail-closed ownership check left the branch in
+			// place — do not commit onto infrastructure we don't own.
+			//
+			// Report this to the caller as a failure rather than a silent
+			// no-op: every caller of the CommitScaffoldFiles chain treats a
+			// nil error as successful delivery, so returning nil here would
+			// let install/upgrade exit 0 while the scaffold files were
+			// never actually delivered.
+			printer.StepFail("Scaffold branch ownership could not be verified; scaffold delivery aborted")
+			return false, fmt.Errorf("scaffold branch %q already exists and its ownership could not be verified; leaving it in place instead of committing", scaffoldBranch)
 		}
 	}
 
@@ -332,15 +362,80 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		}
 		if branchCommitted {
 			printer.StepDone("Scaffold PR already exists — updated with new files")
-			printer.StepInfo("Merge the PR to activate fullsend workflows")
+			printer.StepInfo("Merge the PR to apply these changes")
 		} else {
 			printer.StepDone("Scaffold branch and PR up to date")
 		}
 	} else {
 		printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
-		printer.StepInfo("Merge the PR to activate fullsend workflows")
+		printer.StepInfo("Merge the PR to apply these changes")
 	}
 	return false, nil
+}
+
+// recreateStaleScaffoldBranch deletes and recreates scaffoldBranch when
+// CreateBranch reported that it already exists. A leftover branch from a
+// previously merged scaffold PR would otherwise stay based on an old tip
+// and produce a confusing PR diff.
+//
+// Fail-closed ownership check: if an open PR on this (predictable) branch
+// has an empty author or an author other than authenticatedUser, the
+// branch is left in place and proceedToCommit is false — the caller must
+// not commit onto a branch it doesn't own. Our own open PR is also left
+// in place (proceedToCommit true) so a re-run updates that PR instead of
+// replacing it. The branch is only deleted when no open PR uses it.
+//
+// When ownership cannot be determined at all (authenticatedUser is empty,
+// or listing PRs fails), this fails closed too: proceedToCommit is false
+// and the branch is left in place, since there is no way to distinguish
+// "no competing PR" from "a competing PR exists but we can't see it."
+func recreateStaleScaffoldBranch(ctx context.Context, client forge.Client, printer *ui.Printer,
+	upstreamOwner, upstreamRepo, targetOwner, targetRepo, scaffoldBranch, authenticatedUser string,
+	createBranch func() error) (proceedToCommit bool, err error) {
+
+	if authenticatedUser == "" {
+		printer.StepWarn("Could not verify scaffold branch ownership; leaving existing branch in place")
+		return false, nil
+	}
+
+	prs, err := client.ListRepoPullRequests(ctx, upstreamOwner, upstreamRepo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check open PRs before replacing scaffold branch: %v", err))
+		return false, nil
+	}
+
+	targetRepoFullName := targetOwner + "/" + targetRepo
+	for _, pr := range prs {
+		if pr.Head != scaffoldBranch {
+			continue
+		}
+		if !strings.EqualFold(pr.HeadRepo, targetRepoFullName) {
+			// Same branch name, different (e.g. unrelated fork) repo — it
+			// isn't occupying the branch we're about to delete/recreate.
+			continue
+		}
+		if pr.Author == "" || !strings.EqualFold(pr.Author, authenticatedUser) {
+			printer.StepWarn(fmt.Sprintf(
+				"Scaffold branch %q already exists with open PR #%d not authored by %s; leaving it in place",
+				scaffoldBranch, pr.Number, authenticatedUser))
+			return false, nil
+		}
+		// Our own open PR: update in place rather than replacing the branch.
+		return true, nil
+	}
+
+	printer.StepStart(fmt.Sprintf("Deleting stale scaffold branch %s", scaffoldBranch))
+	if delErr := client.DeleteBranch(ctx, targetOwner, targetRepo, scaffoldBranch); delErr != nil && !forge.IsNotFound(delErr) {
+		printer.StepWarn(fmt.Sprintf("Could not delete stale scaffold branch %s: %v", scaffoldBranch, delErr))
+		return true, nil
+	}
+
+	if createErr := createBranch(); createErr != nil {
+		printer.StepFail("Failed to recreate scaffold branch")
+		return false, fmt.Errorf("recreating scaffold branch: %w", createErr)
+	}
+	printer.StepDone(fmt.Sprintf("Recreated scaffold branch %s from current default branch", scaffoldBranch))
+	return true, nil
 }
 
 // commitViaPR creates a feature branch, commits files, and opens a PR.
@@ -543,8 +638,8 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	}
 	if err != nil && forge.IsBranchProtected(err) {
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")
-		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n"+
-			"Merge this PR to deliver the scaffold files.", defaultBranch)
+		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n%s",
+			defaultBranch, prBody)
 		return commitScaffoldViaPR(ctx, client, printer,
 			owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, fallbackBody, files, in)
 	} else if err != nil {

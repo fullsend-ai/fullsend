@@ -242,6 +242,60 @@ func TestMergeSkills(t *testing.T) {
 	}
 }
 
+func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+privilege_levels:
+  default: write
+  runtime: write
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+privilege_levels:
+  runtime: read
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{
+		"default": "write",
+		"runtime": "read",
+	}, h.PrivilegeLevels)
+	assert.Equal(t, "read", h.PrivilegeLevelForStage(PrivilegeStageRuntime))
+	assert.Equal(t, "write", h.PrivilegeLevelForStage(PrivilegeStagePreScript))
+}
+
+func TestMergeBaseIntoChild_PrivilegeLevelsChildWins(t *testing.T) {
+	base := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageDefault: "write",
+		PrivilegeStageRuntime: "write",
+	}}
+	child := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageRuntime: "read",
+	}}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "write", child.PrivilegeLevels[PrivilegeStageDefault])
+	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
+}
+
+func TestMergeBaseIntoChild_PrivilegeLevelsInheritedWhenChildNil(t *testing.T) {
+	base := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageRuntime: "read",
+	}}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
+}
+
 func TestLoadWithBase_LocalBase_RunnerEnvMerge(t *testing.T) {
 	dir := t.TempDir()
 
@@ -516,6 +570,7 @@ base: ../../../etc/passwd
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes workspace root")
+	assert.NotContains(t, err.Error(), "via symlink")
 }
 
 func TestLoadWithBase_LocalBase_PathTraversal_NoWorkspaceRoot(t *testing.T) {
@@ -535,6 +590,178 @@ base: ../outside.yaml
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_MissingSiblingWithinWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	harnessDir := filepath.Join(workspace, "harness")
+	path := writeTestHarness(t, harnessDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: ../sibling-dir/missing.yaml
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving base path symlinks")
+	assert.NotContains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_MissingSiblingWithMixedWorkspaceAlias(t *testing.T) {
+	realWorkspace := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realWorkspace, workspaceAlias))
+
+	path := writeTestHarness(t, filepath.Join(workspaceAlias, "harness"), "child.yaml", `
+agent: agents/child.md
+role: test
+base: ../sibling-dir/missing.yaml
+`)
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	require.NoError(t, err)
+
+	_, _, err = LoadWithBase(context.Background(), resolvedPath, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving base path symlinks")
+	assert.NotContains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_WorkspaceRootSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	writeTestHarness(t, realDir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.NoError(t, err)
+}
+
+func TestLoadWithBase_LocalBase_MissingBaseWithWorkspaceSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	path := writeTestHarness(t, realDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: missing.yaml
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading base harness")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	linkedDir := filepath.Join(dir, "linked")
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeWithWorkspaceAliasRejected(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	outside := t.TempDir()
+	linkedDir := filepath.Join(realDir, "linked")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_AbsoluteSymlinkTraversalRejected(t *testing.T) {
+	workspace := t.TempDir()
+	outsideParent := t.TempDir()
+	outsideDir := filepath.Join(outsideParent, "target")
+	require.NoError(t, os.Mkdir(outsideDir, 0755))
+	linkedDir := filepath.Join(workspace, "linked")
+	require.NoError(t, os.Symlink(outsideDir, linkedDir))
+	writeTestHarness(t, outsideParent, "outside.yaml", `
+agent: agents/outside.md
+role: test
+`)
+
+	absoluteBase := linkedDir + string(filepath.Separator) + ".." + string(filepath.Separator) + "outside.yaml"
+	path := writeTestHarness(t, workspace, "child.yaml", fmt.Sprintf(`
+base: %s
+agent: agents/child.md
+role: test
+`, absoluteBase))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.Error(t, err)
+}
+
+func TestLoadWithBase_LocalBase_SymlinkKeepsReferencingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	harnessDir := filepath.Join(workspace, "harness")
+	sharedDir := filepath.Join(workspace, "shared")
+
+	writeTestHarness(t, harnessDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: harness
+`)
+	writeTestHarness(t, sharedDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: shared
+`)
+	template := writeTestHarness(t, sharedDir, "template.yaml", `
+agent: agents/base.md
+role: test
+base: defaults.yaml
+`)
+	require.NoError(t, os.Symlink(template, filepath.Join(harnessDir, "base.yaml")))
+	path := writeTestHarness(t, harnessDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.NoError(t, err)
+	assert.Equal(t, "harness", h.RunnerEnv["BASE_DIRECTORY"])
 }
 
 func TestLoadWithBase_DepthExceeded(t *testing.T) {
@@ -627,6 +854,376 @@ model: opus
 
 	// GitLab forge inherited from base
 	assert.Equal(t, "gl-pre.sh", h.PreScript)
+}
+
+// TestLoadWithBase_ChildTopLevelOverridesInheritedForge verifies that base
+// forge/overlay values are resolved before merging into the child, so they
+// participate as top-level values and do not override the child's explicit
+// top-level settings. See #6798.
+func TestLoadWithBase_ChildTopLevelOverridesInheritedForge(t *testing.T) {
+	t.Run("inherited platform no child forge", func(t *testing.T) {
+		// Issue scenario 1: child sets top-level scripts, base has
+		// forge.github scripts. Child's values must survive.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+forge:
+  github:
+    pre_script: base-forge-pre.sh
+    post_script: base-forge-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+post_script: child-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base forge value")
+		assert.Equal(t, "child-post.sh", h.PostScript,
+			"child top-level post_script must override resolved base forge value")
+	})
+
+	t.Run("same platform child also has forge", func(t *testing.T) {
+		// Issue scenario 2: both base and child define forge.github.
+		// Base forge pre_script should not leak through to override
+		// child's top-level pre_script.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: base-forge.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child.sh
+forge:
+  github:
+    post_script: child-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child.sh", h.PreScript,
+			"child top-level pre_script must survive when both layers have forge.github")
+		assert.Equal(t, "child-post.sh", h.PostScript,
+			"child forge post_script must apply via child's own ResolveForge")
+	})
+
+	t.Run("child forge overrides child top level", func(t *testing.T) {
+		// Issue scenario 3: within the same layer, forge > top-level.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-top.sh
+forge:
+  github:
+    pre_script: child-forge.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-forge.sh", h.PreScript,
+			"within the same layer, forge must override top-level")
+	})
+
+	t.Run("multi level chain", func(t *testing.T) {
+		// Issue scenario 4: grandparent forge → parent top-level → child top-level.
+		// Each layer resolves before the next.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "grandparent.yaml", `
+agent: agents/test.md
+role: test
+pre_script: gp-top.sh
+forge:
+  github:
+    pre_script: gp-forge.sh
+    post_script: gp-forge-post.sh
+`)
+
+		writeTestHarness(t, dir, "parent.yaml", `
+base: grandparent.yaml
+pre_script: parent-pre.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: parent.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level must override parent which overrides resolved grandparent forge")
+		// post_script: grandparent forge resolves → gp-forge-post.sh becomes top-level.
+		// Parent doesn't set post_script → inherits gp-forge-post.sh.
+		// Child doesn't set post_script → inherits gp-forge-post.sh.
+		assert.Equal(t, "gp-forge-post.sh", h.PostScript,
+			"grandparent forge post_script should propagate through chain when not overridden")
+	})
+
+	t.Run("overlays resolved before merge", func(t *testing.T) {
+		// Issue scenario 5: base overlay sets pre_script, child sets top-level
+		// pre_script. Child must win.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: base-overlay-pre.sh
+    post_script: base-overlay-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base overlay value")
+		assert.Equal(t, "base-overlay-post.sh", h.PostScript,
+			"resolved base overlay post_script should inherit when child does not set it")
+	})
+
+	t.Run("partial override", func(t *testing.T) {
+		// Issue scenario 6: child sets pre_script but not post_script.
+		// Only pre_script overridden; post_script inherited from resolved base.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: base-forge-pre.sh
+    post_script: base-forge-post.sh
+    policy: base-forge-policy.yaml
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level pre_script must override resolved base forge value")
+		assert.Equal(t, "base-forge-post.sh", h.PostScript,
+			"resolved base forge post_script should inherit when child does not set it")
+		assert.Equal(t, "base-forge-policy.yaml", h.Policy,
+			"resolved base forge policy should inherit when child does not set it")
+	})
+
+	t.Run("skills and providers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    skills:
+      - base-forge-skill
+    providers:
+      - base-forge-provider
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+skills:
+  - child-skill
+providers:
+  - child-provider
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		// Base forge skills are resolved into base top-level before merge.
+		// mergeBaseIntoChild concatenates: base top-level + child top-level.
+		assert.Contains(t, SkillSources(h.Skills), "child-skill",
+			"child top-level skill must be present")
+		assert.Contains(t, SkillSources(h.Skills), "base-forge-skill",
+			"resolved base forge skill should be inherited via top-level concatenation")
+		assert.Contains(t, h.Providers, "child-provider",
+			"child top-level provider must be present")
+		assert.Contains(t, h.Providers, "base-forge-provider",
+			"resolved base forge provider should be inherited via top-level concatenation")
+	})
+
+	t.Run("runner env", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    runner_env:
+      SHARED_KEY: base-forge-value
+      FORGE_ONLY: forge-only-value
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+runner_env:
+  SHARED_KEY: child-value
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-value", h.RunnerEnv["SHARED_KEY"],
+			"child top-level runner_env key must win over resolved base forge value")
+		assert.Equal(t, "forge-only-value", h.RunnerEnv["FORGE_ONLY"],
+			"resolved base forge env key not set by child should still apply")
+	})
+
+	t.Run("env sub maps", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    env:
+      runner:
+        SHARED_KEY: base-forge-runner-val
+        FORGE_ONLY: forge-runner-val
+      sandbox:
+        SB_SHARED: base-forge-sb-val
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+env:
+  runner:
+    SHARED_KEY: child-runner-val
+  sandbox:
+    SB_SHARED: child-sb-val
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-runner-val", h.Env.Runner["SHARED_KEY"],
+			"child top-level env.runner key must win over resolved base forge value")
+		assert.Equal(t, "forge-runner-val", h.Env.Runner["FORGE_ONLY"],
+			"resolved base forge env.runner key not set by child should still apply")
+		assert.Equal(t, "child-sb-val", h.Env.Sandbox["SB_SHARED"],
+			"child top-level env.sandbox key must win over resolved base forge value")
+	})
+
+	t.Run("base overlay resolved before merge", func(t *testing.T) {
+		// Base uses overlays (not forge) to set pre_script.
+		// Child sets top-level pre_script. Child must win because the
+		// base overlay is resolved before merging into the child.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: base-overlay-pre.sh
+    post_script: base-overlay-post.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+pre_script: child-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "child-pre.sh", h.PreScript,
+			"child top-level must override resolved base overlay")
+		assert.Equal(t, "base-overlay-post.sh", h.PostScript,
+			"resolved base overlay post_script should inherit when child does not set it")
+	})
+
+	t.Run("base forge for different platform is discarded", func(t *testing.T) {
+		// Base defines forge for gitlab but child runs on github.
+		// The gitlab forge values should be discarded, not leaked.
+		dir := t.TempDir()
+
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-top-pre.sh
+forge:
+  gitlab:
+    pre_script: base-gl-pre.sh
+`)
+
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    post_script: child-gh-post.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			ForgePlatform: "github",
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, "base-top-pre.sh", h.PreScript,
+			"base top-level pre_script should inherit (gitlab forge was discarded)")
+		assert.Equal(t, "child-gh-post.sh", h.PostScript,
+			"child forge post_script should apply")
+	})
 }
 
 func TestLoadWithBase_URLBase(t *testing.T) {
@@ -1359,7 +1956,8 @@ model: opus
 
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid harness")
+	assert.Contains(t, err.Error(), "invalid base harness")
+	assert.Contains(t, err.Error(), "unrecognized key")
 }
 
 func TestLoadWithBase_ValidationErrorAfterMerge(t *testing.T) {
@@ -1624,6 +2222,70 @@ model: opus
 
 	assert.Equal(t, 30, h.TimeoutMinutes)
 	assert.Equal(t, 600, h.SandboxTimeoutSeconds)
+}
+
+func TestLoadWithBase_TriggerInheritance(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
+}
+
+func TestLoadWithBase_TriggerChildWins(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+trigger: 'event.entity.kind == "change_proposal"'
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "change_proposal"`, h.Trigger)
+}
+
+func TestLoadWithBase_TriggerChainedInheritance(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "c.yaml", `
+agent: agents/c.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	writeTestHarness(t, dir, "b.yaml", `
+base: c.yaml
+model: opus
+`)
+
+	path := writeTestHarness(t, dir, "a.yaml", `
+base: b.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
 }
 
 func TestLoadWithBase_RunnerEnvNilBase(t *testing.T) {
@@ -4853,6 +5515,18 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestMergeBaseIntoChild_PanicsOnUnresolvedForge(t *testing.T) {
+	base := &Harness{Forge: map[string]*ForgeConfig{"github": {}}}
+	child := &Harness{}
+	assert.Panics(t, func() { mergeBaseIntoChild(base, child) })
+}
+
+func TestMergeBaseIntoChild_PanicsOnUnresolvedOverlays(t *testing.T) {
+	base := &Harness{Overlays: []OverlayEntry{{}}}
+	child := &Harness{}
+	assert.Panics(t, func() { mergeBaseIntoChild(base, child) })
+}
+
 func TestMergeBaseIntoChild_Env(t *testing.T) {
 	base := &Harness{
 		Env: &EnvConfig{
@@ -4931,6 +5605,33 @@ func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
 	mergeBaseIntoChild(base, child)
 
 	assert.Equal(t, "max", child.Effort)
+}
+
+func TestMergeBaseIntoChild_TriggerInherited(t *testing.T) {
+	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_TriggerChildWins(t *testing.T) {
+	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
+	child := &Harness{Trigger: `event.entity.kind == "change_proposal"`}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "change_proposal"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
+	base := &Harness{}
+	child := &Harness{Trigger: `event.entity.kind == "work_item"`}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {

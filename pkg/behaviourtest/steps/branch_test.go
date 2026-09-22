@@ -105,6 +105,10 @@ func (f *fakeBranchCI) WaitForFailedHarnessAgent(context.Context, string, string
 	return f.run, f.err
 }
 
+func (f *fakeBranchCI) GetRunLogs(context.Context, string, string, int) (string, error) {
+	return "", nil
+}
+
 func branchTestWorld(scmDriver scm.Driver) *world.World {
 	return &world.World{
 		SCM:       scmDriver,
@@ -231,6 +235,8 @@ func TestWhenCommentPostedOnPullRequest(t *testing.T) {
 }
 
 func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+
 	origWindow, origInterval := failureCommentPollWindow, failureCommentPollInterval
 	failureCommentPollWindow, failureCommentPollInterval = 50*time.Millisecond, 10*time.Millisecond
 	t.Cleanup(func() {

@@ -16,8 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // cfmintConfig holds parameters for the CF mint driver. This is an
@@ -312,6 +312,13 @@ func envSuiteName() string {
 		return v
 	}
 	return "bt"
+}
+
+// envConfigPreset returns the optional config base layer preset path or
+// URL from BEHAVIOUR_CONFIG_PRESET. Empty when unset, so github setup
+// is invoked without --config.
+func envConfigPreset() string {
+	return os.Getenv("BEHAVIOUR_CONFIG_PRESET")
 }
 
 // envAppSet returns the app set for PEM bootstrap from env or a default.

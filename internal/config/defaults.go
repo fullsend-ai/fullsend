@@ -79,6 +79,11 @@ func (d *perRepoDefaults) ConfigInferenceRegion() string { return DefaultPerRepo
 // must be provided by the installer or existing secret).
 func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }
 
+// ConfigKeepHistory returns the default keep-history state (true —
+// sticky comment updates append previous content as "Previous run"
+// blocks, preserving the pre-existing behavior).
+func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
+
 // ConfigInferenceOpenAI returns the default OpenAI WIF identifiers (none —
 // set by `fullsend github setup --openai-*` or the FULLSEND_OPENAI_*
 // runner variables).

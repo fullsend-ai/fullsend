@@ -2,9 +2,10 @@
 # redact-behaviour-artifacts.sh — Strip job secrets from behaviour debug artifacts
 # before upload.
 #
-# Invoked from .github/workflows/e2e.yml after a behaviour job failure. The workflow
-# checks out this script from the base branch (not PR head) and runs it in a clean
-# environment so PR-head code cannot tamper with the redaction toolchain.
+# Invoked from .github/workflows/e2e.yml after every relevant behaviour test run,
+# whether it succeeds or fails. The workflow checks out this script from the base
+# branch (not PR head) and runs it in a clean environment so PR-head code cannot
+# tamper with the redaction toolchain.
 #
 # Handles plain text (logs, JSON, JSONL), nested archives (zip, tar.gz, gzip), and
 # replaces opaque or encrypted blobs that cannot be scanned safely.

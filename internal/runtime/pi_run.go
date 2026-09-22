@@ -333,6 +333,10 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// (which cannot start pi itself) launch children of its own choosing.
 	agentEnabled := m.Agent != nil && m.Agent.Enabled
 	agentExt := r.ConfigDir() + "/" + piAgentExtensionFile
+	// Decided from the same tool list --tools is built from below, so the
+	// extension never registers edit for an agent that was not granted it.
+	editRepair := piEditRepairEnabled(m.Tools)
+	editRepairExt := r.ConfigDir() + "/" + piEditRepairExtensionFile
 
 	// The agent definition's model is the fallback when the runner resolved
 	// none; EffectiveModel is shared with NeedsOpenAIProvider so the launch
@@ -363,6 +367,10 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Same block: the Agent extension must be byte-identical to the
 		// embedded copy before .env can shadow the tools that check it.
 		parts = append(parts, "&& "+piAgentGuard(agentExt))
+	}
+	if editRepair {
+		// Same block, same reason as the Agent extension's guard.
+		parts = append(parts, "&& "+piEditRepairGuard(editRepairExt))
 	}
 	if manifestSum != "" {
 		// Same block, same reason. The hooks guard above only checks that
@@ -409,15 +417,15 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Claude-on-Vertex: the vendored extension reads none of these -- it
 		// builds its endpoint from the region and takes its credential from
 		// ADC -- but pi's built-in anthropic provider is loaded in the same
-		// process and discovers ANTHROPIC_AUTH_TOKEN and the API-key
-		// variables from the environment, so a stray value in the
-		// agent-writable .env would authenticate a direct-to-Anthropic path
-		// that never reaches Vertex. The project is pinned to the variable
-		// Claude Code on Vertex is driven by, so both runtimes hit the same
-		// GCP project regardless of an ambient GOOGLE_CLOUD_PROJECT (the
-		// extension reads that one first).
+		// process and discovers ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN
+		// and ANTHROPIC_API_KEY from the environment (env-api-keys), so a
+		// stray value in the agent-writable .env would authenticate a
+		// direct-to-Anthropic path that never reaches Vertex. The project
+		// is pinned to the variable Claude Code on Vertex is driven by, so
+		// both runtimes hit the same GCP project regardless of an ambient
+		// GOOGLE_CLOUD_PROJECT (the extension reads that one first).
 		parts = append(parts,
-			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
+			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
 			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
 		)
 	}
@@ -523,6 +531,14 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// (Claude Code runs the same hooks on its Agent tool). Children
 		// get their own -e list from the manifest, never this file.
 		parts = append(parts, "-e "+shellQuote(agentExt))
+	}
+	if editRepair {
+		// It registers tools and no tool_call handler, so its place among
+		// the runner-owned extensions does not affect the hook order. pi
+		// rejects two extensions that register the same tool name
+		// regardless of -e order, so a declared extension must not also
+		// register edit while this extension is loaded.
+		parts = append(parts, "-e "+shellQuote(editRepairExt))
 	}
 	// Declared extensions come after the hook adapter: pi runs tool_call
 	// handlers in -e order and the first block wins, so the adapter's
@@ -810,8 +826,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	modelSpec := translatePiModel(EffectiveModel(params.Model, m.Model), params.ModelAliases)
 	// Telemetry and the renderer get the bare model id, as they do for
-	// Claude Code, so runs group by model across runtimes; the provider is
-	// gen_ai.system's job and stays visible on the command line.
+	// Claude Code, so runs group by model across runtimes; the serving
+	// endpoint is gen_ai.system / gen_ai.provider.name's job (ProviderFor)
+	// and stays visible on the command line.
 	metrics.Model = piBareModelID(modelSpec)
 	// The wire carries no CLI version and the model only on the first
 	// assistant message; Bootstrap's preflight and the resolved model are
@@ -858,6 +875,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if exitCode == piAgentTamperedExit && m.Agent != nil && m.Agent.Enabled {
 		return exitCode, fmt.Errorf("pi Agent extension missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piEditRepairTamperedExit && piEditRepairEnabled(m.Tools) {
+		return exitCode, fmt.Errorf("pi edit-repair extension %s missing or modified in %s; refusing to run (was Bootstrap run, or did the agent change it?)", piEditRepairExtensionFile, r.ConfigDir())
 	}
 	if exitCode == piManifestTamperedExit {
 		return exitCode, fmt.Errorf("the pi manifest at %s is not the one Bootstrap wrote; refusing to run because it configures the hook plan and the sub-agent children (did the agent or a rewritten .env change it?)", r.piManifestPath())

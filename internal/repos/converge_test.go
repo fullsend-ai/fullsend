@@ -8,7 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -484,12 +486,12 @@ func TestConverge_ExistingSecretsSkipInference(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	// Secrets exist so the repo is partially installed; convergence
-	// repairs missing components (workflow, variables) without needing
-	// inference flags.
-	converged := result.Converged()
-	if len(converged) != 1 {
-		t.Errorf("expected 1 converged (secrets exist, missing components repaired), got %d", len(converged))
+	// Secrets exist but the workflow is not on the default branch, so
+	// this is still a fresh install (ReuseSecrets skips rewriting them).
+	installed := result.Installed()
+	if len(installed) != 1 {
+		t.Errorf("expected 1 installed (secrets exist, workflow missing), got installed=%d converged=%d",
+			len(installed), len(result.Converged()))
 	}
 	if len(result.Failed()) != 0 {
 		for _, f := range result.Failed() {
@@ -742,26 +744,30 @@ func TestConverge_PartialSecretState(t *testing.T) {
 		t.Fatalf("Converge() batch error: %v", err)
 	}
 
-	// One secret exists so repo is partially installed; convergence
-	// repairs the missing secret and other components.
-	converged := result.Converged()
-	if len(converged) != 1 {
-		t.Fatalf("expected 1 converged (partial secret repaired), got %d", len(converged))
+	// One secret exists but the workflow is not on the default branch,
+	// so this is still a fresh install. Install writes the missing secret.
+	installed := result.Installed()
+	if len(installed) != 1 {
+		t.Fatalf("expected 1 installed (partial secret, workflow missing), got installed=%d converged=%d",
+			len(installed), len(result.Converged()))
 	}
 	if len(result.Failed()) != 0 {
 		for _, f := range result.Failed() {
 			t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
 		}
 	}
-	// Verify the missing secret was written.
-	hasSecretAdd := false
-	for _, a := range converged[0].Actions {
-		if a.Component == "secret:FULLSEND_GCP_WIF_PROVIDER" && a.Action == "add" {
-			hasSecretAdd = true
-		}
+	if !fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] {
+		t.Error("expected Install to write missing FULLSEND_GCP_WIF_PROVIDER secret")
 	}
-	if !hasSecretAdd {
-		t.Error("expected add action for missing FULLSEND_GCP_WIF_PROVIDER secret")
+	// The already-present secret must be left untouched: overwriting it
+	// (e.g. because ReuseSecrets is all-or-nothing) could silently
+	// retarget an already-written GCP secret binding to a different
+	// --inference-project or resolved WIF provider on a partial-state
+	// re-run.
+	for _, rec := range fc.CreatedSecrets {
+		if rec.Owner == "acme" && rec.Repo == "api" && rec.Name == "FULLSEND_GCP_PROJECT_ID" {
+			t.Error("expected already-present FULLSEND_GCP_PROJECT_ID secret to be left untouched, but Install rewrote it")
+		}
 	}
 }
 
@@ -1104,11 +1110,12 @@ func TestConverge_ExistingSecretsWithRegionVar(t *testing.T) {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	// Secrets exist, so repo is partially installed; convergence
-	// repairs missing components (workflow, variables).
-	converged := result.Converged()
-	if len(converged) != 1 {
-		t.Errorf("expected 1 converged (existing secrets + region, missing components repaired), got %d", len(converged))
+	// Secrets exist but the workflow is not on the default branch, so
+	// this is still a fresh install.
+	installed := result.Installed()
+	if len(installed) != 1 {
+		t.Errorf("expected 1 installed (existing secrets + region, workflow missing), got installed=%d converged=%d",
+			len(installed), len(result.Converged()))
 	}
 	if len(result.Failed()) != 0 {
 		for _, f := range result.Failed() {
@@ -1863,22 +1870,16 @@ func TestConvergeBatchResult_Helpers(t *testing.T) {
 	}
 }
 
-func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
-	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
-	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
-
-	m := &Manifest{
-		Version: 1,
-		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			FullsendRef: "v2.5.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
+func gitlabConvergeCfg(repo string) ConvergeConfig {
+	return ConvergeConfig{
+		Manifest: &Manifest{
+			Version: 1,
+			GitLab: &PlatformConfig{
+				URL:         "https://gitlab.example.com",
+				FullsendRef: "v2.5.0",
+				Repos:       []RepoEntry{{Name: repo}},
+			},
 		},
-	}
-	cfg := ConvergeConfig{
-		Manifest:               m,
 		MaxConcurrency:         4,
 		Roles:                  []string{"triage"},
 		Direct:                 true,
@@ -1886,34 +1887,172 @@ func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
 		InferenceProjectNumber: "123456789",
 		InferenceRegion:        "us-central1",
 	}
+}
 
+func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
+	full := owner + "/" + repo
+	fc.FileContents[full+"/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	trustScript, _ := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
+	fc.FileContents[full+"/"+gitlabTrustScriptPath] = trustScript
+	fc.Secrets[full+"/"+forge.SecretGCPProjectID] = true
+	fc.Secrets[full+"/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets[full+"/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules[full] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+}
+
+func TestConverge_GitLab_RepairsMissingTrustScript(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	delete(fc.FileContents, "acme/api/"+gitlabTrustScriptPath)
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, f := range sc.files {
+		if f.Path == gitlabTrustScriptPath {
+			return
+		}
+	}
+	t.Fatalf("convergence did not repair %s; files: %+v", gitlabTrustScriptPath, sc.files)
+}
+
+func TestConverge_GitLab_DoesNotSeedRetiredPollVariables(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+	}
+
+	for _, a := range result.Results[0].Actions {
+		if a.Action == "add" && strings.HasPrefix(a.Component, "var:") {
+			name := DriftFieldName(a.Component)
+			for _, retired := range gitlabRetiredLegacyVars {
+				if name == retired {
+					t.Errorf("retired variable %s was seeded", name)
+				}
+			}
+		}
+	}
+	for _, name := range gitlabRetiredLegacyVars {
+		if _, ok := fc.VariableValues["acme/api/"+name]; ok {
+			t.Errorf("retired variable %s written to forge", name)
+		}
+	}
+}
+
+func TestConverge_GitLab_MigrateThenDeleteRetiredVars(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	for _, name := range gitlabRetiredLegacyVars {
+		val := "{}"
+		if name == forge.VarLastPollAtFast || name == forge.VarLastPollAtFull {
+			val = "2020-01-01T00:00:00Z"
+		}
+		fc.VariableValues["acme/api/"+name] = val
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+	}
+
+	deleted := map[string]bool{}
+	for _, a := range result.Results[0].Actions {
+		if a.Action == "orphan" && strings.HasPrefix(a.Component, "var:FULLSEND_") {
+			name := DriftFieldName(a.Component)
+			for _, retired := range gitlabRetiredLegacyVars {
+				if name == retired {
+					t.Errorf("retired variable %s flagged as orphan", name)
+				}
+			}
+		}
+		if a.Action == "delete" {
+			deleted[DriftFieldName(a.Component)] = true
+		}
+	}
+	for _, name := range gitlabRetiredLegacyVars {
+		if !deleted[name] {
+			t.Errorf("expected delete action for %s", name)
+		}
+		if _, ok := fc.VariableValues["acme/api/"+name]; ok {
+			t.Errorf("retired variable %s still present on forge", name)
+		}
+	}
+	assertPollStateBranchesSeeded(t, fc, "acme", "api")
+}
+
+func TestConverge_GitLab_RetiredVarsIdempotentOnceGone(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", poll.PollStateBranchSlash, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
+		t.Fatalf("seed slash: %v", err)
+	}
+	if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", poll.PollStateBranchEvents, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, a := range result.Results[0].Actions {
+		if a.Action == "delete" {
+			t.Errorf("unexpected delete when retired vars are already gone: %+v", a)
+		}
+		if a.Action == "orphan" && strings.HasPrefix(a.Component, "var:") {
+			t.Errorf("unexpected orphan var action: %+v", a)
+		}
+	}
+}
+
+func TestConverge_GitLab_RetiredVarsDryRunDoesNotDelete(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
+
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.DryRun = true
 	sc := &fakeScaffoldCommit{}
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
 
-	if len(result.Converged()) != 1 {
-		t.Fatalf("expected 1 converged repo, got %d", len(result.Converged()))
-	}
-
-	seeded := map[string]bool{}
+	found := false
 	for _, a := range result.Results[0].Actions {
-		if a.Action == "add" && strings.HasPrefix(a.Component, "var:") {
-			seeded[DriftFieldName(a.Component)] = true
+		if a.Component == "var:"+forge.VarLastPollAtFast && a.Action == "delete" {
+			found = true
+			if !strings.Contains(a.Detail, "would migrate then delete") {
+				t.Errorf("detail = %q, want dry-run wording", a.Detail)
+			}
 		}
 	}
-	for _, v := range []string{"FULLSEND_LAST_POLL_AT_FAST", "FULLSEND_LAST_POLL_AT_FULL", "FULLSEND_LABEL_STATE"} {
-		if !seeded[v] {
-			t.Errorf("expected poll variable %s to be seeded, but it was not", v)
-		}
+	if !found {
+		t.Error("expected dry-run delete action for retired var")
 	}
-
-	if val := fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"]; val == "" {
-		t.Error("FULLSEND_LAST_POLL_AT_FAST not written to forge")
-	}
-	if val := fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"]; val != "{}" {
-		t.Errorf("FULLSEND_LABEL_STATE = %q, want %q", val, "{}")
+	if fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] == "" {
+		t.Error("dry-run must not delete the retired var")
 	}
 }
 
@@ -2045,6 +2184,699 @@ func TestConverge_GitLab_SchedulesAlreadyPresent(t *testing.T) {
 	// No new schedules should have been created.
 	if len(fc.CreatedSchedules) != 0 {
 		t.Errorf("expected 0 created schedules, got %d", len(fc.CreatedSchedules))
+	}
+}
+
+func TestConverge_GitLab_MigratesObsoleteWorkflowRule(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Root .gitlab-ci.yml still carries the obsolete merge_request_event
+	// rule from before #7322 — simulates an already-enrolled repo that
+	// has not been reinstalled.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-rules update action, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	if strings.Contains(s, "merge_request_event") {
+		t.Errorf("expected obsolete merge_request_event rule to be removed, got:\n%s", s)
+	}
+	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "schedule"`) {
+		t.Errorf("expected current schedule rule to be preserved, got:\n%s", s)
+	}
+	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "api"`) {
+		t.Errorf("expected current api rule to be preserved, got:\n%s", s)
+	}
+}
+
+func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Already migrated — no obsolete rule present.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" {
+			t.Errorf("expected no gitlab-ci-rules action, got %+v", a)
+		}
+	}
+}
+
+func TestConverge_GitLab_MigratesObsoleteDispatchStage(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Merge-path enrollment: root stages still carry the leftover
+	// dispatch stage from before #7337. No obsolete workflow rule.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
+			found = true
+		}
+		if a.Component == "gitlab-ci-rules" {
+			t.Errorf("expected no gitlab-ci-rules action, got %+v", a)
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-stages update action, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	if strings.Contains(s, "- dispatch") {
+		t.Errorf("expected obsolete dispatch stage to be removed, got:\n%s", s)
+	}
+	if !strings.Contains(s, "- build") {
+		t.Errorf("expected user stage to be preserved, got:\n%s", s)
+	}
+	if !strings.Contains(s, "- poll") || !strings.Contains(s, "- agent") {
+		t.Errorf("expected current fullsend stages to be preserved, got:\n%s", s)
+	}
+}
+
+func TestConverge_GitLab_WrapperStillPullsInDispatchPreventsStrip(t *testing.T) {
+	// Same root .gitlab-ci.yml shape as
+	// TestConverge_GitLab_MigratesObsoleteDispatchStage, but this repo's
+	// on-repo pipeline wrapper (.gitlab/ci/fullsend-pipeline.yml) predates
+	// #7322: it still includes fullsend-dispatch.yml, which defines a job
+	// on the "dispatch" stage. StripObsoleteGitLabStages only sees the
+	// root file and would otherwise approve the strip; convergeGitLabRootCIFiles
+	// must additionally confirm the wrapper it depends on doesn't still
+	// pull in the obsolete dispatch job before applying it.
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+`)
+	// The on-repo wrapper still includes the pre-#7322 dispatch file.
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-pipeline.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-dispatch.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - local: '.gitlab/ci/fullsend-poll.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "schedule"
+
+stages:
+  - dispatch
+  - poll
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-stages" {
+			t.Errorf("expected no gitlab-ci-stages action while the wrapper still pulls in dispatch, got %+v", a)
+		}
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			t.Errorf(".gitlab-ci.yml must not be committed while the wrapper still pulls in dispatch, got %s", f.Content)
+		}
+	}
+}
+
+func TestConverge_GitLab_MigratesObsoleteRuleAndStage(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	var sawRules, sawStages bool
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			sawRules = true
+		}
+		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
+			sawStages = true
+		}
+	}
+	if !sawRules || !sawStages {
+		t.Errorf("expected both gitlab-ci-rules and gitlab-ci-stages updates, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	if strings.Contains(s, "merge_request_event") {
+		t.Errorf("expected obsolete merge_request_event rule to be removed, got:\n%s", s)
+	}
+	if strings.Contains(s, "- dispatch") {
+		t.Errorf("expected obsolete dispatch stage to be removed, got:\n%s", s)
+	}
+}
+
+func TestConverge_GitLab_MigratesObsoleteDispatchStage_DryRun(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		DryRun:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-stages" && a.Action == "update" {
+			found = true
+			if !strings.Contains(a.Detail, "would remove") {
+				t.Errorf("expected dry-run detail, got %q", a.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-stages update action in dry-run, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			t.Errorf("dry-run must not commit .gitlab-ci.yml")
+		}
+	}
+}
+
+func TestConverge_GitLab_NoObsoleteDispatchStageNoAction(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Already migrated — current stages only, no obsolete rule.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - poll
+  - agent
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-stages" {
+			t.Errorf("expected no gitlab-ci-stages action, got %+v", a)
+		}
+	}
+}
+
+func TestConverge_GitLab_MergePathRepoNotMigrated(t *testing.T) {
+	// A repo enrolled via the merge path has a workflow: block but no
+	// fullsend-generated workflow.name, so fullsend ownership of the
+	// obsolete merge_request_event rule cannot be established. The
+	// migration must leave the rule in place (preserving a possible
+	// user-owned MR gate) rather than strip it.
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Merge-path enrollment: workflow block present, no workflow.name,
+	// carries both the obsolete rule and fullsend's current rules.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" {
+			t.Errorf("expected no gitlab-ci-rules action for merge-path repo, got %+v", a)
+		}
+	}
+}
+
+func TestConverge_GitLab_RootCIReadErrorSurfaces(t *testing.T) {
+	// A non-not-found error reading the root .gitlab-ci.yml during the
+	// obsolete-rule migration must surface as a repo failure, not be
+	// silently swallowed.
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.GetFileContentErrors = map[string]error{
+		"acme/api/.gitlab-ci.yml": fmt.Errorf("rate limited"),
+	}
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	failed := result.Failed()
+	if len(failed) != 1 {
+		t.Fatalf("expected 1 failed repo (root CI read error), got %d", len(failed))
+	}
+	if !strings.Contains(failed[0].Error.Error(), "rate limited") {
+		t.Errorf("expected 'rate limited' in error, got: %v", failed[0].Error)
 	}
 }
 
@@ -2913,5 +3745,904 @@ func TestConverge_VendorGitLabEmitsWarning(t *testing.T) {
 	}
 	if !strings.Contains(warnings[0], "GitLab CI templates do not yet reference the vendored binary") {
 		t.Errorf("unexpected warning: %s", warnings[0])
+	}
+}
+
+func TestWorkflowPresent(t *testing.T) {
+	if workflowPresent(nil) {
+		t.Error("nil components should not report workflow present")
+	}
+	if workflowPresent([]ComponentStatus{
+		{Name: "secret:FULLSEND_GCP_PROJECT_ID", Present: true},
+		{Name: "var:FULLSEND_GCP_REGION", Present: true},
+	}) {
+		t.Error("secrets/vars without workflow should not report workflow present")
+	}
+	if !workflowPresent([]ComponentStatus{
+		{Name: "workflow", Present: true},
+	}) {
+		t.Error("present workflow component should report workflow present")
+	}
+	if workflowPresent([]ComponentStatus{
+		{Name: "workflow", Present: false},
+	}) {
+		t.Error("absent workflow component should not report workflow present")
+	}
+}
+
+func gitlabRequiredScaffoldPaths() []string {
+	return []string{
+		".gitlab/ci/fullsend-pipeline.yml",
+		".gitlab/ci/fullsend-agent.yml",
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".fullsend/config.yaml",
+		".gitlab-ci.yml",
+	}
+}
+
+func assertGitLabScaffoldComplete(t *testing.T, files []forge.TreeFile) {
+	t.Helper()
+	paths := make(map[string]bool, len(files))
+	for _, f := range files {
+		paths[f.Path] = true
+	}
+	for _, expected := range gitlabRequiredScaffoldPaths() {
+		if !paths[expected] {
+			t.Errorf("missing required GitLab scaffold file %q", expected)
+		}
+	}
+}
+
+// TestConverge_GitLab_RerunBeforeInitMergeReusesFreshInstallPath
+// reproduces #7417: variables/secrets written before the initialization
+// MR merges must not flip the second run onto the upgrade path.
+func TestConverge_GitLab_RerunBeforeInitMergeReusesFreshInstallPath(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Direct = false
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("first Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("first Converge() failed: %v", result.Failed()[0].Error)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("first Converge() expected 1 installed, got %d", len(result.Installed()))
+	}
+	if !result.Installed()[0].NeedsGitLabPostInstall {
+		t.Error("first Converge() expected NeedsGitLabPostInstall=true: nothing existed before this run, so bot token/schedule setup must run")
+	}
+	sc.mu.Lock()
+	firstFiles := append([]forge.TreeFile(nil), sc.files...)
+	firstInstalled := append([]bool(nil), sc.installed...)
+	sc.mu.Unlock()
+	if len(firstInstalled) != 1 {
+		t.Fatalf("first Converge() expected 1 scaffold commit, got %d", len(firstInstalled))
+	}
+	if firstInstalled[0] {
+		t.Error("first Converge() passed installed=true; want fresh-install metadata")
+	}
+	assertGitLabScaffoldComplete(t, firstFiles)
+
+	// Simulate the CLI's GitLab post-install step (bot token + pipeline
+	// schedule setup) succeeding after the first run, since that setup
+	// lives outside Converge and NeedsGitLabPostInstall=true is what
+	// triggers it. Converge alone never writes these artifacts.
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{Description: "fullsend slash poll"},
+		{Description: "fullsend event poll"},
+	}
+
+	// Second run with the same default-branch state: secrets and the
+	// GitLab post-install artifacts exist from the first run, but the
+	// workflow file is still absent from the default branch.
+	sc2 := &spyScaffoldCommit{}
+	result2, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc2.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("second Converge() error: %v", err)
+	}
+	if len(result2.Failed()) != 0 {
+		t.Fatalf("second Converge() failed: %v", result2.Failed()[0].Error)
+	}
+	if len(result2.Installed()) != 1 {
+		t.Fatalf("second Converge() expected 1 installed (still no workflow on default branch), got installed=%d converged=%d current=%d",
+			len(result2.Installed()), len(result2.Converged()), len(result2.AlreadyCurrent()))
+	}
+	// #7417's re-run scenario: variables/secrets/bot token already exist
+	// from the first run. Installed stays true (workflow still absent),
+	// but re-running GitLab post-install (bot token + schedule setup)
+	// would revoke and recreate the live fullsend-bot PAT and pipeline
+	// schedules — it must not run a second time.
+	if result2.Installed()[0].NeedsGitLabPostInstall {
+		t.Error("second Converge() expected NeedsGitLabPostInstall=false: components already existed from the first run, so bot token/schedule setup must not re-run")
+	}
+	sc2.mu.Lock()
+	secondFiles := append([]forge.TreeFile(nil), sc2.files...)
+	secondInstalled := append([]bool(nil), sc2.installed...)
+	sc2.mu.Unlock()
+	if len(secondInstalled) != 1 {
+		t.Fatalf("second Converge() expected 1 scaffold commit, got %d", len(secondInstalled))
+	}
+	if secondInstalled[0] {
+		t.Error("second Converge() passed installed=true; would select a bump branch instead of fullsend/scaffold-install")
+	}
+	assertGitLabScaffoldComplete(t, secondFiles)
+}
+
+// TestConverge_PartialSecretsWithoutWorkflowStayOnFreshInstallPath covers
+// the anyComponentPresent false-positive: a leftover secret from a
+// previous incomplete run must not select the upgrade path.
+func TestConverge_PartialSecretsWithoutWorkflowStayOnFreshInstallPath(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.VariableValues["acme/api/"+forge.VarGCPRegion] = "us-central1"
+
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Direct = false
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("Converge() failed: %v", result.Failed()[0].Error)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed (workflow missing), got installed=%d converged=%d current=%d",
+			len(result.Installed()), len(result.Converged()), len(result.AlreadyCurrent()))
+	}
+	sc.mu.Lock()
+	installedFlags := append([]bool(nil), sc.installed...)
+	files := append([]forge.TreeFile(nil), sc.files...)
+	sc.mu.Unlock()
+	if len(installedFlags) != 1 {
+		t.Fatalf("expected 1 scaffold commit, got %d", len(installedFlags))
+	}
+	if installedFlags[0] {
+		t.Error("passed installed=true despite missing workflow; would open a bump MR")
+	}
+	assertGitLabScaffoldComplete(t, files)
+}
+
+// TestConverge_GitLab_NeedsPostInstallSurvivesUnrelatedSecrets covers a
+// review finding on #7418: NeedsGitLabPostInstall must be gated on the
+// GitLab-specific post-install artifacts (the bot token secret and
+// pipeline schedules), not on any probed component being present. A
+// retry after Install() succeeded but the GitLab post-install step
+// failed (or never ran) must still report NeedsGitLabPostInstall=true so
+// the retry actually repairs the missing bot token/schedules, instead of
+// silently skipping them just because unrelated GCP inference secrets
+// already exist.
+func TestConverge_GitLab_NeedsPostInstallSurvivesUnrelatedSecrets(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Direct = false
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("Converge() failed: %v", result.Failed()[0].Error)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
+	}
+	if !result.Installed()[0].NeedsGitLabPostInstall {
+		t.Error("expected NeedsGitLabPostInstall=true: pre-existing GCP inference secrets must not mask a missing GitLab bot token/schedules")
+	}
+}
+
+// TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts covers a
+// review finding on #7418: gitlabPostInstallDone (and the needsBotToken /
+// needsSchedules present-checks it wraps) were only exercised directly by
+// TestGitlabPostInstallDone, never through Converge itself. A regression
+// that set NeedsGitLabBotToken / NeedsGitLabPipelineSchedules from the
+// combined needsPostInstall flag instead of their own present-checks would
+// still pass every other integration test, since those only cover the two
+// poles (nothing present, everything present). This exercises the partial
+// states in between: bot token present but schedules missing, schedules
+// present but the bot token missing, and the bot token plus only one of
+// the two schedules present.
+func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) {
+	tests := []struct {
+		name            string
+		seed            func(fc *forge.FakeClient, full string)
+		wantBotToken    bool
+		wantSchedules   bool
+		wantPostInstall bool
+	}{
+		{
+			name: "bot token present, schedules missing",
+			seed: func(fc *forge.FakeClient, full string) {
+				fc.Secrets[full+"/"+forge.SecretForgeToken] = true
+			},
+			wantBotToken:    false,
+			wantSchedules:   true,
+			wantPostInstall: true,
+		},
+		{
+			name: "schedules present, bot token missing",
+			seed: func(fc *forge.FakeClient, full string) {
+				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
+					{Description: "fullsend slash poll"},
+					{Description: "fullsend event poll"},
+				}
+			},
+			wantBotToken:    true,
+			wantSchedules:   false,
+			wantPostInstall: true,
+		},
+		{
+			name: "bot token plus only one schedule present",
+			seed: func(fc *forge.FakeClient, full string) {
+				fc.Secrets[full+"/"+forge.SecretForgeToken] = true
+				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
+					{Description: "fullsend slash poll"},
+				}
+			},
+			wantBotToken:    false,
+			wantSchedules:   true,
+			wantPostInstall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := newFakeClientForBatch("acme/api")
+			tt.seed(fc, "acme/api")
+
+			cfg := gitlabConvergeCfg("acme/api")
+			cfg.Direct = false
+			sc := &spyScaffoldCommit{}
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+			if len(result.Failed()) != 0 {
+				t.Fatalf("Converge() failed: %v", result.Failed()[0].Error)
+			}
+			if len(result.Installed()) != 1 {
+				t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
+			}
+			got := result.Installed()[0]
+			if got.NeedsGitLabBotToken != tt.wantBotToken {
+				t.Errorf("NeedsGitLabBotToken = %v, want %v", got.NeedsGitLabBotToken, tt.wantBotToken)
+			}
+			if got.NeedsGitLabPipelineSchedules != tt.wantSchedules {
+				t.Errorf("NeedsGitLabPipelineSchedules = %v, want %v", got.NeedsGitLabPipelineSchedules, tt.wantSchedules)
+			}
+			if got.NeedsGitLabPostInstall != tt.wantPostInstall {
+				t.Errorf("NeedsGitLabPostInstall = %v, want %v", got.NeedsGitLabPostInstall, tt.wantPostInstall)
+			}
+		})
+	}
+}
+
+// TestGitlabPostInstallDone is a table test for gitlabPostInstallDone
+// covering partial GitLab post-install states. gitlabPostInstallDone is
+// a strict AND of the bot-token secret and every pipeline-schedule
+// component; before this test, only the two poles (nothing present, and
+// token+both schedules present) were exercised, so a regression that
+// weakened the AND to check only the token (or only the schedules)
+// would still pass. This covers the partial states in between: token
+// only, schedules only (no token), and token plus just one of the two
+// schedules.
+func TestGitlabPostInstallDone(t *testing.T) {
+	specs := PipelineScheduleSpecs()
+	if len(specs) < 2 {
+		t.Fatalf("expected at least 2 pipeline schedule specs, got %d", len(specs))
+	}
+	tokenComponent := "secret:" + forge.SecretForgeToken
+	schedule0 := specs[0].ComponentName
+	schedule1 := specs[1].ComponentName
+
+	tests := []struct {
+		name       string
+		components []ComponentStatus
+		want       bool
+	}{
+		{
+			name:       "nil components",
+			components: nil,
+			want:       false,
+		},
+		{
+			name:       "empty components",
+			components: []ComponentStatus{},
+			want:       false,
+		},
+		{
+			name: "GCP secrets only (unrelated to GitLab post-install)",
+			components: []ComponentStatus{
+				{Name: "secret:" + forge.SecretGCPProjectID, Present: true},
+				{Name: "secret:" + forge.SecretGCPWIFProvider, Present: true},
+			},
+			want: false,
+		},
+		{
+			name: "bot token only, no schedules",
+			components: []ComponentStatus{
+				{Name: tokenComponent, Present: true},
+			},
+			want: false,
+		},
+		{
+			name: "both schedules only, no bot token",
+			components: []ComponentStatus{
+				{Name: schedule0, Present: true},
+				{Name: schedule1, Present: true},
+			},
+			want: false,
+		},
+		{
+			name: "bot token plus only the first schedule",
+			components: []ComponentStatus{
+				{Name: tokenComponent, Present: true},
+				{Name: schedule0, Present: true},
+			},
+			want: false,
+		},
+		{
+			name: "bot token plus only the second schedule",
+			components: []ComponentStatus{
+				{Name: tokenComponent, Present: true},
+				{Name: schedule1, Present: true},
+			},
+			want: false,
+		},
+		{
+			name: "bot token plus both schedules",
+			components: []ComponentStatus{
+				{Name: tokenComponent, Present: true},
+				{Name: schedule0, Present: true},
+				{Name: schedule1, Present: true},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gitlabPostInstallDone(tt.components); got != tt.want {
+				t.Errorf("gitlabPostInstallDone(%+v) = %v, want %v", tt.components, got, tt.want)
+			}
+		})
+	}
+}
+
+// presetYAMLWithRoles is a config preset that declares its own roles, used
+// to constrain converge.go's fresh-install overlay-shadowing guard (the
+// `installRoles = nil` branch): a preset-owned roles list must only take
+// effect through the overlay -> base layered accessor chain when the
+// overlay itself leaves roles unset.
+const presetYAMLWithRoles = "version: \"1\"\n" +
+	"roles:\n  - triage\n  - review\n"
+
+func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
+	presetPath := writePresetFile(t, presetYAMLWithRoles)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+
+	sc := &spyScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
+	}
+
+	var overlayYAML, baseYAML []byte
+	for _, f := range sc.files {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			baseYAML = f.Content
+			if string(f.Content) != presetYAMLWithRoles {
+				t.Errorf("base content = %q, want preset bytes", f.Content)
+			}
+		case ".fullsend/config.yaml":
+			overlayYAML = f.Content
+		}
+	}
+	if baseYAML == nil {
+		t.Error("fresh install with declared preset must write config.base.yaml")
+	}
+	if overlayYAML == nil {
+		t.Fatal("fresh install must still write config.yaml overlay")
+	}
+
+	// convergeCfgWithDefaults sets Roles to the production cobra-default
+	// ([]string{"triage"}) with RolesExplicit false. The overlay must
+	// leave roles unset so the preset's own roles take effect via the
+	// overlay -> base layered accessor chain, instead of the fleet-wide
+	// default roles shadowing them (converge.go's installRoles = nil
+	// branch). Deleting or inverting that branch would still pass with
+	// only a file-existence assertion, so this asserts both the raw
+	// overlay bytes and the effective layered roles.
+	if strings.Contains(string(overlayYAML), "roles:") {
+		t.Errorf("overlay must not set roles when the preset owns them (RolesExplicit=false): %s", overlayYAML)
+	}
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
+	if err != nil {
+		t.Fatalf("composing layered config: %v", err)
+	}
+	if got, want := effective.ConfigRoles(), []string{"triage", "review"}; !slices.Equal(got, want) {
+		t.Errorf("effective roles = %v, want preset roles %v (preset must not be shadowed by default roles)", got, want)
+	}
+}
+
+// TestConverge_PresetFreshInstallExplicitRolesWritesOverlay is the
+// RolesExplicit=true counterpart to
+// TestConverge_PresetFreshInstallWritesBaseAndOverlay: when the caller
+// explicitly passes --roles, converge.go must not take the
+// installRoles = nil branch, so the caller-supplied roles are written
+// into the overlay and take effect over the preset's own roles.
+func TestConverge_PresetFreshInstallExplicitRolesWritesOverlay(t *testing.T) {
+	presetPath := writePresetFile(t, presetYAMLWithRoles)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+
+	sc := &spyScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Roles = []string{"fix"}
+	cfg.RolesExplicit = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
+	}
+
+	var overlayYAML, baseYAML []byte
+	for _, f := range sc.files {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			baseYAML = f.Content
+		case ".fullsend/config.yaml":
+			overlayYAML = f.Content
+		}
+	}
+	if overlayYAML == nil {
+		t.Fatal("fresh install must write config.yaml overlay")
+	}
+
+	if !strings.Contains(string(overlayYAML), "roles:") {
+		t.Errorf("overlay must set roles when the caller explicitly passed --roles: %s", overlayYAML)
+	}
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
+	if err != nil {
+		t.Fatalf("composing layered config: %v", err)
+	}
+	if got, want := effective.ConfigRoles(), []string{"fix"}; !slices.Equal(got, want) {
+		t.Errorf("effective roles = %v, want caller-supplied roles %v (RolesExplicit=true must not be shadowed by the preset)", got, want)
+	}
+}
+
+func TestConverge_PresetIdempotentWhenUnchanged(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+	overlayBefore := fc.FileContents["acme/api/.fullsend/config.yaml"]
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		for _, f := range files {
+			if f.Path == ".fullsend/config.yaml" {
+				t.Error("idempotent preset converge must not rewrite overlay")
+			}
+		}
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.AlreadyCurrent()) != 1 {
+		t.Errorf("expected 1 already current, got %d (actions: %v)", len(result.AlreadyCurrent()), result.Results[0].Actions)
+	}
+	if committed {
+		t.Error("should not commit when declared preset matches installed base")
+	}
+	if got := fc.FileContents["acme/api/.fullsend/config.yaml"]; string(got) != string(overlayBefore) {
+		t.Error("overlay must be preserved when preset is unchanged")
+	}
+}
+
+func TestConverge_PresetChangeReplacesBasePreservesOverlay(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
+	overlay := []byte("version: \"1\"\n# keep me\n")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Converged()) != 1 {
+		t.Fatalf("expected 1 converged, got %d (err=%v actions=%v)", len(result.Converged()), result.Results[0].Error, result.Results[0].Actions)
+	}
+
+	var sawBase, sawOverlay bool
+	for _, f := range committedFiles {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			sawBase = true
+			if string(f.Content) != testPresetYAML {
+				t.Errorf("base content = %q, want new preset", f.Content)
+			}
+		case ".fullsend/config.yaml":
+			sawOverlay = true
+		}
+	}
+	if !sawBase {
+		t.Error("changed preset must replace config.base.yaml")
+	}
+	if sawOverlay {
+		t.Error("changed preset must not rewrite overlay")
+	}
+	if got := fc.FileContents["acme/api/.fullsend/config.yaml"]; string(got) != string(overlay) {
+		t.Error("overlay bytes must survive preset replacement")
+	}
+}
+
+func TestConverge_PresetHashMismatchFailsBeforeApply(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+	m.Defaults.ConfigBase.SHA256 = strings.Repeat("0", 64)
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(result.Failed()))
+	}
+	if result.Failed()[0].Error == nil || !strings.Contains(result.Failed()[0].Error.Error(), "hash mismatch") {
+		t.Errorf("expected hash mismatch error, got %v", result.Failed()[0].Error)
+	}
+	if committed {
+		t.Error("hash mismatch must fail before applying changes")
+	}
+}
+
+func TestConverge_PresetInvalidSourceFailsBeforeApply(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = "/nonexistent/preset.yaml"
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(result.Failed()))
+	}
+	if committed {
+		t.Error("invalid source must fail before applying changes")
+	}
+}
+
+func TestConverge_NoPresetPreservesExistingBase(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+	m := newConvergeManifest(repoNames...)
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.AlreadyCurrent()) != 1 {
+		t.Errorf("expected 1 already current, got %d", len(result.AlreadyCurrent()))
+	}
+	if committed {
+		t.Error("undeclared preset must not rewrite existing base")
+	}
+	if got := string(fc.FileContents["acme/api/.fullsend/config.base.yaml"]); got != testPresetYAML {
+		t.Errorf("existing base was modified: %q", got)
+	}
+}
+
+func TestConverge_GitLab_PresetChangeReplacesBase(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
+	overlay := []byte("version: \"1\"\n# gitlab overlay\n")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
+
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Manifest.Defaults.ConfigBase.Source = presetPath
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = append(committedFiles, files...)
+		return nil
+	}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if result.Results[0].Error != nil {
+		t.Fatalf("repo error: %v", result.Results[0].Error)
+	}
+
+	var sawBase, sawOverlay bool
+	for _, f := range committedFiles {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			sawBase = true
+			if string(f.Content) != testPresetYAML {
+				t.Errorf("gitlab base content = %q, want new preset", f.Content)
+			}
+		case ".fullsend/config.yaml":
+			sawOverlay = true
+		}
+	}
+	if !sawBase {
+		t.Error("GitLab converge must replace drifted config.base.yaml")
+	}
+	if sawOverlay {
+		t.Error("GitLab converge must not rewrite overlay")
+	}
+}
+
+func TestConverge_GitLab_PresetFreshInstallWritesBase(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	fc := newFakeClientForBatch("acme/api")
+	cfg := gitlabConvergeCfg("acme/api")
+	cfg.Manifest.Defaults.ConfigBase.Source = presetPath
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed, got %d (err=%v)", len(result.Installed()), result.Results[0].Error)
+	}
+
+	var hasBase, hasOverlay bool
+	for _, f := range sc.files {
+		switch f.Path {
+		case ".fullsend/config.base.yaml":
+			hasBase = true
+			if string(f.Content) != testPresetYAML {
+				t.Errorf("gitlab base content = %q, want preset bytes", f.Content)
+			}
+		case ".fullsend/config.yaml":
+			hasOverlay = true
+		}
+	}
+	if !hasBase {
+		t.Error("GitLab fresh install with declared preset must write config.base.yaml")
+	}
+	if !hasOverlay {
+		t.Error("GitLab fresh install must still write config.yaml overlay")
+	}
+}
+
+func TestConverge_FreshInstallDryRunReportsPreset(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+	cfg := convergeCfgWithDefaults(m)
+	cfg.DryRun = true
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if committed {
+		t.Error("dry-run must not commit")
+	}
+	var saw bool
+	for _, a := range result.Results[0].Actions {
+		if a.Component == ".fullsend/config.base.yaml" && a.Action == "add" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("expected dry-run add action for config.base.yaml, got %v", result.Results[0].Actions)
+	}
+}
+
+func TestConverge_RemotePresetWithoutHashWarns(t *testing.T) {
+	warned := make(map[string]bool)
+	const source = "https://example.com/preset.yaml"
+	if !shouldWarnRemotePreset(source, "", warned) {
+		t.Fatal("expected an unpinned remote preset to warn")
+	}
+	if shouldWarnRemotePreset(source, "", warned) {
+		t.Fatal("expected only one warning per preset source")
+	}
+	if shouldWarnRemotePreset(source, strings.Repeat("a", 64), warned) {
+		t.Fatal("expected a hashed remote preset not to warn")
+	}
+	if shouldWarnRemotePreset("preset.yaml", "", warned) {
+		t.Fatal("expected a local preset not to warn")
+	}
+}
+
+func TestConverge_PresetDryRunDoesNotCommit(t *testing.T) {
+	presetPath := writePresetFile(t, testPresetYAML)
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.ConfigBase.Source = presetPath
+	cfg := convergeCfgWithDefaults(m)
+	cfg.DryRun = true
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if committed {
+		t.Error("dry-run must not commit preset changes")
+	}
+	var saw bool
+	for _, a := range result.Results[0].Actions {
+		if a.Component == ".fullsend/config.base.yaml" && a.Action == "update" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("expected dry-run update action for config.base.yaml, got %v", result.Results[0].Actions)
+	}
+}
+
+func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
+	overrideYAML := "version: \"1\"\nruntime: pi\n"
+	overridePath := writePresetFile(t, overrideYAML)
+	defaultPath := writePresetFile(t, testPresetYAML)
+
+	fc := newFakeClientForBatch("acme/inherit", "acme/override", "acme/disabled")
+	for _, repo := range []string{"inherit", "override", "disabled"} {
+		markFullyInstalled(fc, "acme", repo)
+		populateScaffoldContent(t, fc, "acme", repo, "v1.0.0", "https://mint.example.com")
+	}
+	fc.FileContents["acme/inherit/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+	fc.FileContents["acme/override/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+	fc.FileContents["acme/disabled/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: defaultPath}},
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v1.0.0",
+			Repos: []RepoEntry{
+				{Name: "acme/inherit"},
+				{Name: "acme/override", ConfigBase: ConfigBase{Source: overridePath}},
+				{Name: "acme/disabled", ConfigBase: ConfigBase{Source: NoneSentinel}},
+			},
+		},
+	}
+
+	committed := map[string][]forge.TreeFile{}
+	commitFn := func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool, _ bool) error {
+		committed[owner+"/"+repo] = append(committed[owner+"/"+repo], files...)
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failures: %v", result.Failed()[0].Error)
+	}
+
+	if _, ok := committed["acme/inherit"]; ok {
+		t.Error("inherit repo should stay current")
+	}
+	var sawOverride bool
+	for _, f := range committed["acme/override"] {
+		if f.Path == ".fullsend/config.base.yaml" {
+			sawOverride = true
+			if string(f.Content) != overrideYAML {
+				t.Errorf("override base = %q, want per-repo preset", f.Content)
+			}
+		}
+	}
+	if !sawOverride {
+		t.Error("override repo must replace base with per-repo preset")
+	}
+	if _, ok := committed["acme/disabled"]; ok {
+		t.Error("disabled repo must preserve existing base without comparison")
 	}
 }

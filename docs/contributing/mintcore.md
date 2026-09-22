@@ -39,6 +39,9 @@ internal/dispatch/gcf/
 parsing, OIDC verification, claims validation, authorization (org,
 workflow-ref, repos scope), GitHub App token creation, and status
 endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+It is a nested module with a local-only `replace`; packages reachable
+from `pkg/behaviourtest` must not import it (including `mintconsts`).
+See [Go Code](go-code.md).
 
 **Entrypoints** (`internal/mint`, `cmd/mint`, `cmd/mint-wasm`) are thin.
 They construct the appropriate `OIDCVerifier` + `PEMAccessor` for their

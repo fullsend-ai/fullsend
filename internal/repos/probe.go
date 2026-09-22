@@ -16,8 +16,8 @@ import (
 // reports it.
 type ComponentStatus struct {
 	// Name identifies the component, prefixed by category:
-	//   "workflow", "thin-caller:<path>", "var:<name>", "secret:<name>",
-	//   "schedule:<name>"
+	//   "workflow", "thin-caller:<path>", "scaffold:<path>", "var:<name>",
+	//   "secret:<name>", "schedule:<name>"
 	Name string
 
 	// Present is true when the component exists on the forge.
@@ -62,6 +62,7 @@ func DriftFieldName(componentName string) string {
 //
 // Components checked:
 //   - Shim workflow file (presence)
+//   - GitLab trust script (presence)
 //   - Per-repo thin callers (presence, GitHub only)
 //   - Required variables (presence; values compared when expectedVarValues
 //     contains a non-empty entry for the variable name)
@@ -93,6 +94,23 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		Actual:  workflowRef,
 		Match:   workflowPresent,
 	})
+
+	// The trust script is sourced by the GitLab poll and agent templates,
+	// but is not itself the workflow component. Probe it separately so
+	// status and converge can detect and repair installs missing only this
+	// auxiliary scaffold file.
+	if forgeName == ForgeGitLab {
+		_, err := client.GetFileContent(ctx, owner, repo, gitlabTrustScriptPath)
+		if err != nil && !forge.IsNotFound(err) {
+			return nil, fmt.Errorf("checking GitLab trust script: %w", err)
+		}
+		present := err == nil
+		results = append(results, ComponentStatus{
+			Name:    "scaffold:" + gitlabTrustScriptPath,
+			Present: present,
+			Match:   present,
+		})
+	}
 
 	// Per-repo thin callers (GitHub only).
 	if forgeName == ForgeGitHub || forgeName == "" {

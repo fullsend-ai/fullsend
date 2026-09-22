@@ -109,6 +109,53 @@ trigger: event.entity.kind == "work_item"
 	assert.Equal(t, "good", out[0].Name)
 }
 
+func TestListTriggeredHarnesses_AllResolveFailuresJoin(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "code", Source: "code.yaml"},
+		{Name: "review", Source: "review.yaml"},
+	})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "code")
+	assert.Contains(t, err.Error(), "review")
+}
+
+func TestListTriggeredHarnesses_EmptyTriggerWithMissingPeer(t *testing.T) {
+	dir := t.TempDir()
+	writeHarnessConfig(t, dir, `agent: agents/triage.md
+role: triage
+slug: no-trigger
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`)
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "issue-ping", Source: "harness/issue-ping.yaml"},
+		{Name: "missing", Source: "harness/missing.yaml"},
+	})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err, "a successfully loaded manual-only harness is not a total load failure")
+	assert.Empty(t, out)
+}
+
 func TestDispatch_FetchPolicyPlumbing(t *testing.T) {
 	// Verify that Options.FetchPolicy is threaded through Dispatch →
 	// ListTriggeredHarnesses → ResolveRegisteredPath. A URL-sourced agent
@@ -208,6 +255,8 @@ func urlHarnessServer(t *testing.T, harnessName, harnessYAML string, badHash boo
 
 func TestListTriggeredHarnesses_BaseComposition(t *testing.T) {
 	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
 	harnessDir := filepath.Join(dir, "harness")
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 
@@ -446,8 +495,11 @@ func TestListTriggeredHarnesses_ResolveFailureAnnotation(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "missing")
+	assert.Contains(t, err.Error(), "resolve failed")
 
 	annotation := buf.String()
 	assert.Contains(t, annotation, "::error::")
@@ -477,8 +529,11 @@ func TestListTriggeredHarnesses_LoadFailureAnnotation(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
-	require.NoError(t, err)
+	require.Error(t, err)
 	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "broken")
+	assert.Contains(t, err.Error(), "load failed")
 
 	annotation := buf.String()
 	assert.Contains(t, annotation, "::error::")

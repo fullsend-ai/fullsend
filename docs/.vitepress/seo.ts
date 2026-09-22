@@ -30,6 +30,7 @@ export const OG_IMAGE = `${DOCS_URL_BASE}img/logo.png`;
 /** Canonical destinations for pages that are redirects rather than content. */
 const CANONICAL_REDIRECTS: Record<string, string> = {
   "index.md": "guides/getting-started/",
+  "archived-roadmap.md": "archived-roadmaps/",
 };
 
 /** Non-content path: template placeholder or repo-metadata (ALL-CAPS) name. */
@@ -101,12 +102,14 @@ export function pageSeoHead({
  * VitePress injects a custom 404.md that can't be disabled.
  */
 export function isIndexablePage(page: string): boolean {
-  return page !== "404.md" && !isNonContentPath(page);
+  return page !== "404.md" && page !== "archived-roadmap.md" && !isNonContentPath(page);
 }
 
 /** Robots metadata for pages that must not enter search indexes. */
 export function pageRobotsHead(page: string): HeadConfig[] {
-  return page === "404.md" ? [["meta", { name: "robots", content: "noindex" }]] : [];
+  return page === "404.md" || page === "archived-roadmap.md"
+    ? [["meta", { name: "robots", content: "noindex" }]]
+    : [];
 }
 
 /**
@@ -117,7 +120,12 @@ export function pageRobotsHead(page: string): HeadConfig[] {
  */
 export function isSitemapUrl(url: string): boolean {
   const normalized = url.replace(/^\/+|\/+$/g, "");
-  return normalized !== "" && !isNonContentPath(normalized);
+  return (
+    normalized !== "" &&
+    normalized !== "archived-roadmap" &&
+    normalized !== "archived-roadmap.html" &&
+    !isNonContentPath(normalized)
+  );
 }
 
 /** Site-wide SEO head tags that are identical on every page. */

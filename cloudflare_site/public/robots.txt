@@ -1,43 +1,31 @@
-Sitemap: https://fullsend.sh/docs/sitemap.xml
+# As a condition of accessing this website, you agree to abide by the following
+# content signals:
 
-# Training crawlers — blocked site-wide
-User-agent: ClaudeBot
-Disallow: /
+# (a)  If a Content-Signal = yes, you may collect content for the corresponding
+#      use.
+# (b)  If a Content-Signal = no, you may not collect content for the
+#      corresponding use.
+# (c)  If the website operator does not include a Content-Signal for a
+#      corresponding use, the website operator neither grants nor restricts
+#      permission via Content-Signal with respect to the corresponding use.
 
-User-agent: GPTBot
-Disallow: /
+# The content signals and their meanings are:
 
-User-agent: CCBot
-Disallow: /
+# search:   building a search index and providing search results (e.g., returning
+#           hyperlinks and short excerpts from your website's contents). Search does not
+#           include providing AI-generated search summaries.
+# ai-input: inputting content into one or more AI models (e.g., retrieval
+#           augmented generation, grounding, or other real-time taking of content for
+#           generative AI search answers).
+# ai-train: training or fine-tuning AI models.
+# use:      how AI systems may consume the content (immediate, reference, or full).
 
-User-agent: Google-Extended
-Disallow: /
+# ANY RESTRICTIONS EXPRESSED VIA CONTENT SIGNALS ARE EXPRESS RESERVATIONS OF
+# RIGHTS UNDER ARTICLE 4 OF THE EUROPEAN UNION DIRECTIVE 2019/790 ON COPYRIGHT
+# AND RELATED RIGHTS IN THE DIGITAL SINGLE MARKET.
 
-User-agent: Bytespider
-Disallow: /
-
-User-agent: meta-externalagent
-Disallow: /
-
-User-agent: Applebot
-Allow: /
-
-User-agent: Applebot-Extended
-Disallow: /
-
-# Retrieval / search bots — allowed
-User-agent: OAI-SearchBot
-Allow: /
-
-User-agent: Claude-SearchBot
-Allow: /
-
-User-agent: PerplexityBot
-Allow: /
-
-User-agent: Amazonbot
-Allow: /
-
-# All other bots (standard search engines, etc.)
 User-agent: *
+Content-Signal: search=yes,ai-train=no,use=reference
 Allow: /
+
+Sitemap: https://fullsend.sh/docs/sitemap.xml

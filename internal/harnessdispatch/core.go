@@ -21,7 +21,8 @@ type Options struct {
 }
 
 // Dispatch evaluates authorization, kill switch, harness triggers, and returns execution refs.
-// Returns empty slice (not error) when denied or no matches.
+// Returns empty slice (not error) when denied, kill-switched, or no triggers match.
+// Returns an error when every registered harness fails to resolve or load.
 func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	if opts.Event == nil {
 		return nil, fmt.Errorf("event is required")

@@ -6,6 +6,7 @@ Detecting and responding to unauthorized changes in MCP (Model Context Protocol)
 - [security-threat-model.md](security-threat-model.md) — Threat 1 (persistent injection via externally editable resources), cross-cutting security principles
 - [agent-architecture.md](agent-architecture.md) — agent roles and trust model
 - [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md) — credential isolation
+- [landscape.md](../landscape.md#safe-mcp) — SAFE-MCP's SAFE-T1201 (Rug Pull Attack): delayed server-side tool modification after gaining trust
 
 ## The problem
 

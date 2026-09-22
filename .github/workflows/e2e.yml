@@ -294,7 +294,7 @@ jobs:
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
 
       - name: Check out redaction script from base branch
-        if: failure() && steps.changes.outputs.relevant != 'false'
+        if: always() && steps.changes.outputs.relevant != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
@@ -305,7 +305,7 @@ jobs:
 
       - name: Redact secrets from behaviour debug artifacts
         id: redact
-        if: failure() && steps.changes.outputs.relevant != 'false'
+        if: always() && steps.changes.outputs.relevant != 'false'
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
@@ -345,7 +345,7 @@ jobs:
             /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
-        if: failure() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}

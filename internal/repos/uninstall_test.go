@@ -3,11 +3,13 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -28,6 +30,34 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		}
 	}
 	return client
+}
+
+// uninstallCommitFn is a test ScaffoldCommitFunc that applies TreeFile
+// deletes and updates via CommitFiles, matching --direct delivery.
+func uninstallCommitFn(client *forge.FakeClient) ScaffoldCommitFunc {
+	return func(ctx context.Context, owner, repo string, files []forge.TreeFile, _ bool, _ bool) error {
+		_, err := client.CommitFiles(ctx, owner, repo, "chore: remove fullsend workflow", files)
+		return err
+	}
+}
+
+// uninstallCommitErr returns a ScaffoldCommitFunc that always fails.
+func uninstallCommitErr(err error) ScaffoldCommitFunc {
+	return func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		return err
+	}
+}
+
+func collectDeletedPaths(client *forge.FakeClient) []string {
+	var paths []string
+	for _, rec := range client.CommittedFiles {
+		for _, f := range rec.Files {
+			if f.Delete {
+				paths = append(paths, f.Path)
+			}
+		}
+	}
+	return paths
 }
 
 func testManifest(repos ...string) *Manifest {
@@ -51,8 +81,9 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -70,17 +101,22 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if r.VarsDeleted != 4 {
 		t.Errorf("VarsDeleted = %d, want 4", r.VarsDeleted)
 	}
-	if r.SecretsDeleted != 2 {
-		t.Errorf("SecretsDeleted = %d, want 2", r.SecretsDeleted)
+	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
+	// uninstall always attempts to delete (idempotent: a 404 for a repo
+	// that never set it is not an error) so a repo that did set it
+	// doesn't keep a long-lived key around after teardown.
+	if r.SecretsDeleted != 3 {
+		t.Errorf("SecretsDeleted = %d, want 3", r.SecretsDeleted)
 	}
 
-	if len(client.DeletedFiles) == 0 {
+	deleted := collectDeletedPaths(client)
+	if len(deleted) == 0 {
 		t.Error("no files were deleted")
 	}
 	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
 		found := false
-		for _, df := range client.DeletedFiles {
-			if df.Path == tcPath {
+		for _, p := range deleted {
+			if p == tcPath {
 				found = true
 				break
 			}
@@ -92,8 +128,13 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if len(client.DeletedVariables) != 4 {
 		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))
 	}
-	if len(client.DeletedSecrets) != 2 {
-		t.Errorf("deleted %d secrets, want 2", len(client.DeletedSecrets))
+	if len(client.DeletedSecrets) != 3 {
+		t.Errorf("deleted %d secrets, want 3", len(client.DeletedSecrets))
+	}
+	for _, ref := range client.DeletedRefs {
+		if strings.Contains(ref, poll.PollStateBranchSlash) || strings.Contains(ref, poll.PollStateBranchEvents) {
+			t.Errorf("GitHub uninstall deleted poll-state ref %s", ref)
+		}
 	}
 }
 
@@ -134,8 +175,9 @@ func TestUninstall_NonInstalledRepo(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -156,8 +198,9 @@ func TestUninstall_YamlExtensionFallback(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -170,8 +213,8 @@ func TestUninstall_YamlExtensionFallback(t *testing.T) {
 		t.Error("WorkflowDeleted = false, want true")
 	}
 	found := false
-	for _, f := range client.DeletedFiles {
-		if f.Path == ".github/workflows/fullsend.yaml" {
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".github/workflows/fullsend.yaml" {
 			found = true
 		}
 	}
@@ -188,7 +231,7 @@ func TestUninstall_DryRun(t *testing.T) {
 		Repos:          []string{"acme/api"},
 		DryRun:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -197,8 +240,8 @@ func TestUninstall_DryRun(t *testing.T) {
 	if !r.Success {
 		t.Errorf("Success = false; Error = %v", r.Error)
 	}
-	if len(client.DeletedFiles) != 0 {
-		t.Errorf("dry-run deleted %d files, want 0", len(client.DeletedFiles))
+	if len(client.CommittedFiles) != 0 {
+		t.Errorf("dry-run committed %d file batches, want 0", len(client.CommittedFiles))
 	}
 	if len(client.DeletedVariables) != 0 {
 		t.Errorf("dry-run deleted %d variables, want 0", len(client.DeletedVariables))
@@ -215,8 +258,9 @@ func TestUninstall_MultipleRepos(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web", "acme/docs"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -233,15 +277,16 @@ func TestUninstall_MultipleRepos(t *testing.T) {
 
 func TestUninstall_PartialFailure(t *testing.T) {
 	client := newInstalledFakeClient("acme/api", "acme/web")
-	client.Errors["DeleteFiles"] = fmt.Errorf("permission denied")
+	client.Errors["CommitFiles"] = fmt.Errorf("permission denied")
 
 	manifest := testManifest("acme/api", "acme/web")
 
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
+		Direct:         true,
 		MaxConcurrency: 1,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -261,13 +306,14 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
 	client.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
 	client.VariablesExist["acme/api/"+forge.PerRepoGuardVar] = true
-	client.Errors["DeleteFiles"] = fmt.Errorf("branch protection")
+	client.Errors["CommitFiles"] = fmt.Errorf("branch protection")
 
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -290,7 +336,7 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 func TestUninstall_EmptyRepos(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		MaxConcurrency: 4,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for empty repos")
@@ -301,10 +347,54 @@ func TestUninstall_InvalidRepoFormat(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"just-a-name"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid repo format")
+	}
+}
+
+func TestUninstall_NestedGitLabPath(t *testing.T) {
+	client := newInstalledFakeGitLabClient("group/subgroup/project")
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("group/subgroup/project"),
+		Repos:          []string{"group/subgroup/project"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v, want nil for nested GitLab path", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if r.Error != nil {
+		t.Errorf("Error = %v, want nil", r.Error)
+	}
+	if r.Owner != "group" {
+		t.Errorf("Owner = %q, want %q", r.Owner, "group")
+	}
+	if r.Repo != "subgroup/project" {
+		t.Errorf("Repo = %q, want %q", r.Repo, "subgroup/project")
+	}
+}
+
+func TestUninstall_NilCommitScaffold(t *testing.T) {
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
+
+	if err == nil {
+		t.Fatal("Uninstall() error = nil, want error for nil commit function")
+	}
+	if !strings.Contains(err.Error(), "scaffold commit function is required") {
+		t.Errorf("error = %v, want scaffold commit function is required", err)
 	}
 }
 
@@ -312,7 +402,7 @@ func TestUninstall_InvalidConcurrency(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 0,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid concurrency")
@@ -326,8 +416,9 @@ func TestUninstall_VariableDeleteError(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -348,8 +439,9 @@ func TestUninstall_SecretDeleteError(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -413,8 +505,9 @@ func TestUninstall_GitLabRepo(t *testing.T) {
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testGitLabManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -437,34 +530,30 @@ func TestUninstall_GitLabRepo(t *testing.T) {
 	}
 
 	// Verify GitLab scaffold paths were deleted, not GitHub paths.
-	for _, df := range client.DeletedFiles {
-		if df.Path == ".github/workflows/fullsend.yml" {
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".github/workflows/fullsend.yml" {
 			t.Error("GitHub workflow path was deleted for GitLab repo")
 		}
 	}
-}
 
-func TestUninstall_GitLabCommitMessage_HasSkipCI(t *testing.T) {
-	client := newInstalledFakeGitLabClient("acme/api")
-
-	_, err := Uninstall(context.Background(), UninstallConfig{
-		Manifest:       testGitLabManifest("acme/api"),
-		Repos:          []string{"acme/api"},
-		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
-
-	if err != nil {
-		t.Fatalf("Uninstall() error = %v", err)
+	wantRefs := []string{
+		"acme/api/heads/" + poll.PollStateBranchSlash,
+		"acme/api/heads/" + poll.PollStateBranchEvents,
 	}
-	if len(client.DeletedFiles) == 0 {
-		t.Fatal("no files were deleted")
+	if len(client.DeletedRefs) != len(wantRefs) {
+		t.Errorf("DeletedRefs = %v, want %v", client.DeletedRefs, wantRefs)
 	}
-	msg := client.DeletedFiles[0].Message
-	if msg == "" {
-		t.Fatal("commit message is empty")
-	}
-	if !strings.Contains(msg, "[skip ci]") {
-		t.Errorf("commit message %q does not contain [skip ci]", msg)
+	for _, want := range wantRefs {
+		found := false
+		for _, got := range client.DeletedRefs {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DeletedRefs missing %s (got %v)", want, client.DeletedRefs)
+		}
 	}
 }
 
@@ -474,20 +563,239 @@ func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testGitLabManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
 	found := false
-	for _, df := range client.DeletedFiles {
-		if df.Path == ".fullsend/config.yaml" {
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".fullsend/config.yaml" {
 			found = true
 		}
 	}
 	if !found {
 		t.Error(".fullsend/config.yaml was not in scaffold paths for GitLab uninstall")
+	}
+}
+
+func TestUninstall_GitLabTrustScript_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	found := false
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".gitlab/ci/scripts/trust-ci-server-ca.sh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("trust-ci-server-ca.sh was not deleted on GitLab uninstall")
+	}
+}
+
+func TestUninstall_GitLabRootCI_DeletedWhenEmpty(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	// Override the shared fixture: omit merge_request_event. It's no
+	// longer in unmergeWorkflowRules (#7333) — with no provenance signal
+	// to distinguish a fullsend-installed copy from the repo owner's own
+	// MR gate, it survives unmerge — so a fixture containing it would
+	// never leave the file empty. This test exercises the "genuinely
+	// nothing left" deletion path, which is orthogonal to that decision.
+	client.FileContents["acme/api/.gitlab-ci.yml"] = []byte("---\n" +
+		"include:\n" +
+		"  - local: '.gitlab/ci/fullsend-pipeline.yml'\n" +
+		"\n" +
+		"workflow:\n" +
+		"  auto_cancel:\n" +
+		"    on_new_commit: none\n" +
+		"  rules:\n" +
+		"    - if: $CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_REF_PROTECTED == \"true\"\n" +
+		"    - if: $CI_PIPELINE_SOURCE == \"api\" && $CI_COMMIT_REF_PROTECTED == \"true\" && $STAGE\n")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	found := false
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".gitlab-ci.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error(".gitlab-ci.yml was not deleted when empty after unmerge")
+	}
+	if _, ok := client.FileContents["acme/api/.gitlab-ci.yml"]; ok {
+		t.Error(".gitlab-ci.yml still present after uninstall")
+	}
+}
+
+func TestUninstall_GitLabRootCI_RewrittenWhenNotEmpty(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.FileContents["acme/api/.gitlab-ci.yml"] = []byte("---\n" +
+		"include:\n" +
+		"  - local: '.gitlab/ci/fullsend-pipeline.yml'\n" +
+		"  - local: 'other.yml'\n")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".gitlab-ci.yml" {
+			t.Fatal(".gitlab-ci.yml was deleted, want rewrite of remaining content")
+		}
+	}
+	content, ok := client.FileContents["acme/api/.gitlab-ci.yml"]
+	if !ok {
+		t.Fatal(".gitlab-ci.yml missing after uninstall")
+	}
+	if strings.Contains(string(content), "fullsend-pipeline.yml") {
+		t.Errorf(".gitlab-ci.yml still contains fullsend include:\n%s", content)
+	}
+	if !strings.Contains(string(content), "other.yml") {
+		t.Errorf(".gitlab-ci.yml lost user include:\n%s", content)
+	}
+}
+
+func TestUninstall_GitLabRootCI_UnmergeErrorContinues(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.GetFileContentErrors = map[string]error{
+		"acme/api/.gitlab-ci.yml": fmt.Errorf("read failed"),
+	}
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if !r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
+	}
+	found := false
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".fullsend/config.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("scaffold files were not deleted after unmerge warning")
+	}
+}
+
+func TestUninstall_PassesDirectToCommit(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	var gotDirect *bool
+	commit := func(_ context.Context, _, _ string, _ []forge.TreeFile, direct bool, _ bool) error {
+		gotDirect = &direct
+		return nil
+	}
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), commit, nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if gotDirect == nil {
+		t.Fatal("commit function was not called")
+	}
+	if !*gotDirect {
+		t.Error("Direct = false, want true")
+	}
+}
+
+func TestUninstall_DefaultNotDirect(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	var gotDirect *bool
+	commit := func(_ context.Context, _, _ string, files []forge.TreeFile, direct bool, _ bool) error {
+		gotDirect = &direct
+		_, err := client.CommitFiles(context.Background(), "acme", "api", "chore: remove fullsend workflow", files)
+		return err
+	}
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), commit, nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !results[0].Success {
+		t.Errorf("Success = false; Error = %v", results[0].Error)
+	}
+	if gotDirect == nil {
+		t.Fatal("commit function was not called")
+	}
+	if *gotDirect {
+		t.Error("Direct = true, want false (PR delivery is the default)")
+	}
+	if results[0].VarsDeleted == 0 {
+		t.Error("vars were not deleted on the PR path")
+	}
+}
+
+func TestUninstall_CommitError_SkipsVarsAndSecrets(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitErr(fmt.Errorf("pr delivery failed")), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if r.Success {
+		t.Error("Success = true, want false")
+	}
+	if r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = true, want false")
+	}
+	if len(client.DeletedVariables) != 0 {
+		t.Errorf("deleted %d variables, want 0", len(client.DeletedVariables))
+	}
+	if len(client.DeletedSecrets) != 0 {
+		t.Errorf("deleted %d secrets, want 0", len(client.DeletedSecrets))
 	}
 }
 
@@ -505,8 +813,9 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
+		Direct:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), progress)
+	}, newTestClientFactory(client), uninstallCommitFn(client), progress)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -532,5 +841,90 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 	}
 	if !hasDone {
 		t.Error("missing 'done' phase callback")
+	}
+}
+
+func TestUninstall_GitLabPollStateBranches_NotFoundOK(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.Errors["DeleteRef"] = forge.ErrNotFound
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+}
+
+func TestUninstall_GitLabPollStateBranches_DeleteError(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.Errors["DeleteRef"] = fmt.Errorf("forbidden")
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if r.Success {
+		t.Error("Success = true, want false (branch deletion failed)")
+	}
+	if r.Error == nil || !strings.Contains(r.Error.Error(), "poll-state branch") {
+		t.Errorf("Error = %v, want poll-state branch deletion error", r.Error)
+	}
+	// Vars and secrets still deleted even when branch deletion fails.
+	if r.VarsDeleted != len(gitlabUninstallVars) {
+		t.Errorf("VarsDeleted = %d, want %d", r.VarsDeleted, len(gitlabUninstallVars))
+	}
+}
+
+func TestUninstallSecretsForForge_GitHub_DeletesOptInOpenAIKey(t *testing.T) {
+	secrets := UninstallSecretsForForge(ForgeGitHub)
+	found := false
+	for _, s := range secrets {
+		if s == forge.SecretOpenAIAPIKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("UninstallSecretsForForge(GitHub) = %v, want it to include %s so a torn-down repo doesn't keep the opt-in key", secrets, forge.SecretOpenAIAPIKey)
+	}
+
+	// The opt-in key must never become a health requirement: a repo with
+	// no OpenAI WIF and no static key is not an unhealthy installation.
+	for _, s := range requiredSecretsForForge(ForgeGitHub) {
+		if s == forge.SecretOpenAIAPIKey {
+			t.Errorf("requiredSecretsForForge(GitHub) must not include the opt-in %s", forge.SecretOpenAIAPIKey)
+		}
+	}
+}
+
+func TestUninstallSecretsForForge_GitLab_DoesNotDeleteOpenAIKey(t *testing.T) {
+	// Unlike GitHub's FULLSEND_OPENAI_API_KEY — a dedicated,
+	// FULLSEND_-namespaced secret fullsend can safely delete regardless of
+	// how it was set — GitLab's unprefixed OPENAI_API_KEY CI/CD variable is
+	// never forwarded by fullsend and shares no such namespace (it "already
+	// works" as a plain variable the project owner manages). Deleting it on
+	// uninstall would risk destroying a credential unrelated jobs in the
+	// same project depend on. Assert the exact list, not just this one
+	// key's absence, so an unrelated future addition can't silently widen
+	// what GitLab uninstall deletes.
+	got := UninstallSecretsForForge(ForgeGitLab)
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
+	if !slices.Equal(got, want) {
+		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
 	}
 }

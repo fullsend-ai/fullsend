@@ -418,9 +418,7 @@ repos:
 
 func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
 	fc := forge.NewFakeClient()
-	setRepoVars(fc, "acme", "api", map[string]string{
-		"FULLSEND_LAST_POLL_AT_FAST": "2026-01-01T00:00:00Z",
-	})
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
 		"  ref: v2.5.0\n")
 

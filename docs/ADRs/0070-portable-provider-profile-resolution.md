@@ -32,6 +32,11 @@ Currently:
 - Provider definitions are loaded from `.fullsend/providers/` by `LoadProviderDefs`
 - Profile definitions are imported from `.fullsend/profiles/` by `ImportProfiles`
 
+> **Update (#7095):** `ImportProfiles`'s wholesale directory import described above has
+> since been removed; profiles are now imported only when listed under
+> `openshell.profiles` (see [ADR 0075](0075-local-path-profiles-providers.md)). The
+> sentence above is retained as historical context for the problem this ADR addressed.
+
 When a harness is referenced via `base:` (ADR 0045) and that base harness lives in a
 remote repository, its bundled provider and profile definitions cannot be discovered.
 The base harness may declare providers needed for the agent to run, but those providers
@@ -195,8 +200,14 @@ Result after merge and resolution:
 - **Local providers** are not checked here — their `type` references
   gateway-resident profiles, and the gateway itself rejects unknown types at
   `openshell provider create` time.
+  > **Update (#7095):** this is no longer accurate; `checkProviderProfileIntegrity`
+  > now validates all providers uniformly and does not read `FromURL`, so local
+  > providers are checked against harness-resolved profiles the same as
+  > URL-resolved providers (see [ADR 0075](0075-local-path-profiles-providers.md)).
 - When URL-resolved providers exist but no URL-resolved profiles are declared,
   a warning is emitted (referential integrity cannot be verified ahead of time).
+  > **Update (#7095):** this case is no longer a warning; `checkProviderProfileIntegrity`
+  > now returns a hard error here, the same as an actual type mismatch.
 - Runs after profile import but before provider creation.
 
 ## Security
@@ -235,3 +246,9 @@ Fully backwards-compatible:
 - The validation layer ensures referential integrity: every provider's type must
   match a declared profile, preventing broken harnesses.
 - No new attack surface — same fetch + cache + audit pipeline as ADR 0038.
+
+## Amendments
+
+### 2026-09-07: Org-level allowlist fallback for profile/provider URL resolution (#6452)
+
+Profile/provider URLs now also pass validation if they match the org-level `allowed_remote_resources` from `config.yaml`, which acts as a fallback when the harness-level `AllowedRemoteResources` list does not include the URL. See ADR 0038 amendment of the same date for the broader change.

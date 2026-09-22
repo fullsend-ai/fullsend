@@ -5,7 +5,8 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
+[Configuring GitHub](../getting-started/configuring-github.md) or
+[Configuring GitLab](../getting-started/configuring-gitlab.md). For advanced
 installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
@@ -33,6 +34,20 @@ code defaults (compiled into fullsend)
 
 Existing installations without `config.base.yaml` are unaffected — the
 overlay falls through directly to code defaults.
+
+`fullsend github setup --config` commits the preset as `config.base.yaml`
+and writes only explicitly passed persistent setup flags into
+`config.yaml`. Required values such as `inference.project` may come from
+the preset alone; CLI flags override the same keys without rewriting the
+preset file.
+
+`fullsend repos install` uses the same preset implementation. Declare a
+default source in `defaults.config_base.source` (optional
+`defaults.config_base.sha256`) or override it per repository with
+`config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
+`config.base.yaml` and never edits the overlay; `repos status` reports
+base-file drift only when a preset is declared. See
+[Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
 ### Marshal behavior
 
@@ -74,6 +89,7 @@ the overlay → base → code defaults chain.
 | `version` | `string` | Scalar override | `"1"` |
 | `runtime` | `string` | Scalar override | `"claude"` |
 | `kill_switch` | `*bool` | Scalar override | `false` (inactive) |
+| `keep_history` | `*bool` | Scalar override | `true` (history appended) |
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
@@ -141,6 +157,20 @@ unset, the accessor falls through to the base layer, then to code defaults.
   - `*false` (explicit `kill_switch: false`) — locally set to inactive.
     Does **not** fall through.
   - `*true` (explicit `kill_switch: true`) — locally set to active.
+- **`keep_history`**: Pointer to bool (`*bool`). Controls whether sticky
+  comment updates (from `post-review`, `post-comment`, and
+  `issues post-comment`) append the previous body as a collapsed
+  "Previous run" `<details>` block. Uses the same three-state pointer
+  semantics as `kill_switch`:
+  - `nil` (key omitted) — unset, falls through to parent.
+    Code default is `true` (history appended, preserving existing
+    behavior).
+  - `*true` (explicit `keep_history: true`) — updates collapse old
+    content into history blocks.
+  - `*false` (explicit `keep_history: false`) — updates replace the
+    comment body in-place with no history. Useful when accumulated
+    "Previous run" blocks add unwanted noise (e.g., when comments are
+    synced to Jira where `<details>` does not render as collapsible).
 
 ### `mint_url` and `inference` — scalar override (ADR 0069 Decision 1)
 
@@ -307,8 +337,9 @@ agents:
 
 ### `allowed_remote_resources` — union with deny-all
 
-This field controls which URL prefixes are allowed for remote agent sources
-and base composition. It uses special three-way semantics:
+This field controls which URL prefixes are allowed for remote resources
+(agents, policies, skills, plugins, profiles, providers, and base
+composition). It uses special three-way semantics:
 
 | Overlay value | Behavior |
 |---------------|----------|
@@ -379,6 +410,7 @@ compiled-in defaults apply:
 | `version` | `"1"` |
 | `runtime` | `"claude"` |
 | `kill_switch` | `false` (inactive) |
+| `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
@@ -395,9 +427,13 @@ compiled-in defaults apply:
 
 ## Related
 
+- [Config Reference](../../reference/config-reference.md) — canonical
+  user-facing reference for every `.fullsend/config.yaml` field.
 - [ADR 0069 — Ready-made configuration presets](../../ADRs/0069-ready-made-configuration-presets.md)
   — the architectural decision that introduced layered configuration.
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)
   — per-repo config file location and format.
 - [Configuring GitHub](../getting-started/configuring-github.md) — initial
+  per-repo setup guide.
+- [Configuring GitLab](../getting-started/configuring-gitlab.md) — initial
   per-repo setup guide.

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
@@ -32,11 +31,10 @@ const (
 func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracker.Client, error) {
 	switch trackerName {
 	case trackerGitHub:
-		ghToken, err := resolveGitHubTrackerToken(token)
+		fc, err := newAuthenticatedGitHubClient(token, "")
 		if err != nil {
 			return nil, err
 		}
-		fc := gh.New(ghToken)
 		return tracker.NewForgeClient(fc), nil
 
 	case trackerGitLab:
@@ -87,16 +85,6 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 	default:
 		return nil, fmt.Errorf("unsupported tracker %q: use %q, %q, or %q", trackerName, trackerGitHub, trackerGitLab, trackerJira)
 	}
-}
-
-// resolveGitHubTrackerToken returns a GitHub token from the explicit
-// override, environment variables, or gh auth token — the same chain as
-// resolveToken but accepting an explicit override first.
-func resolveGitHubTrackerToken(explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	return resolveToken()
 }
 
 // resolveGitLabTrackerToken returns a GitLab token from the explicit

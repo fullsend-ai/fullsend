@@ -26,7 +26,7 @@ func resolveGitLabToken() (string, error) {
 }
 
 // newForgeClient creates a forge.Client for the given forge type.
-// For GitHub, it uses the standard token resolution chain (GH_TOKEN,
+// For GitHub, it delegates to newAuthenticatedGitHubClient (GH_TOKEN,
 // GITHUB_TOKEN, gh auth token). For GitLab, it uses GITLAB_TOKEN or
 // the provided gitlabToken override.
 //
@@ -62,11 +62,7 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 		opts = append(opts, glOpts...)
 		return gl.New(token, opts...)
 	case repos.ForgeGitHub, "":
-		token, err := resolveToken()
-		if err != nil {
-			return nil, err
-		}
-		return newGitHubLiveClient(token, baseURL), nil
+		return newAuthenticatedGitHubClient("", baseURL)
 	default:
 		return nil, fmt.Errorf("unsupported forge %q", forgeName)
 	}

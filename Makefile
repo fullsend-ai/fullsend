@@ -26,7 +26,7 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, gitlint-rules, artifact redaction, kill_stray_processes)"
+	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, artifact redaction, kill_stray_processes)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
@@ -162,14 +162,11 @@ wasm-stage: wasm-build
 	@echo "==> Staged: $(WORKERSRC_DIR)/mintcore.wasm, $(WORKERSRC_DIR)/wasm_exec.js"
 
 # Run CF Worker bridge smoke tests.
-# Works on a clean checkout: stages WASM, installs npm deps, runs vitest.
-# Uses `npm install` (not `npm ci`) because the workersrc lockfile is not
-# committed — the dep tree is small enough that install-time resolution is
-# acceptable. Switch to `npm ci` if a lockfile is added later.
+# Works on a clean checkout: stages WASM, installs locked npm deps, runs vitest.
 # Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
 mint-cf-worker-test: wasm-stage
 	@echo "==> Installing CF Worker npm dependencies..."
-	cd $(WORKERSRC_DIR) && npm install --no-audit --no-fund
+	cd $(WORKERSRC_DIR) && npm ci --no-audit --no-fund
 	@echo "==> Type-checking CF Worker source (production + test files)..."
 	cd $(WORKERSRC_DIR) && npm run typecheck && npm run typecheck:tests
 	@echo "==> Running CF Worker bridge smoke tests..."
@@ -177,7 +174,7 @@ mint-cf-worker-test: wasm-stage
 	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmaps/2026-07.md '**/*.md'
 
 define run-timed
 	@start=$$(date +%s); \
@@ -197,11 +194,16 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/prepare_validation_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/executor/gateway_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/lib_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
+	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
+	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test lint-eval-cases

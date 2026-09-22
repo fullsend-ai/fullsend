@@ -7,6 +7,13 @@ are written to the `run-telemetry.jsonl` file that gets uploaded into an artifac
 in the workflow. Fullsend is able to send traces to a remote OpenTelemetry-compatible
 endpoint.
 
+When the same `OTEL_EXPORTER_OTLP_*` configuration is set,
+`fullsend eval-measure` also exports newly written scores as
+`gen_ai.evaluation.result` span events on that endpoint (fail-open; local
+`eval-measurements.jsonl` always wins). See
+[Eval Measurements](../infrastructure/eval-measurements.md) for the score
+contract and carrier details.
+
 Follow this guide to configure a GitHub repository or organization to send traces
 to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 
@@ -113,7 +120,9 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 ## Capture conversation content
 
 Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, and tool calls to each `agent` span, in the local file and
+text, reasoning, tool calls, and tool results — when the runtime's stream
+provides them; Claude runs do — to each `agent` span, in the
+local file and
 at the endpoint. Content is redacted for secrets and bounded per iteration,
 but may still contain proprietary code or PII — make sure your backend's
 access controls fit before enabling it.
@@ -121,6 +130,12 @@ access controls fit before enabling it.
 ```bash
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
+
+With the `claude` runtime, id-bearing tool calls are visible at every level as
+`execute_tool` child spans of each `agent` span (tool name, call id, timing,
+error) — that is metadata, not content, and this variable does not affect
+it. The pi and codex runtimes emit none yet (see
+[Runtimes](../../runtimes.md)).
 
 ## Disable trace export
 
@@ -152,6 +167,9 @@ gh variable set OTEL_SDK_DISABLED --body "false" --repo <owner/repo>
 
 ## See also
 
+- [Eval Measurements](../infrastructure/eval-measurements.md): local score
+  JSONL and optional OTLP `gen_ai.evaluation.result` export on the same
+  `OTEL_EXPORTER_OTLP_*` path as agent traces
 - [Tracing with MLflow](tracing-with-mlflow.md): experiment routing, Basic
   auth encoding, org-level organization, and cost column caveats
 - [Tracing Reference](../infrastructure/distributed-tracing.md): span

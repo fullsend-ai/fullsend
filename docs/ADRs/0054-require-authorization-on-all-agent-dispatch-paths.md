@@ -27,6 +27,16 @@ Related: [#877](https://github.com/fullsend-ai/fullsend/issues/877)
 (agents must not model their own authority limitations — this ADR
 implements the platform-level enforcement that principle requires).
 
+Living contract:
+[Authorization Contract v1](../normative/authorization/v1/)
+consolidates the normative rules from this ADR and subsequent
+implementation changes into a single reference for dispatch
+implementations, forge adapters, and harness authors.
+
+[ADR 0098](0098-entity-first-harness-evaluation.md) extends this decision for
+Fullsend-originated entity discovery without a prompting event. Event-backed
+dispatch remains subject to this ADR's actor authorization gate.
+
 ## Context
 
 The dispatch routing logic (`dispatch.yml` / `reusable-dispatch.yml`)

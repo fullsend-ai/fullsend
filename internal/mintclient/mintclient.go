@@ -11,11 +11,32 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
+
+// MaxMintDuration is a practical upper bound on how long a single
+// MintToken call can take, informed by its retry schedule: fetchOIDCJWT
+// retries up to 3 times (1s+2s backoff between attempts) and callMint
+// retries up to 5 times (1s+2s+4s+8s backoff), for 18s of backoff spread
+// across up to 8 HTTP round trips — each individually bounded by
+// httpClient's 30s timeout (see doWithRetry, fetchOIDCJWT, callMint).
+//
+// The literal worst case — every one of the 8 attempts hanging for the
+// full 30s client timeout — is 258s, unrealistically long for a caller
+// to wait out during teardown. In practice a mint-service outage produces
+// fast failing responses dominated by the backoff schedule, not attempts
+// that each hang the full client timeout, so MaxMintDuration is a
+// documented practical ceiling rather than that literal worst case:
+// comfortably above the ~18s backoff-only estimate — leaving headroom for
+// real per-request latency across up to 8 round trips, including a slow
+// attempt or two — while remaining well inside a CI job's own timeout.
+//
+// Callers that bound MintToken with a context deadline (e.g. the
+// post-script remint in internal/cli, #7231) should use at least this
+// value: a shorter bound routinely cuts off retries the client itself
+// would have completed.
+const MaxMintDuration = 120 * time.Second
 
 // HTTPDoer abstracts http.Client for testability.
 type HTTPDoer interface {
@@ -23,8 +44,10 @@ type HTTPDoer interface {
 }
 
 // defaultAudience is the canonical OIDC audience for the fullsend
-// token mint, sourced from the shared mintconsts package.
-const defaultAudience = mintconsts.OIDCAudience
+// token mint. Duplicated from mintconsts.OIDCAudience so this package
+// does not import the nested mintcore module (mintconsts lives inside
+// that module even though it has no mintcore imports of its own).
+const defaultAudience = "fullsend-mint"
 
 // MintRequest holds the parameters for minting a token via the fullsend mint service.
 type MintRequest struct {
@@ -232,6 +255,15 @@ func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*M
 }
 
 type retryableError struct{ error }
+
+// Unwrap exposes the wrapped error to errors.Is/errors.As so callers can
+// detect e.g. a context.DeadlineExceeded that occurred mid-request (wrapped
+// here to mark it retryable) rather than only one that fired between
+// retries (returned unwrapped by doWithRetry's ctx.Done() case below).
+// Without this, a caller bounding MintToken with a context deadline can't
+// distinguish a truncated retry from a genuine rejection when the deadline
+// happens to land while an HTTP request is in flight.
+func (e *retryableError) Unwrap() error { return e.error }
 
 var retryBaseDelay = time.Second
 

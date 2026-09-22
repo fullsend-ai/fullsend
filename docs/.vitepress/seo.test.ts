@@ -48,6 +48,10 @@ describe("canonicalUrl", () => {
     expect(canonicalUrl("index.md")).toBe("https://fullsend.sh/docs/guides/getting-started/");
   });
 
+  it("resolves the old archived-roadmap URL to the dated archive index", () => {
+    expect(canonicalUrl("archived-roadmap.md")).toBe("https://fullsend.sh/docs/archived-roadmaps/");
+  });
+
   it("resolves a directory index to a trailing-slash URL", () => {
     expect(canonicalUrl("agents/index.md")).toBe("https://fullsend.sh/docs/agents/");
   });
@@ -96,6 +100,10 @@ describe("isIndexablePage", () => {
     expect(isIndexablePage("404.md")).toBe(false);
   });
 
+  it("excludes the archived-roadmap redirect stub from indexing", () => {
+    expect(isIndexablePage("archived-roadmap.md")).toBe(false);
+  });
+
   it("treats content pages as indexable", () => {
     expect(isIndexablePage("index.md")).toBe(true);
     expect(isIndexablePage("agents/triage.md")).toBe(true);
@@ -128,6 +136,8 @@ describe("isSitemapUrl", () => {
   it("excludes the redirecting root and non-content URLs", () => {
     expect(isSitemapUrl("")).toBe(false);
     expect(isSitemapUrl("/")).toBe(false);
+    expect(isSitemapUrl("archived-roadmap")).toBe(false);
+    expect(isSitemapUrl("archived-roadmap.html")).toBe(false);
     expect(isSitemapUrl("experiments/0000-experiment-template/")).toBe(false);
     expect(isSitemapUrl("experiments/example/SKILL")).toBe(false);
   });
@@ -139,10 +149,14 @@ describe("isSitemapUrl", () => {
 
 describe("pageRobotsHead", () => {
   it("marks the directly reachable 404 asset noindex", () => {
-    expect(pageRobotsHead("404.md")).toEqual([
+    expect(pageRobotsHead("404.md")).toEqual([["meta", { name: "robots", content: "noindex" }]]);
+    expect(pageRobotsHead("agents/triage.md")).toEqual([]);
+  });
+
+  it("marks the archived-roadmap redirect stub noindex", () => {
+    expect(pageRobotsHead("archived-roadmap.md")).toEqual([
       ["meta", { name: "robots", content: "noindex" }],
     ]);
-    expect(pageRobotsHead("agents/triage.md")).toEqual([]);
   });
 });
 

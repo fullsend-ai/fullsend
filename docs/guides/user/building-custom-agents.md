@@ -1,8 +1,10 @@
 # Building custom agents from scratch
 
-> **Note:** For new custom agents, register them in `config.yaml` with a
-> local `source:` path instead of the patterns shown below. See
-> [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
+> **Note:** For new custom agents, run
+> [`fullsend agent new <name>`](../../cli/agent.md#agent-new) — it generates a
+> complete, valid, registered agent and is the recommended starting point. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the full workflow. The
+> patterns below are retained for understanding an existing hand-written agent.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
@@ -147,6 +149,11 @@ providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
 
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml  # must be listed explicitly to be imported
+    - profiles/fullsend-github.yaml
+
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
@@ -173,6 +180,10 @@ validation_loop:
   max_iterations: 2
 
 post_script: scripts/post-my-agent.sh
+
+# Optional: give the sandbox a read-only token (default is write everywhere).
+# privilege_levels:
+#   runtime: read
 
 env:
   runner:
@@ -230,9 +241,15 @@ providers:
   - vertex-ai       # Anthropic API + GCP (required for model access)
   - github           # GitHub API + Git transport
   - package-registries  # npm, PyPI, Go modules (optional)
+
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+    - profiles/fullsend-github.yaml
+    - profiles/fullsend-package-registries.yaml
 ```
 
-Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+Each provider has a profile that defines its endpoints and binaries. Every profile a provider needs must be listed under `openshell.profiles` (or inherited via `base:` composition) — the gateway only composes the profiles named there into the effective network policy, not every file that happens to exist under `profiles/`. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
 
 The scaffold ships with profiles for common services. To see what's available:
 
@@ -240,6 +257,8 @@ The scaffold ships with profiles for common services. To see what's available:
 ls .fullsend/providers/     # provider definitions (name + type)
 ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
 ```
+
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
 
 For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
@@ -362,6 +381,19 @@ still parsed for `reason` and other outputs when exit 78 is used, but a parse
 error does not block the skip. See the
 [normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
 for full details.
+
+**Hard failures.** A non-zero exit other than 78 fails the run. Print a GitHub
+Actions error annotation so the message appears in the PR status comment
+instead of a bare `exit status 1`:
+
+```bash
+echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+exit 1
+```
+
+Without an annotation, the last non-empty stderr line (then stdout) is used.
+See the [normative spec](../../normative/prescript-output/v1/README.md#hard-failure-diagnostics)
+for the full preference order and sanitization rules.
 
 ### Post-script (action execution)
 
@@ -540,6 +572,13 @@ jobs:
           name: fullsend-my-agent
           path: ${{ github.workspace }}/output
 ```
+
+This example reflects the currently deployed cancellation policy. Under
+[ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
+the platform will change subject-scoped agent workflows to
+`cancel-in-progress: false` once preserve-and-coalesce scheduling is
+implemented. Until that migration lands, keep the setting aligned with the
+reusable workflow that invokes the agent.
 
 ### Critical workflow steps
 

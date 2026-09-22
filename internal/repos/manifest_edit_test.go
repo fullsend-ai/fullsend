@@ -55,6 +55,44 @@ func TestAddToManifest_Basic(t *testing.T) {
 	}
 }
 
+// TestAddToManifest_LocalConfigSourceStaysRelativeOnWriteBack guards
+// against Validate's local-path resolution leaking into the manifest
+// written back to disk. AddToManifest (like RemoveFromManifest) calls
+// LoadManifest, Validate, then marshals the same *Manifest back to
+// repos.yaml; the committed defaults.config_base.source must stay the relative path
+// the operator wrote, not a machine-local absolute path.
+func TestAddToManifest_LocalConfigSourceStaysRelativeOnWriteBack(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	presetPath := filepath.Join(dir, "preset.yaml")
+
+	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`version: 1
+defaults:
+  config_base:
+    source: ./preset.yaml
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/existing
+`), 0o644))
+
+	manifest, err := LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	require.NoError(t, manifest.Validate())
+
+	_, _, err = AddToManifest(context.Background(), ManifestEditConfig{
+		Manifest:     manifest,
+		ManifestPath: manifestPath,
+	}, ForgeGitHub, []RepoEntry{{Name: "acme/new-repo"}}, nil, nil)
+	require.NoError(t, err)
+
+	reloaded, err := LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, "./preset.yaml", reloaded.Defaults.ConfigBase.Source,
+		"defaults.config_base.source must remain the relative path on disk, not the resolved absolute path")
+}
+
 func TestAddToManifest_Duplicate(t *testing.T) {
 	manifest := testManifest("acme/api")
 
@@ -190,6 +228,72 @@ func TestAddToManifest_GlobRepoAllowed(t *testing.T) {
 	}
 }
 
+func TestAddToManifest_GitLabNestedPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		forge     string
+		repoName  string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:     "gitlab 3-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "group/subgroup/project",
+		},
+		{
+			name:     "gitlab 4-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "a/b/c/d",
+		},
+		{
+			name:     "gitlab 2-segment path accepted",
+			forge:    ForgeGitLab,
+			repoName: "owner/project",
+		},
+		{
+			name:      "single-segment rejected for gitlab",
+			forge:     ForgeGitLab,
+			repoName:  "project",
+			wantErr:   true,
+			errSubstr: "group[/subgroup]/project format",
+		},
+		{
+			name:      "github rejects 3-segment path",
+			forge:     ForgeGitHub,
+			repoName:  "a/b/c",
+			wantErr:   true,
+			errSubstr: "owner/repo format",
+		},
+		{
+			name:     "github 2-segment path accepted",
+			forge:    ForgeGitHub,
+			repoName: "owner/repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := &Manifest{Version: 1}
+			_, _, err := AddToManifest(context.Background(), ManifestEditConfig{
+				Manifest: manifest,
+			}, tt.forge, []RepoEntry{{Name: tt.repoName}}, nil, nil)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errSubstr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestAddToManifest_DiscoverInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
@@ -294,9 +398,7 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 
 func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
 		"# fullsend-ref: v3.2.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.2.0\n    file: .gitlab/ci/dispatch.yml\n")
 
@@ -570,6 +672,42 @@ func TestSetDefault_AllowedRemoteResources_ValidatesURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for valid HTTPS URLs, got: %v", err)
 	}
+}
+
+func TestSetDefault_Config(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+
+	require.NoError(t, SetDefault(path, "defaults.config_base.source", "https://example.com/preset.yaml"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "source: https://example.com/preset.yaml")
+
+	err = SetDefault(path, "defaults.config_base.source", "http://insecure.example.com/preset.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+
+	require.NoError(t, SetDefault(path, "defaults.config_base.source", ""), "empty clears the default")
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "source:")
+}
+
+func TestSetDefault_ConfigHash(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+	hash := sha256Hex(testPresetYAML)
+
+	require.NoError(t, SetDefault(path, "defaults.config_base.sha256", hash))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "sha256: "+hash)
+
+	err = SetDefault(path, "defaults.config_base.sha256", "short")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "64-character")
 }
 
 func TestSetDefault_CreatesManifestIfMissing(t *testing.T) {

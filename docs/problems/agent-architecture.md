@@ -145,11 +145,15 @@ The repository's existing infrastructure provides all the coordination needed:
 - **Branch protection rules** define what's required before merge (status checks, approvals)
 - **CODEOWNERS** defines who (human or bot account) must approve changes to which paths
 - **Required status checks** ensure all review sub-agents have posted their findings
-- **GitHub events** (PR opened, comment posted, status check completed) trigger agent actions
+- **Forge events and scheduled entity discovery** identify entities whose
+  harness predicates should be evaluated. Each predicate can inspect the
+  resolved entity and an optional prompting event
+  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
-1. A PR is opened → review sub-agents are triggered (by webhook/GitHub event)
+1. A PR is opened → its entity is resolved and review sub-agent predicates are
+   evaluated with the GitHub event as context
 2. Each review sub-agent independently evaluates the PR and posts its findings (as status checks or structured comments)
 3. If a review sub-agent requests changes → the code agent sees the comment and responds (treating it as untrusted input, but recognizing blocking authority if the reviewer has approval rights)
 4. The merge decision is a **deterministic function of state**: all required status checks pass, all required CODEOWNERS approvals present, no blocking reviews outstanding
@@ -159,6 +163,8 @@ The "coordination logic" is the repository's branch protection configuration —
 This principle aligns with what Yegge's Gas City project calls "Zero Framework Cognition" (ZFC): the orchestration layer should handle mechanics only, while all judgment is deferred to the LLM via prompts. Gas City enforces this with a testable invariant — "does any line of Go contain a judgment call? If yes, it's a violation" — and extends it with the Bitter Lesson test: anything a smarter model would handle better from the prompt doesn't belong in the framework. (See [landscape.md](../landscape.md#gas-town--gas-city).) Fullsend's repo-as-coordinator model naturally satisfies ZFC: branch protection rules, CODEOWNERS, and status checks are deterministic infrastructure. The judgment happens in the review and implementation agents, mediated through GitHub's existing mechanisms. Note the architectural distinction: Gas City *does* have a controller process (reconciliation, health patrol), but enforces that it contain zero cognition. Fullsend's model goes further by eliminating the controller entirely and using the forge's native mechanisms instead.
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) is the useful contrast case. It uses an event-driven FastAPI/Redis/LangGraph worker and durable checkpoints to move work forward, which is operationally sensible, but it also centralizes workflow truth and treats Jira labels/comments as approval signals. Fullsend can borrow the event-driven resume mechanics without moving merge authority or intent authorization out of repository-visible controls.
+
+[OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
 
 ### How agents communicate
 

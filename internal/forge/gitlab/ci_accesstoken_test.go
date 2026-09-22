@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,9 +64,9 @@ func TestListProjectAccessTokens(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		writeJSON(t, w, http.StatusOK, []map[string]any{
-			{"id": 1, "name": "fullsend-bot", "active": true},
+			{"id": 1, "name": "fullsend-bot", "active": true, "expires_at": "2027-09-21"},
 			{"id": 2, "name": "deploy-token", "active": true},
-			{"id": 3, "name": "fullsend-bot", "active": false},
+			{"id": 3, "name": "fullsend-bot", "active": false, "revoked": true},
 		})
 	})
 
@@ -74,8 +75,41 @@ func TestListProjectAccessTokens(t *testing.T) {
 	require.Len(t, tokens, 3)
 	assert.Equal(t, "fullsend-bot", tokens[0].Name)
 	assert.True(t, tokens[0].Active)
+	assert.Equal(t, "2027-09-21", tokens[0].ExpiresAt)
 	assert.Equal(t, "deploy-token", tokens[1].Name)
 	assert.False(t, tokens[2].Active)
+	assert.True(t, tokens[2].Revoked)
+}
+
+func TestListProjectAccessTokens_Paginates(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		require.NoError(t, err)
+		switch page {
+		case 1:
+			tokens := make([]map[string]any, 100)
+			for i := range tokens {
+				tokens[i] = map[string]any{"id": i + 1, "name": "token", "active": true}
+			}
+			writeJSON(t, w, http.StatusOK, tokens)
+		case 2:
+			writeJSON(t, w, http.StatusOK, []map[string]any{{"id": 101, "name": "last", "active": true}})
+		default:
+			t.Fatalf("unexpected page %d", page)
+		}
+	})
+
+	tokens, err := client.ListProjectAccessTokens(ctx, "mygroup", "myproject")
+	require.NoError(t, err)
+	assert.True(t, handlerCalled)
+	assert.Len(t, tokens, 101)
+	assert.Equal(t, 101, tokens[len(tokens)-1].ID)
 }
 
 func TestRevokeProjectAccessToken(t *testing.T) {

@@ -16,7 +16,8 @@ func TestCodexRuntimeMetadata(t *testing.T) {
 	rt := CodexRuntime{}
 	assert.Equal(t, "codex", rt.Name())
 	// Single-vendor runtime: the gen_ai.system is the model vendor, not the
-	// runtime name (pi and opencode are multi-provider and use their own).
+	// runtime name. Pi implements ProviderResolver so its spans report the
+	// serving endpoint; opencode still falls back to its runtime name.
 	assert.Equal(t, "openai", rt.System())
 	assert.Equal(t, sandbox.SandboxCodexConfig, rt.ConfigDir())
 	assert.Equal(t, sandbox.SandboxWorkspace, rt.WorkspaceDir())

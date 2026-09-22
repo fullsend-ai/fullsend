@@ -17,13 +17,18 @@ Add one when a **user-visible workflow** must be verified end-to-end (dispatch �
 Shared framework (importable by external repos):
 
 ```
-pkg/behaviourtest/
+pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour)
   world/             # Scenario state
   steps/             # Step definitions + CleanupScenario
   artifacts/         # Artifact lookup helpers
   drivers/           # SCM, CI, env, install interfaces + v1 impls
   suite/             # InitScenario (tags, hooks, step registration)
-pkg/e2etest/         # Org pool, CLI runner, cleanup (shared with admin e2e)
+```
+
+In-repo live-test infrastructure (not a public API):
+
+```
+internal/e2etest/    # Org pool, CLI runner, cleanup (shared with admin e2e)
 ```
 
 In-repo runner and scenarios:
@@ -32,7 +37,7 @@ In-repo runner and scenarios:
 e2e/behaviour/
   features/          # Portable Gherkin scenarios
   fixtures/          # Static content for write_fixture ops
-  suite_test.go      # Thin godog entry (build tag: behaviour)
+  suite_test.go      # Thin RunSuite caller (build tag: behaviour)
 ```
 
 ## Writing scenarios
@@ -76,7 +81,7 @@ And the agent will output issues.out with:
 
 Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
-- **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection. Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
+- **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection (or `config.base.yaml` when `BEHAVIOUR_CONFIG_PRESET` supplied a preset). Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
 - **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with the agent step for the runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent "<name>" defined as:` — both commit the same file) and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)). `features/runtime/codex-openai.feature` is that same shape on the codex runtime — `And a codex agent "<name>" defined as:` for the agent, and `the codex output stream records at least one tool call`, which reads the tee'd `codex exec --json` stream (`output.jsonl`) rather than a session transcript. It is gated on `runtime-codex-openai` for the same reason, and codex has no Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every job — codex has **no default behaviour coverage at all** until that organization exists; its evidence until then is unit tests, recorded fixtures and local smoke runs.
 - **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
@@ -231,6 +236,8 @@ The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finaliz
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
+**Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
+
 **Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
@@ -239,6 +246,8 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
+BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
+BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
 E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
@@ -248,6 +257,8 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 ```
 
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
+
+When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
@@ -436,13 +447,41 @@ External behaviour runners import the shared libraries from this module:
 require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 ```
 
-- Import `github.com/fullsend-ai/fullsend/pkg/behaviourtest/...` for world, steps, drivers, and `suite.InitScenario`.
-- Import `github.com/fullsend-ai/fullsend/pkg/e2etest` for org pool acquisition, env config, CLI build/run, and cleanup.
-- Set `world.FixturesRoot` to the module-relative fixtures directory (e.g. `"behaviour"` in the agents repo).
-- Build the fullsend CLI with `e2etest.BuildModuleBinary(t, "github.com/fullsend-ai/fullsend")` — not `BuildCLIBinary`, which resolves the **current** module root.
-- Run with `-tags behaviour` and the same env vars as CI (see above).
+Do not import `internal/mintcore` (or `internal/mintcore/mintconsts`) from packages reachable from `pkg/behaviourtest`. The nested mintcore module is resolved only by a local `replace` that downstream modules do not inherit; a leak makes `go build github.com/fullsend-ai/fullsend/pkg/behaviourtest` fail with `unknown revision internal/mintcore/v0.0.0`. Duplicate constants locally and keep the graph clean — see [Go Code](../../contributing/go-code.md).
+
+The supported entry point is `behaviourtest.RunSuite`. Driver selection, org acquisition, CLI build, concurrency, tags, and step registration are handled internally from the same environment variables as the in-repo suite (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`, `ENVIRONMENT`, `BEHAVIOUR_CAPABILITIES`, `BEHAVIOUR_CONFIG_PRESET`, `GODOG_TAGS`, `GODOG_CONCURRENCY`):
+
+```go
+//go:build behaviour
+
+package behaviour_test
+
+import (
+    "testing"
+
+    "github.com/fullsend-ai/fullsend/pkg/behaviourtest"
+)
+
+func TestBehaviourSuite(t *testing.T) {
+    behaviourtest.RunSuite(t, behaviourtest.SuiteOptions{
+        FeaturePaths: []string{"features"},
+        FixturesRoot: "behaviour", // module-relative; "e2e/behaviour" in this repo
+    })
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `FeaturePaths` | Godog feature file or directory paths, relative to the test working directory |
+| `FixturesRoot` | Module-relative directory that contains `fixtures/` |
+
+`RunSuite` builds the CLI from module `github.com/fullsend-ai/fullsend` (equivalent to `e2etest.BuildModuleBinary`), so the caller's module root is not used. Run with `-tags behaviour` and the same env vars as CI (see above).
+
+Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`) remain available for custom bootstraps. Org pool and CLI helpers live in `internal/e2etest` and are not importable outside this module. Prefer `RunSuite` unless you need to inject drivers the env-based selector does not cover.
 
 ### API changes
+
+**`behaviourtest.RunSuite`:** New high-level entry point. Callers pass `SuiteOptions{FeaturePaths, FixturesRoot}` only. Replaces the ~80-line bootstrap previously duplicated in `e2e/behaviour/suite_test.go`.
 
 **`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)`. The `*world.RepoPool` type has been removed. Repo leasing is handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
 
@@ -481,4 +520,4 @@ suiteRunner := godog.TestSuite{
 
 **`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
 
-Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.
+Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

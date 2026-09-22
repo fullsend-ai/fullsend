@@ -1,25 +1,27 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func newPostCommentCmd() *cobra.Command {
 	var (
-		repo   string
-		number int
-		marker string
-		result string
-		token  string
-		dryRun bool
+		repo        string
+		number      int
+		marker      string
+		result      string
+		token       string
+		dryRun      bool
+		keepHistory bool
+		fullsendDir string
 	)
 
 	cmd := &cobra.Command{
@@ -43,11 +45,12 @@ The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
 
-			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
-			if token == "" {
-				return fmt.Errorf("--token or GITHUB_TOKEN required")
+			client, err := newAuthenticatedGitHubClient(token, "")
+			if err != nil {
+				if errors.Is(err, errGitHubTokenMissing) {
+					return githubTokenFlagError("--token")
+				}
+				return err
 			}
 
 			if number <= 0 {
@@ -67,10 +70,24 @@ The --result flag accepts a file path or "-" for stdin.`,
 
 			printer.Header("Post Comment")
 
-			client := gh.New(token)
+			// Resolve keep_history: explicit --keep-history flag takes
+			// precedence, otherwise fall back to config.yaml via
+			// --fullsend-dir (matching the pattern in issues post-comment
+			// and post-review).
+			resolvedKeepHistory := keepHistory
+			if !cmd.Flags().Changed("keep-history") {
+				var khFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+				}
+				resolvedKeepHistory = resolved
+			}
+
 			cfg := sticky.Config{
-				Marker: marker,
-				DryRun: dryRun,
+				Marker:      marker,
+				DryRun:      dryRun,
+				KeepHistory: resolvedKeepHistory,
 			}
 			_, err = sticky.Post(cmd.Context(), client, owner, repoName, number, body, cfg, printer)
 			return err
@@ -81,8 +98,10 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().IntVar(&number, "number", 0, "issue or pull request number (required)")
 	cmd.Flags().StringVar(&marker, "marker", "", "hidden HTML marker to identify this agent's comments (required)")
 	cmd.Flags().StringVar(&result, "result", "-", "path to comment body file, or '-' for stdin")
-	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: $GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")

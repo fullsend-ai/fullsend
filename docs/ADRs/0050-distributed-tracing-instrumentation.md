@@ -161,11 +161,20 @@ online scoring of wild-run traces writes `eval-measurements.jsonl`
 beside telemetry when at least one new score is produced (tool-agnostic). Distinct from functional eval fixtures
 ([ADR 0051](0051-agent-eval-harness-for-test-infrastructure.md)).
 
-> **Planned:** portable remote score export follows the same OTLP
-> configuration as this ADR — no vendor score adapters in core.
+> **Done ([#6459](https://github.com/fullsend-ai/fullsend/pull/6459) /
+> [ADR 0087](0087-eval-measurements-online-trace-scoring.md)):** portable
+> remote score export uses the same OTLP configuration as this ADR — no
+> vendor score adapters in core.
 
 **2026-08-18 — Remove duplicate token/cost from root span (3278b059):**
 `gen_ai.request.model` and `gen_ai.usage.*` token attributes moved to agent
 spans only; the root span keeps `fullsend.cost_usd` and `fullsend.tool_calls`
 (custom-namespaced, not auto-summed by MLflow). This prevents MLflow from
 double-counting token usage across the trace.
+
+**2026-09-03 — Tool-call span topology ([ADR 0108](0108-tool-call-span-topology.md)):**
+each id-bearing tool call the runtime reports — Claude Code today; pi and
+codex emit no call ids — becomes an `execute_tool` child of its iteration's
+`agent` span, up to 1,024 per iteration, metadata only; the message record
+on the `agent` span stays the content carrier. Sub-agent nesting (deferred item 1 above)
+remains deferred.

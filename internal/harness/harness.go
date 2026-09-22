@@ -41,6 +41,20 @@ func ValidPluginBasename(name string) bool {
 	return validPluginName.MatchString(name)
 }
 
+// ValidAgentBasename reports whether name is a safe agent name — the same
+// check Validate applies to the agent: basename (minus .md). Exported so a
+// caller that constructs a harness, rather than loading one, can reject an
+// unsafe name before writing it anywhere: the name reaches shell
+// interpolation, so this is a security check, not a style check.
+func ValidAgentBasename(name string) bool {
+	return validAgentName.MatchString(name)
+}
+
+// ValidSlug reports whether slug matches the allowed harness slug pattern.
+func ValidSlug(slug string) bool {
+	return validSlugName.MatchString(slug)
+}
+
 // ChmodPluginDir makes all files under dir executable (0755). It resolves
 // symlinks first so it operates on the real directory tree. Plugins may
 // contain scripts or MCP server binaries that need the execute bit.
@@ -334,6 +348,7 @@ type Harness struct {
 	Effort                 string                  `yaml:"effort,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
+	PrivilegeLevels        map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
@@ -475,6 +490,9 @@ func (h *Harness) Validate() error {
 	}
 	if strings.Contains(h.Role, "--") {
 		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
+	}
+	if err := h.validatePrivilegeLevels(); err != nil {
+		return err
 	}
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)

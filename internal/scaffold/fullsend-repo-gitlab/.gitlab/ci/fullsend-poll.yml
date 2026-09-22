@@ -27,6 +27,11 @@ spec:
         echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
         exit 1
       fi
+      # Private-CA trust for self-hosted GitLab. Must run before any
+      # GitLab network operation (curl, git, or the fullsend Go client).
+      # CI_SERVER_TLS_CA_FILE is a job-local path; it is not available on
+      # a separately provisioned sandbox host. See operations.md.
+      . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/trust-ci-server-ca.sh"
       # Install fullsend CLI at the version pinned during
       # `fullsend repos install`. Mirrors the GitHub Actions
       # install-fullsend-cli action (#6445).
