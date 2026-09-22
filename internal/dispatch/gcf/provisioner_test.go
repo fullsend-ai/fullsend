@@ -3077,8 +3077,8 @@ func TestMergeAllowedOrgs_BothEmpty(t *testing.T) {
 }
 
 func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
-	// When ALLOWED_ORGS is empty and ROLE_APP_IDS is also empty (or has
-	// only the enrolling org), this is a genuine first enrollment — proceed.
+	// When ALLOWED_ORGS is empty and ROLE_APP_IDS has no role-only entries,
+	// this is a genuine first enrollment — proceed.
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI:     "https://mint.example.com",
@@ -3094,6 +3094,87 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
 	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestEnsureOrgInMint_DataInconsistencyGuard(t *testing.T) {
+	// When ALLOWED_ORGS is empty but ROLE_APP_IDS has role-only entries,
+	// the mint has been bootstrapped — empty ALLOWED_ORGS is data loss.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{"coder":"111","reviewer":"222"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "data inconsistency")
+	assert.Contains(t, err.Error(), "2 configured roles")
+	assert.Contains(t, err.Error(), "proj1")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureOrgInMint_DataInconsistencyGuard_NoRoleAppIDs(t *testing.T) {
+	// When ALLOWED_ORGS is empty and ROLE_APP_IDS is also empty,
+	// this is a genuine first enrollment — no error.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": "",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureOrgInMint_DataInconsistencyGuard_OnlyLegacyKeys(t *testing.T) {
+	// When ALLOWED_ORGS is empty and ROLE_APP_IDS has only legacy org/role
+	// keys (containing "/"), RoleOnlyAppIDs filters them out — no guard trigger.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{"acme/coder":"111"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureOrgInMint_DataInconsistencyGuard_MalformedRoleAppIDs(t *testing.T) {
+	// Non-empty but invalid ROLE_APP_IDS with empty ALLOWED_ORGS is also
+	// data inconsistency — fail closed instead of treating it as first enrollment.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{invalid`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "data inconsistency")
+	assert.Contains(t, err.Error(), "not valid JSON")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestParseAllowedOrgsEnv(t *testing.T) {
@@ -3725,12 +3806,15 @@ func TestMarshalRoleAppIDs_SortsKeys(t *testing.T) {
 }
 
 func TestEnsureOrgInMint_DerivesAllowedRolesWhenEmpty(t *testing.T) {
+	// ALLOWED_ORGS populated, ALLOWED_ROLES empty — should derive roles
+	// from ROLE_APP_IDS and proceed. Empty ALLOWED_ORGS with populated
+	// ROLE_APP_IDS is now a guarded data-inconsistency path.
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
 	}
 	fake.trafficEnvVars = map[string]string{
-		"ALLOWED_ORGS": "",
+		"ALLOWED_ORGS": "existing-org",
 		"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
 	}
 
