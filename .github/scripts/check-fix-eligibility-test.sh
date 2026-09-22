@@ -22,7 +22,7 @@ iso_from_epoch() {
 }
 
 write_commit_fixtures() {
-  local author_type="$1" author_login="$2" committed_at="$3" pushed_at="${4:-}"
+  local author_type="$1" author_login="$2" committed_at="$3"
   printf '%s' "abc123def456" > "${TMPDIR}/head-sha.txt"
   jq -n \
     --arg type "${author_type}" \
@@ -30,7 +30,6 @@ write_commit_fixtures() {
     --arg committed_at "${committed_at}" \
     '{type:$type,login:$login,committer_type:"",committer_login:"",committed_at:$committed_at}' \
     > "${TMPDIR}/commit-json.txt"
-  printf '%s' "${pushed_at}" > "${TMPDIR}/gql-pushed.txt"
 }
 
 # build_mock creates a mock gh binary that returns preconfigured PR JSON.
@@ -61,7 +60,7 @@ build_mock() {
 
   # Default HEAD is an old bot commit so existing proceed-path tests
   # still pass the recency check without extra arguments.
-  write_commit_fixtures "Bot" "fullsend-ai-coder[bot]" "2020-01-01T00:00:00Z" ""
+  write_commit_fixtures "Bot" "fullsend-ai-coder[bot]" "2020-01-01T00:00:00Z"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -94,28 +93,18 @@ if [[ "$1" == "api" ]]; then
   shift
   path=""
   jq_arg=""
-  is_graphql=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      graphql) is_graphql=1 ;;
       --jq) shift; jq_arg="$1" ;;
       -f|-F|--repo) shift ;;
       *)
-        if [[ "$1" != -* && -z "${path}" && "${is_graphql}" -eq 0 ]]; then
+        if [[ "$1" != -* && -z "${path}" ]]; then
           path="$1"
         fi
         ;;
     esac
     shift
   done
-  if [[ "${is_graphql}" -eq 1 ]]; then
-    if [[ "${jq_arg}" != '.data.repository.object.pushedDate // empty' ]]; then
-      echo "mock gh: unexpected graphql --jq arg: ${jq_arg}" >&2
-      exit 1
-    fi
-    cat "${MOCK_DIR}/gql-pushed.txt"
-    exit 0
-  fi
   case "${path}" in
     repos/*/pulls/*)
       if [[ "${jq_arg}" != '.head.sha' ]]; then
@@ -192,13 +181,12 @@ run_test() {
 #   $8  — GitHub author type (User/Bot/empty)
 #   $9  — GitHub author login
 #   $10 — committed_at ISO timestamp
-#   $11 — pushedDate ISO timestamp (optional, empty uses committed_at)
 run_commit_test() {
   local name="$1" expected_exit="$2" is_bot="$3" login="$4" trigger="$5" labels="${6:-}" expected_annotation="${7:-}"
-  local author_type="$8" author_login="$9" committed_at="${10}" pushed_at="${11:-}"
+  local author_type="$8" author_login="$9" committed_at="${10}"
   local mock_bin
   mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
-  write_commit_fixtures "${author_type}" "${author_login}" "${committed_at}" "${pushed_at}"
+  write_commit_fixtures "${author_type}" "${author_login}" "${committed_at}"
 
   local actual_exit=0 output
   output=$(PATH="${mock_bin}:${PATH}" \
@@ -314,7 +302,6 @@ run_test_gh_failure
 
 RECENT_TS="$(iso_from_epoch $((NOW_EPOCH - 300)))"
 OLD_TS="$(iso_from_epoch $((NOW_EPOCH - 3600)))"
-PUSH_RECENT_TS="$(iso_from_epoch $((NOW_EPOCH - 1560)))"
 
 # Human HEAD commit within the recency window — skip bot-triggered fix.
 run_commit_test "human HEAD within window skipped" 1 \
@@ -349,7 +336,6 @@ run_test_committer_fallback() {
   jq -n --arg committed_at "${RECENT_TS}" \
     '{type:"",login:"",committer_type:"User",committer_login:"waynesun09",committed_at:$committed_at}' \
     > "${TMPDIR}/commit-json.txt"
-  printf '%s' "" > "${TMPDIR}/gql-pushed.txt"
 
   local actual_exit=0 output
   output=$(PATH="${mock_bin}:${PATH}" \
@@ -377,12 +363,11 @@ run_test_committer_fallback() {
 }
 run_test_committer_fallback
 
-# Old git committer date but recent GraphQL pushedDate — skip (the #7564 race:
-# authored earlier, pushed inside the window).
-run_commit_test "human HEAD recent pushedDate skipped" 1 \
+# Malformed committer date fails open (nothing else to fall back to).
+run_commit_test "malformed committer date fails open" 0 \
   "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
-  "skipped: recent human push" \
-  "User" "waynesun09" "${OLD_TS}" "${PUSH_RECENT_TS}"
+  "Could not parse head commit timestamp" \
+  "User" "waynesun09" "not-a-date"
 
 # Explicit /fs-fix still proceeds even if HEAD is a recent human commit.
 run_commit_test "human trigger ignores recent human HEAD" 0 \

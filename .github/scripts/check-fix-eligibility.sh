@@ -137,24 +137,7 @@ if [[ -z "${EFFECTIVE_TYPE}" && -z "${EFFECTIVE_LOGIN}" ]]; then
   exit 0
 fi
 
-# Prefer GraphQL pushedDate (when the commit landed on GitHub) over the
-# git committer timestamp, which can lag a later push of the same commit.
-OWNER="${SOURCE_REPO%%/*}"
-REPO_NAME="${SOURCE_REPO##*/}"
-PUSHED_AT=""
-if ! PUSHED_AT=$(gh api graphql \
-  -F owner="${OWNER}" \
-  -F name="${REPO_NAME}" \
-  -F oid="${HEAD_SHA}" \
-  -f query='query($owner:String!, $name:String!, $oid:GitObjectID!) { repository(owner:$owner, name:$name) { object(oid:$oid) { ... on Commit { pushedDate } } } }' \
-  --jq '.data.repository.object.pushedDate // empty'); then
-  PUSHED_AT=""
-fi
-PUSHED_AT="${PUSHED_AT//$'\n'/}"
-PUSHED_AT="${PUSHED_AT//$'\r'/}"
-
-TIMESTAMP="${PUSHED_AT:-${COMMITTED_AT}}"
-if [[ -z "${TIMESTAMP}" ]]; then
+if [[ -z "${COMMITTED_AT}" ]]; then
   echo "::warning::Head commit timestamp missing for human-activity check — proceeding"
   exit 0
 fi
@@ -169,7 +152,7 @@ if [[ ! "${NOW_EPOCH}" =~ ^[0-9]+$ ]]; then
 fi
 
 COMMIT_EPOCH=0
-if ! COMMIT_EPOCH=$(date -u -d "${TIMESTAMP}" +%s); then
+if ! COMMIT_EPOCH=$(date -u -d "${COMMITTED_AT}" +%s); then
   echo "::warning::Could not parse head commit timestamp for human-activity check — proceeding"
   exit 0
 fi
