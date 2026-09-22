@@ -843,7 +843,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		if repoVendor {
 			var vendorErr error
-			files, _, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, opts.fullsendBinary, opts.fullsendSource)
+			var vendorCleanup func()
+			files, _, vendorCleanup, vendorErr = appendVendorTreeFiles(ctx, fc.Client, printer, owner, repo, files, true, opts.fullsendBinary, opts.fullsendSource)
+			if vendorCleanup != nil {
+				defer vendorCleanup()
+			}
 			if vendorErr != nil {
 				return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 			}

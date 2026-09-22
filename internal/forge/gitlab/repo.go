@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -30,6 +32,31 @@ func blobSHA(content []byte) string {
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func blobSHAFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", info.Size())
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func treeFileBlobSHA(f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return blobSHAFile(f.LocalPath)
+	}
+	return blobSHA(f.Content), nil
 }
 
 func (c *LiveClient) getDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
@@ -881,6 +908,8 @@ func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo strin
 // CommitFiles atomically commits multiple files to the default branch
 // via GitLab's Commits API. Returns (false, nil) when all files already
 // match the current tree (idempotent).
+// TreeFile.LocalPath is hashed from disk and read only when the file
+// actually needs to be uploaded.
 func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message string, files []forge.TreeFile) (bool, error) {
 	if len(files) == 0 {
 		return false, nil
@@ -938,7 +967,10 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			continue
 		}
 
-		expectedSHA := blobSHA(f.Content)
+		expectedSHA, err := treeFileBlobSHA(f)
+		if err != nil {
+			return false, fmt.Errorf("hash %s: %w", f.Path, err)
+		}
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
@@ -949,10 +981,14 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			action = "update"
 		}
 
+		content, err := f.Bytes()
+		if err != nil {
+			return false, fmt.Errorf("reading %s: %w", f.Path, err)
+		}
 		entry := map[string]any{
 			"action":    action,
 			"file_path": f.Path,
-			"content":   base64.StdEncoding.EncodeToString(f.Content),
+			"content":   base64.StdEncoding.EncodeToString(content),
 			"encoding":  "base64",
 		}
 		if f.Mode == "100755" {

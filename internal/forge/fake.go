@@ -770,7 +770,9 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 		Files:   files,
 	})
 
-	f.applyFileContents(owner, repo, files)
+	if err := f.applyFileContents(owner, repo, files); err != nil {
+		return false, err
+	}
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -792,7 +794,9 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 		Files:   files,
 	})
 
-	f.applyFileContents(owner, repo, files)
+	if err := f.applyFileContents(owner, repo, files); err != nil {
+		return false, err
+	}
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -864,7 +868,7 @@ func (f *FakeClient) ForceCommitFileToBranch(_ context.Context, owner, repo, bra
 	return nil
 }
 
-func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
+func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) error {
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
 	}
@@ -872,10 +876,15 @@ func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
 		key := owner + "/" + repo + "/" + file.Path
 		if file.Delete {
 			delete(f.FileContents, key)
-		} else {
-			f.FileContents[key] = file.Content
+			continue
 		}
+		content, err := file.Bytes()
+		if err != nil {
+			return err
+		}
+		f.FileContents[key] = content
 	}
+	return nil
 }
 
 func (f *FakeClient) getRefLocked(owner, repo, refPath string) (string, bool) {

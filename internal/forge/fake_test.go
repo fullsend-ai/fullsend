@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -1657,6 +1659,31 @@ func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {
 	assert.Equal(t, "SECRET_KEY", fc.CreatedProtectedVars[0].Name)
 	assert.Equal(t, "secret-val", fc.CreatedProtectedVars[0].Value)
 	assert.True(t, fc.CreatedProtectedVars[0].Protected)
+}
+
+func TestFakeClient_CommitFiles_LocalPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fullsend")
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	require.NoError(t, os.WriteFile(path, content, 0o755))
+
+	fc := NewFakeClient()
+	changed, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: path, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, content, fc.FileContents["org/repo/bin/fullsend"])
+}
+
+func TestFakeClient_CommitFiles_LocalPathMissing(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	_, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
 }
 
 func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
