@@ -52,7 +52,6 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |
-| [Pre-commit tools registry](internal/scaffold/fullsend-repo/scripts/.pre-commit-tools.yaml) | Adding or changing a `language: system` pre-commit hook or its binary — register it in this YAML; do not bake it into the sandbox Containerfile. See `resolve-precommit-tools.py` and `install-precommit-tools.sh` in the same directory |
 | [Bot Identities](docs/contributing/bot-identities.md) | Referencing bot identities in code — covers GitHub App logins and shared identities |
 | [GitLab Role Credentials](docs/contributing/gitlab-role-credentials.md) | GitLab registered-role credential contract (built-in Poller/Analyst/Coder plus administrator custom roles), trusted registry, migration gate, selection rules, and credential-routing security checklist |
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |
