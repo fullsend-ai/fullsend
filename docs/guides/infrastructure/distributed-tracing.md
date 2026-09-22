@@ -234,6 +234,17 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 > must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
 > or update their provider allowlist to include the resolved values above.
 
+> **Breaking change — mixed-model Pi iterations:** `agent` spans for
+> mixed-model Pi iterations (more than one `per_model_usage` entry) no
+> longer carry `gen_ai.usage.input_tokens` / `output_tokens` /
+> `cache_creation.input_tokens` / `cache_read.input_tokens`. Those values
+> move to the new `usage <model>` children, one per `per_model_usage` entry.
+> Downstream consumers that summed `gen_ai.usage.*` directly off the `agent`
+> span will silently see missing or zero token counts for mixed-model
+> iterations going forward and must filter on `fullsend.usage.component`
+> children instead. Single-model iterations are unaffected. See
+> [Per-model usage components](#per-model-usage-components).
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
@@ -246,6 +257,7 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 | `fullsend.usage.component` | `usage <model>` | Present (`true`) on each per-model usage child. Query this flag (not span name) to sum billable tokens/cost without the parent rollup. |
 | `fullsend.usage.model_spec` | `usage <model>` | The `per_model_usage` key that produced this child (`anthropic-vertex/claude-sonnet-5`, `xai-vertex/xai/grok-4.6`, `unknown`). |
 | `fullsend.usage.requests` | `usage <model>` | Inference episodes attributed to this model spec (one for the parent iteration, one per sub-agent call). |
+| `fullsend.usage.dropped` | `agent` | Present when the iteration's `per_model_usage` breakdown had more distinct specs than the usage-span cap allows: the number of specs refused a `usage <model>` component. Mirrors `fullsend.tool_spans.dropped` for the usage-component stream. |
 | `fullsend.tool_calls` | `run` (aggregated), `agent` | Number of tool invocations |
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
@@ -293,9 +305,9 @@ A Pi iteration that dispatched sub-agents on more than one model spec already re
 
 **How to query without double-counting.** The parent `agent` span is a rollup: it keeps the parent identity and the iteration's `fullsend.cost_usd`, and is marked `fullsend.usage.rollup=true`. It does **not** carry `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` on mixed-model iterations, because backends that auto-sum those keys (MLflow; ADR 0050, 2026-08-18) would otherwise add the rollup to the components. `reasoning_tokens` has no per-model counterpart and stays on the `agent` span.
 
-Billable tokens and cost live on the children (`fullsend.usage.component=true`). Filter on that flag — not on span name — when summing. Do not add the `agent` span's `fullsend.cost_usd` to the children's; they already sum to it. The root `run` span's `fullsend.cost_usd` is the run total and is custom-namespaced, so it is not auto-summed with GenAI usage. Across retry iterations, each `agent` span (and its children, if mixed) covers that iteration only; the root remains the run rollup.
+Billable tokens and cost live on the children (`fullsend.usage.component=true`). Filter on that flag — not on span name — when summing. Do not add the `agent` span's `fullsend.cost_usd` to the children's — sum the children directly instead of using the `agent` span's rollup as a stand-in for that sum (see the rounding caveat below). The root `run` span's `fullsend.cost_usd` is the run total and is custom-namespaced, so it is not auto-summed with GenAI usage. Across retry iterations, each `agent` span (and its children, if mixed) covers that iteration only; the root remains the run rollup.
 
-The sum of component input, output, cache-creation, and cache-read tokens equals that iteration's run totals. Component `fullsend.cost_usd` values are rounded to cents the same way as the agent span, so they sum to the rounded iteration cost, not necessarily to the raw `metrics.json` float.
+The sum of component input, output, cache-creation, and cache-read tokens equals that iteration's run totals — those are exact integers, never rounded. Component `fullsend.cost_usd` values are each rounded to cents independently, the same rounding the `agent` and root spans apply (see [Rounding and precision by surface](#rounding-and-precision-by-surface)) — not by rounding once after summing. Because of that, the sum of the children's rounded costs can differ from the `agent` span's rounded rollup by up to a cent per component: three components each costing $0.006 round individually to $0.01 (summing to $0.03), while the raw iteration total of $0.018 rounds to $0.02. This is the same class of discrepancy as the agent-vs-root rounding caveat below, one level down.
 
 This is usage attribution, not the recursive sub-agent span expansion [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md) deferred: the children are near-zero-duration, carry no turns or content, and are keyed by model spec rather than by `Agent`-tool call.
 
