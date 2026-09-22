@@ -578,7 +578,15 @@ Consumers must reject an unsupported `schema_version` or `filter_version`; they
 must validate `index.json`, `collection.json`, `entity/metadata.json`,
 `relations/reviews.json`, `history/agent-runs.json`, check metadata documents,
 `state/actors.json`, and `state/threads.json` against their v1 schemas. Other
-emitted files follow the byte contracts above. The schemas are closed:
+emitted files follow the byte contracts above. The files under
+`docs/normative/entity-context/v1/` form one local schema bundle: consumers
+must load every sibling `*.schema.json` file into the same resolver registry,
+keyed by its `$id` and filename, before validating any document. Relative
+references such as `common.schema.json#/$defs/timestamp` resolve to sibling
+files within that directory. `$id` values are stable schema identifiers, not
+documented HTTP endpoints; consumers must not fetch them over the network, and
+an unavailable sibling or unresolved reference is a validation error. The
+schemas are closed:
 adding a property, record kind, enum value, or status is a breaking change.
 Changing path derivation, canonical bytes, required fields, field meaning, or
 ordering likewise requires
