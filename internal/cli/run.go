@@ -2849,17 +2849,17 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// oidcDenyKeys lists credential env vars that must not leak into
 // user-controlled or sandbox-visible contexts. The parent harness process
-// retains these for mintAgentToken and OIDC token refresh; stripping them
-// from child scripts, expanders, and sandbox injection prevents user code
-// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+// retains OIDC credentials for mintAgentToken and token refresh; stripping
+// them and GITHUB_TOKEN from child scripts, expanders, and sandbox injection
+// prevents user code and LLM sessions from minting additional tokens. See
+// #5832, ADR 0073.
 //
-// MAINTENANCE: when new OIDC-related credential env vars are introduced
-// (e.g. by mint infrastructure changes), add them here. By convention the
-// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
-// expansion site in this file consults this map, so a single addition
-// propagates to all deny checks.
+// MAINTENANCE: when a credential env var must not reach a harness-controlled
+// context, add it here. OIDC vars conventionally use ACTIONS_ID_TOKEN_ or
+// FULLSEND_GCP_OIDC_ prefixes. Every expansion site in this file consults
+// this map, so a single addition propagates to all deny checks.
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
@@ -2876,6 +2876,9 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+	// The workflow token may have status-write permission but must never be
+	// available through harness-controlled expansion or child scripts.
+	"GITHUB_TOKEN": true,
 }
 
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
@@ -3526,7 +3529,7 @@ func stripOIDCEnv(env []string) []string {
 	for _, e := range env {
 		if i := strings.IndexByte(e, '='); i > 0 {
 			key := e[:i]
-			if oidcDenyKeys[key] || key == "GITHUB_TOKEN" {
+			if oidcDenyKeys[key] {
 				continue
 			}
 		}
@@ -4193,7 +4196,7 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 			// Strip OIDC credential vars and the GitHub workflow token from
 			// user-authored child scripts. A minted GH_TOKEN remains available
 			// to the agent through its role-scoped runner environment.
-			if oidcDenyKeys[key] || key == "GITHUB_TOKEN" {
+			if oidcDenyKeys[key] {
 				continue
 			}
 		}
