@@ -2297,8 +2297,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running agent")
 		printer.Blank()
 
+		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		agentSpanTraceparent := telemetry.Traceparent(agentSpan.SpanContext())
+
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentSpanTraceparent); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
 			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
@@ -2312,7 +2315,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
-		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
@@ -3006,9 +3008,9 @@ func iterationEnvSourceLine() string {
 
 // iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
 // and the Unix time at which the running iteration is killed.
-func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
-	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
-		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time, traceparent string) string {
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), traceparent, iterationEnvFile)
 }
 
 // runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
@@ -3025,8 +3027,8 @@ func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) e
 }
 
 // writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
-func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
-	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, traceparent string) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, traceparent))
 }
 
 // clearIterationEnv removes a previous iteration's file so a stale deadline
