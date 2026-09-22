@@ -259,6 +259,9 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		if hasBody {
 			req.ContentLength = contentLength
 		}
+		if open != nil {
+			req.GetBody = open
+		}
 
 		if c.token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.token)

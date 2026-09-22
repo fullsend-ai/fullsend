@@ -89,16 +89,10 @@ func (r *blobJSONReadCloser) Read(p []byte) (int, error) {
 					r.phase = 2
 					continue
 				}
-				if n > 0 {
-					return n, nil
-				}
-				continue
+				return n, nil
 			}
 			if r.rawN < 3 && !r.eof {
-				if n > 0 {
-					return n, nil
-				}
-				continue
+				return n, nil
 			}
 			r.encN = base64.StdEncoding.EncodedLen(r.rawN)
 			base64.StdEncoding.Encode(r.enc[:], r.raw[:r.rawN])

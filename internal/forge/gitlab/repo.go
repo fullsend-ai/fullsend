@@ -981,6 +981,13 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			action = "update"
 		}
 
+		// NOTE: unlike the GitHub blob path, this still base64-encodes the
+		// full file content in memory. GitLab's Commits API takes all
+		// actions for a commit as a single JSON body, so there is no
+		// per-file streaming endpoint to target the way Git Blobs has for
+		// GitHub. LocalPath only defers the read until a file is confirmed
+		// changed (see the hashing above); it does not stream the upload.
+		// Tracked as a known follow-up, not solved by this change.
 		content, err := f.Bytes()
 		if err != nil {
 			return false, fmt.Errorf("reading %s: %w", f.Path, err)
