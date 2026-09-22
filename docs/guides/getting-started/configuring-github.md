@@ -5,6 +5,8 @@ sidebar_position: 3
 # Configuring GitHub For Fullsend
 
 The goal of this document is that you configure Fullsend for your GitHub repository.
+GitLab repositories use a different command (`fullsend repos install --forge gitlab`).
+See [Configuring GitLab](configuring-gitlab.md) for that flow.
 
 ## Prerequisites
 
@@ -113,7 +115,7 @@ committing. `--config` is only valid for per-repo mode.
 
 This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` and `codex` are experimental and meant for opt-in pilots — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
 
-To apply the same preset across many repositories, declare `defaults.config` (and optionally `defaults.config_hash`) in `repos.yaml` and run `fullsend repos install`. See [Repo Management — Configuration presets](repo-management.md#configuration-presets).
+To apply the same preset across many repositories, declare `defaults.config_base` (and optionally `defaults.config_base.sha256`) in `repos.yaml` and run `fullsend repos install`. See [Repo Management — Configuration presets](repo-management.md#configuration-presets).
 
 ## Testing Fullsend
 

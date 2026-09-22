@@ -39,15 +39,17 @@ func TestResolveConfig_ConfigPresetCascade(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			Config:     path,
-			ConfigHash: sha256Hex(testPresetYAML),
+			ConfigBase: ConfigBase{
+				Source: path,
+				SHA256: sha256Hex(testPresetYAML),
+			},
 		},
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos: []RepoEntry{
 				{Name: "acme/inherit"},
-				{Name: "acme/override", Config: override},
-				{Name: "acme/disabled", Config: NoneSentinel},
+				{Name: "acme/override", ConfigBase: ConfigBase{Source: override}},
+				{Name: "acme/disabled", ConfigBase: ConfigBase{Source: NoneSentinel}},
 			},
 		},
 	}
@@ -74,13 +76,15 @@ func TestResolveConfig_ConfigHashNone(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			Config:     path,
-			ConfigHash: sha256Hex(testPresetYAML),
+			ConfigBase: ConfigBase{
+				Source: path,
+				SHA256: sha256Hex(testPresetYAML),
+			},
 		},
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos: []RepoEntry{
-				{Name: "acme/app", ConfigHash: NoneSentinel},
+				{Name: "acme/app", ConfigBase: ConfigBase{SHA256: NoneSentinel}},
 			},
 		},
 	}

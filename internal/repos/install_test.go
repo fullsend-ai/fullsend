@@ -781,6 +781,11 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
+	if err != nil {
+		t.Fatalf("GitLabPerRepoFile() error = %v", err)
+	}
+	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"

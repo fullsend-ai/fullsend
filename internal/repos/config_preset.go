@@ -11,7 +11,7 @@ import (
 )
 
 // presetCache fetches and validates configuration presets once per
-// unique (source, hash) pair so a fleet of repos sharing defaults.config
+// unique (source, hash) pair so a fleet of repos sharing defaults.config_base
 // does not re-download the same document. The fetch/validate itself runs
 // outside c.mu (see Load) so an in-flight load for one key never blocks
 // lookups or loads for other keys.

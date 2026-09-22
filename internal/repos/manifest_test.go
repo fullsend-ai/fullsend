@@ -1849,8 +1849,8 @@ func TestValidate_PerRepoInvalidConfigScheme(t *testing.T) {
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos: []RepoEntry{{
-				Name:   "acme/app",
-				Config: "ftp://example.com/preset.yaml",
+				Name:       "acme/app",
+				ConfigBase: ConfigBase{Source: "ftp://example.com/preset.yaml"},
 			}},
 		},
 	}
@@ -1862,7 +1862,7 @@ func TestValidate_PerRepoInvalidConfigScheme(t *testing.T) {
 func TestValidate_InvalidHTTPSConfigURL(t *testing.T) {
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: "https://"},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://"}},
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "acme/app"}},
@@ -1877,8 +1877,10 @@ func TestValidate_InvalidConfigHashHex(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			Config:     "https://example.com/preset.yaml",
-			ConfigHash: strings.Repeat("g", 64),
+			ConfigBase: ConfigBase{
+				Source: "https://example.com/preset.yaml",
+				SHA256: strings.Repeat("g", 64),
+			},
 		},
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
@@ -1893,12 +1895,12 @@ func TestValidate_InvalidConfigHashHex(t *testing.T) {
 func TestValidate_ConfigHashWithoutSource(t *testing.T) {
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{ConfigHash: strings.Repeat("a", 64)},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)}},
 		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	err := m.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "defaults.config_hash is set without defaults.config")
+	assert.Contains(t, err.Error(), "defaults.config_base.sha256 is set without defaults.config_base.source")
 }
 
 func TestValidate_PerRepoConfigHashWithoutSource(t *testing.T) {
@@ -1906,12 +1908,12 @@ func TestValidate_PerRepoConfigHashWithoutSource(t *testing.T) {
 		Version: 1,
 		GitHub: &PlatformConfig{Repos: []RepoEntry{{
 			Name:       "acme/app",
-			ConfigHash: strings.Repeat("a", 64),
+			ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)},
 		}}},
 	}
 	err := m.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "config_hash is set but no config source is declared")
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but no config_base.source is declared")
 }
 
 func TestValidate_ConfigHashWithDisabledSource(t *testing.T) {
@@ -1919,19 +1921,18 @@ func TestValidate_ConfigHashWithDisabledSource(t *testing.T) {
 		Version: 1,
 		GitHub: &PlatformConfig{Repos: []RepoEntry{{
 			Name:       "acme/app",
-			Config:     NoneSentinel,
-			ConfigHash: strings.Repeat("a", 64),
+			ConfigBase: ConfigBase{Source: NoneSentinel, SHA256: strings.Repeat("a", 64)},
 		}}},
 	}
 	err := m.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "config_hash is set but config is")
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but config_base.source is")
 }
 
 func TestValidate_InvalidConfigScheme(t *testing.T) {
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: "http://example.com/preset.yaml"},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "http://example.com/preset.yaml"}},
 		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	err := m.Validate()
@@ -1942,7 +1943,7 @@ func TestValidate_InvalidConfigScheme(t *testing.T) {
 func TestValidate_InvalidConfigHashLength(t *testing.T) {
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: "https://example.com/preset.yaml", ConfigHash: "abc"},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml", SHA256: "abc"}},
 		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	err := m.Validate()
@@ -1953,13 +1954,13 @@ func TestValidate_InvalidConfigHashLength(t *testing.T) {
 func TestValidate_HTTPSConfigAccepted(t *testing.T) {
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: "https://example.com/preset.yaml"},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml"}},
 		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	require.NoError(t, m.Validate())
 }
 
-func TestParseManifest_ConfigFieldsRoundTrip(t *testing.T) {
+func TestLoadManifest_LegacyConfigFieldsRejected(t *testing.T) {
 	input := `
 version: 1
 defaults:
@@ -1968,28 +1969,48 @@ defaults:
 github:
   repos:
     - name: acme/app
-      config: /tmp/override.yaml
-      config_hash: none
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	_, err := LoadManifest(context.Background(), p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in type")
+}
+
+func TestParseManifest_ConfigFieldsRoundTrip(t *testing.T) {
+	input := `
+version: 1
+defaults:
+  config_base:
+    source: https://example.com/preset.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+github:
+  repos:
+    - name: acme/app
+      config_base:
+        source: /tmp/override.yaml
+        sha256: none
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	assert.Equal(t, "https://example.com/preset.yaml", m.Defaults.Config)
-	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", m.Defaults.ConfigHash)
-	assert.Equal(t, "/tmp/override.yaml", m.GitHub.Repos[0].Config)
-	assert.Equal(t, NoneSentinel, m.GitHub.Repos[0].ConfigHash)
+	assert.Equal(t, "https://example.com/preset.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", m.Defaults.ConfigBase.SHA256)
+	assert.Equal(t, "/tmp/override.yaml", m.GitHub.Repos[0].ConfigBase.Source)
+	assert.Equal(t, NoneSentinel, m.GitHub.Repos[0].ConfigBase.SHA256)
 }
 
 func TestValidate_RemoteManifestRejectsLocalConfigSource(t *testing.T) {
 	m := &Manifest{
 		Version:      1,
 		sourceRemote: true,
-		Defaults:     DefaultsConfig{Config: "preset.yaml"},
+		Defaults:     DefaultsConfig{ConfigBase: ConfigBase{Source: "preset.yaml"}},
 		GitHub:       &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 
 	err := m.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remote manifests must use HTTPS config sources")
+	assert.Contains(t, err.Error(), "remote manifests must use HTTPS config_base sources")
 }
 
 func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *testing.T) {
@@ -1997,21 +2018,21 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	m := &Manifest{
 		Version:   1,
 		sourceDir: base,
-		Defaults:  DefaultsConfig{Config: "presets/base.yaml"},
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "presets/base.yaml"}},
 		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	require.NoError(t, m.Validate())
-	// The user-facing Config field must stay the relative path the
+	// The user-facing Source field must stay the relative path the
 	// operator wrote so a subsequent marshal (e.g. AddToManifest,
 	// RemoveFromManifest) round-trips it unchanged; only the internal
 	// fetch-time source is resolved to an absolute, manifest-relative path.
-	assert.Equal(t, "presets/base.yaml", m.Defaults.Config)
-	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.configSource())
+	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
 
 	escaping := &Manifest{
 		Version:   1,
 		sourceDir: base,
-		Defaults:  DefaultsConfig{Config: "../outside.yaml"},
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "../outside.yaml"}},
 		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	err := escaping.Validate()
@@ -2025,7 +2046,7 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	symlinked := &Manifest{
 		Version:   1,
 		sourceDir: base,
-		Defaults:  DefaultsConfig{Config: "linked.yaml"},
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "linked.yaml"}},
 		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
 	}
 	err = symlinked.Validate()

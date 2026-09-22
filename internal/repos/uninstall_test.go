@@ -581,6 +581,30 @@ func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
 	}
 }
 
+func TestUninstall_GitLabTrustScript_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	found := false
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".gitlab/ci/scripts/trust-ci-server-ca.sh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("trust-ci-server-ca.sh was not deleted on GitLab uninstall")
+	}
+}
+
 func TestUninstall_GitLabRootCI_DeletedWhenEmpty(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
 	// Override the shared fixture: omit merge_request_event. It's no

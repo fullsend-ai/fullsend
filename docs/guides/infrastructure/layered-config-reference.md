@@ -5,7 +5,8 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
+[Configuring GitHub](../getting-started/configuring-github.md) or
+[Configuring GitLab](../getting-started/configuring-gitlab.md). For advanced
 installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
@@ -41,9 +42,9 @@ the preset alone; CLI flags override the same keys without rewriting the
 preset file.
 
 `fullsend repos install` uses the same preset implementation. Declare a
-default source in `defaults.config` (optional `defaults.config_hash`) or
-override it per repository with `config` / `config_hash`. The `none`
-sentinel disables inheritance. Convergence writes the fetched bytes to
+default source in `defaults.config_base.source` (optional
+`defaults.config_base.sha256`) or override it per repository with
+`config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
 `config.base.yaml` and never edits the overlay; `repos status` reports
 base-file drift only when a preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
@@ -433,4 +434,6 @@ compiled-in defaults apply:
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)
   — per-repo config file location and format.
 - [Configuring GitHub](../getting-started/configuring-github.md) — initial
+  per-repo setup guide.
+- [Configuring GitLab](../getting-started/configuring-gitlab.md) — initial
   per-repo setup guide.

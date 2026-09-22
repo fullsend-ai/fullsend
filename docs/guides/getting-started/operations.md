@@ -5,8 +5,18 @@ Day-2 administration for fullsend per-repo installations: configuration updates,
 ## Prerequisites
 
 - **fullsend CLI** installed (see [Getting Started](../getting-started/))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — repository admin for the target repository
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
+
+**GitLab:** none of the GitHub-specific prerequisites above apply — GitLab
+does not use `gh`. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab access token and permissions needed for the day-2 tasks
+documented below.
 
 ## Updating configuration values
 
@@ -29,15 +39,22 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 
 ### GitLab
 
-For GitLab repos, re-run `repos install` with updated values to converge configuration:
+For initial GitLab setup, see [Configuring GitLab](configuring-gitlab.md). Secrets are checked for presence only, so `repos install` cannot update the *value* of an existing `FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER` — once those CI/CD secrets exist, a new `--inference-project` is a silent no-op for them. To change either one, edit the CI/CD variable directly in GitLab (Settings → CI/CD → Variables), since converge cannot read secret values back to compare or overwrite them.
 
-```bash
-fullsend repos install -f repos.yaml "$OWNER/$REPO" \
-  --inference-project "<GCP_PROJECT>"
-```
+`FULLSEND_GCP_REGION` is also a variable (not a secret), but converge treats
+`--inference-project` and `--inference-region` as an all-or-nothing set when
+`--inference-wif-provider` isn't set — passing
+`--inference-region` alone fails with `incomplete inference flags`. To update
+the region through converge, pass both flags, for example
+`fullsend repos install <group/project> --inference-project <id>
+--inference-region <region>`. This updates the plain `FULLSEND_GCP_REGION`
+variable; the presence-only-checked project and WIF-provider secrets still
+must be edited directly in GitLab (Settings → CI/CD → Variables). Editing the
+region there remains an alternative.
 
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
+| `FULLSEND_FORGE_TOKEN` | CI/CD secret | Shared bot project access token; auto-provisioned by `repos install` | (masked) |
 | `FULLSEND_GCP_REGION` | CI/CD variable | GCP region for Agent Platform inference | `us-central1` |
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
@@ -80,13 +97,17 @@ To remove fullsend from a single repository:
 
 **GitLab repos:**
 
-1. Run `fullsend repos uninstall` to open a PR that removes fullsend entries from `.gitlab-ci.yml` and deletes `.gitlab/ci/fullsend-pipeline.yml` and `.fullsend/config.yaml` (pass `--direct` to push those file changes to the default branch). Variables, secrets, and the `fullsend-poll-state-slash` / `fullsend-poll-state-events` branches are deleted immediately via the API. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml` and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`poll`, `agent`, and `dispatch` on installs from before the empty dispatch stage was removed), the fullsend workflow rules (`schedule`, `api`, and `merge_request_event` on installs from before native MR dispatch was removed), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration. Also delete the two poll-state branches if they are still present.
+1. Run `fullsend repos uninstall "$PROJECT_PATH"` (the full `group/subgroup/project` path) to open a PR that removes fullsend entries from `.gitlab-ci.yml` and deletes `.gitlab/ci/fullsend-pipeline.yml`, `.gitlab/ci/fullsend-agent.yml`, `.gitlab/ci/fullsend-dispatch.yml`, `.gitlab/ci/fullsend-poll.yml`, `.gitlab/ci/scripts/trust-ci-server-ca.sh`, and `.fullsend/config.yaml` (pass `--direct` to push those file changes to the default branch). Variables, secrets, and the `fullsend-poll-state-slash` / `fullsend-poll-state-events` branches are deleted immediately via the API. If you prefer manual removal: delete `.gitlab/ci/fullsend-*.yml`, `.gitlab/ci/scripts/trust-ci-server-ca.sh`, and `.fullsend/config.yaml`, then edit `.gitlab-ci.yml` to remove the fullsend pipeline include entry, the fullsend stages (`poll`, `agent`, and `dispatch` on installs from before the empty dispatch stage was removed), the fullsend workflow rules (`schedule`, `api`, and `merge_request_event` on installs from before native MR dispatch was removed), and the `auto_cancel` block if fullsend added it. Only delete `.gitlab-ci.yml` entirely if it contains no non-fullsend configuration. Also delete the two poll-state branches if they are still present.
 
-> **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when no existing value is present but does not overwrite an existing value. This only applies when the repo's `.gitlab-ci.yml` already contains a `workflow:` block — when no `workflow:` block exists, fullsend leaves it absent so push-triggered pipelines are not disrupted. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
+> **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when an existing, non-empty `.gitlab-ci.yml` already has a `workflow:` block and that key is missing; it does not overwrite an existing value. If that existing block has no `rules:` key, fullsend also adds protected-ref `schedule`/`api` rules, which can stop ordinary push pipelines unless the block already has a matching rule; add a catch-all/push rule (or an explicit `when: always` rule) before installing, or remove the name-only block so fullsend can leave `workflow:` absent. If an existing, non-empty file has no `workflow:` block, fullsend leaves it absent so push-triggered pipelines are not disrupted. For a missing or empty `.gitlab-ci.yml`, fullsend writes a fullsend-owned `workflow:` block with protected-ref `schedule`/`api` rules; later push jobs added to that file likewise need additional `workflow.rules` or an explicit `when: always` rule, or GitLab will skip them. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
 
 2. Delete all CI/CD variables prefixed with `FULLSEND_`. If you set `OPENAI_API_KEY` for the static-key route, delete it yourself too if you want it gone — fullsend never created it (it is a plain CI/CD variable, not `FULLSEND_`-prefixed) and does not delete it as part of uninstall
-3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
-4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+3. Revoke every Fullsend project access token created for this repo — `fullsend-bot`, `fullsend-poller`, `fullsend-analyst`, `fullsend-coder`, and any `fullsend-role-*` tokens — from Settings → Access Tokens
+4. If you installed using a personal-token fallback or enrollment (`--gitlab-bot-token`/`FULLSEND_GITLAB_BOT_TOKEN` or `--gitlab-role-token` — see [Configuring GitLab § Free-tier bot token](configuring-gitlab.md#free-tier-bot-token) and [Role identities and GitLab Free](configuring-gitlab.md#role-identities-and-gitlab-free)), also revoke those personal PATs on the accounts that issued them (User Settings → Access Tokens, or Group Access Tokens if group-scoped). Deleting the CI/CD variables in step 2 does not revoke the underlying PATs — they remain valid until revoked directly on their issuing accounts.
+5. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
+6. If you provisioned the shared `gitlab-oidc` WIF provider (see [Configuring GitLab § Inference Setup](configuring-gitlab.md#inference-setup)), revoke this repo's trust — `fullsend inference deprovision` does **not** cover `gitlab-oidc`; it only removes GitHub-style per-repo providers. Deleting the `FULLSEND_GCP_WIF_PROVIDER` CI/CD variable in step 2 does not revoke the underlying GCP IAM trust. What to do next depends on which install recipe you used:
+   * **Default single-repo, or [multiple specific projects](configuring-gitlab.md#authorizing-multiple-specific-projects-alternative)** (a per-repo `attribute.project_path` principalSet): remove this repo's IAM binding — `gcloud projects remove-iam-policy-binding "$GCP_PROJECT" --role="roles/aiplatform.user" --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.project_path/$PROJECT_PATH"`. This alone fully revokes `roles/aiplatform.user` for the repo. For hygiene, also drop this repo's `assertion.project_path == '...'` clause from the shared `--attribute-condition` (or narrow/delete the condition and provider entirely if no other GitLab repo shares them), so a stale CI job elsewhere can't even request a token against the provider.
+   * **[Group or group tree](configuring-gitlab.md#authorizing-a-group-or-group-tree-alternative)** (a shared `attribute.namespace_path` principalSet): there is no per-repo IAM member to remove. A single repo cannot be carved out of group-wide trust while sibling repos in the namespace still need it — removing the `attribute.namespace_path/$GROUP_PATH` principalSet or narrowing the `--attribute-condition` revokes Vertex AI access for every project in the namespace, not just the one being uninstalled. To retire trust for just this repo, first migrate the namespace to the [multiple specific projects recipe](configuring-gitlab.md#authorizing-multiple-specific-projects-alternative) (one principalSet per remaining repo), then remove this repo's binding as described above.
 
 If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
@@ -205,7 +226,7 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 
 | Variable | Description |
 |----------|-------------|
-| `GITLAB_TOKEN` | **Required.** Project or group access token with API scope. |
+| `FULLSEND_FORGE_TOKEN` | **Required for the generated scaffold.** Protected project or group access token; `repos install` provisions it automatically. The agent job exports it internally as `GITLAB_TOKEN` for status-notification tooling. |
 | `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
 | `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
@@ -215,7 +236,12 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
 | `CI_SERVER_TLS_CA_FILE` | GitLab Runner predefined path to a job-local PEM CA bundle when `tls-ca-file` is set. Consumed by poll/agent jobs and the GitLab Go client. See [Private CA](#private-ca-self-hosted-gitlab). |
 
-`GITLAB_TOKEN` should be configured as a CI/CD variable with the **Masked** and **Protected** flags enabled in your GitLab project or group settings. Unlike GitHub (where tokens are minted at runtime and masked via `::add-mask::`), GitLab uses pre-provisioned tokens and relies on the runner-level masking configuration.
+For a generated scaffold, `repos install` provisions the protected
+`FULLSEND_FORGE_TOKEN` variable (requested as masked when GitLab accepts the
+value); the agent job exports it internally as `GITLAB_TOKEN` for status
+notifications. If wiring fullsend into GitLab CI manually, provision
+`FULLSEND_FORGE_TOKEN` as a masked and protected variable instead. See
+[Configuring GitLab](configuring-gitlab.md#verifying-the-installation).
 
 ## Private CA (self-hosted GitLab)
 

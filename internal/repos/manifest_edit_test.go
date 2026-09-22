@@ -59,7 +59,7 @@ func TestAddToManifest_Basic(t *testing.T) {
 // against Validate's local-path resolution leaking into the manifest
 // written back to disk. AddToManifest (like RemoveFromManifest) calls
 // LoadManifest, Validate, then marshals the same *Manifest back to
-// repos.yaml; the committed defaults.config must stay the relative path
+// repos.yaml; the committed defaults.config_base.source must stay the relative path
 // the operator wrote, not a machine-local absolute path.
 func TestAddToManifest_LocalConfigSourceStaysRelativeOnWriteBack(t *testing.T) {
 	dir := t.TempDir()
@@ -69,7 +69,8 @@ func TestAddToManifest_LocalConfigSourceStaysRelativeOnWriteBack(t *testing.T) {
 	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
 	require.NoError(t, os.WriteFile(manifestPath, []byte(`version: 1
 defaults:
-  config: ./preset.yaml
+  config_base:
+    source: ./preset.yaml
 github:
   mint_url: https://mint.example.com
   repos:
@@ -88,8 +89,8 @@ github:
 
 	reloaded, err := LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
-	assert.Equal(t, "./preset.yaml", reloaded.Defaults.Config,
-		"defaults.config must remain the relative path on disk, not the resolved absolute path")
+	assert.Equal(t, "./preset.yaml", reloaded.Defaults.ConfigBase.Source,
+		"defaults.config_base.source must remain the relative path on disk, not the resolved absolute path")
 }
 
 func TestAddToManifest_Duplicate(t *testing.T) {
@@ -678,19 +679,19 @@ func TestSetDefault_Config(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "repos.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
 
-	require.NoError(t, SetDefault(path, "defaults.config", "https://example.com/preset.yaml"))
+	require.NoError(t, SetDefault(path, "defaults.config_base.source", "https://example.com/preset.yaml"))
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "config: https://example.com/preset.yaml")
+	assert.Contains(t, string(data), "source: https://example.com/preset.yaml")
 
-	err = SetDefault(path, "defaults.config", "http://insecure.example.com/preset.yaml")
+	err = SetDefault(path, "defaults.config_base.source", "http://insecure.example.com/preset.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported URL scheme")
 
-	require.NoError(t, SetDefault(path, "defaults.config", ""), "empty clears the default")
+	require.NoError(t, SetDefault(path, "defaults.config_base.source", ""), "empty clears the default")
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), "config:")
+	assert.NotContains(t, string(data), "source:")
 }
 
 func TestSetDefault_ConfigHash(t *testing.T) {
@@ -699,12 +700,12 @@ func TestSetDefault_ConfigHash(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
 	hash := sha256Hex(testPresetYAML)
 
-	require.NoError(t, SetDefault(path, "defaults.config_hash", hash))
+	require.NoError(t, SetDefault(path, "defaults.config_base.sha256", hash))
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "config_hash: "+hash)
+	assert.Contains(t, string(data), "sha256: "+hash)
 
-	err = SetDefault(path, "defaults.config_hash", "short")
+	err = SetDefault(path, "defaults.config_base.sha256", "short")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "64-character")
 }

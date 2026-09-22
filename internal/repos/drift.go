@@ -37,8 +37,9 @@ type ContentDriftFile struct {
 // Both the status and converge paths use this function so they share
 // the same comparison logic and cannot diverge.
 //
-// Files that are not found on the forge are skipped — presence drift
-// is detected separately by ProbeComponents.
+// Missing workflow and thin-caller files are handled by ProbeComponents;
+// auxiliary scaffold files with forge-specific health semantics are also
+// checked there.
 func CheckFileContentDrift(ctx context.Context, client forge.Client,
 	owner, repo string, fc ForgeConfig, forgeName string,
 	expectedFiles []forge.TreeFile) ([]ContentDriftFile, error) {

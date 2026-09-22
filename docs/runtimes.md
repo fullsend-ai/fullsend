@@ -170,7 +170,9 @@ silently shadowed. Bump the workflow's fullsend pin to a version that carries pe
 *before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
 whereas a current CLI validates the settings on every run.
 
-Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi`. Repos on pi need a
+Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi` (GitHub). For GitLab,
+use `fullsend repos install --runtime pi` or set `runtime` in `.fullsend/config.yaml` — see
+[Choosing a runtime](guides/getting-started/choosing-a-runtime.md). Repos on pi need a
 sandbox image that carries `PI_VERSION`; repos on codex need one that carries `CODEX_VERSION`.
 
 ## Models

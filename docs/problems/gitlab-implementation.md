@@ -491,11 +491,14 @@ func detectForge(repoURL string) (string, error) {
 ```yaml
 # repos.yaml (manifest)
 gitlab:
-  url: https://gitlab.example.com  # optional, defaults to gitlab.com
+  url: https://gitlab.example.com  # required whenever GitLab repos are present, including gitlab.com
 ```
 
 > **Note:** The original design proposed `gitlab_instance_url` in `config.yaml`;
-> the implementation uses `gitlab.url` in the repos manifest instead.
+> the implementation uses `gitlab.url` in the repos manifest instead, and requires it
+> (rather than defaulting to gitlab.com) whenever GitLab repos are present. See
+> [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) for the
+> current setup flow.
 
 ### New Packages
 

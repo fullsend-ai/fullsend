@@ -35,7 +35,7 @@ fullsend github setup <owner/repo> \
   --config-hash "<sha256-hex>"
 ```
 
-See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details. Fleet installs declare the same source in `repos.yaml` (`defaults.config` / per-repo `config`) and converge it with `fullsend repos install`; see [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
+See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) and converge it with `fullsend repos install`; see [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
 If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
 
@@ -147,6 +147,8 @@ fullsend github uninstall "$ORG_NAME" --app-set "$ORG_NAME"
 ### Custom inference WIF configuration
 
 For most cases, `fullsend inference provision` auto-provisions the inference WIF pool and prints the provider resource name to pass to `github setup --inference-wif-provider`. Use manual configuration only when you need custom pool names, attribute conditions, or want to share an inference WIF provider across multiple tools:
+
+> **GitLab:** The recipe below is GitHub-specific — it uses GitHub's OIDC issuer and `assertion.repository`/`assertion.repository_owner` claims, which GitLab `id_token`s don't have. It cannot be copied as-is for GitLab. See [Configuring GitLab § Inference Setup](../getting-started/configuring-gitlab.md#inference-setup) for the GitLab-specific provider, claims, issuer, and audience configuration.
 
 **Create a Workload Identity Pool and OIDC Provider:**
 

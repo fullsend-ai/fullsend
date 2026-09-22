@@ -1705,7 +1705,7 @@ func TestStatus_ConfigPresetDrift(t *testing.T) {
 	presetPath := writePresetFile(t, testPresetYAML)
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.Config = presetPath
+	m.Defaults.ConfigBase.Source = presetPath
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -1769,7 +1769,7 @@ func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: presetPath},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: presetPath}},
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",

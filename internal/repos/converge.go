@@ -513,7 +513,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			d.preset = data
 			if shouldWarnRemotePreset(d.resolved.Config, d.resolved.ConfigHash, warnedRemote) {
 				progress(d.repo.Owner+"/"+d.repo.Repo, "preset",
-					"Remote preset fetched without config_hash; content integrity is not verified")
+					"Remote preset fetched without config_base.sha256; content integrity is not verified")
 			}
 		}
 
@@ -866,7 +866,7 @@ func convergeRepo(ctx context.Context,
 
 	scaffoldNeedsRepair := false
 	for _, c := range d.components {
-		if !c.Match && (c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:")) {
+		if !c.Match && (c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") || strings.HasPrefix(c.Name, "scaffold:")) {
 			scaffoldNeedsRepair = true
 			break
 		}
@@ -1631,7 +1631,7 @@ func convergeScaffoldFiles(ctx context.Context,
 		if c.Match {
 			continue
 		}
-		if c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") {
+		if c.Name == "workflow" || strings.HasPrefix(c.Name, "thin-caller:") || strings.HasPrefix(c.Name, "scaffold:") {
 			field := DriftFieldName(c.Name)
 			if !c.Present {
 				missingComponents = append(missingComponents, field)

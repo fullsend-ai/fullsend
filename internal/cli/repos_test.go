@@ -2085,6 +2085,7 @@ func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".fullsend/config.yaml",
 		".gitlab-ci.yml",
 	} {

@@ -237,7 +237,7 @@ File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.y
 
 Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
 
-GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
+GCP WIF pool/provider cleanup for GitHub repos is handled separately via `inference deprovision`. This does not cover GitLab's shared `gitlab-oidc` WIF provider — for GitLab repos, see [Operations § Per-repo teardown](../guides/getting-started/operations.md#per-repo-teardown) step 6 to revoke that repo's WIF trust.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
 
@@ -297,8 +297,8 @@ fullsend repos set-default github.mint_url ""   # removes the key
 | `defaults.allowed_remote_resources` | comma-separated URLs | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition) |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
-| `defaults.config` | local path or HTTPS URL | Configuration preset written as `.fullsend/config.base.yaml`; a per-entry `config` overrides it (`none` disables inheritance). A local path is resolved relative to `repos.yaml`'s directory and must not escape it; manifests loaded from an HTTPS URL must use an HTTPS preset URL. Fetch/validation semantics otherwise match `github setup --config`. |
-| `defaults.config_hash` | 64-character SHA-256 hex | Optional digest that validates the fetched preset; a per-entry `config_hash` overrides it (`none` skips validation). Same semantics as `github setup --config-hash`. |
+| `defaults.config_base.source` | local path or HTTPS URL | Configuration preset written as `.fullsend/config.base.yaml`; a per-entry `config_base.source` overrides it (`none` disables inheritance). A local path is resolved relative to `repos.yaml`'s directory and must not escape it; manifests loaded from an HTTPS URL must use an HTTPS preset URL. Fetch/validation semantics otherwise match `github setup --config`. |
+| `defaults.config_base.sha256` | 64-character SHA-256 hex | Optional digest that validates the fetched preset; a per-entry `config_base.sha256` overrides it (`none` skips validation). Same semantics as `github setup --config-hash`. |
 | `github.url` | URL | GitHub instance URL (default: `https://github.com`) |
 | `github.mint_url` | URL | Token mint service URL (defaults to `https://mint.fullsend.sh` in public mode) |
 | `github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
@@ -342,5 +342,6 @@ fullsend repos set-default gitlab.url https://gitlab.example.com
 ## See also
 
 - [Getting Started](../guides/getting-started/) — Standard per-repo installation
+- [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) — GitLab getting-started guide
 - [Operations](../guides/getting-started/operations.md) — Day-2 administration
 - [CLI Internals](../guides/dev/cli-internals.md) — Command structure and implementation details

@@ -7,19 +7,31 @@ sidebar_position: 5
 Manage per-repo fullsend installations at scale using a declarative
 `repos.yaml` manifest. The `fullsend repos` command group provides bulk
 install, status checking, drift detection, configuration sync, and
-version upgrades across multiple repos and GitHub orgs.
+version upgrades across multiple repos, GitHub orgs, and GitLab groups.
 
 **Target audience:** Platform administrators (SRE/DevOps) managing
-fullsend across an organization. Individual repo owners should use
-`fullsend github setup` for single-repo installation (see
-[Configuring GitHub](configuring-github.md)).
+fullsend across an organization. For a single repository, GitHub owners
+should use `fullsend github setup` (see [Configuring GitHub](configuring-github.md));
+GitLab project owners should use `fullsend repos install --forge gitlab`
+(see [Configuring GitLab](configuring-gitlab.md)).
 
 ## Prerequisites
 
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
 - **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+**GitLab:**
+
+GitLab does not use `gh`, `fullsend inference provision`, or mint
+enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab token, GCP inference project, and runner requirements.
 
 ## Getting started
 
@@ -96,14 +108,17 @@ GitHub repos use a token mint for authentication. The
 `mint_mode` and `mint_url` can be overridden per-repo.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
-is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
-`GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
-none are set. You can also pass `--gitlab-url` to `fullsend repos install`
-to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
-when no forge is specified). Self-hosted instances that use a private CA
-need runner `tls-ca-file` plus separate sandbox-host trust — see
-[Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
+`--gitlab-token` to `fullsend repos` subcommands. Manifest-driven commands
+(`repos install` and `repos status`) require `gitlab.url` whenever GitLab
+repos are present, including gitlab.com; there is no manifest default. Pass
+`--gitlab-url` to `fullsend repos install` to set it (this also implies
+`--forge=gitlab` when no forge is specified), or set it later with
+`fullsend repos set-default gitlab.url <url>`. The env-var fallback chain
+(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
+gitlab.com) applies only to call paths without a manifest URL, such as
+`repos migrate`; it does not override manifest validation. Self-hosted
+instances that use a private CA need runner `tls-ca-file` plus separate
+sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -120,7 +135,7 @@ github:
 ```
 
 The `none` sentinel works for string fields (`fullsend_ref`,
-`mint_url`, `mint_mode`, `config`, `config_hash`). List fields like
+`mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). List fields like
 `allowed_remote_resources` are managed at the `defaults` level and
 cannot be cleared per-repo.
 
@@ -135,29 +150,32 @@ merged with the preset.
 ```yaml
 version: 1
 defaults:
-  config: https://example.com/presets/org.yaml
-  config_hash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  config_base:
+    source: https://example.com/presets/org.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 github:
   repos:
     - name: acme/api          # inherits the fleet preset
     - name: acme/special
-      config: ./special.yaml  # per-repo override (path is relative to repos.yaml's directory)
-      config_hash: none       # do not apply the fleet hash to this source
+      config_base:
+        source: ./special.yaml  # per-repo override (path is relative to repos.yaml's directory)
+        sha256: none            # do not apply the fleet hash to this source
     - name: acme/legacy
-      config: none            # disable inheritance; existing base is preserved
+      config_base:
+        source: none            # disable inheritance; existing base is preserved
 ```
 
-`config_hash` is optional. When set, it must be a 64-character SHA-256
+`config_base.sha256` is optional. When set, it must be a 64-character SHA-256
 hex digest of the fetched content, matching `github setup --config-hash`.
-A per-repo `config` override still inherits `defaults.config_hash` unless
-you set `config_hash` on that entry (`none` skips validation). A hash
-mismatch or invalid source fails before any files are written. Remote
-presets without a hash are accepted, but content integrity is not
-verified. Local preset paths are resolved relative to the directory
-containing `repos.yaml`, not the process working directory, and must
-stay within that directory (`../` paths that escape it are rejected).
-A manifest loaded from an HTTPS URL must declare preset sources as
-HTTPS URLs; local preset paths are not allowed in that case.
+A per-repo `config_base.source` override still inherits
+`defaults.config_base.sha256` unless you set `config_base.sha256` on that
+entry (`none` skips validation). A hash mismatch or invalid source fails
+before any files are written. Remote presets without a hash are accepted,
+but content integrity is not verified. Local preset paths are resolved
+relative to the directory containing `repos.yaml`, not the process working
+directory, and must stay within that directory (`../` paths that escape it
+are rejected). A manifest loaded from an HTTPS URL must declare preset
+sources as HTTPS URLs; local preset paths are not allowed in that case.
 
 Changing the declared preset replaces the complete base file. Repeated
 installs are idempotent when the desired bytes already match. If no
@@ -216,10 +234,11 @@ Install runs in two phases:
    repaired automatically; ref updates are committed as PRs (or direct
    pushes with `--direct`).
 
-> **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
-> must be completed before running install. For self-managed mints,
-> also run `fullsend mint enroll`. The hosted community mint needs no
-> enrollment.
+> **GitHub prerequisite:** GCP WIF provisioning
+> (`fullsend inference provision`) must be completed before running install.
+> For self-managed mints, also run `fullsend mint enroll`. The hosted
+> community mint needs no enrollment. For GitLab prerequisites and inference
+> setup, see [Configuring GitLab](configuring-gitlab.md#prerequisites).
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -429,6 +448,24 @@ Common causes:
   manifest schema (such as the legacy `mint:` key) are rejected.
 - **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
   instead of under `github` or `gitlab`.
+- **Renamed fields** — the old flat `config` / `config_hash` preset keys
+  were replaced by a nested `config_base` object. Rewrite `config:` as
+  `config_base: {source: <value>}` and `config_hash:` as
+  `config_base: {sha256: <value>}`, for both `defaults` and per-repo
+  entries:
+
+  ```yaml
+  # Before
+  defaults:
+    config: presets/base.yaml
+    config_hash: <sha256>
+
+  # After
+  defaults:
+    config_base:
+      source: presets/base.yaml
+      sha256: <sha256>
+  ```
 
 To fix, correct the field name or remove the unrecognized entry and re-run
 the command.
@@ -545,7 +582,7 @@ infrastructure, coordinate between roles:
 | Step | Role | Command |
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
-| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
+| 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
 | 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` (self-hosted mints only; not needed for the hosted community mint) |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
@@ -554,6 +591,7 @@ commands.
 
 ## See also
 
+- [Configuring GitLab](configuring-gitlab.md) — GitLab-specific getting-started guide
 - [Operations](operations.md) — Day-2 per-repo administration and standalone commands
 - [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference

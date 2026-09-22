@@ -331,8 +331,8 @@ var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
 	"defaults.runtime",
 	"defaults.vendor",
-	"defaults.config",
-	"defaults.config_hash",
+	"defaults.config_base.source",
+	"defaults.config_base.sha256",
 	"github.url",
 	"github.mint_url",
 	"github.mint_mode",
@@ -387,10 +387,10 @@ func SetDefault(manifestPath, key, value string) error {
 	switch key {
 	case "defaults.runtime":
 		m.Defaults.Runtime = value
-	case "defaults.config":
-		m.Defaults.Config = value
-	case "defaults.config_hash":
-		m.Defaults.ConfigHash = value
+	case "defaults.config_base.source":
+		m.Defaults.ConfigBase.Source = value
+	case "defaults.config_base.sha256":
+		m.Defaults.ConfigBase.SHA256 = value
 	case "defaults.vendor":
 		if value == "" {
 			m.Defaults.Vendor = nil
@@ -486,11 +486,11 @@ func validateDefaultValue(key, value string) error {
 		if err := validateRuntimeValue(key, value); err != nil {
 			return err
 		}
-	case "defaults.config":
+	case "defaults.config_base.source":
 		if err := validateConfigSource(key, value); err != nil {
 			return err
 		}
-	case "defaults.config_hash":
+	case "defaults.config_base.sha256":
 		if err := validateConfigHash(key, value); err != nil {
 			return err
 		}
