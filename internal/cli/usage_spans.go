@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
 // Synthetic per-model usage spans. A mixed-model Pi iteration already has
@@ -50,12 +51,33 @@ const (
 	attrUsageRollup    = "fullsend.usage.rollup"
 	attrUsageRequests  = "fullsend.usage.requests"
 	attrUsageModelSpec = "fullsend.usage.model_spec"
+	attrUsageDropped   = "fullsend.usage.dropped"
 
 	// usageSpansScope matches telemetry.Setup's instrumentation scope so
 	// usage children land in the same scope as the rest of the run. Tests
 	// that start the parent under a different tracer name still record
 	// them: the provider is shared.
 	usageSpansScope = "github.com/fullsend-ai/fullsend/internal/telemetry"
+
+	// maxUsageSpanNameBytes bounds the model portion of a usage span name.
+	// A usage span is not an execute_tool span; this stays a dedicated
+	// constant rather than reusing tool_spans.go's maxToolSpanNameBytes so
+	// the two bounds can move independently of each other.
+	maxUsageSpanNameBytes = 128
+
+	// maxUsageSpansPerIteration bounds how many usage children one
+	// iteration may emit. PerModelUsage keys come from a sandbox-writable
+	// file capped at piSubagentUsageMaxBytes (internal/runtime/
+	// pi_subagents.go, ~4k child records per its own comment); with
+	// isMixedModelUsage requiring only len(PerModelUsage) > 1, a legitimate
+	// parent entry plus attacker-controlled distinct keys could otherwise
+	// emit thousands of children in a burst right before the agent span
+	// ends. tool_spans.go caps the structurally similar execute_tool stream
+	// at maxToolSpansPerIteration for the same reason (the OTLP batch
+	// processor's default queue, 2048, drop-newest, would otherwise evict
+	// the agent span); this reuses that value rather than inventing a new
+	// one to reason about.
+	maxUsageSpansPerIteration = maxToolSpansPerIteration
 )
 
 // isMixedModelUsage reports whether m has a per-model breakdown with more
@@ -90,7 +112,7 @@ func splitModelSpec(spec string) (provider, model string) {
 }
 
 func usageSpanName(model string) string {
-	model = strings.ToValidUTF8(truncateStatusMsgTo(model, maxToolSpanNameBytes), "")
+	model = strings.ToValidUTF8(truncateStatusMsgTo(model, maxUsageSpanNameBytes), "")
 	if model == "" {
 		return strings.TrimSpace(usageSpanNamePrefix)
 	}
@@ -113,25 +135,73 @@ func emitPerModelUsageSpans(parent trace.Span, runtimeName string, m *agentrunti
 	}
 	sort.Strings(specs)
 
+	// Cap before anything else touches the tracer: the count of distinct
+	// specs is under the sandboxed agent's control (see
+	// maxUsageSpansPerIteration), so an oversized breakdown must never reach
+	// tracer.Start.
+	dropped := 0
+	if len(specs) > maxUsageSpansPerIteration {
+		dropped = len(specs) - maxUsageSpansPerIteration
+		specs = specs[:maxUsageSpansPerIteration]
+	}
+	recordUsageSpanOverflow(parent, dropped)
+
 	ctx := trace.ContextWithSpan(context.Background(), parent)
 	tracer := parent.TracerProvider().Tracer(usageSpansScope)
+	pipeline := security.OutputPipeline()
 	for _, spec := range specs {
 		u := m.PerModelUsage[spec]
-		provider, model := splitModelSpec(spec)
+		safeSpec := sanitizeModelSpec(pipeline, spec)
+		provider, model := splitModelSpec(safeSpec)
 		_, span := tracer.Start(ctx, usageSpanName(model),
 			trace.WithSpanKind(trace.SpanKindInternal),
-			trace.WithAttributes(usageComponentSpanAttrs(spec, provider, model, runtimeName, u)...),
+			trace.WithAttributes(usageComponentSpanAttrs(safeSpec, provider, model, runtimeName, u)...),
 		)
 		span.SetStatus(codes.Ok, "")
 		span.End()
 	}
 }
 
+// sanitizeModelSpec runs a PerModelUsage key through the output security
+// pipeline before any part of it reaches a span name or attribute. The key
+// is not trusted input: foldPiSubagentUsage (internal/runtime/
+// pi_subagents.go) keys entries by a child record's "model" field, read
+// back from a file the sandbox can write, and its own comments acknowledge
+// a malformed line may be agent-authored. scanOutputFiles (run.go) skips
+// the telemetry JSONL outright on the invariant that every stream-derived
+// string landing on a span was already scanned at assembly — the same
+// treatment toolSpanTracker.safeName gives execute_tool's stream-derived
+// name. Mirroring that: a scan that only redacts part of the spec keeps the
+// redacted text, and a spec that carries findings but sanitizes to nothing
+// is dropped (splitModelSpec("") maps it to the unknown bucket) rather than
+// shown.
+func sanitizeModelSpec(pipeline *security.Pipeline, spec string) string {
+	scanned := pipeline.Scan(spec)
+	if scanned.Sanitized != "" {
+		return scanned.Sanitized
+	}
+	if len(scanned.Findings) > 0 {
+		return ""
+	}
+	return spec
+}
+
+// recordUsageSpanOverflow marks the parent agent span when its iteration's
+// per-model breakdown had more distinct specs than maxUsageSpansPerIteration
+// allows, mirroring the contract recordToolSpanOverflow gives execute_tool
+// spans: a consumer can tell a capped usage-component set from an uncapped
+// one.
+func recordUsageSpanOverflow(parent trace.Span, dropped int) {
+	if dropped > 0 {
+		parent.SetAttributes(attribute.Int(attrUsageDropped, dropped))
+	}
+}
+
 func usageComponentSpanAttrs(spec, provider, model, runtimeName string, u agentruntime.ModelUsage) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.system", provider),
-		stringAttr("gen_ai.provider.name", provider),
+		boundedStringAttr("gen_ai.system", provider),
+		boundedStringAttr("gen_ai.provider.name", provider),
 		boundedStringAttr("gen_ai.request.model", model),
 		stringAttr("fullsend.runtime", runtimeName),
 		attribute.Bool(attrUsageComponent, true),

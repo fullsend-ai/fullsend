@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -352,10 +353,10 @@ func TestUsageSpanName_BoundsModel(t *testing.T) {
 	assert.Equal(t, "usage claude-sonnet-5", usageSpanName("claude-sonnet-5"))
 	assert.Equal(t, "usage xai/grok-4.6", usageSpanName("xai/grok-4.6"))
 	assert.Equal(t, "usage", usageSpanName(""))
-	long := strings.Repeat("m", maxToolSpanNameBytes*2)
+	long := strings.Repeat("m", maxUsageSpanNameBytes*2)
 	name := usageSpanName(long)
 	assert.True(t, strings.HasPrefix(name, usageSpanNamePrefix))
-	assert.LessOrEqual(t, len(name), len(usageSpanNamePrefix)+maxToolSpanNameBytes)
+	assert.LessOrEqual(t, len(name), len(usageSpanNamePrefix)+maxUsageSpanNameBytes)
 }
 
 func TestUsageComponentSpanAttrs_RepairsInvalidUTF8(t *testing.T) {
@@ -429,6 +430,139 @@ func TestUsageComponentSpanAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
 		}
 	}
 	t.Fatal("gen_ai.request.model not found")
+}
+
+// TestEmitPerModelUsageSpans_SanitizesSecretInSpec covers the security-review
+// finding that a PerModelUsage key is not trusted input: foldPiSubagentUsage
+// keys entries by a child record's "model" field read back from a
+// sandbox-writable file, and scanOutputFiles skips the telemetry JSONL on
+// the invariant that stream-derived strings are scanned before they land on
+// a span. A spec embedding a credential-shaped value must never reach the
+// span name or an attribute unredacted.
+func TestEmitPerModelUsageSpans_SanitizesSecretInSpec(t *testing.T) {
+	pinSpanLimitEnv(t)
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+
+	// env_assignment is a structural pattern (internal/security/redactor.go):
+	// KEY=value where value is 8+ chars. A deliberately low-entropy filler
+	// still satisfies the pattern's character class without resembling a
+	// real credential.
+	const secretValue = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+	spec := "anthropic-vertex/model API_KEY=" + secretValue
+	m := &agentruntime.RunMetrics{
+		Model:        "claude-sonnet-5",
+		InputTokens:  15,
+		OutputTokens: 3,
+		PerModelUsage: map[string]agentruntime.ModelUsage{
+			spec:                                {Requests: 1, InputTokens: 10, OutputTokens: 2},
+			"xai-vertex/xai/grok-4.6-mini-fast": {Requests: 1, InputTokens: 5, OutputTokens: 1},
+		},
+	}
+	emitPerModelUsageSpans(parent, "pi", m)
+	parent.End()
+
+	for _, sp := range rec.Ended() {
+		assert.NotContains(t, sp.Name(), secretValue, "span name must never carry the raw secret")
+		for k, v := range spanAttrMap(sp) {
+			assert.NotContains(t, v.Emit(), secretValue,
+				"attribute %s on span %q must never carry the raw secret", k, sp.Name())
+		}
+	}
+
+	var found bool
+	for _, sp := range rec.Ended() {
+		attrs := spanAttrMap(sp)
+		if strings.HasPrefix(attrs[attrUsageModelSpec].AsString(), "anthropic-vertex/") {
+			found = true
+			assert.Equal(t, "model API_KEY=zzzz...", attrs["gen_ai.request.model"].AsString(),
+				"the redactor's mask (prefix + ellipsis) replaces the secret's value, matching toolSpanTracker.safeName's treatment")
+		}
+	}
+	assert.True(t, found, "the anthropic-vertex component must still be exported, redacted rather than dropped")
+}
+
+// TestEmitPerModelUsageSpans_CapsCardinality covers the data-exposure
+// finding that PerModelUsage keys come from a sandbox-writable file with no
+// cap of its own: an adversarial burst of distinct model keys must not emit
+// an unbounded number of children, the same protection
+// maxToolSpansPerIteration gives the execute_tool stream.
+func TestEmitPerModelUsageSpans_CapsCardinality(t *testing.T) {
+	pinSpanLimitEnv(t)
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+
+	const over = 5
+	usage := make(map[string]agentruntime.ModelUsage, maxUsageSpansPerIteration+over)
+	for i := 0; i < maxUsageSpansPerIteration+over; i++ {
+		usage[fmt.Sprintf("provider/model-%04d", i)] = agentruntime.ModelUsage{Requests: 1, InputTokens: 1}
+	}
+	m := &agentruntime.RunMetrics{Model: "claude-sonnet-5", PerModelUsage: usage}
+
+	emitPerModelUsageSpans(parent, "pi", m)
+	parent.End()
+
+	ended := rec.Ended()
+	var components int
+	for _, sp := range ended {
+		if sp.Name() != "agent" {
+			components++
+		}
+	}
+	assert.Equal(t, maxUsageSpansPerIteration, components,
+		"the component count must never exceed the cap regardless of how many specs the breakdown has")
+
+	agent := agent0(ended)
+	require.NotNil(t, agent)
+	assert.Equal(t, int64(over), spanAttrMap(agent)[attrUsageDropped].AsInt64(),
+		"the parent agent span records exactly how many specs were refused a component")
+}
+
+// TestEmitPerModelUsageSpans_NoOverflowUnderCap documents that the overflow
+// attribute is absent (not present-and-zero) when the breakdown fits.
+func TestEmitPerModelUsageSpans_NoOverflowUnderCap(t *testing.T) {
+	pinSpanLimitEnv(t)
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+
+	emitPerModelUsageSpans(parent, "pi", mixedVertexXAIGoogleMetrics())
+	parent.End()
+
+	agent := agent0(rec.Ended())
+	require.NotNil(t, agent)
+	_, ok := spanAttrMap(agent)[attrUsageDropped]
+	assert.False(t, ok, "an unbounded breakdown must not carry the overflow attribute")
+}
+
+// TestUsageComponentCosts_RoundedSumCanDifferFromRollup demonstrates that
+// independently-rounded component costs do not always sum to the rounded
+// iteration rollup: three components at $0.006 each round individually to
+// $0.01 (summing to $0.03), while the raw total $0.018 rounds to $0.02. The
+// mixed-model integration test above cannot show this because its fixture
+// costs are already at cent precision.
+func TestUsageComponentCosts_RoundedSumCanDifferFromRollup(t *testing.T) {
+	t.Parallel()
+	raw := []float64{0.006, 0.006, 0.006}
+	var rawTotal, roundedSum float64
+	for _, c := range raw {
+		rawTotal += c
+		attrs := usageComponentSpanAttrs("p/m", "p", "m", "pi", agentruntime.ModelUsage{CostUSD: c})
+		for _, kv := range attrs {
+			if kv.Key == "fullsend.cost_usd" {
+				roundedSum += kv.Value.AsFloat64()
+			}
+		}
+	}
+	assert.InDelta(t, 0.03, roundedSum, 1e-9, "each $0.006 component rounds up to a full cent")
+	assert.InDelta(t, 0.02, roundUSD(rawTotal), 1e-9, "the raw $0.018 total rounds down")
+	assert.NotEqual(t, roundUSD(rawTotal), roundedSum,
+		"component costs are rounded independently, so their sum is not guaranteed to equal the rounded rollup")
 }
 
 func mixedVertexXAIGoogleUsage() map[string]agentruntime.ModelUsage {
