@@ -903,20 +903,23 @@ func (h *Harness) validateResourceFilesExist() error {
 	}
 	for i, p := range h.Providers {
 		if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
-			// CI layers providers/, so a missing path is a local-only miss;
-			// a bare name is not checked here (see above).
-			return fmt.Errorf("%w (commit the provider file at that path, or use a bare provider name; CI layers providers/ from the scaffold on every run)", err)
+			// CI layers providers/, so a missing path is a local-only miss.
+			// A bare name is not offered as an alternative here: only the
+			// OpenAI provider is filled in from the embedded scaffold
+			// fallback (appendEmbeddedProviderDefs in cli/run.go); other
+			// bare names still degrade to a warning and a sandbox that
+			// cannot reach the provider, which is the silent failure
+			// #7567 exists to make loud.
+			return fmt.Errorf("%w (commit the provider file at that path; CI layers providers/ from the scaffold on every run)", err)
 		}
 	}
-	if h.OpenShell != nil {
-		for i, p := range h.OpenShell.Profiles {
-			if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
-				// CI never layers profiles/, so a missing path is the same
-				// class of committed-file error as policy: (#6834, #7567).
-				// Re-running agent new is no fix: it refuses on an existing
-				// agent's files before writing the profile.
-				return fmt.Errorf("%w (commit the profile file at that path next to the harness, or set openshell.profiles to its URL with a #sha256= hash under allowed_remote_resources; CI never layers profiles/; `fullsend agent new` only writes one when generating a new agent)", err)
-			}
+	for i, p := range h.OpenShellProfiles() {
+		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
+			// CI never layers profiles/, so a missing path is the same
+			// class of committed-file error as policy: (#6834, #7567).
+			// Re-running agent new is no fix: it refuses on an existing
+			// agent's files before writing the profile.
+			return fmt.Errorf("%w (commit the profile file at that path next to the harness, or set openshell.profiles to its URL with a #sha256= hash under allowed_remote_resources; CI never layers profiles/; `fullsend agent new` only writes one when generating a new agent)", err)
 		}
 	}
 	return nil
