@@ -95,7 +95,7 @@ Agent PRs go through the same review process as human PRs:
 The review stage runs N independent review agents in parallel. One is randomly selected as coordinator. The coordinator collects verdicts and applies one of three outcomes:
 
 - **Unanimous approve:** All reviewers agree the PR is good. Label `ready-for-merge` is applied. The PR can be merged per your org's governance policy.
-- **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
+- **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins. On GitHub, bot-triggered fix is skipped when a human pushed the current HEAD in the last 30 minutes (use `/fs-fix` to re-engage).
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
 Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
@@ -143,7 +143,7 @@ Re-review happens automatically on every push to the PR. The `ready-for-merge` l
 
 ### Stage 4: Fix
 
-**Triggered by:** review agent submitting a "changes requested" review, or human `/fs-fix` command.
+**Triggered by:** review agent submitting a "changes requested" review, or human `/fs-fix` command. Bot-triggered runs on GitHub are skipped when the PR HEAD is a human commit pushed in the last 30 minutes; `/fs-fix` is not skipped. See the [fix agent reference](../../agents/fix.md).
 
 The [fix agent](../../agents/fix.md):
 

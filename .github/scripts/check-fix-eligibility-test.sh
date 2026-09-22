@@ -13,6 +13,26 @@ FAILURES=0
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
+# Fixed "now" so recency assertions do not depend on wall clock.
+NOW_EPOCH=1700000000
+WINDOW_SECONDS=1800
+
+iso_from_epoch() {
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ
+}
+
+write_commit_fixtures() {
+  local author_type="$1" author_login="$2" committed_at="$3" pushed_at="${4:-}"
+  printf '%s' "abc123def456" > "${TMPDIR}/head-sha.txt"
+  jq -n \
+    --arg type "${author_type}" \
+    --arg login "${author_login}" \
+    --arg committed_at "${committed_at}" \
+    '{type:$type,login:$login,committer_type:"",committer_login:"",committed_at:$committed_at}' \
+    > "${TMPDIR}/commit-json.txt"
+  printf '%s' "${pushed_at}" > "${TMPDIR}/gql-pushed.txt"
+}
+
 # build_mock creates a mock gh binary that returns preconfigured PR JSON.
 #   $1 — is_bot value (true/false/null)
 #   $2 — login value
@@ -38,6 +58,10 @@ build_mock() {
 
   printf '%s' "${json}" > "${TMPDIR}/pr-json.txt"
   printf '%s' "${TMPDIR}/pr-json.txt" > "${TMPDIR}/pr-json-path"
+
+  # Default HEAD is an old bot commit so existing proceed-path tests
+  # still pass the recency check without extra arguments.
+  write_commit_fixtures "Bot" "fullsend-ai-coder[bot]" "2020-01-01T00:00:00Z" ""
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -65,6 +89,53 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
   fi
   cat "${PR_JSON_FILE}"
   exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  shift
+  path=""
+  jq_arg=""
+  is_graphql=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      graphql) is_graphql=1 ;;
+      --jq) shift; jq_arg="$1" ;;
+      -f|-F|--repo) shift ;;
+      *)
+        if [[ "$1" != -* && -z "${path}" && "${is_graphql}" -eq 0 ]]; then
+          path="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+  if [[ "${is_graphql}" -eq 1 ]]; then
+    if [[ "${jq_arg}" != '.data.repository.object.pushedDate // empty' ]]; then
+      echo "mock gh: unexpected graphql --jq arg: ${jq_arg}" >&2
+      exit 1
+    fi
+    cat "${MOCK_DIR}/gql-pushed.txt"
+    exit 0
+  fi
+  case "${path}" in
+    repos/*/pulls/*)
+      if [[ "${jq_arg}" != '.head.sha' ]]; then
+        echo "mock gh: unexpected pulls --jq arg: ${jq_arg}" >&2
+        exit 1
+      fi
+      cat "${MOCK_DIR}/head-sha.txt"
+      exit 0
+      ;;
+    repos/*/commits/*)
+      if [[ "${jq_arg}" != '{type:(.author.type//""),login:(.author.login//""),committer_type:(.committer.type//""),committer_login:(.committer.login//""),committed_at:(.commit.committer.date//"")}' ]]; then
+        echo "mock gh: unexpected commits --jq arg: ${jq_arg}" >&2
+        exit 1
+      fi
+      cat "${MOCK_DIR}/commit-json.txt"
+      exit 0
+      ;;
+  esac
+  echo "unexpected gh api call: path=${path} jq=${jq_arg}" >&2
+  exit 1
 fi
 echo "unexpected gh call: $*" >&2
 exit 1
@@ -95,16 +166,60 @@ run_test() {
     PR_NUM="123" \
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
+    HUMAN_PUSH_NOW_EPOCH="${NOW_EPOCH}" \
+    HUMAN_PUSH_RECENCY_SECONDS="${WINDOW_SECONDS}" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
     echo "FAIL: ${name} — expected exit ${expected_exit}, got ${actual_exit}"
+    echo "  output: ${output}"
     FAILURES=$((FAILURES + 1))
     return
   fi
 
   if [[ -n "${expected_annotation}" ]] && [[ "${output}" != *"${expected_annotation}"* ]]; then
     echo "FAIL: ${name} — expected annotation '${expected_annotation}' not found in output"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${name}"
+}
+
+# run_commit_test is run_test plus a custom HEAD commit fixture.
+#   $1-$7 — same as run_test
+#   $8  — GitHub author type (User/Bot/empty)
+#   $9  — GitHub author login
+#   $10 — committed_at ISO timestamp
+#   $11 — pushedDate ISO timestamp (optional, empty uses committed_at)
+run_commit_test() {
+  local name="$1" expected_exit="$2" is_bot="$3" login="$4" trigger="$5" labels="${6:-}" expected_annotation="${7:-}"
+  local author_type="$8" author_login="$9" committed_at="${10}" pushed_at="${11:-}"
+  local mock_bin
+  mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
+  write_commit_fixtures "${author_type}" "${author_login}" "${committed_at}" "${pushed_at}"
+
+  local actual_exit=0 output
+  output=$(PATH="${mock_bin}:${PATH}" \
+    TRIGGER_SOURCE="${trigger}" \
+    PR_NUM="123" \
+    SOURCE_REPO="org/repo" \
+    GH_TOKEN="fake" \
+    HUMAN_PUSH_NOW_EPOCH="${NOW_EPOCH}" \
+    HUMAN_PUSH_RECENCY_SECONDS="${WINDOW_SECONDS}" \
+    bash "${SCRIPT}" 2>&1) || actual_exit=$?
+
+  if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
+    echo "FAIL: ${name} — expected exit ${expected_exit}, got ${actual_exit}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_annotation}" ]] && [[ "${output}" != *"${expected_annotation}"* ]]; then
+    echo "FAIL: ${name} — expected annotation '${expected_annotation}' not found in output"
+    echo "  output: ${output}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -196,6 +311,158 @@ MOCKEOF
   echo "PASS: gh pr view failure"
 }
 run_test_gh_failure
+
+RECENT_TS="$(iso_from_epoch $((NOW_EPOCH - 300)))"
+OLD_TS="$(iso_from_epoch $((NOW_EPOCH - 3600)))"
+PUSH_RECENT_TS="$(iso_from_epoch $((NOW_EPOCH - 1560)))"
+
+# Human HEAD commit within the recency window — skip bot-triggered fix.
+run_commit_test "human HEAD within window skipped" 1 \
+  "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "skipped: recent human push" \
+  "User" "waynesun09" "${RECENT_TS}"
+
+# Human HEAD commit older than the window — existing behavior preserved.
+run_commit_test "human HEAD older than window proceeds" 0 \
+  "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "" \
+  "User" "waynesun09" "${OLD_TS}"
+
+# Bot HEAD commit (prior fix/code run) does not block bot-to-bot follow-up,
+# even when the commit is recent.
+run_commit_test "bot HEAD within window proceeds" 0 \
+  "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "" \
+  "Bot" "fullsend-ai-coder[bot]" "${RECENT_TS}"
+
+# Login ending in [bot] is treated as a bot even if type is missing.
+run_commit_test "bot login suffix within window proceeds" 0 \
+  "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "" \
+  "" "renovate[bot]" "${RECENT_TS}"
+
+# Unlinked git author falls back to GitHub committer identity.
+run_test_committer_fallback() {
+  local mock_bin
+  mock_bin=$(build_mock "true" "app/fullsend-ai-coder" "")
+  printf '%s' "abc123def456" > "${TMPDIR}/head-sha.txt"
+  jq -n --arg committed_at "${RECENT_TS}" \
+    '{type:"",login:"",committer_type:"User",committer_login:"waynesun09",committed_at:$committed_at}' \
+    > "${TMPDIR}/commit-json.txt"
+  printf '%s' "" > "${TMPDIR}/gql-pushed.txt"
+
+  local actual_exit=0 output
+  output=$(PATH="${mock_bin}:${PATH}" \
+    TRIGGER_SOURCE="review-bot[bot]" \
+    PR_NUM="123" \
+    SOURCE_REPO="org/repo" \
+    GH_TOKEN="fake" \
+    HUMAN_PUSH_NOW_EPOCH="${NOW_EPOCH}" \
+    HUMAN_PUSH_RECENCY_SECONDS="${WINDOW_SECONDS}" \
+    bash "${SCRIPT}" 2>&1) || actual_exit=$?
+
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    echo "FAIL: committer fallback recent human skipped — expected exit 1, got ${actual_exit}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${output}" != *"skipped: recent human push"* ]]; then
+    echo "FAIL: committer fallback recent human skipped — expected skip annotation"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: committer fallback recent human skipped"
+}
+run_test_committer_fallback
+
+# Old git committer date but recent GraphQL pushedDate — skip (the #7564 race:
+# authored earlier, pushed inside the window).
+run_commit_test "human HEAD recent pushedDate skipped" 1 \
+  "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "skipped: recent human push" \
+  "User" "waynesun09" "${OLD_TS}" "${PUSH_RECENT_TS}"
+
+# Explicit /fs-fix still proceeds even if HEAD is a recent human commit.
+run_commit_test "human trigger ignores recent human HEAD" 0 \
+  "true" "app/fullsend-ai-coder" "human-user" "" \
+  "" \
+  "User" "waynesun09" "${RECENT_TS}"
+
+# Recency lookup failure is fail-open (proceed), unlike the label/authorship
+# fetch which fails closed.
+run_test_recency_api_failure() {
+  local mock_bin
+  mock_bin=$(build_mock "true" "app/fullsend-ai-coder" "")
+  cat > "${mock_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PR_JSON_FILE="$(cat "${MOCK_DIR}/pr-json-path")"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  cat "${PR_JSON_FILE}"
+  exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  echo "gh: API rate limit exceeded" >&2
+  exit 1
+fi
+echo "unexpected gh call: $*" >&2
+exit 1
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  local actual_exit=0 output
+  output=$(PATH="${mock_bin}:${PATH}" \
+    TRIGGER_SOURCE="review-bot[bot]" \
+    PR_NUM="123" \
+    SOURCE_REPO="org/repo" \
+    GH_TOKEN="fake" \
+    HUMAN_PUSH_NOW_EPOCH="${NOW_EPOCH}" \
+    HUMAN_PUSH_RECENCY_SECONDS="${WINDOW_SECONDS}" \
+    bash "${SCRIPT}" 2>&1) || actual_exit=$?
+
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    echo "FAIL: recency API failure fail-open — expected exit 0, got ${actual_exit}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${output}" != *"Could not fetch PR head SHA for human-activity check"* ]]; then
+    echo "FAIL: recency API failure fail-open — expected proceeding warning not found"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: recency API failure fail-open"
+}
+run_test_recency_api_failure
+
+# WINDOW=0 disables the recency check even for a fresh human HEAD.
+run_test_window_disabled() {
+  local mock_bin
+  mock_bin=$(build_mock "true" "app/fullsend-ai-coder" "")
+  write_commit_fixtures "User" "waynesun09" "${RECENT_TS}" ""
+
+  local actual_exit=0 output
+  output=$(PATH="${mock_bin}:${PATH}" \
+    TRIGGER_SOURCE="review-bot[bot]" \
+    PR_NUM="123" \
+    SOURCE_REPO="org/repo" \
+    GH_TOKEN="fake" \
+    HUMAN_PUSH_NOW_EPOCH="${NOW_EPOCH}" \
+    HUMAN_PUSH_RECENCY_SECONDS="0" \
+    bash "${SCRIPT}" 2>&1) || actual_exit=$?
+
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    echo "FAIL: recency window disabled — expected exit 0, got ${actual_exit}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: recency window disabled"
+}
+run_test_window_disabled
 
 echo ""
 if [[ "${FAILURES}" -gt 0 ]]; then
