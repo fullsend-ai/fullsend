@@ -2513,6 +2513,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// The workflow token must never reach harness-controlled expansions.
+		"GITHUB_TOKEN",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
