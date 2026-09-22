@@ -987,7 +987,13 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		// per-file streaming endpoint to target the way Git Blobs has for
 		// GitHub. LocalPath only defers the read until a file is confirmed
 		// changed (see the hashing above); it does not stream the upload.
-		// Tracked as a known follow-up, not solved by this change.
+		// This is a documented limitation of GitLab's commit API, not a
+		// tracked follow-up — there is no open issue for it. Issue #2353
+		// (avoid loading the full binary into memory across the install
+		// path) is still resolved: LocalPath keeps the payload off the
+		// heap until a file is confirmed changed, for both GitHub and
+		// GitLab. Only a changed GitLab upload still peaks at
+		// file-plus-base64 in memory, bounded by GitLab's API shape.
 		content, err := f.Bytes()
 		if err != nil {
 			return false, fmt.Errorf("reading %s: %w", f.Path, err)
