@@ -91,13 +91,14 @@ silently.
 
 ## Span lifecycle in run.go
 
-`run.go` creates four span types arranged in a parent-child hierarchy:
+`run.go` creates these span types in a parent-child hierarchy:
 
 ```
 run (root)
 ├── sandbox_create    (gen_ai.operation.name=create_agent)
 └── agent             (one per iteration; gen_ai.operation.name=invoke_agent)
-    └── execute_tool  (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
+    ├── execute_tool  (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
+    └── usage <model> (mixed-model Pi only; one per PerModelUsage entry)
 ```
 
 ### Root span
@@ -134,6 +135,25 @@ build the attribute slices. Start attributes: `iteration`,
 value), model, token counts, `fullsend.cost_usd`, `fullsend.runtime`,
 `fullsend.tool_calls`. Multi-provider runtimes resolve the provider from the
 effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
+On a mixed-model Pi iteration (`len(PerModelUsage) > 1`) the agent span is
+marked `fullsend.usage.rollup` and omits `gen_ai.usage.*` token attributes;
+those move to the usage children so a backend that auto-sums them cannot
+double-count. Single-model runs and runtimes without `PerModelUsage` are
+unchanged.
+
+### usage spans
+
+Mixed-model Pi iterations only. `emitPerModelUsageSpans()` (`internal/cli/usage_spans.go`)
+runs from `finalizeAgentSpan` after unanswered tool spans close and before
+the agent span ends, so the children land in the file sink on a cancelled
+iteration. One Internal child per `PerModelUsage` entry, named `usage <model>`,
+keyed by model spec (parent included). Each child carries that spec's
+serving-endpoint provider, effective model, token fields, request count, and
+cost, marked `fullsend.usage.component`. Specs emit in sorted order so the
+trace is deterministic across retries. An `unknown` spec (a child record with
+no model) is still a component; it is not translated through `translatePiModel`.
+This is usage attribution, not the recursive sub-agent span expansion ADR 0050
+deferred — see the [query contract](../infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ### execute_tool spans
 

@@ -3570,12 +3570,23 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		stringAttr("gen_ai.provider.name", system),
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
-		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
-		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
-		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
-		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
+	}
+	// Mixed-model Pi iterations emit gen_ai.usage.* on per-model usage
+	// children instead of here, so a backend that auto-sums those keys
+	// (MLflow) cannot add this rollup to the components (#7550). The
+	// parent identity and fullsend.cost_usd stay; reasoning_tokens has
+	// no per-model counterpart and remains on this span.
+	if isMixedModelUsage(m) {
+		attrs = append(attrs, attribute.Bool(attrUsageRollup, true))
+	} else {
+		attrs = append(attrs,
+			attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
+			attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
+			attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
+			attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
+		)
 	}
 	if m.ReasoningTokens > 0 {
 		attrs = append(attrs, attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens))
@@ -3873,6 +3884,9 @@ func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, s
 	// SIGTERM handleRunCancellation names) still lands its unanswered calls
 	// in the file sink before the process goes.
 	recordToolSpanOverflow(span, toolSpans.Finish())
+	// Usage children end before the agent span so they reach the file
+	// sink on a cancelled iteration, the same way unanswered tool spans do.
+	emitPerModelUsageSpans(span, runtimeName, m)
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, runtimeName, m)...)
 	switch {
 	case runErr != nil:

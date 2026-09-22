@@ -121,6 +121,13 @@ parent's stream, so without it `total_cost_usd` would grow with no way to attrib
 - A model spec of `unknown` is a usage record that carries no model spec at all; its cost is
   bucketed there rather than dropped. A dispatch rejected *before* a model was resolved writes
   no record, so it never reaches the breakdown.
+- **Traces.** When an iteration has more than one spec, the same breakdown is exported as
+  `usage <model>` children of that iteration's `agent` span, one per entry, so mixed-vendor
+  spend is not attributed to the parent in OTLP backends. Filter `fullsend.usage.component`
+  to sum billable tokens and cost; the parent `agent` span is the rollup
+  (`fullsend.usage.rollup`) and must not be added to the children. Single-model iterations and
+  runtimes without `per_model_usage` keep the previous `agent` span. See
+  [Per-model usage components](../guides/infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ## Budget and deadline
 

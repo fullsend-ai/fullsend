@@ -178,3 +178,9 @@ codex emit no call ids — becomes an `execute_tool` child of its iteration's
 `agent` span, up to 1,024 per iteration, metadata only; the message record
 on the `agent` span stays the content carrier. Sub-agent nesting (deferred item 1 above)
 remains deferred.
+
+**2026-09-22 — Per-model usage components (#7550):** mixed-model Pi iterations
+export one `usage <model>` child of the `agent` span per `per_model_usage`
+entry so child-provider tokens and cost are not attributed to the parent.
+This is usage attribution (near-zero-duration, keyed by model spec), not the
+recursive sub-agent span expansion still deferred above.
