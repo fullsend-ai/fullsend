@@ -257,7 +257,7 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 | `fullsend.usage.component` | `usage <model>` | Present (`true`) on each per-model usage child. Query this flag (not span name) to sum billable tokens/cost without the parent rollup. |
 | `fullsend.usage.model_spec` | `usage <model>` | The `per_model_usage` key that produced this child (`anthropic-vertex/claude-sonnet-5`, `xai-vertex/xai/grok-4.6`, `unknown`). |
 | `fullsend.usage.requests` | `usage <model>` | Inference episodes attributed to this model spec (one for the parent iteration, one per sub-agent call). |
-| `fullsend.usage.dropped` | `agent` | Present when the iteration's `per_model_usage` breakdown had more distinct specs than the usage-span cap allows: the number of specs refused a `usage <model>` component. Mirrors `fullsend.tool_spans.dropped` for the usage-component stream. |
+| `fullsend.usage.dropped` | `agent` | Present when the iteration's `per_model_usage` breakdown had more distinct specs than the 1,024-spec usage-span cap allows: the number of specs refused a `usage <model>` component. Mirrors `fullsend.tool_spans.dropped` for the usage-component stream. |
 | `fullsend.tool_calls` | `run` (aggregated), `agent` | Number of tool invocations |
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
@@ -299,7 +299,7 @@ Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 
 A Pi iteration that dispatched sub-agents on more than one model spec already records the breakdown in `metrics.json` (`per_model_usage`). The trace now exports the same components so model/provider dashboards do not attribute every child to the parent.
 
-**When they appear.** One Internal child of that iteration's `agent` span per `per_model_usage` entry, named `usage <model>`, only when the iteration has **more than one** spec. A single-model Pi run (including an Agent-enabled iteration that dispatched nothing) and any runtime that leaves `per_model_usage` unset keep today's `agent` span and emit no children. Historical traces are not rewritten; `metrics.json` is unchanged.
+**When they appear.** One Internal child of that iteration's `agent` span per `per_model_usage` entry, named `usage <model>`, only when the iteration has **more than one** spec. A single-model Pi run (including an Agent-enabled iteration that dispatched nothing) and any runtime that leaves `per_model_usage` unset keep today's `agent` span and emit no children. Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024 children are emitted per iteration; a breakdown with more distinct specs than that reports the overflow as `fullsend.usage.dropped` on the `agent` span instead of emitting further children.
 
 **What each child carries.** The serving-endpoint provider (`gen_ai.system` / `gen_ai.provider.name`), the effective model id (`gen_ai.request.model`), input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`), `fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd` (that component, rounded to cents), and `fullsend.runtime`. Status is Ok: the span reports consumed usage, not the agent's outcome. There is no prompt/output content, no credentials, and no `mlflow.*` attributes. A record with no model spec is keyed `unknown` (provider and model `unknown`) rather than dropped.
 

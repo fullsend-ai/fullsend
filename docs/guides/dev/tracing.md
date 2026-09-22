@@ -152,6 +152,20 @@ serving-endpoint provider, effective model, token fields, request count, and
 cost, marked `fullsend.usage.component`. Specs emit in sorted order so the
 trace is deterministic across retries. An `unknown` spec (a child record with
 no model) is still a component; it is not translated through `translatePiModel`.
+Each `PerModelUsage` key is a sandbox-writable value (`foldPiSubagentUsage`
+keys entries by a child record's model field, and `scanOutputFiles` skips the
+telemetry JSONL on the invariant that stream-derived span strings are
+scanned before assembly), so `sanitizeModelSpec` runs it through
+`security.OutputPipeline()` before any part of it reaches a span name or
+attribute — the same treatment `toolSpanTracker.safeName` gives the
+structurally identical execute_tool case; a spec that sanitizes to nothing
+is dropped into the `unknown` bucket rather than shown unredacted. The
+model portion of the span name is bounded to `maxUsageSpanNameBytes` (128)
+bytes. `emitPerModelUsageSpans` records at most `maxUsageSpansPerIteration`
+(1,024) children per iteration and reports the overflow as
+`fullsend.usage.dropped` on the agent span, mirroring
+`fullsend.tool_spans.dropped`'s protection against an agent-controlled
+burst filling the OTLP batch queue.
 This is usage attribution, not the recursive sub-agent span expansion ADR 0050
 deferred — see the [query contract](../infrastructure/distributed-tracing.md#per-model-usage-components).
 
