@@ -3,6 +3,7 @@
 package e2etest
 
 import (
+	"debug/buildinfo"
 	"os"
 	"testing"
 
@@ -14,12 +15,28 @@ func TestBuildCLI(t *testing.T) {
 	if _, err := os.Stat(binary); err != nil {
 		t.Fatalf("binary not found at %s: %v", binary, err)
 	}
-	if sha := gitHeadSHA(ModuleRoot(t)); sha != "" {
-		data, err := os.ReadFile(binary)
-		require.NoError(t, err)
-		require.Contains(t, string(data), sha,
-			"e2e CLI must stamp commitSHA with HEAD so scaffold refs pin to the commit under test")
+	sha := gitHeadSHA(ModuleRoot(t))
+	if sha == "" {
+		return
 	}
+
+	// Assert the -ldflags setting recorded in the binary's build info, not
+	// a raw byte search: Go's default VCS stamping already embeds HEAD's
+	// SHA as `vcs.revision` even when -X .../cli.commitSHA=... is omitted
+	// entirely, so a plain require.Contains on the binary bytes would pass
+	// whether or not commitSHA was actually stamped.
+	info, err := buildinfo.ReadFile(binary)
+	require.NoError(t, err)
+	want := commitSHALdflags(sha)
+	var got string
+	for _, s := range info.Settings {
+		if s.Key == "-ldflags" {
+			got = s.Value
+			break
+		}
+	}
+	require.Contains(t, got, want,
+		"e2e CLI must stamp commitSHA with HEAD via -ldflags so scaffold refs pin to the commit under test")
 }
 
 func TestBuildModuleBinary(t *testing.T) {

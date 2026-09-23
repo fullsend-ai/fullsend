@@ -51,7 +51,7 @@ func buildCLIBinary(t *testing.T, modRoot string) string {
 		t.Logf("stamping CLI commitSHA=%s", sha)
 		args = []string{
 			"build",
-			"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=%s", sha),
+			"-ldflags", commitSHALdflags(sha),
 			"-o", binary,
 			"./cmd/fullsend/",
 		}
