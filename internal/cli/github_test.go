@@ -2067,6 +2067,34 @@ agents:
 	require.NoError(t, cfg.Validate())
 }
 
+func TestLoadExistingPerRepoConfig_OverlayMissingBasePresent(t *testing.T) {
+	t.Parallel()
+	// The overlay was removed while config.base.yaml remains. The base
+	// must still be returned so a pin-warning comparison against the
+	// on-disk base layer (rather than compiled defaults) is possible,
+	// even though there is no overlay to parse.
+	baseYAML := "version: \"1\"\nruntime: claude\n"
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": []byte(baseYAML),
+	}
+	cfg, base, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.NoError(t, err)
+	assert.Nil(t, cfg)
+	assert.Equal(t, baseYAML, string(base))
+}
+
+func TestLoadExistingPerRepoConfig_OverlayMissingBaseReadError(t *testing.T) {
+	t.Parallel()
+	client := forge.NewFakeClient()
+	client.GetFileContentErrors = map[string]error{
+		"acme/widget/.fullsend/config.base.yaml": fmt.Errorf("github api: 500"),
+	}
+	_, _, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing .fullsend/config.base.yaml")
+}
+
 func TestLoadExistingPerRepoConfig_BaseReadError(t *testing.T) {
 	t.Parallel()
 	client := forge.NewFakeClient()

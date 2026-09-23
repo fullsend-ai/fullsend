@@ -553,18 +553,28 @@ func setupConfigFlagsChanged(cfg githubSetupConfig) bool {
 // ValidateAgentEntries sees the merged agent set — an overlay entry that
 // tunes a custom agent registered only in config.base.yaml would
 // otherwise fail with "is not a built-in agent".
-// Returns (nil, nil, nil) when config.yaml does not exist (first install)
-// and an error when it exists but cannot be parsed — a re-run must not
-// silently regenerate over a file the repo edited. baseData is the raw
-// config.base.yaml bytes when that file exists, used to compare explicit
-// CLI flags against the inherited lower layer.
+// Returns a nil config.yaml writer when config.yaml does not exist (first
+// install, or an overlay that was removed while config.base.yaml remains)
+// and an error when config.yaml exists but cannot be parsed — a re-run
+// must not silently regenerate over a file the repo edited. baseData is
+// the raw config.base.yaml bytes when that file exists, returned even
+// when there is no overlay, so callers can compare explicit CLI flags
+// against the inherited lower layer.
 func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, []byte, error) {
 	data, err := client.GetFileContent(ctx, owner, repo, ".fullsend/config.yaml")
 	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil, nil, nil
+		if !forge.IsNotFound(err) {
+			return nil, nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
 		}
-		return nil, nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
+		// No overlay yet, but a base layer may still exist (overlay
+		// removed while base remains) — callers compare CLI flags
+		// against that base, so it must be returned even though there
+		// is no overlay to parse.
+		baseData, baseErr := readExistingPerRepoBase(ctx, client, owner, repo)
+		if baseErr != nil {
+			return nil, nil, baseErr
+		}
+		return nil, baseData, nil
 	}
 	if !config.IsPerRepoYAML(data) {
 		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
@@ -573,12 +583,9 @@ func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, 
 	// Fetch the base layer when present so validation sees the merged
 	// agent set (an overlay entry tuning a base-registered custom agent
 	// needs the base's source to pass ValidateAgentEntries).
-	var baseData []byte
-	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
-	if baseErr == nil {
-		baseData = baseContent
-	} else if !forge.IsNotFound(baseErr) {
-		return nil, nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+	baseData, err := readExistingPerRepoBase(ctx, client, owner, repo)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	parsed, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
@@ -586,6 +593,19 @@ func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, 
 		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
 	}
 	return parsed, baseData, nil
+}
+
+// readExistingPerRepoBase fetches the repo's config.base.yaml, returning
+// nil data (and no error) when the file does not exist.
+func readExistingPerRepoBase(ctx context.Context, client forge.Client, owner, repo string) ([]byte, error) {
+	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
+	if baseErr == nil {
+		return baseContent, nil
+	}
+	if forge.IsNotFound(baseErr) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
 }
 
 // inheritedSetupReader is the lower layer an overlay write would inherit

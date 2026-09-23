@@ -575,10 +575,13 @@ func TestRunGitHubSetupPerRepo_PinWarningWhenCLIEqualsBase(t *testing.T) {
 
 	files := committedSetupFiles(client)
 	assert.Equal(t, presetContent, string(files[".fullsend/config.base.yaml"]), "preset must stay unchanged")
-	overlay, err := config.ParsePerRepoConfig(files[".fullsend/config.yaml"])
-	require.NoError(t, err)
-	assert.Equal(t, "claude", overlay.ConfigRuntime())
-	assert.Equal(t, "global", overlay.ConfigInferenceRegion())
+	// Assert on the raw overlay bytes rather than a parsed reader:
+	// ParsePerRepoConfig always falls through to compiled defaults
+	// ("claude" / "global"), so asserting on the parsed reader would
+	// pass even if the overlay never recorded these keys at all.
+	overlayYAML := string(files[".fullsend/config.yaml"])
+	assert.Contains(t, overlayYAML, "runtime: claude", "overlay must record the pinned runtime")
+	assert.Regexp(t, `region:\s*global`, overlayYAML, "overlay must record the pinned inference region")
 }
 
 func TestRunGitHubSetupPerRepo_NoPinWarningWhenCLIDiffers(t *testing.T) {
