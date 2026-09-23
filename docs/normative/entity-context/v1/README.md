@@ -138,8 +138,10 @@ Created-At: "2026-09-08T10:15:30.000000000Z"
 Filtered Markdown body.
 ```
 
-`Fullsend-Record` is `"comment"` or `"review"`. The header order and blank
-line are fixed. `Author-ID` may be `null` when the forge withholds or has
+`Fullsend-Record` is `"entity"`, `"comment"`, or `"review"`. The header order
+and blank line are fixed. `"entity"` is required for the reserved entity-body
+record; `"comment"` and `"review"` identify ordinary conversation records.
+`Author-ID` may be `null` when the forge withholds or has
 deleted the actor. The immutable actor ID is included because attribution is
 part of the source record. The current login stays in `index.json` and
 `state/actors.json`: it may change after an account rename without the record
