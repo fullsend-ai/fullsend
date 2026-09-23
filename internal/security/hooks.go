@@ -60,9 +60,13 @@ type hookMatcher struct {
 	Hooks   []hookEntry `json:"hooks"`
 }
 
-// hooksConfig represents the hooks.json structure for Claude Code hook wiring.
+// hooksConfig represents the hooks.json structure for Claude Code --settings.
+// IncludeCoAuthoredBy is a Claude Code settings key, not a hook; it lives here
+// because buildRunCommand points --settings at this file, which takes
+// precedence over Claude Code's default of appending a Co-authored-by trailer.
 type hooksConfig struct {
-	Hooks map[string][]hookMatcher `json:"hooks"`
+	IncludeCoAuthoredBy *bool                    `json:"includeCoAuthoredBy,omitempty"`
+	Hooks               map[string][]hookMatcher `json:"hooks"`
 }
 
 // SandboxHooksDir is the directory where hook scripts are installed inside
@@ -181,13 +185,18 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 	return plan
 }
 
-// GenerateHooksConfig produces the hooks.json Claude Code hook wiring,
+// GenerateHooksConfig produces the hooks.json Claude Code --settings file,
 // loaded via --settings in buildRunCommand. Returns the JSON bytes. The
 // wiring comes from HookPlan; this function only renders it in Claude Code's
-// settings format.
+// settings format. When SuppressCoAuthoredBy is set, the file also carries
+// includeCoAuthoredBy: false so Claude Code does not append a trailer.
 func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 	cfg := hooksConfig{
 		Hooks: make(map[string][]hookMatcher),
+	}
+	if hooks.suppressCoAuthoredBy {
+		f := false
+		cfg.IncludeCoAuthoredBy = &f
 	}
 
 	for _, g := range HookPlan(hooks) {

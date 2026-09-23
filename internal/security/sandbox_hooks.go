@@ -12,8 +12,9 @@ import (
 // mechanism. A nil internal hook config uses the same defaults as an unset
 // harness security block.
 type SandboxHookConfig struct {
-	hooks            *harness.SandboxHooks
-	forgeEgressEntry string // optional "host:port" to auto-merge into the egress allowlist
+	hooks                *harness.SandboxHooks
+	forgeEgressEntry     string // optional "host:port" to auto-merge into the egress allowlist
+	suppressCoAuthoredBy bool   // Claude Code: set includeCoAuthoredBy false in --settings
 }
 
 // SandboxHookConfigFromHarness extracts sandbox hook settings from a harness.
@@ -70,4 +71,19 @@ func (c SandboxHookConfig) WithForgeEgressEntry(entry string) SandboxHookConfig 
 // set by the CLI layer, or empty when none was configured.
 func (c SandboxHookConfig) ForgeEgressEntry() string {
 	return c.forgeEgressEntry
+}
+
+// WithSuppressCoAuthoredBy returns a copy of c that tells GenerateHooksConfig
+// to set includeCoAuthoredBy: false in Claude Code's --settings file. Used
+// when the target repo's AGENTS.md or CLAUDE.md forbids Co-authored-by
+// trailers (#2905).
+func (c SandboxHookConfig) WithSuppressCoAuthoredBy() SandboxHookConfig {
+	c.suppressCoAuthoredBy = true
+	return c
+}
+
+// SuppressCoAuthoredBy reports whether Claude Code should omit its automatic
+// Co-authored-by trailer.
+func (c SandboxHookConfig) SuppressCoAuthoredBy() bool {
+	return c.suppressCoAuthoredBy
 }

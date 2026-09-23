@@ -119,7 +119,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **Retro agent loop** — the retro agent (enabled in Walk) has been surfacing problems and filing issues. With the code agent active, those issues can now feed directly into the code agent, closing the loop.
 
-**PR conventions** — specify your merge strategy (squash / rebase / merge), commit message format, and PR description expectations in AGENTS.md or a skill. Agent PRs stay consistent with how your team works.
+**PR conventions** — specify your merge strategy (squash / rebase / merge), commit message format, and PR description expectations in AGENTS.md or a skill. Agent PRs stay consistent with how your team works. An explicit ban on `Co-authored-by` trailers is enforced by the runner; see [Prohibiting Co-authored-by trailers](customizing-with-agents-md.md#prohibiting-co-authored-by-trailers).
 
 **CI checks knowledge** — document your CI pipeline in skills so the code agent knows what checks run, what linters are enforced, what test suites must pass. The more the code agent knows upfront, the fewer round-trips through review and fix.
 

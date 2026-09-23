@@ -490,7 +490,11 @@ slots:
 │         /sandbox/workspace/<repo>/AGENTS.md            │
 │  Loaded via: Claude Code auto-loads from working dir   │
 │  Controls: conventions, architecture, domain context   │
-│  Authority: advisory — cannot override layer 1         │
+│  Authority: advisory — cannot override layer 1.        │
+│            Exception: an explicit Co-authored-by ban   │
+│            is enforced by the runner (#2905), not the  │
+│            model, because Claude Code's trailer is a   │
+│            runtime default rather than layer 1.        │
 ├────────────────────────────────────────────────────────┤
 │  Layer 3: Skills                                       │
 │  Personal: /sandbox/claude-config/skills/ (fullsend)   │
@@ -512,6 +516,12 @@ slots:
    repo has AGENTS.md but no CLAUDE.md → inject bridge CLAUDE.md pointing to
    AGENTS.md, add to `.git/info/exclude`
 3. If target repo has both → use as-is
+4. If root `AGENTS.md` / `CLAUDE.md` (or the injected org default) explicitly
+   prohibits Co-authored-by trailers (`internal/cli/coauthor.go`): set
+   `includeCoAuthoredBy: false` on Claude Code's `--settings` file and write a
+   `commit-msg` hook at `<repo>/.git/hooks/commit-msg` that strips matching
+   trailers. SafeDownload removes `.git/hooks/`, so the hook does not leave
+   the sandbox. Repos that require or only mention Co-authored-by are unchanged.
 
 ### Context file security scanning
 
