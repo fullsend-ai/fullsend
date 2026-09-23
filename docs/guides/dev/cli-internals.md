@@ -556,6 +556,12 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                   │ instead of pushing (known limitation,    │
 │  │                   │ see #5393).                              │
 │  │                   │                                          │
+│  │                   │ After the post-script, a fix-agent run   │
+│  │                   │ compares extracted HEAD to PRE_AGENT_HEAD│
+│  │                   │ (or target-repo HEAD if unset). Matching │
+│  │                   │ SHAs flip the status comment from        │
+│  │                   │ success to "no changes made" (#3419).    │
+│  │                   │                                          │
 │  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
 │  │                   │ to the validated iteration's output dir, │
 │  │                   │ for forward compatibility. The scaffold- │

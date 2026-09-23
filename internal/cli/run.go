@@ -1217,6 +1217,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// than "success", with runSkipReason as the visible explanation.
 	var runSkipped bool
 	var runSkipReason string
+	// runNoChanges records that a fix agent finished without producing a
+	// new commit relative to PRE_AGENT_HEAD (#3419). The comparison defer
+	// below sets this; the status-notification defer (registered first,
+	// so it runs last) reads it.
+	var runNoChanges bool
 
 	// aggMetrics accumulates behavioral metrics across retry iterations.
 	// Declared here so the status-notification defer (below) can read the
@@ -1240,17 +1245,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepDone("Posted start status comment")
 			}
 			defer func() {
-				status := "success"
-				detail := ""
-				if ctx.Err() != nil {
-					status = "cancelled"
-				} else if runErr != nil {
-					status = "failure"
-					detail = runErr.Error()
-				} else if runSkipped {
-					status = "skipped"
-					detail = runSkipReason
-				}
+				status, detail := completionStatus(ctx, runErr, runSkipped, runSkipReason, runNoChanges)
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
@@ -1745,6 +1740,32 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
 		}
 	}()
+
+	// Detect zero-commit fix-agent outcomes (#3419). Gated on the agent
+	// name passed to `fullsend run`, not harness role: "code" and "fix"
+	// both carry role: coder (config.ValidAgentNames), so a role check
+	// here would also fire for code-agent runs and never for fix-agent
+	// runs invoked as `fullsend run fix`. Registered after download-dir
+	// cleanup so LIFO runs this after the post-script (which may rewrite
+	// HEAD) and before the directory is removed. The status notifier
+	// defer is registered earlier, so it runs last and observes
+	// runNoChanges. Snapshot pre-agent HEAD now, before the sandbox mutates
+	// the extracted copy; PRE_AGENT_HEAD is set by the fix workflow.
+	if isZeroCommitCheckAgent(agentName) {
+		preAgentHead := resolvePreAgentHead(printer, targetRepo)
+		defer func() {
+			if runErr != nil || runSkipped || ctx.Err() != nil {
+				return
+			}
+			if !repoExtractedOK {
+				return
+			}
+			if isNoCommitOutcome(printer, hostRepositoryDownloadDir, preAgentHead) {
+				runNoChanges = true
+				printer.StepWarn("Fix agent completed without making any code changes")
+			}
+		}()
+	}
 
 	// Post-script runs after sandbox cleanup (defers are LIFO).
 	// When a validation_loop is configured, the post-script only runs if

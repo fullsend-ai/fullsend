@@ -465,7 +465,7 @@ When `status_notifications` is omitted entirely, both start and completion comme
 | Value | Behavior |
 |-------|----------|
 | `enabled` | Always post a completion comment (default) |
-| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `on_failure` | Post when the agent fails, is cancelled, is skipped by a pre-script, or (for the fix agent) completed without making any code changes; the start comment is automatically suppressed to avoid notification noise |
 | `disabled` | Never post a completion comment; silently remove the start comment |
 
 `on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
@@ -489,8 +489,8 @@ At completion, the start reaction (if any) is removed, and — depending on `com
 
 | Value | Behavior |
 |-------|----------|
-| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
-| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped or (for the fix agent) a zero-commit run |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped or (for the fix agent) a zero-commit run; leave no reaction on success |
 | `disabled` | Never add a completion reaction (default) |
 
 👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.

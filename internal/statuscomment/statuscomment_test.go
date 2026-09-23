@@ -94,6 +94,30 @@ func TestPostCompletion_EditInPlace(t *testing.T) {
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Completed 2:41 PM UTC")
 }
 
+func TestPostCompletion_NoChangesMade(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Fix")
+	require.NoError(t, err)
+
+	completionTime := fixedTime().Add(8 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	const detail = "The fix agent completed without making any code changes. The requested fix may require manual intervention or may be outside the agent's code-change scope (e.g., PR title/metadata edits)."
+	err = n.PostCompletionWithDetail(context.Background(), "Fix", "no changes made", detail)
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Fix")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "⚠️ No changes made")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "✅ Success")
+	assert.Contains(t, fc.UpdatedComments[0].Body, detail)
+}
+
 func TestPostCompletion_NewComment_WhenInterveningHumanActivity(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
@@ -392,7 +416,24 @@ func TestPostCompletion_NoStartComment(t *testing.T) {
 func TestCapitalize(t *testing.T) {
 	assert.Equal(t, "Success", capitalize("success"))
 	assert.Equal(t, "Failure", capitalize("failure"))
+	assert.Equal(t, "No changes made", capitalize("no changes made"))
 	assert.Equal(t, "", capitalize(""))
+}
+
+func TestStatusEmoji(t *testing.T) {
+	assert.Equal(t, "✅", statusEmoji("success"))
+	assert.Equal(t, "❌", statusEmoji("failure"))
+	assert.Equal(t, "⏭️", statusEmoji("skipped"))
+	assert.Equal(t, "⚠️", statusEmoji("no changes made"))
+	assert.Equal(t, "⚠️", statusEmoji("cancelled"))
+}
+
+func TestIsFailureStatus(t *testing.T) {
+	assert.False(t, isFailureStatus("success"))
+	assert.True(t, isFailureStatus("failure"))
+	assert.True(t, isFailureStatus("cancelled"))
+	assert.True(t, isFailureStatus("skipped"))
+	assert.True(t, isFailureStatus("no changes made"))
 }
 
 func TestFormatTime(t *testing.T) {
@@ -1372,6 +1413,27 @@ func TestPostCompletion_OnFailure_PostsOnFailure(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "❌ Failure")
 }
 
+func TestPostCompletion_OnFailure_PostsOnNoChangesMade(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Fix")
+	require.NoError(t, err)
+	assert.Equal(t, "", n.startCommentID, "start comment auto-suppressed")
+
+	n.now = func() time.Time { return fixedTime().Add(2 * time.Minute) }
+	err = n.PostCompletion(context.Background(), "Fix", "no changes made")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments)
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1, "no-changes must still post when completion is on_failure")
+	assert.Contains(t, comments[0].Body, "⚠️ No changes made")
+}
+
 func TestPostCompletion_OnFailure_PostsOnCancelled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
@@ -1753,6 +1815,21 @@ func TestPostCompletion_ReactionSuccess(t *testing.T) {
 	assert.Equal(t, []int64{startReactionID}, fc.DeletedReactions, "start reaction is replaced, not stacked")
 	require.Len(t, fc.AddedReactions, 2)
 	assert.Equal(t, "+1", fc.AddedReactions[1].Content)
+}
+
+func TestPostCompletion_ReactionNoChangesMade(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Fix"))
+	require.NoError(t, n.PostCompletion(context.Background(), "Fix", "no changes made"))
+
+	require.Len(t, fc.AddedReactions, 2)
+	assert.Equal(t, "confused", fc.AddedReactions[1].Content)
 }
 
 func TestPostCompletion_ReactionFailure(t *testing.T) {

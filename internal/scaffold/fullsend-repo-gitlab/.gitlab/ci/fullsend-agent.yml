@@ -726,7 +726,9 @@ stages:
         export FIX_ITERATION
 
         # Pre-agent HEAD — record before the agent modifies the tree.
-        # The post-script uses this to detect whether the agent committed.
+        # The post-script uses this to detect whether the agent committed;
+        # fullsend run also compares it to the extracted HEAD so a
+        # zero-commit fix run reports "no changes made" instead of success.
         PRE_AGENT_HEAD=$(git rev-parse HEAD)
         export PRE_AGENT_HEAD
       fi
