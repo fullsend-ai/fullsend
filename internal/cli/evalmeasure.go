@@ -183,11 +183,7 @@ func resolveEvalMeasureRegistry(ctx context.Context, printer *ui.Printer, opts e
 		}
 	}
 	composeOpts, client := evalMeasureFetchContext(opts.fullsendDir, opts.offline, printer)
-	path, err := tryAgentsRepoMeasurementManifest(ctx, agent, client, composeOpts, printer)
-	if err != nil {
-		return "", err
-	}
-	return path, nil
+	return tryAgentsRepoMeasurementManifest(ctx, agent, client, composeOpts, printer)
 }
 
 func sanitizeMeasurementAgentName(agent string) (string, error) {

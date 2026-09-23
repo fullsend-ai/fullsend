@@ -5940,33 +5940,6 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 	return path, err
 }
 
-// agentRefPATGuidance is appended to fatal errors when GetRef rejects the
-// caller's GitHub token while resolving fullsend-ai/agents. Kept as a
-// package-level string so tests can assert the user-facing fix text.
-const agentRefPATGuidance = "The GitHub token was rejected while resolving the agent reference. " +
-	"This often means the token is expired, scoped to the wrong organization, " +
-	"or violates an enterprise token-lifetime policy. " +
-	"Create or update a fine-grained PAT at https://github.com/settings/personal-access-tokens " +
-	"and export it as GH_TOKEN (or GITHUB_TOKEN)."
-
-// isAgentRefAuthError reports whether err is a GitHub 401/403 that indicates
-// the caller's token was rejected, as opposed to a rate limit (which is also
-// a 403) or a missing ref. Rate limits stay on the warn-and-skip path.
-func isAgentRefAuthError(err error) bool {
-	var apiErr *gh.APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	if gh.IsRateLimitError(err) {
-		return false
-	}
-	return apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden
-}
-
-func wrapAgentsRefAuthError(displayRef string, err error) error {
-	return fmt.Errorf("resolving %s/%s@%s: %w\n\n%s", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err, agentRefPATGuidance)
-}
-
 // fetchPinnedAgentsRepoFile resolves the agents ref to a commit SHA and
 // fetches relPath from fullsend-ai/agents. Expected misses (offline, no
 // client, not allowlisted, HTTP 404, non-auth GetRef failures) return an
@@ -5988,7 +5961,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	displayRef, gitRef := resolveAgentsRef()
 	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
 	if err != nil {
-		if isAgentRefAuthError(err) {
+		if isAgentsRefAuthError(err) {
 			printer.StepFail(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
 			return "", none, wrapAgentsRefAuthError(displayRef, err)
 		}
@@ -6066,6 +6039,36 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, nil
+}
+
+// agentsRefPATGuidance is appended to fatal errors when GetRef rejects the
+// caller's GitHub token while resolving fullsend-ai/agents. Kept as a
+// package-level string so tests can assert the user-facing fix text.
+const agentsRefPATGuidance = "The GitHub token was rejected while resolving the agent reference. " +
+	"This often means the token is expired, scoped to the wrong organization, " +
+	"or violates an enterprise token-lifetime policy. " +
+	"Create or update a fine-grained PAT at https://github.com/settings/personal-access-tokens " +
+	"and export it as GH_TOKEN (or GITHUB_TOKEN)."
+
+// isAgentsRefAuthError reports whether err is a GitHub 401/403 that indicates
+// the caller's token was rejected, as opposed to a rate limit (which is also
+// a 403) or a missing ref. Rate limits stay on the warn-and-skip path.
+func isAgentsRefAuthError(err error) bool {
+	var apiErr *gh.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if gh.IsRateLimitError(err) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden
+}
+
+// wrapAgentsRefAuthError formats a fatal error when ref resolution fails
+// because the caller's GitHub token was rejected, appending PAT remediation
+// guidance.
+func wrapAgentsRefAuthError(displayRef string, err error) error {
+	return fmt.Errorf("resolving %s/%s@%s: %w\n\n%s", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err, agentsRefPATGuidance)
 }
 
 func isFetchHTTPStatus(err error, code int) bool {

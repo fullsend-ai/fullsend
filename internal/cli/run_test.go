@@ -1370,7 +1370,7 @@ func TestTryAgentsRepoFallback_GetRefPATForbidden(t *testing.T) {
 	assert.Nil(t, deps)
 	assert.Contains(t, err.Error(), "resolving fullsend-ai/agents@main")
 	assert.Contains(t, err.Error(), "github api: 403")
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 	assert.Contains(t, buf.String(), "Could not resolve fullsend-ai/agents@main")
 	assert.Contains(t, buf.String(), "\u2717")
 }
@@ -1385,7 +1385,7 @@ func TestTryAgentsRepoFallback_GetRefUnauthorized(t *testing.T) {
 	_, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github api: 401")
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 }
 
 func TestTryAgentsRepoFallback_GetRefRateLimitStillSkipped(t *testing.T) {
@@ -1401,13 +1401,13 @@ func TestTryAgentsRepoFallback_GetRefRateLimitStillSkipped(t *testing.T) {
 	assert.Contains(t, buf.String(), "Could not resolve")
 }
 
-func TestIsAgentRefAuthError(t *testing.T) {
-	assert.False(t, isAgentRefAuthError(nil))
-	assert.False(t, isAgentRefAuthError(fmt.Errorf("rate limited")))
-	assert.False(t, isAgentRefAuthError(&gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"}))
-	assert.False(t, isAgentRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "API rate limit exceeded"}))
-	assert.True(t, isAgentRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "Resource not accessible by personal access token"}))
-	assert.True(t, isAgentRefAuthError(fmt.Errorf("get ref: %w", &gh.APIError{StatusCode: http.StatusUnauthorized, Message: "Bad credentials"})))
+func TestIsAgentsRefAuthError(t *testing.T) {
+	assert.False(t, isAgentsRefAuthError(nil))
+	assert.False(t, isAgentsRefAuthError(fmt.Errorf("rate limited")))
+	assert.False(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"}))
+	assert.False(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "API rate limit exceeded"}))
+	assert.True(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "Resource not accessible by personal access token"}))
+	assert.True(t, isAgentsRefAuthError(fmt.Errorf("get ref: %w", &gh.APIError{StatusCode: http.StatusUnauthorized, Message: "Bad credentials"})))
 }
 
 func TestResolveAgentSource_GetRefPATForbiddenIsFatal(t *testing.T) {
@@ -1421,7 +1421,7 @@ func TestResolveAgentSource_GetRefPATForbiddenIsFatal(t *testing.T) {
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving fullsend-ai/agents@main")
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 	assert.NotContains(t, err.Error(), "agents-repo fallback unavailable")
 }
 
@@ -1440,7 +1440,7 @@ func TestResolveAgentSource_GetRefPATForbiddenWhenNotInConfig(t *testing.T) {
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 	assert.NotContains(t, err.Error(), "not in config")
 }
 
@@ -1462,7 +1462,7 @@ agents:
 	printer := ui.New(io.Discard)
 	_, _, err = resolveAgentSource(context.Background(), dir, "triage", fakeClient, cfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 	assert.NotContains(t, err.Error(), "agents-repo fallback unavailable")
 }
 
@@ -1843,7 +1843,7 @@ func TestTryAgentsRepoMeasurementManifest_GetRefPATForbidden(t *testing.T) {
 	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Empty(t, path)
-	assert.Contains(t, err.Error(), agentRefPATGuidance)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 }
 
 func TestIsFetchHTTPStatus(t *testing.T) {
