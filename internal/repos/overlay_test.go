@@ -159,6 +159,118 @@ github:
 	}
 }
 
+// A URL-sourced agent in defaults.config whose prefix is only covered by
+// the sibling defaults.allowed_remote_resources shorthand must validate:
+// the shorthand is merged onto the overlay (managedOverlay) before the
+// allowlist is checked, even though defaults.config's own allowed_
+// remote_resources field is forbidden and never set directly.
+func TestValidate_ConfigOverlayAgentAllowedViaARRShorthand(t *testing.T) {
+	input := `
+version: 1
+defaults:
+  allowed_remote_resources:
+    - https://example.com/
+  config:
+    agents:
+      - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+github:
+  repos:
+    - name: acme/app
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	assert.NoError(t, m.Validate())
+}
+
+// An override-only agents entry (no source) may tune a custom agent
+// registered in config.base.yaml. That base layer isn't known at
+// manifest-validate time (overlay install/converge is follow-on work,
+// #7632/#7633), so validation must not reject the entry just because its
+// name isn't one of the compiled-in built-in agents.
+func TestValidate_ConfigOverlayOverrideOnlyCustomAgentDefersToBaseLayer(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        agents:
+          - name: mycustom
+            model: opus
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	assert.NoError(t, m.Validate())
+}
+
+func TestRenderManagedOverlay_OverrideOnlyCustomAgentDefersToBaseLayer(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        agents:
+          - name: mycustom
+            model: opus
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Contains(t, string(body), "mycustom")
+}
+
+func TestValidate_ConfigOverlayRejectsNonHTTPSMintURL(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        mint_url: "http://mint.example.com"
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint_url must be a valid HTTPS URL")
+}
+
+func TestValidate_ConfigOverlayRejectsMintURLWithUserinfo(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        mint_url: "https://user:pass@mint.example.com"
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "userinfo")
+}
+
+func TestValidate_ConfigOverlayRejectsMalformedWIFProvider(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        inference:
+          wif_provider: not-a-valid-resource-name
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wif_provider")
+}
+
 func TestResolveConfig_OverlayOptInAndPrecedence(t *testing.T) {
 	input := `
 version: 1

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 )
@@ -39,7 +40,10 @@ func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, 
 		return nil, false, nil
 	}
 	overlay := m.managedOverlay(entry)
-	if err := overlay.Validate(); err != nil {
+	if err := config.ValidateMergedOverlay(overlay); err != nil {
+		return nil, true, fmt.Errorf("managed config overlay: %w", err)
+	}
+	if err := validateOverlayMintAndWIF(overlay); err != nil {
 		return nil, true, fmt.Errorf("managed config overlay: %w", err)
 	}
 	body, err := overlay.Marshal()
@@ -67,7 +71,7 @@ func validateManifestOverlays(m *Manifest) error {
 	for _, p := range []struct {
 		name string
 		cfg  *PlatformConfig
-	}{{"github", m.GitHub}, {"gitlab", m.GitLab}} {
+	}{{ForgeGitHub, m.GitHub}, {ForgeGitLab, m.GitLab}} {
 		if p.cfg == nil {
 			continue
 		}
@@ -83,7 +87,10 @@ func validateManifestOverlays(m *Manifest) error {
 				continue
 			}
 			overlay := m.managedOverlay(entry)
-			if err := overlay.Validate(); err != nil {
+			if err := config.ValidateMergedOverlay(overlay); err != nil {
+				return fmt.Errorf("%s: merged overlay: %w", field, err)
+			}
+			if err := validateOverlayMintAndWIF(overlay); err != nil {
 				return fmt.Errorf("%s: merged overlay: %w", field, err)
 			}
 		}
@@ -91,12 +98,48 @@ func validateManifestOverlays(m *Manifest) error {
 	return nil
 }
 
+// validateOverlayBlock validates a single overlay layer (defaults.config
+// or one repository's raw config block) in isolation, before
+// defaults.config and the repository config are merged and before
+// repos.yaml shorthands are applied. It intentionally does not run the
+// checks that need that merge (agent allowlist, override-only custom
+// agents) — see config.ValidateOverlayLayer — those run again, correctly,
+// against the merged overlay below.
 func validateOverlayBlock(field string, o config.OverlayConfig) error {
 	if !o.IsSet() {
 		return nil
 	}
-	if err := o.Writer().Validate(); err != nil {
+	if err := config.ValidateOverlayLayer(o.Writer()); err != nil {
 		return fmt.Errorf("%s: %w", field, err)
+	}
+	if err := validateOverlayMintAndWIF(o.Writer()); err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	return nil
+}
+
+// validateOverlayMintAndWIF runs the same mint_url HTTPS/userinfo gate
+// used for RepoEntry.MintURL, plus the WIF provider resource-name
+// pattern check, on an overlay layer or the shorthand-merged overlay.
+// Neither field is touched by ApplyOverlayShorthands, so the same check
+// is correct whether r is an isolated layer or the merged overlay; an
+// unset value resolves through the parent chain to the code default
+// (always a valid HTTPS mint URL), so this only ever flags a value the
+// overlay itself set. Overlay install/converge (which would actually
+// use these values to drive a mint install) is follow-on work
+// (#7632, #7633); this closes the format gate before that lands.
+func validateOverlayMintAndWIF(r config.PerRepoConfigReader) error {
+	if mintURL := r.ConfigMintURL(); mintURL != "" {
+		mu, err := url.Parse(mintURL)
+		if err != nil || mu.Scheme != "https" || mu.Host == "" {
+			return fmt.Errorf("mint_url must be a valid HTTPS URL, got %q", mintURL)
+		}
+		if err := RejectExtraneousURLParts(mu, "mint_url"); err != nil {
+			return err
+		}
+	}
+	if wif := r.ConfigInferenceWIFProvider(); wif != "" && !WIFProviderPattern.MatchString(wif) {
+		return fmt.Errorf("inference.wif_provider %q does not match the required resource name pattern", wif)
 	}
 	return nil
 }

@@ -23,6 +23,9 @@ const (
 var (
 	overlayKeysOnce sync.Once
 	overlayKeys     map[string]bool
+
+	agentEntryKeysOnce sync.Once
+	agentEntryKeys     map[string]bool
 )
 
 func knownOverlayKeys() map[string]bool {
@@ -30,6 +33,38 @@ func knownOverlayKeys() map[string]bool {
 		overlayKeys = yamlKeysOf(perRepoConfig{})
 	})
 	return overlayKeys
+}
+
+func knownAgentEntryKeys() map[string]bool {
+	agentEntryKeysOnce.Do(func() {
+		agentEntryKeys = yamlKeysOf(AgentEntry{})
+	})
+	return agentEntryKeys
+}
+
+// unknownAgentEntryFieldErrors checks each mapping-form entry in an
+// `agents:` sequence node for keys outside AgentEntry's yaml tags. String
+// shorthand entries and malformed elements are left to
+// AgentEntry.UnmarshalYAML, which reports its own errors for those.
+func unknownAgentEntryFieldErrors(n *yaml.Node) []error {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		return nil
+	}
+	known := knownAgentEntryKeys()
+	var errs []error
+	for idx, item := range n.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			keyNode := item.Content[i]
+			if !known[keyNode.Value] {
+				errs = append(errs, overlayFieldError(keyNode,
+					fmt.Sprintf("agents[%d]: unknown field %q", idx, keyNode.Value)))
+			}
+		}
+	}
+	return errs
 }
 
 func yamlKeysOf(v any) map[string]bool {
@@ -121,6 +156,15 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 					fmt.Sprintf("unknown field %q", key)))
 			}
 		}
+		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
+		// decodeKnownFields' dec.KnownFields(true) below never sees these
+		// nested mappings — yaml.v3 hands each list element straight to
+		// the custom unmarshaler, which decodes via a plain type alias
+		// with no strict-field option. Reject unknown keys here instead,
+		// the same way top-level overlay keys are rejected above.
+		if key == "agents" {
+			fieldErrs = append(fieldErrs, unknownAgentEntryFieldErrors(node.Content[i+1])...)
+		}
 	}
 	if err := errors.Join(fieldErrs...); err != nil {
 		return nil, err
@@ -134,7 +178,10 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 	return &cfg, nil
 }
 
-func overlayFieldError(_ *yaml.Node, msg string) error {
+func overlayFieldError(n *yaml.Node, msg string) error {
+	if n != nil && n.Line > 0 {
+		return fmt.Errorf("line %d: %s", n.Line, msg)
+	}
 	return errors.New(msg)
 }
 

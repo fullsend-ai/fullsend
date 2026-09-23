@@ -302,6 +302,69 @@ func TestOverlayConfig_InvalidRoleIsSemanticError(t *testing.T) {
 	assert.Contains(t, err.Error(), `invalid role "not-a-role"`)
 }
 
+func TestOverlayConfig_RejectsUnknownAgentEntryField(t *testing.T) {
+	var o OverlayConfig
+	err := yaml.Unmarshal([]byte("agents:\n  - name: code\n    efort: high\n"), &o)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `agents[0]: unknown field "efort"`)
+}
+
+func TestOverlayConfig_AgentEntryStringShorthandUnaffectedByUnknownFieldCheck(t *testing.T) {
+	var o OverlayConfig
+	err := yaml.Unmarshal([]byte("agents:\n  - https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890\n"), &o)
+	require.NoError(t, err)
+}
+
+// ValidateOverlayLayer validates a single, isolated overlay layer (ADR
+// 0122) — before defaults.config/repo config are merged and before the
+// repos.yaml allowed_remote_resources shorthand is applied. It must defer
+// the agent-allowlist and override-only-built-in-name checks, which need
+// information this layer alone doesn't have; ValidateMergedOverlay runs
+// them once that information is available (except the built-in-name
+// check, which needs config.base.yaml and so is never enforced by
+// either — see internal/repos/overlay.go).
+func TestValidateOverlayLayer_DefersAllowlistAndBuiltinNameChecks(t *testing.T) {
+	var o OverlayConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+agents:
+  - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  - name: mycustom
+    runtime: pi
+`), &o))
+	w := o.Writer()
+
+	require.NoError(t, ValidateOverlayLayer(w),
+		"isolated layer must not reject a URL agent for lacking an allowlist, or an override-only entry for not naming a built-in agent")
+
+	// The same agents fail strict, full validation (used for a complete,
+	// self-contained config), which requires both.
+	assert.Error(t, w.Validate())
+}
+
+func TestValidateMergedOverlay_EnforcesAllowlistButNotBuiltinName(t *testing.T) {
+	var o OverlayConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+agents:
+  - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  - name: mycustom
+    runtime: pi
+`), &o))
+	w := o.Writer()
+
+	// Before the allowed_remote_resources shorthand is merged in, the URL
+	// agent still fails.
+	err := ValidateMergedOverlay(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
+
+	// Once the shorthand is applied (as managedOverlay does), the URL
+	// agent passes; the override-only entry naming "mycustom" still isn't
+	// required to be a built-in agent — config.base.yaml, which may
+	// register it, isn't layered on until install/converge time.
+	w.SetAllowedRemoteResources([]string{"https://example.com/"})
+	assert.NoError(t, ValidateMergedOverlay(w))
+}
+
 func TestMergeOverlays_AllFieldsAndAgentClone(t *testing.T) {
 	enabled := false
 	sub := "sonnet"
