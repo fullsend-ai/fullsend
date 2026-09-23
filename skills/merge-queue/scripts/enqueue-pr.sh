@@ -9,13 +9,21 @@ set -euo pipefail
 
 pr="${1:-}"
 
-# Resolve PR to its URL and node ID in a single API call
+# Resolve PR to its URL and node ID in a single API call.
+# Parse github.com URLs locally so `gh pr view` never receives a raw URL
+# argument: the sandbox SSRF PreToolUse hook DNS-resolves https?://
+# literals on non-inert commands, and github.com is not allowlisted.
 if [[ -z "$pr" ]]; then
   pr_json="$(gh pr view --json url,id)"
+elif [[ "$pr" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+  repo="${BASH_REMATCH[1]}"
+  number="${BASH_REMATCH[2]}"
+  pr_json="$(gh pr view "$number" -R "$repo" --json url,id)"
 elif [[ "$pr" =~ ^[0-9]+$ ]]; then
   pr_json="$(gh pr view "$pr" --json url,id)"
 else
-  pr_json="$(gh pr view "$pr" --json url,id)"
+  echo "Error: provide a PR number or URL" >&2
+  exit 1
 fi
 
 pr_url="$(echo "$pr_json" | jq -r .url)"

@@ -11,22 +11,39 @@ set -euo pipefail
 
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 pr="${1:-}"
+repo=""
 
-# Resolve PR URL and repo
+# Resolve PR URL, number, and repo without passing a github.com URL to gh.
+# The sandbox SSRF PreToolUse hook DNS-resolves https?:// literals on
+# non-inert commands, and github.com is not allowlisted.
 if [[ -z "$pr" ]]; then
-  pr_json_init="$(gh pr view --json url,baseRefName -q '{url,baseRefName}')"
+  pr_json_init="$(gh pr view --json url,baseRefName,number)"
+elif [[ "$pr" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+  repo="${BASH_REMATCH[1]}"
+  number="${BASH_REMATCH[2]}"
+  pr_json_init="$(gh pr view "$number" -R "$repo" --json url,baseRefName,number)"
+elif [[ "$pr" =~ ^[0-9]+$ ]]; then
+  pr_json_init="$(gh pr view "$pr" --json url,baseRefName,number)"
 else
-  pr_json_init="$(gh pr view "$pr" --json url,baseRefName -q '{url,baseRefName}')"
+  echo "Error: provide a PR number or URL" >&2
+  exit 1
 fi
 
 pr_url="$(echo "$pr_json_init" | jq -r .url)"
 base_branch="$(echo "$pr_json_init" | jq -r .baseRefName)"
+number="$(echo "$pr_json_init" | jq -r .number)"
 
-# Extract owner/repo from the PR URL
-repo_nwo="$(echo "$pr_url" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')"
+if [[ -z "$repo" ]]; then
+  if [[ "$pr_url" =~ ^https://github.com/([^/]+/[^/]+)/pull/ ]]; then
+    repo="${BASH_REMATCH[1]}"
+  else
+    echo "Error: could not determine repository from PR URL" >&2
+    exit 1
+  fi
+fi
 
 # Fetch required status checks from branch rulesets as a JSON array
-required_json="$(gh api "repos/$repo_nwo/rules/branches/$base_branch" \
+required_json="$(gh api "repos/$repo/rules/branches/$base_branch" \
   --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique' 2>/dev/null || echo '[]')"
 
 if [[ "$(echo "$required_json" | jq 'length')" -gt 0 ]]; then
@@ -37,7 +54,7 @@ echo "Waiting for checks and approvals on: $pr_url"
 
 while true; do
   # Get check rollup and review decision in one call
-  pr_json="$(gh pr view "$pr_url" --json statusCheckRollup,reviewDecision)"
+  pr_json="$(gh pr view "$number" -R "$repo" --json statusCheckRollup,reviewDecision)"
 
   review_decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
 
@@ -90,6 +107,7 @@ while true; do
   break
 done
 
-# Delegate to the enqueue script
+# Delegate to the enqueue script. Pass the PR URL so enqueue-pr.sh can parse
+# owner/repo itself (needed when the PR is not in the cwd repo).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec bash "$SCRIPT_DIR/enqueue-pr.sh" "$pr_url"
