@@ -44,14 +44,22 @@ var coAuthoredByProhibitRe = regexp.MustCompile(`(?i)` +
 // word elsewhere in the file are ignored.
 var coAuthoredByWithoutRe = regexp.MustCompile(`(?i)\b(?:commit(?:s|ting)?|merg(?:e|ing))\s+without\s+(?:a\s+|any\s+|the\s+)?` + "`*" + `co-authored-by`)
 
-// negatedVerbBeforeRe matches a negation word ("never", "not", "don't", ...)
-// shortly before a position. Used to check the text preceding a
-// coAuthoredByWithoutRe match: "never merge without Co-authored-by" is a
+// negatedVerbBeforeRe matches a negation word ("never", "not", "cannot",
+// "don't", ...) shortly before a position. Used to check the text preceding
+// a coAuthoredByWithoutRe match: "never merge without Co-authored-by" is a
 // requirement (the trailer is mandatory), not a ban, because the negation
 // applies to the verb rather than to the trailer. Go's RE2 engine has no
 // lookbehind, so this is applied against a slice of the preceding text
 // instead of embedded in coAuthoredByWithoutRe directly.
-var negatedVerbBeforeRe = regexp.MustCompile(`(?i)\b(?:never|not|don['’]t|doesn['’]t|won['’]t|wouldn['’]t|shouldn['’]t|didn['’]t|isn['’]t)\s*\S{0,30}$`)
+//
+// "cannot"/"can't"/"couldn't" are listed explicitly rather than relying on
+// \bnot matching inside them: RE2's \b is a \w/\W boundary, and there is no
+// such boundary between "can" and "not" in "cannot" (both are word
+// characters), so a bare "not" alternative never fires there. The trailing
+// `(?:\s+\S+){0,3}\s*$` allows up to three intervening words (e.g. "never
+// ever merge") between the negation and the verb, rather than only a single
+// token immediately before the end of the window.
+var negatedVerbBeforeRe = regexp.MustCompile(`(?i)\b(?:never|not|cannot|can['’]t|couldn['’]t|don['’]t|doesn['’]t|won['’]t|wouldn['’]t|shouldn['’]t|didn['’]t|isn['’]t)(?:\s+\S+){0,3}\s*$`)
 
 // coAuthorStripHookScript is a commit-msg hook that drops Co-authored-by
 // trailers. Other trailers (Assisted-by, Signed-off-by, Closes) are left
@@ -104,16 +112,20 @@ func prohibitsCoAuthoredBy(content string) bool {
 	if coAuthoredByProhibitRe.MatchString(content) {
 		return true
 	}
-	loc := coAuthoredByWithoutRe.FindStringIndex(content)
-	if loc == nil {
-		return false
-	}
+	// Check every "commit/merge without Co-authored-by" occurrence, not just
+	// the first: an earlier negated occurrence (a requirement) does not rule
+	// out a later, un-negated occurrence that is an actual ban.
 	const window = 40
-	prefix := content[:loc[0]]
-	if len(prefix) > window {
-		prefix = prefix[len(prefix)-window:]
+	for _, loc := range coAuthoredByWithoutRe.FindAllStringIndex(content, -1) {
+		prefix := content[:loc[0]]
+		if len(prefix) > window {
+			prefix = prefix[len(prefix)-window:]
+		}
+		if !negatedVerbBeforeRe.MatchString(prefix) {
+			return true
+		}
 	}
-	return !negatedVerbBeforeRe.MatchString(prefix)
+	return false
 }
 
 // applyCoAuthorSuppress flags Claude Code's --settings file to disable the
@@ -143,8 +155,11 @@ func prepareCoAuthorSuppress(hostRepoDir, orgAgentsMD string, boot runtime.Boots
 // maybeInstallCoAuthorStripHook writes a commit-msg hook into the sandbox
 // clone so every runtime strips Co-authored-by trailers at git commit time.
 // SafeDownload removes .git/hooks on the way back to the host, so the hook
-// does not leak out of the sandbox. A failed install is a warning: the
-// Claude Code setting still covers that runtime.
+// does not leak out of the sandbox. A failed install is a warning, not a
+// fatal error, matching the hook script's own fail-open behavior: the
+// Claude Code setting still covers that runtime, but a non-Claude-Code
+// runtime whose install fails is not guaranteed to have the trailer
+// stripped from that commit.
 func maybeInstallCoAuthorStripHook(sandboxName, remoteRepositoryDir string, suppress bool, printer *ui.Printer, execFn sandboxExecFunc) {
 	if !suppress {
 		return

@@ -83,6 +83,12 @@ asking the model to remember it:
 - A `commit-msg` hook in the sandbox clone strips any `Co-authored-by` line
   the agent still writes
 
+The hook install is best-effort: a failure to install it is logged as a
+warning and does not fail the run. Claude Code stays covered either way
+because its trailer is already turned off above, but a non-Claude-Code
+runtime whose hook install fails is not guaranteed to have the trailer
+stripped from that commit.
+
 Other trailers (`Assisted-by`, `Signed-off-by`, `Closes`) are left alone, so a
 rule like "never add Co-Authored-By; use Assisted-by instead" keeps the trailer
 you want. Detection looks for an explicit prohibition next to the trailer name

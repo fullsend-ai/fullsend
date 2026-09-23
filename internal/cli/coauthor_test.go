@@ -119,6 +119,31 @@ func TestProhibitsCoAuthoredBy(t *testing.T) {
 			content: "Do not commit without Co-authored-by trailers.",
 			want:    false,
 		},
+		{
+			name:    "cannot commit without is a requirement, not a ban",
+			content: "You cannot commit without Co-authored-by trailers.",
+			want:    false,
+		},
+		{
+			name:    "can't merge without is a requirement, not a ban",
+			content: "Can't merge without Co-authored-by.",
+			want:    false,
+		},
+		{
+			name:    "couldn't commit without is a requirement, not a ban",
+			content: "You couldn't commit without Co-authored-by trailers attached.",
+			want:    false,
+		},
+		{
+			name:    "never ever merge without is still a requirement",
+			content: "Never ever merge without Co-authored-by trailers.",
+			want:    false,
+		},
+		{
+			name:    "earlier requirement does not mask a later ban",
+			content: "Never merge without Co-authored-by trailers. Commit without Co-authored-by is not optional.",
+			want:    true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
