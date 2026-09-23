@@ -255,6 +255,45 @@ and the sandbox environment via `childScriptEnv()`. That function strips
 any inherited `TRACEPARENT` from `os.Environ()` and `runner_env` before
 appending fullsend's own value (issue #2779).
 
+### Sampled-flag preservation invariant
+
+**Invariant (issue #2779):** Any code path that emits or regenerates a
+`TRACEPARENT` value for a downstream consumer must preserve the inbound
+sampled-flag decision extracted from the remote parent context. It must
+never substitute a locally-sampled `SpanContext`'s flags directly.
+
+This is a contract binding every TRACEPARENT-emission path, not a
+description of one helper. Current and expected consumers include:
+
+- pre/post scripts and the sandbox environment via `childScriptEnv()`
+- a runtime env / `iteration.env` injection, if added
+- any future path that formats a W3C traceparent for a child process,
+  sandbox, or dispatched run
+
+The local tracer uses `AlwaysSample` so the file exporter records every
+span. That local decision is **not** the outbound sampling decision.
+`resolveTraceIdentity()` already applies the rule: when the inbound
+parent was valid, remote, and unsampled, it calls
+`telemetry.TraceparentWithFlags` with the inbound flags instead of
+`rootSpan.SpanContext().TraceFlags()`. New paths must reuse that logic.
+
+- Reuse `resolveTraceIdentity()`'s `Traceparent` string when the root
+  span is the intended parent.
+- When emitting a different span's IDs (for example an `agent` span),
+  call `telemetry.TraceparentWithFlags` with the same preserved inbound
+  flags. Do not call `telemetry.Traceparent(span.SpanContext())` or
+  format `span.SpanContext().TraceFlags()` directly — those always
+  carry the local `AlwaysSample` bit (`-01`) and re-advertise an
+  unsampled parent trace as sampled.
+
+**When reviewing PRs** that add or modify a TRACEPARENT emission or
+propagation path in `internal/cli/run.go` or `internal/telemetry/`:
+flag any outbound traceparent built from a local `SpanContext()`
+without this flag preservation as a **medium-severity** finding. The
+fix is to reuse `resolveTraceIdentity()`'s preserved flags or
+`telemetry.TraceparentWithFlags` with the inbound remote parent's
+unsampled flags.
+
 ## File exporter output format
 
 `fileExporter` writes OTLP JSON with hex-encoded trace/span IDs (per the
