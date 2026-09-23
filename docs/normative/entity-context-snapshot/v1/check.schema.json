@@ -3,13 +3,17 @@
   "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/check.schema.json",
   "title": "CheckMetadata",
   "type": "object",
-  "required": ["id", "name", "status", "created_at"],
+  "required": ["id", "name", "status", "created_at", "head_sha"],
   "properties": {
     "id": { "$ref": "common.schema.json#/$defs/structural_id" },
     "name": { "type": "string", "minLength": 1 },
     "status": { "enum": ["queued", "in_progress", "completed"] },
     "conclusion": { "enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"] },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "head_sha": {
+      "$ref": "common.schema.json#/$defs/git_oid",
+      "description": "The target change-proposal HEAD SHA observed at collection time; only checks for that exact SHA are retained."
+    },
     "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "never_started": {
       "type": "boolean",

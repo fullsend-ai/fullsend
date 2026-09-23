@@ -3,8 +3,12 @@
   "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/collection.schema.json",
   "title": "EntityContextSnapshotCollection",
   "type": "object",
-  "required": ["included_sources", "record_selection", "check_log_selection", "bounds"],
+  "required": ["entity_kind", "included_sources", "record_selection", "check_log_selection", "bounds"],
   "properties": {
+    "entity_kind": {
+      "enum": ["work_item", "change_proposal"],
+      "description": "The forge entity kind being collected; source selection is constrained by this value."
+    },
     "included_sources": {
       "type": "array",
       "items": { "enum": ["entity", "comments", "reviews", "checks", "check_logs", "agent_runs"] },
@@ -35,6 +39,16 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "entity_kind": { "const": "work_item" } }, "required": ["entity_kind"] },
+      "then": {
+        "properties": {
+          "included_sources": {
+            "items": { "enum": ["entity", "comments", "agent_runs"] }
+          }
+        }
+      }
+    },
     {
       "if": { "properties": { "included_sources": { "contains": { "const": "check_logs" } } }, "required": ["included_sources"] },
       "then": {

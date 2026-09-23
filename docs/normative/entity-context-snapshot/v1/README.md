@@ -159,6 +159,19 @@ renaming an actor or repository, changing an actor's permission, or inserting
 an earlier record must not rename or rewrite an unchanged record. Changing its
 body or immutable attribution ID changes that record's bytes and digest.
 
+Before a comment is admitted to the snapshot, the producer applies the
+current [authorization contract](../../../normative/authorization/v1/README.md),
+which implements ADR 0054 and its later, explicitly documented extensions.
+Comments that are not authorized for the handled transition are omitted and
+count in the `comments` scope's `authorization_failed` gap. The current
+GitHub exceptions for label transitions and submitted bot reviews authorize
+those specific transitions; they do not make arbitrary bot-authored comments
+trusted, and v1 has no general bot allow-list. A future ADR may add an
+additional trusted-bot mechanism. Every admitted comment still passes the
+complete filter pipeline below, including Unicode safety that removes
+invisible text and unnecessary control characters, secret redaction, prompt-
+injection scanning, and byte bounds.
+
 The initial issue or change-proposal body uses the same layout with
 `Fullsend-Record: "entity"`, the entity's stable ID, immutable author ID, and
 creation time. This makes it the first self-contained turn.
@@ -201,7 +214,10 @@ files, leaving earlier record blocks byte-identical. A backfilled earlier
 record, edit, deletion, or attribution change invalidates reuse from the first
 affected block onward. Consumers never infer resolution from record content.
 
-Check status is observation state in `checks/<record-key>/metadata.json`; its
+Checks are a change-proposal-only source. A collection profile for a
+`work_item` cannot select `reviews`, `checks`, or `check_logs`; those sources
+are not represented as empty scopes or fetch gaps. Check status is observation
+state in `checks/<record-key>/metadata.json`; its
 log file contains only filtered log bytes. A growing or replaced forge log is
 changed content and may change `log.txt`. A new check attempt has a new forge
 record ID and therefore a new record key; v1 has no separate synthesized
@@ -223,6 +239,14 @@ report. It forbids `started_at` and is limited to `failure`, `skipped`, or
 must not set it on an ordinary `failure` merely because `started_at` is absent.
 Consumers must use the explicit flag and must not infer never-started state from
 an omitted timestamp.
+
+At collection start, the producer captures the target change-proposal HEAD
+revision and retains only checks whose forge-reported revision equals that
+`head_sha`. Every retained check records that exact SHA in its check metadata;
+the field is required even when a forge exposes only a generic check-run
+endpoint. A missing, malformed, or mismatched check revision is
+`invalid_metadata` and the check is not emitted. The producer must not fetch
+logs or synthesize a check for any other revision.
 Check manifest records carry `created_at` but no `author_id` or `author`.
 
 Adapters use these exhaustive v1 native-status mappings:
@@ -325,7 +349,13 @@ from forge association labels such as GitHub `authorAssociation`. Each row
 states whether the actor is a `human` or `bot`. A bot's role is that bot
 identity's own effective permission on the target repository, never Fullsend's
 installation permission. A permission lookup failure, including a collaborator
-API 404, emits `role_verified: false` and `role: null`.
+API 404, emits `role_verified: false` and `role: null`. These roles are still
+needed for auditability and for ordinary authorization decisions about human
+authors, resolvers, and dismissers; they are not a content-trust signal. The
+authorization contract documents the narrow transition-specific exceptions
+for GitHub label changes and submitted bot reviews, which do not turn an
+unverified bot role into Fullsend's installation role or authorize arbitrary
+bot comments.
 
 Entity-context-snapshot and normalized-event v1 carry independently versioned
 copies of the actor-role vocabulary. They match when this version is accepted, but a
@@ -356,6 +386,12 @@ that does not expose edit history.
 
 `collection.json` is the exact collection configuration and conforms to
 `collection.schema.json`. Its source-kind array sorts by ASCII byte order.
+`entity_kind` must match the entity metadata kind. For `work_item`, the only
+valid non-entity sources are `comments` and `agent_runs`; reviews, checks, and
+check logs are inapplicable and cannot be selected. A profile that violates
+these entity-kind rules is invalid before fetching or assembly and aborts
+collection; it is never represented as an empty scope or an `unsupported`
+gap. `change_proposal` profiles may select the full v1 source set.
 Non-entity records first enter the corresponding canonical order from
 [Ordering and determinism](#ordering-and-determinism); `record_selection`
 retains either the oldest or newest `max_records_per_source` entries for each
@@ -395,8 +431,10 @@ For a retained check, the index record has `log_path` if and only if
 `check_log_selection` selected its log and filtering produced the file without
 an unusable `invalid_metadata` or `unsafe_content` gap.
 
-Missing selected data is represented in `index.json.gaps`; it is never silently
-treated as an empty history. Scopes are `entity`, `comments`, `reviews`,
+Missing data from a valid selected source is represented in `index.json.gaps`;
+it is never silently treated as an empty history. Inapplicable sources are
+rejected by the collection profile before fetching and therefore do not create
+an empty scope or a gap. Scopes are `entity`, `comments`, `reviews`,
 `checks`, `check_logs`, `agent_runs`, and `actors`. `profile_bound` and
 `history_unavailable` gaps have `usability: partial`; consumers may use present
 records but must not claim the scope is complete. `unsupported`,
@@ -487,10 +525,15 @@ user, credential-file or environment exfiltration, hidden HTML instructions,
 and translate-then-execute requests. Exact patterns and thresholds are part of
 `filter_version`; ML detectors may supplement them only when their model,
 threshold, and deterministic execution contract are also versioned. No
-detector reliably blocks every visible prompt injection. Runtimes therefore
-mark staged records as untrusted data in distinct content blocks, prohibit
-following instructions from those blocks, and retain least-privilege tool and
-credential boundaries as the primary defense.
+detector reliably blocks every visible prompt injection. The entire
+entity-context-snapshot tree is therefore untrusted snapshot-derived data:
+this includes `index.json`, entity metadata, relations, history, state,
+check metadata and logs, order files, and all record bodies. Runtimes must
+keep those blocks distinct from run-specific instructions, prohibit following
+instructions from any snapshot-derived block, and retain least-privilege tool
+and credential boundaries as the primary defense. Filtering and authorization
+are not bot bypasses: a bot identity is subject to the same comment admission
+and content filtering rules as a human identity.
 
 `filter.status` is:
 
