@@ -125,12 +125,12 @@ When repos are specified as positional arguments, only those repos are processed
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
 | `--gitlab-url` | | GitLab instance URL (e.g. `https://gitlab.example.com`); sets `gitlab.url` in the manifest and implies `--forge=gitlab` when no forge is specified. Private-CA instances also need runner `tls-ca-file` / `CI_SERVER_TLS_CA_FILE` — see [Private CA (self-hosted GitLab)](../guides/getting-started/operations.md#private-ca-self-hosted-gitlab) |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
-| `--gitlab-role-migration` | | GitLab role-credential gate: `enforced` or `rollback`. Ordinary unflagged `repos install` provisions role credentials and cuts over to `enforced` automatically. Passing `enforced` explicitly assumes drain the same way ordinary install does and does not require `--gitlab-role-cutover-drained`, unlike `--gitlab-role-cutover`. Use `rollback` only for explicit emergency recovery (with `--gitlab-role-rollback-confirmed` when leaving `enforced`). Leftover `migrating` and `disabled` values are not operator-settable. |
+| `--gitlab-role-migration` | | GitLab role-credential gate: `enforced` or `rollback`. Ordinary unflagged `repos install` provisions role credentials and cuts over to `enforced` automatically. Passing `enforced` explicitly assumes drain the same way ordinary install does and does not require `--gitlab-role-cutover-drained`, unlike `--gitlab-role-cutover`. Use `rollback` only for explicit emergency recovery (with `--gitlab-role-rollback-confirmed` when leaving a role-required gate, `migrating` or `enforced`). Leftover `migrating` and `disabled` values are not operator-settable. |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
 | `--gitlab-role-token` | | Administrator-provided GitLab role PAT (`role=token`, repeatable) for free-tier enrollment or a custom `own` credential. Values are never logged. |
 | `--gitlab-role-cutover` | `false` | Explicit retry of GitLab role cutover: verify every registered role, enable fail-closed `enforced` mode, and retire the shared `FULLSEND_FORGE_TOKEN`. Ordinary install already does this when roles are ready; this flag fails closed instead of deferring when cutover is not ready. |
 | `--gitlab-role-cutover-drained` | `false` | Confirm that in-flight jobs using the shared credential have drained; required with `--gitlab-role-cutover`. Ordinary unflagged install treats drain as part of converging to the enforced desired state. |
-| `--gitlab-role-rollback-confirmed` | `false` | Confirm reopening the shared-credential path when changing an enforced role gate to `rollback`; required for that reverse transition. |
+| `--gitlab-role-rollback-confirmed` | `false` | Confirm reopening the shared-credential path when changing a role-required gate (`migrating` or `enforced`) to `rollback`; required for that reverse transition. |
 | `--rotate-gitlab-roles` | `false` | Force-rotate GitLab role credentials even if they are not near expiry. Auto-rotation of expiring, expired, revoked, or unverified own-credential roles already runs during `repos install` when the gate is `migrating` or `enforced`. |
 | `--rotate-gitlab-role` | | Rotate a specific GitLab role (repeatable). Default is all own-credential roles that are due. A `reuse` role follows its target. |
 
@@ -218,8 +218,8 @@ false for an installation that previously reported ready while a custom-agent
 mapping was incomplete. Missing role secrets are drift in `migrating` and
 `enforced`.
 
-Leaving an enforced gate requires the explicit
-`--gitlab-role-migration=rollback` plus
+Leaving a role-required gate (`migrating` or `enforced`) requires the
+explicit `--gitlab-role-migration=rollback` plus
 `--gitlab-role-rollback-confirmed` acknowledgement because it reopens the
 shared-credential path. That emergency recovery path is separate from
 ordinary unflagged converge.

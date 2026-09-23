@@ -66,8 +66,8 @@ type RoleProvisionConfig struct {
 	// via --gitlab-role-migration; leftover values remain writable here so
 	// install can converge them.
 	DesiredMode gitlabroles.Mode
-	// RollbackConfirmed authorizes replacing an enforced gate with a
-	// shared-token-only mode.
+	// RollbackConfirmed authorizes replacing a role-required gate
+	// (migrating or enforced) with a shared-token-only mode.
 	RollbackConfirmed bool
 	// ProvidedTokens maps a role name to an administrator-supplied
 	// PAT (free-tier enrollment or a custom own credential). Values
