@@ -174,7 +174,8 @@ repo baseline and overrides)
   (contract: [`docs/normative/prescript-output/v1`](normative/prescript-output/v1/README.md)),
   replacing the inline workflow pre-checks and their scaffold script copies
   ([ADR 0072](ADRs/0072-pre-script-output-protocol.md)).
-- Deterministic entity context: before the pre-script, the runner fetches one
+- Deterministic forge entity snapshot (the `entity-context` v1 compatibility
+  name): before the pre-script, the runner fetches one
   bounded entity snapshot through `forge.Client`, filters untrusted content,
   and stages a versioned per-record file tree with relationship, projection,
   and immutable agent-run lineage metadata outside the repository. Repository

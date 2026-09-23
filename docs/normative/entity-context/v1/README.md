@@ -5,10 +5,13 @@ by [ADR 0107](../../../ADRs/0107-deterministic-filtered-entity-context-staging.m
 It is the contract between forge adapters, `fullsend run`, harness scripts, and
 agent runtimes.
 
-Here, *entity context* means the staged data snapshot for a handled Git-forge
-entity. [ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md)
-uses the same phrase for the distinct routing category that determines which
-agent or slash command may handle an issue, change proposal, or conversation.
+Here, *forge entity snapshot* means the staged data snapshot for a handled
+Git-forge entity. The compatibility path and schema identifiers retain the
+`entity-context` name for v1; implementation work should evaluate renaming
+those identifiers before they become a public compatibility commitment.
+[ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md) uses
+*entity context* for the distinct routing category that determines which agent
+or slash command may handle an issue, change proposal, or conversation.
 Entity-context v1 applies only to GitHub, GitLab, and Forgejo work items and
 change proposals. A non-forge `work_item`, such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
@@ -59,6 +62,12 @@ deterministic projections containing those same paths, one per LF-terminated
 line. `views/timeline.order` and `views/unresolved-review.order` exist even when
 empty.
 
+Manifest `media_type` values are closed by file role: JSON documents use
+`application/json`, comment/review/entity records use `text/markdown`, and
+order views plus check logs use `text/plain`. Producers must emit the value
+specified for the role; media-type parameters and alternate spellings are not
+valid v1 values.
+
 The canonical empty singleton documents are `{"reviews":[],"threads":[]}` for
 `relations/reviews.json`, `{"runs":[]}` for `history/agent-runs.json`,
 `{"actors":[]}` for `state/actors.json`, and `{"threads":[]}` for
@@ -67,12 +76,16 @@ zero-byte file.
 
 ## Stable records and mutable state
 
-A record key is the lowercase hexadecimal SHA-256 of these four UTF-8 strings
-joined by a single NUL byte, with no trailing NUL:
-
-```text
-<source.forge>://<source.host>, source.repository_id, record kind, forge record ID
-```
+A record key is the lowercase hexadecimal SHA-256 of four UTF-8 strings. In
+order, the strings are `<source.forge>://<source.host>`,
+`<source.repository_id>`, the record kind, and the forge record ID. Encode each
+string as UTF-8 and concatenate them with exactly one U+0000 byte between
+adjacent fields and no trailing U+0000. Commas and spaces shown in prose are
+not part of the input. For example, the four fields
+`github://github.com`, `R_kgDOExample`, `comment`, and `IC_kwDOExample` produce
+the byte sequence `github://github.com\0R_kgDOExample\0comment\0IC_kwDOExample`
+and the key
+`c73645a72a9c5de28d71e3e1efe235b9a5d02ee6dfe7dc0ef06cf3d0e5ee3421`.
 
 `source.forge` is `github`, `gitlab`, or `forgejo`. `source.host` is the
 lowercase DNS name, with a port from 1 through 65535 appended as decimal

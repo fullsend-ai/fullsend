@@ -34,9 +34,12 @@ the preferred prefetch model from
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md) to every issue and
 change-proposal run.
 
-This ADR's *entity context* is the staged data snapshot. It is distinct from
-the dispatch-layer routing category called entity context in
-[ADR 0076](0076-slash-command-entity-context-separation.md).
+This ADR's *forge entity snapshot* is the staged data snapshot. It is distinct
+from the dispatch-layer routing category called entity context in
+[ADR 0076](0076-slash-command-entity-context-separation.md). The v1
+compatibility path and schema identifiers retain the `entity-context` name;
+this is known naming debt, and implementation work should evaluate renaming
+those identifiers before they become public compatibility commitments.
 
 ## Decision
 

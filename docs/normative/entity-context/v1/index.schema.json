@@ -109,7 +109,9 @@
         "role": {
           "enum": ["collection", "entity_metadata", "entity_record", "comment_record", "review_record", "thread_order", "timeline_view", "unresolved_review_view", "review_view", "reviews", "agent_runs", "check_metadata", "check_log", "actor_state", "thread_state"]
         },
-        "media_type": { "type": "string", "minLength": 1 },
+        "media_type": {
+          "enum": ["application/json", "text/markdown", "text/plain"]
+        },
         "bytes": { "type": "integer", "minimum": 0 },
         "sha256": { "$ref": "common.schema.json#/$defs/record_key" },
         "filter": {
@@ -120,6 +122,18 @@
         }
       },
       "allOf": [
+        {
+          "if": { "properties": { "role": { "enum": ["collection", "entity_metadata", "reviews", "agent_runs", "check_metadata", "actor_state", "thread_state"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "application/json" } } }
+        },
+        {
+          "if": { "properties": { "role": { "enum": ["entity_record", "comment_record", "review_record"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "text/markdown" } } }
+        },
+        {
+          "if": { "properties": { "role": { "enum": ["thread_order", "timeline_view", "unresolved_review_view", "review_view", "check_log"] } }, "required": ["role"] },
+          "then": { "properties": { "media_type": { "const": "text/plain" } } }
+        },
         {
           "if": { "properties": { "role": { "enum": ["entity_metadata", "reviews", "agent_runs", "check_metadata", "check_log", "actor_state"] } }, "required": ["role"] },
           "then": { "required": ["filter"] }
