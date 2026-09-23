@@ -244,8 +244,9 @@ agents start and complete.
   commits), or `disabled`.
 - **`reaction.start`** — `enabled` or `disabled` (default). Reactions are
   an opt-in alternative that does not generate a GitHub notification.
-- **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
-  (default).
+- **`reaction.completion`** — `enabled`, `on_failure` (reaction only on
+  non-success: failure, cancelled, skipped, or a fix agent that made no
+  commits), or `disabled` (default).
 
 ### `mint_url`
 

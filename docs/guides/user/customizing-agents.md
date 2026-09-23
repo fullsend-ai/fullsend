@@ -489,8 +489,8 @@ At completion, the start reaction (if any) is removed, and — depending on `com
 
 | Value | Behavior |
 |-------|----------|
-| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped/no-changes |
-| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped/no-changes; leave no reaction on success |
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped or (for the fix agent) a zero-commit run |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped or (for the fix agent) a zero-commit run; leave no reaction on success |
 | `disabled` | Never add a completion reaction (default) |
 
 👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.

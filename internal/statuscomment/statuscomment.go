@@ -707,6 +707,8 @@ func statusEmoji(status string) string {
 		return "❌"
 	case "skipped":
 		return "⏭️"
+	case "cancelled":
+		return "⚠️"
 	case "no changes made":
 		return "⚠️"
 	default:

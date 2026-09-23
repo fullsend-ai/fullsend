@@ -1748,7 +1748,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// runNoChanges. Snapshot pre-agent HEAD now, before the sandbox mutates
 	// the extracted copy; PRE_AGENT_HEAD is set by the fix workflow.
 	if h.Role == "fix" {
-		preAgentHead := resolvePreAgentHead(targetRepo)
+		preAgentHead := resolvePreAgentHead(printer, targetRepo)
 		defer func() {
 			if runErr != nil || runSkipped || ctx.Err() != nil {
 				return
@@ -1756,7 +1756,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if !repoExtractedOK {
 				return
 			}
-			if noCommitOutcome(hostRepositoryDownloadDir, preAgentHead) {
+			if isNoCommitOutcome(printer, hostRepositoryDownloadDir, preAgentHead) {
 				runNoChanges = true
 				printer.StepWarn("Fix agent completed without making any code changes")
 			}

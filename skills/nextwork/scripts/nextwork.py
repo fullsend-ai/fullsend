@@ -353,6 +353,12 @@ def agent_terminal_succeeded(body: str) -> bool:
         return False
     if re.search(r"\b(?:failure|failed|skipped)\b", lower):
         return False
+    if "no changes made" in lower:
+        # A zero-commit fix run (#3419) is terminal but made no fix. Treat it
+        # as succeeded anyway so it still clears waiting_fix — otherwise a
+        # launch wait would sit blocked hunting for commits that a run
+        # already reported it could not produce, causing a retry loop.
+        return True
     if "✅" in body or re.search(r"\bsuccess\b", lower):
         return True
     # Sticky triage / marker-only posts with no outcome line.

@@ -3,14 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCompletionStatus(t *testing.T) {
@@ -88,73 +85,61 @@ func TestNoChangesMadeDetailFitsStatusCap(t *testing.T) {
 
 func TestResolvePreAgentHead_PrefersEnv(t *testing.T) {
 	t.Setenv("PRE_AGENT_HEAD", "abc123def")
-	assert.Equal(t, "abc123def", resolvePreAgentHead("/does-not-matter"))
+	assert.Equal(t, "abc123def", resolvePreAgentHead(nil, "/does-not-matter"))
 }
 
 func TestResolvePreAgentHead_EmptyWithoutRepo(t *testing.T) {
 	t.Setenv("PRE_AGENT_HEAD", "")
-	assert.Empty(t, resolvePreAgentHead(""))
+	assert.Empty(t, resolvePreAgentHead(nil, ""))
 }
 
 func TestResolvePreAgentHead_FallsBackToRepoHEAD(t *testing.T) {
 	t.Setenv("PRE_AGENT_HEAD", "")
-	dir, sha := initTestRepo(t)
-	assert.Equal(t, sha, resolvePreAgentHead(dir))
+	dir, sha := initGitTestRepo(t)
+	assert.Equal(t, sha, resolvePreAgentHead(nil, dir))
 }
 
 func TestResolvePreAgentHead_MissingRepo(t *testing.T) {
 	t.Setenv("PRE_AGENT_HEAD", "")
-	assert.Empty(t, resolvePreAgentHead(t.TempDir()))
+	assert.Empty(t, resolvePreAgentHead(nil, t.TempDir()))
 }
 
-func TestNoCommitOutcome(t *testing.T) {
-	dir, sha := initTestRepo(t)
+func TestResolvePreAgentHead_WarnsOnUnexpectedError(t *testing.T) {
+	t.Setenv("PRE_AGENT_HEAD", "")
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	// t.TempDir() is not a git repo, so gitRevParse fails unexpectedly
+	// (as opposed to the "" input handled above without calling git at all).
+	assert.Empty(t, resolvePreAgentHead(printer, t.TempDir()))
+	assert.Contains(t, out.String(), "Could not resolve pre-agent HEAD")
+}
+
+func TestIsNoCommitOutcome(t *testing.T) {
+	dir, sha := initGitTestRepo(t)
 
 	t.Run("matching HEAD", func(t *testing.T) {
-		assert.True(t, noCommitOutcome(dir, sha))
+		assert.True(t, isNoCommitOutcome(nil, dir, sha))
 	})
 	t.Run("different HEAD", func(t *testing.T) {
-		assert.False(t, noCommitOutcome(dir, "0000000000000000000000000000000000000000"))
+		assert.False(t, isNoCommitOutcome(nil, dir, "0000000000000000000000000000000000000000"))
 	})
 	t.Run("empty preHead", func(t *testing.T) {
-		assert.False(t, noCommitOutcome(dir, ""))
+		assert.False(t, isNoCommitOutcome(nil, dir, ""))
 	})
 	t.Run("empty repoDir", func(t *testing.T) {
-		assert.False(t, noCommitOutcome("", sha))
+		assert.False(t, isNoCommitOutcome(nil, "", sha))
 	})
 	t.Run("not a git repo", func(t *testing.T) {
-		assert.False(t, noCommitOutcome(t.TempDir(), sha))
+		assert.False(t, isNoCommitOutcome(nil, t.TempDir(), sha))
 	})
 	t.Run("new commit is not a no-op", func(t *testing.T) {
-		runGit(t, dir, "commit", "--allow-empty", "-m", "second")
-		assert.False(t, noCommitOutcome(dir, sha))
+		runGitTestRepoCmd(t, dir, "commit", "--allow-empty", "-m", "second")
+		assert.False(t, isNoCommitOutcome(nil, dir, sha))
 	})
-}
-
-func initTestRepo(t *testing.T) (dir, head string) {
-	t.Helper()
-	dir = t.TempDir()
-	runGit(t, dir, "init")
-	runGit(t, dir, "config", "user.email", "test@example.com")
-	runGit(t, dir, "config", "user.name", "Test")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644))
-	runGit(t, dir, "add", "README")
-	runGit(t, dir, "commit", "-m", "init")
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	require.NoError(t, err)
-	return dir, strings.TrimSpace(string(out))
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=commit.gpgsign",
-		"GIT_CONFIG_VALUE_0=false",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	t.Run("warns on unexpected rev-parse error", func(t *testing.T) {
+		out := &strings.Builder{}
+		printer := ui.New(out)
+		assert.False(t, isNoCommitOutcome(printer, t.TempDir(), sha))
+		assert.Contains(t, out.String(), "Could not resolve HEAD")
+	})
 }

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"os"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // Status strings posted by the completion-comment defer. They must match
@@ -41,8 +43,11 @@ func completionStatus(ctx context.Context, runErr error, skipped bool, skipReaso
 // resolvePreAgentHead returns the SHA recorded before the agent ran.
 // PRE_AGENT_HEAD is set by the fix workflow / GitLab scaffold; when it
 // is unset (local runs), fall back to HEAD of targetRepo, which the
-// sandbox does not mutate.
-func resolvePreAgentHead(targetRepo string) string {
+// sandbox does not mutate. printer may be nil (e.g. in tests); when
+// non-nil, an unexpected gitRevParse failure is surfaced via StepWarn
+// so a broken git/permissions issue doesn't silently disable zero-commit
+// detection — the fail-open return value is unchanged either way.
+func resolvePreAgentHead(printer *ui.Printer, targetRepo string) string {
 	if sha := os.Getenv("PRE_AGENT_HEAD"); sha != "" {
 		return sha
 	}
@@ -51,20 +56,32 @@ func resolvePreAgentHead(targetRepo string) string {
 	}
 	sha, err := gitRevParse(targetRepo, "HEAD")
 	if err != nil {
+		if printer != nil {
+			printer.StepWarn("Could not resolve pre-agent HEAD from " + targetRepo + ": " + err.Error())
+		}
 		return ""
 	}
 	return sha
 }
 
-// noCommitOutcome reports whether repoDir's HEAD still equals preHead.
-// Empty inputs or a rev-parse failure fail open (false): we would rather
-// keep reporting success than warn on an inconclusive comparison.
-func noCommitOutcome(repoDir, preHead string) bool {
+// isNoCommitOutcome reports whether repoDir's HEAD still equals preHead.
+// Empty inputs fail open (false): we would rather keep reporting success
+// than warn on an inconclusive comparison. A rev-parse failure also fails
+// open, but — unlike empty inputs — it is surfaced via printer.StepWarn
+// (when printer is non-nil) since it usually means something is actually
+// broken (missing git, permissions) rather than an expected missing input.
+func isNoCommitOutcome(printer *ui.Printer, repoDir, preHead string) bool {
 	if preHead == "" || repoDir == "" {
 		return false
 	}
 	head, err := gitRevParse(repoDir, "HEAD")
-	if err != nil || head == "" {
+	if err != nil {
+		if printer != nil {
+			printer.StepWarn("Could not resolve HEAD in " + repoDir + " for zero-commit detection: " + err.Error())
+		}
+		return false
+	}
+	if head == "" {
 		return false
 	}
 	return head == preHead

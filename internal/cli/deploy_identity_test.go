@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -113,35 +112,7 @@ func TestGitRevParse_ErrorWithoutStderr(t *testing.T) {
 
 func TestResolveMintDeployCommit_FromCheckout(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	runGit := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=commit.gpgsign",
-			"GIT_CONFIG_VALUE_0=false",
-		)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	runGit("init")
-	runGit("config", "user.email", "test@example.com")
-	runGit("config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit("add", "README")
-	runGit("commit", "-m", "init")
-
-	wantCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
-	wantOut, err := wantCmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := strings.TrimSpace(string(wantOut))
+	dir, want := initGitTestRepo(t)
 
 	got, err := resolveMintDeployCommit("dev", dir)
 	if err != nil {
@@ -176,27 +147,7 @@ func TestResolveAndReportMintDeployCommit_WarnOnFailure(t *testing.T) {
 }
 
 func TestResolveAndReportMintDeployCommit_InfoOnSuccess(t *testing.T) {
-	dir := t.TempDir()
-	runGit := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=commit.gpgsign",
-			"GIT_CONFIG_VALUE_0=false",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	runGit("init")
-	runGit("config", "user.email", "test@example.com")
-	runGit("config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit("add", "README")
-	runGit("commit", "-m", "init")
+	dir, _ := initGitTestRepo(t)
 
 	out := &strings.Builder{}
 	printer := ui.New(out)

@@ -1878,6 +1878,12 @@ class TestAgentTerminalSucceeded(unittest.TestCase):
         self.assertTrue(agent_terminal_succeeded("<!-- fullsend:status:terminal -->"))
         self.assertTrue(agent_terminal_succeeded("🤖 Finished Triage · done"))
 
+    def test_no_changes_made_clears_waiting_fix(self):
+        # A zero-commit fix run (#3419) is terminal and explicitly recognized
+        # (not an accidental fallthrough) as succeeded, so it still clears
+        # waiting_fix instead of leaving the launch wait blocked forever.
+        self.assertTrue(agent_terminal_succeeded("🤖 Finished Fix · ⚠️ No changes made"))
+
 
 class TestRoleWaitingStatus(unittest.TestCase):
     def test_uses_structured_prefix_not_skip_reason(self):
