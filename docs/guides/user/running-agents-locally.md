@@ -142,6 +142,12 @@ permissions depend on the agent to execute, but generally with Write access to I
 Pull Requests you cover most of them. If this is not enough, explore the codebase or ask
 in our community channels.
 
+Scope the token to the organization that owns the repository you are running
+against, and keep its lifetime inside any enterprise policy (some orgs reject
+PATs longer than 366 days). A 401 or 403 while `fullsend run` resolves a
+first-party agent from `fullsend-ai/agents` is fatal: the CLI stops rather than
+continuing with a warning. See [Agent resolution failures](../../cli/run.md#agent-resolution-failures).
+
 ## Clone repositories
 
 First clone your target repository locally:

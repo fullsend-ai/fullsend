@@ -5818,7 +5818,11 @@ func validateRepoNames(repos []string) error {
 // and any fetch dependencies from URL-based agent resolution.
 func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+		path, deps, err := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer)
+		if err != nil {
+			return "", nil, err
+		}
+		if path != "" {
 			return path, deps, nil
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
@@ -5835,7 +5839,11 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 
 	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
 	if entry == nil {
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+		path, deps, err := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer)
+		if err != nil {
+			return "", nil, err
+		}
+		if path != "" {
 			return path, deps, nil
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
@@ -5844,7 +5852,11 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		// An override-only entry tunes a built-in agent (runtime/model/
 		// effort) but registers no harness: the built-in still comes from
 		// the agents repo, exactly as if the entry were absent.
-		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+		path, deps, err := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer)
+		if err != nil {
+			return "", nil, err
+		}
+		if path != "" {
 			return path, deps, nil
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only sets runtime/model/effort) and agents-repo fallback unavailable", agentName)
@@ -5896,45 +5908,79 @@ func resolveAgentsRef() (displayRef, gitRef string) {
 // agents into a separate repository (fullsend-ai/agents) without requiring
 // config changes from existing users.
 //
-// Returns (path, deps, true) on success, or ("", nil, false) if the fallback
-// should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
-// All errors are non-fatal — returns false to signal that this fallback path was not usable.
-func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
+// Returns (path, deps, nil) on success, ("", nil, nil) if the fallback should
+// be skipped (offline, no forge client, agent not known, not allowlisted,
+// missing file, or a non-auth GetRef failure), and a non-nil error when
+// resolving the agents ref failed because the GitHub token was rejected.
+func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
-		return "", nil, false
+		return "", nil, nil
 	}
-	path, dep, ok := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName)
-	if !ok {
-		return "", nil, false
+	path, dep, err := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName)
+	if err != nil {
+		return "", nil, err
 	}
-	return path, []harness.Dependency{dep}, true
+	if path == "" {
+		return "", nil, nil
+	}
+	return path, []harness.Dependency{dep}, nil
 }
 
 // tryAgentsRepoMeasurementManifest SHA-pins eval/measurements/<agent>.yaml
 // from fullsend-ai/agents (same pin, allowlist, hash, and audit as harness
-// fallback). Missing manifests (HTTP 404) skip; network errors warn.
-func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, bool) {
+// fallback). Missing manifests (HTTP 404) skip; network errors warn; a
+// rejected GitHub token fails closed so the PAT error is not masked as a skip.
+func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, error) {
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
-		return "", false
+		return "", nil
 	}
-	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
-	return path, ok
+	path, _, err := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
+	return path, err
+}
+
+// agentRefPATGuidance is appended to fatal errors when GetRef rejects the
+// caller's GitHub token while resolving fullsend-ai/agents. Kept as a
+// package-level string so tests can assert the user-facing fix text.
+const agentRefPATGuidance = "The GitHub token was rejected while resolving the agent reference. " +
+	"This often means the token is expired, scoped to the wrong organization, " +
+	"or violates an enterprise token-lifetime policy. " +
+	"Create or update a fine-grained PAT at https://github.com/settings/personal-access-tokens " +
+	"and export it as GH_TOKEN (or GITHUB_TOKEN)."
+
+// isAgentRefAuthError reports whether err is a GitHub 401/403 that indicates
+// the caller's token was rejected, as opposed to a rate limit (which is also
+// a 403) or a missing ref. Rate limits stay on the warn-and-skip path.
+func isAgentRefAuthError(err error) bool {
+	var apiErr *gh.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if gh.IsRateLimitError(err) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden
+}
+
+func wrapAgentsRefAuthError(displayRef string, err error) error {
+	return fmt.Errorf("resolving %s/%s@%s: %w\n\n%s", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err, agentRefPATGuidance)
 }
 
 // fetchPinnedAgentsRepoFile resolves the agents ref to a commit SHA and
-// fetches relPath from fullsend-ai/agents. All errors are non-fatal.
-func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+// fetches relPath from fullsend-ai/agents. Expected misses (offline, no
+// client, not allowlisted, HTTP 404, non-auth GetRef failures) return an
+// empty path and a nil error. A rejected GitHub token is fatal.
+func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, error) {
 	var none harness.Dependency
 	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
-		return "", none, false
+		return "", none, nil
 	}
 	if composeOpts.FetchPolicy.Offline {
-		return "", none, false
+		return "", none, nil
 	}
 	if forgeClient == nil {
-		return "", none, false
+		return "", none, nil
 	}
 
 	allowlist := composeOpts.OrgAllowlist
@@ -5942,19 +5988,23 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	displayRef, gitRef := resolveAgentsRef()
 	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
 	if err != nil {
+		if isAgentRefAuthError(err) {
+			printer.StepFail(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
+			return "", none, wrapAgentsRefAuthError(displayRef, err)
+		}
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
-		return "", none, false
+		return "", none, nil
 	}
 	if !commitSHAPattern.MatchString(resolvedSHA) {
 		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, resolvedSHA))
-		return "", none, false
+		return "", none, nil
 	}
 
 	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
 		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
-		return "", none, false
+		return "", none, nil
 	}
 
 	shortSHA := resolvedSHA
@@ -5970,7 +6020,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		} else {
 			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
 		}
-		return "", none, false
+		return "", none, nil
 	}
 
 	// Content is fetched once and used directly — no self-referential hash
@@ -5981,13 +6031,13 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
-		return "", none, false
+		return "", none, nil
 	}
 
 	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for %s: %v", noun, err))
-		return "", none, false
+		return "", none, nil
 	}
 	localPath := filepath.Join(cachePath, "content")
 
@@ -6015,7 +6065,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	}
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
-	return localPath, dep, true
+	return localPath, dep, nil
 }
 
 func isFetchHTTPStatus(err error, code int) bool {

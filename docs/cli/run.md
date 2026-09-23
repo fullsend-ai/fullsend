@@ -4,7 +4,7 @@ sidebar_label: fullsend run
 
 # fullsend run
 
-Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness, provisions a sandbox container, and runs the agent to completion.
+Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness, provisions a sandbox container, and runs the agent to completion. A GitHub token error while resolving a first-party agent from `fullsend-ai/agents` is fatal — see [Agent resolution failures](#agent-resolution-failures).
 
 ## Usage
 
@@ -314,6 +314,18 @@ the minted App identity.
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
+
+## Agent resolution failures
+
+When a first-party agent is not registered in `config.yaml`, `fullsend run`
+resolves it from [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents)
+by calling the GitHub API (`GetRef`) with `GH_TOKEN` / `GITHUB_TOKEN` (or
+unauthenticated, if no token is set). A 401 or 403 that is not a rate limit
+— expired token, token scoped to the wrong organization, or an enterprise
+token-lifetime policy — is a fatal error. The run exits immediately with the
+API message and a link to [token settings](https://github.com/settings/personal-access-tokens).
+Rate limits, missing refs, and HTTP 404s still skip the fallback and surface
+as "agents-repo fallback unavailable" if no config entry exists.
 
 ## Related
 
