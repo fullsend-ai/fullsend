@@ -54,6 +54,9 @@ func TestCheckGeneratedCatchesMissingResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, victim := range append(append([]string{}, role.Providers...), role.Profiles...) {
+		if !harness.IsProviderPath(victim) {
+			continue
+		}
 		t.Run(victim, func(t *testing.T) {
 			dir := t.TempDir()
 			opts := testOptions("lint-docs", "retro")

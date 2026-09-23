@@ -82,9 +82,9 @@ Examples:
 	cmd.Flags().StringVar(&f.description, "description", "", "one-line description of what the agent does")
 	cmd.Flags().StringVar(&f.on, "on", "", "trigger preset: "+strings.Join(agentnew.PresetNames(), ", ")+" (default command:/fs-<name>)")
 	cmd.Flags().StringVar(&f.trigger, "trigger", "", "raw CEL trigger expression; mutually exclusive with --on")
-	cmd.Flags().StringVar(&f.model, "model", agentnew.DefaultModel, "model for the agent")
+	cmd.Flags().StringVar(&f.model, "model", agentnew.DefaultModel, "model for the agent (default opus; --runtime codex requires an OpenAI id)")
 	cmd.Flags().StringVar(&f.effort, "effort", agentnew.DefaultEffort, "effort level (low, medium, high, xhigh, max)")
-	cmd.Flags().StringVar(&f.runtime, "runtime", "", "agent runtime recorded in config.yaml (claude, pi or codex)")
+	cmd.Flags().StringVar(&f.runtime, "runtime", "", "agent runtime recorded in config.yaml (claude, pi or codex); also shapes the generated harness (Vertex credentials for claude/pi; OpenAI --model required for codex, and an OpenAI --model on pi omits Vertex credentials too)")
 	cmd.Flags().StringVar(&f.slug, "slug", "", "harness slug (default: <owner>-<name> from the origin remote)")
 	cmd.Flags().StringVar(&f.image, "image", "", "sandbox image (default: the fleet's pin for this role)")
 	cmd.Flags().IntVar(&f.timeoutMinutes, "timeout-minutes", agentnew.DefaultTimeoutMinutes, "agent timeout in minutes")
@@ -110,6 +110,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	runtimeName = f.runtime
 	on, trigger := f.on, f.trigger
 	slug, image, description := f.slug, f.image, f.description
+	modelFromSpec := false
 
 	if f.specFile != "" {
 		if name != "" {
@@ -126,6 +127,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		}
 		if !f.changed("model") && spec.Model != "" {
 			opts.Model = spec.Model
+			modelFromSpec = true
 		}
 		if !f.changed("effort") && spec.Effort != "" {
 			opts.Effort = spec.Effort
@@ -212,6 +214,38 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
 			runtimeName, strings.Join(userFacingRuntimes(), ", "))
 	}
+	// opts.Runtime must match what dispatch will actually use, not just the
+	// flag: when neither --runtime nor a spec runtime: is given,
+	// runtime.ResolveForAgent falls back to the repo-wide config.yaml
+	// `runtime:` key (defaulting to claude), not to "". Leaving opts.Runtime
+	// empty here would generate a Vertex-shaped harness with an unvalidated
+	// opus default for an agent that will actually dispatch as codex or pi
+	// — the #7264 exposure again, reached through the repo-wide default
+	// instead of --runtime. runtimeName itself (the flag/spec-only value,
+	// returned separately below) is left untouched: it is what runAgentSet
+	// writes, and writing the resolved default would record a per-agent
+	// override nobody asked for.
+	opts.Runtime = runtimeName
+	if opts.Runtime == "" {
+		cfg, cfgErr := config.LoadConfig(f.fullsendDir, config.LoadOpts{MissingOK: true})
+		if cfgErr != nil {
+			return opts, "", "", cfgErr
+		}
+		// Only a per-repo config carries a runtime: default; an org-mode
+		// config (or a directory config.LoadConfig had to default) leaves
+		// opts.Runtime "", which UsesVertex and Validate already treat the
+		// same as the claude default runtime.ResolveForAgent falls back to.
+		if perRepo, ok := cfg.(config.PerRepoConfigReader); ok {
+			opts.Runtime = perRepo.ConfigRuntime()
+		}
+	}
+	// The cobra default for --model is opus, a Claude alias. Generating for
+	// a runtime that requires an OpenAI id (codex, or the repo's resolved
+	// default when it is codex) without an explicit --model (or spec model)
+	// must not silently write that alias into the harness.
+	if opts.Runtime == "codex" && !f.changed("model") && !modelFromSpec {
+		opts.Model = ""
+	}
 
 	if validateErr := opts.Validate(); validateErr != nil {
 		return opts, "", "", validateErr
@@ -277,6 +311,14 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 	if f.noRegister {
 		printer.StepInfo("Not registered (--no-register). Register it later with:")
 		printer.Raw(fmt.Sprintf("  fullsend agent add %s --fullsend-dir %s\n", result.HarnessPath, f.fullsendDir))
+		// `agent add` has no --runtime flag, so a non-empty runtime named
+		// here would otherwise be unrecoverable: the harness is already
+		// shaped by it (Vertex vs OpenAI host_files/env), but nothing
+		// records it, and dispatch falls back to the claude default until
+		// `agent set` names it explicitly.
+		if runtimeName != "" {
+			printer.Raw(fmt.Sprintf("  fullsend agent set %s --runtime %s --fullsend-dir %s\n", opts.Name, runtimeName, f.fullsendDir))
+		}
 	} else {
 		if err := runAgentAdd(ctx, result.HarnessPath, opts.Name, f.fullsendDir, nil, printer); err != nil {
 			return fmt.Errorf("agent files were written but registration failed: %w", err)
@@ -302,12 +344,20 @@ func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer)
 	printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
 	printer.Raw(fmt.Sprintf("  2. Test locally:\n       fullsend run %s --fullsend-dir %s \\\n         --target-repo . --env-file .env.local\n",
 		opts.Name, f.fullsendDir))
-	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID,\n")
-	printer.Raw("     CLOUD_ML_REGION, and GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP\n")
-	printer.Raw("     credentials file — the harness copies that file into the sandbox, so the\n")
-	printer.Raw("     run stops before it starts without it. GH_TOKEN must be a real token: a\n")
-	printer.Raw("     connectivity check runs before the agent does. See\n")
-	printer.Raw("     docs/guides/user/running-agents-locally.md.\n")
+	if !opts.UsesVertex() {
+		printer.Raw("     .env.local needs GITHUB_ISSUE_URL, GH_TOKEN, and OPENAI_API_KEY.\n")
+		printer.Raw("     The harness declares the openai provider; the runner keeps the key\n")
+		printer.Raw("     out of the sandbox. GH_TOKEN must be a real token: a connectivity\n")
+		printer.Raw("     check runs before the agent does. See\n")
+		printer.Raw("     docs/guides/user/running-agents-locally.md.\n")
+	} else {
+		printer.Raw("     .env.local needs GITHUB_ISSUE_URL, GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID,\n")
+		printer.Raw("     CLOUD_ML_REGION, and GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP\n")
+		printer.Raw("     credentials file — the harness copies that file into the sandbox, so the\n")
+		printer.Raw("     run stops before it starts without it. GH_TOKEN must be a real token: a\n")
+		printer.Raw("     connectivity check runs before the agent does. See\n")
+		printer.Raw("     docs/guides/user/running-agents-locally.md.\n")
+	}
 	if cmd := slashCommandFromTrigger(opts.Trigger); cmd != "" {
 		printer.Raw(fmt.Sprintf("  3. Commit %s, then comment `%s` on an issue or pull request to run it in CI.\n",
 			filepath.Clean(f.fullsendDir), cmd))

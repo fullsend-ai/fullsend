@@ -135,7 +135,7 @@ func TestUnknownPresetErrorListsAlternatives(t *testing.T) {
 // role table names is a file the CLI can actually produce. A path that names
 // nothing would pass harness validation and then fail at run time as "agent
 // crashes at 0s", because the embedded provider fallback covers only the
-// OpenAI provider.
+// OpenAI provider. Bare names are skipped: openai is binary-only by design.
 func TestRoleResourcesExistInScaffold(t *testing.T) {
 	for _, name := range RoleNames() {
 		role, err := LookupRole(name)
@@ -143,6 +143,9 @@ func TestRoleResourcesExistInScaffold(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, p := range append(append([]string{}, role.Providers...), role.Profiles...) {
+			if !harness.IsProviderPath(p) {
+				continue
+			}
 			if _, err := scaffold.FullsendRepoFile(p); err != nil {
 				t.Errorf("role %q references %q, which is not in the embedded scaffold: %v", name, p, err)
 			}
