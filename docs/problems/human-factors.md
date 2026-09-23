@@ -37,6 +37,8 @@ This is still fatiguing, in different ways:
 - **Abstraction gap.** Reviewing intent alignment is harder than reviewing code. With code, you can trace logic. With intent, you're asking "did the agent understand what I meant?" — a fuzzier question that requires holding both the intent document and the implementation in mind.
 - **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research (see [evidence section below](#supporting-research-and-frameworks)) — humans are poor monitors of mostly-correct automated systems, and this complacency cannot be trained away. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
 
+At the organizational level, review fatigue becomes an approval-capacity problem: agent output grows faster than the small pool of guarded-path approvers. See [agentic SDLC adoption and organizational communication](agentic-sdlc-adoption-org-communication.md#approval-capacity).
+
 ## Contributor motivation in open source
 
 Many target organizations are open-source projects. Contributors participate for reasons beyond a paycheck — learning, building reputation, solving interesting problems, and being part of a community.

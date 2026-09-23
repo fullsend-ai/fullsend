@@ -177,7 +177,7 @@ The goal: make implicit knowledge explicit (which helps AI agents) **without** m
 - How do we avoid creating a "two-class" system where AI-assisted contributions get faster processing than unassisted human contributions?
 - How verbose is too verbose? At what point does comprehensive documentation (helpful for AI) become overwhelming for human contributors?
 - Should we explicitly signal which documentation is "need to know" for humans vs. "supplementary context" primarily for AI assistants?
-- How do we capture and document the "why" behind decisions when that context is currently tribal knowledge?
+- How do we capture and document the "why" behind decisions when that context is currently tribal knowledge? Agent autonomy makes this more pressing, because tribal knowledge tends to move into agent instructions rather than into documents people read (see [policy moves into prompts and configuration](agentic-sdlc-adoption-org-communication.md#policy-moves-into-prompts-and-configuration)).
 
 ## Potential Solutions
 

@@ -100,6 +100,7 @@ This is a project-level version of the [autonomy spectrum](autonomy-spectrum.md)
 - **[Agent architecture](agent-architecture.md)** describes triage for issues. Extending triage to unsolicited PRs is a natural but non-trivial expansion.
 - **[Human factors](human-factors.md)** discusses review fatigue for internal work. External contribution volume compounds this — maintainers reviewing unsolicited PRs experience a different kind of fatigue than reviewing work they directed.
 - **[Contributor guidance](contributor-guidance.md)** focuses on making rules clear. Under volume pressure, the question becomes whether clear rules reduce volume (by discouraging misaligned contributions) or just make them more sophisticated (contributors use AI to satisfy all stated requirements while still submitting strategically misaligned work).
+- **[Agentic SDLC adoption and organizational communication](agentic-sdlc-adoption-org-communication.md)** — describes the internal version of the same pressure: an organization's own pipeline producing changes faster than its approvers can evaluate them (see [approval capacity](agentic-sdlc-adoption-org-communication.md#approval-capacity)).
 - **[Governance](governance.md)** — contribution volume intersects with governance when the project must decide its philosophy: optimize for throughput (accept and improve) vs. optimize for coherence (gate strictly). This is a governance decision that shapes the project's identity.
 
 ## Open questions
