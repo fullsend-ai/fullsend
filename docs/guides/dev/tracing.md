@@ -268,8 +268,16 @@ never substitute a locally-sampled `SpanContext`'s flags directly.
 This is a contract binding every TRACEPARENT-emission path, not a
 description of one helper. Currently covered consumers:
 
-- pre/post scripts (and the preflight check) via `childScriptEnv()` —
-  all host-side `exec.Command` invocations, not the sandbox
+- pre/post scripts via `childScriptEnv()` — host-side `exec.Command`
+  invocations that receive a flag-preserved `TRACEPARENT`, not the
+  sandbox
+
+The preflight check also calls `childScriptEnv()`, but only to strip
+OIDC credential vars (issue #5832) — it passes an empty traceparent
+argument, and `childScriptEnv()` omits `TRACEPARENT` entirely when
+that argument is empty rather than emitting one. The preflight check
+therefore receives no `TRACEPARENT` and is not a consumer of this
+invariant.
 
 Future consumers that still need their own flag-preservation fix when
 added — `childScriptEnv()` does not cover them today:
