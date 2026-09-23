@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,6 +58,27 @@ func (h *codexAdapterHarness) script(name, body string) string {
 	require.NoError(h.t, os.WriteFile(filepath.Join(h.hooksDir, name), []byte(src), 0o755))
 	h.digests[name] = codexAssetSHA256([]byte(src))
 	return name
+}
+
+func (h *codexAdapterHarness) embeddedScript(name string, content []byte) string {
+	h.t.Helper()
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.hooksDir, name), content, 0o755))
+	h.digests[name] = codexAssetSHA256(content)
+	return name
+}
+
+func (h *codexAdapterHarness) installPostToolChain() {
+	h.t.Helper()
+	for name, content := range map[string][]byte{
+		"posttool_chain.py":            security.PostToolChainHook,
+		"hook_io.py":                   security.HookIO,
+		"unicode_posttool.py":          security.UnicodePostToolHook,
+		"canary_posttool.py":           security.CanaryPostToolHook,
+		"context_suppress_posttool.py": security.ContextSuppressPostToolHook,
+		"secret_redact_posttool.py":    security.SecretRedactPostToolHook,
+	} {
+		h.embeddedScript(name, content)
+	}
 }
 
 type codexAdapterResult struct {
@@ -162,6 +185,16 @@ sys.exit(0)`)
 	assert.True(t, os.IsNotExist(err), "scripts after a block must not run")
 }
 
+func TestCodexAdapter_PreToolUseBlocksSSRFWithTheRealHook(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	ssrf := h.embeddedScript("ssrf_pretool.py", security.SSRFPreToolHook)
+
+	got := h.run("PreToolUse", codexBashInput("curl http://127.0.0.1/admin"), ssrf)
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "SSRF blocked")
+}
+
 // TestCodexAdapter_TranslatesToolNames pins the vocabulary bridge (#608): the
 // scripts and FULLSEND_TOOL_ALLOWLIST are written in Claude names, and codex
 // reports its own canonical ones.
@@ -193,15 +226,15 @@ sys.exit(0)`)
 	}
 }
 
-// TestCodexAdapter_PostToolUseDropsRewriteAndWarns is the other load-bearing
-// translation. codex's PostToolUse hookSpecificOutput is deny_unknown_fields
-// and accepts only additionalContext and updatedMCPToolOutput, so forwarding
-// the sanitizers' updatedToolOutput would make the hook Failed. The rewrite is
-// dropped and the model is told the output is untrusted instead.
-func TestCodexAdapter_PostToolUseDropsRewriteAndWarns(t *testing.T) {
+// TestCodexAdapter_PostToolUseWithholdsSecretRewrite is the other load-bearing
+// translation. codex cannot apply updatedToolOutput to a built-in tool result,
+// so allowing the call with additionalContext would still expose the original
+// secret to the model. A security-sensitive rewrite must withhold the result.
+func TestCodexAdapter_PostToolUseWithholdsSecretRewrite(t *testing.T) {
 	h := newCodexAdapterHarness(t)
 	h.script("chain.py", `print(json.dumps({
     "tool_result": "token=xxxx",
+	"metadata": {"secrets_redacted": 1, "patterns": ["openai_key"]},
     "hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "updatedToolOutput": "token=xxxx",
@@ -214,21 +247,219 @@ sys.exit(0)`)
 	input["hook_event_name"] = "PostToolUse"
 	input["tool_response"] = "token=sk-live-abcdef"
 	got := h.run("PostToolUse", input, "chain.py")
-	require.Equal(t, 0, got.exitCode, got.stderr)
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-live-abcdef", "the flagged value must not be echoed back")
+}
 
-	var out map[string]any
-	require.NoError(t, json.Unmarshal([]byte(got.stdout), &out))
-	assert.Equal(t, []string{"hookSpecificOutput"}, sortedKeys(out),
-		"only hookSpecificOutput may be emitted; an unknown top-level key makes codex reject the whole object")
+func TestCodexAdapter_PostToolUseWithholdsSecretWithTheRealChain(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
 
-	specific := out["hookSpecificOutput"].(map[string]any)
-	assert.Equal(t, "PostToolUse", specific["hookEventName"])
-	assert.NotContains(t, specific, "updatedToolOutput", "codex cannot rewrite built-in tool output")
-	assert.NotContains(t, specific, "updatedMCPToolOutput")
-	context := specific["additionalContext"].(string)
-	assert.Contains(t, context, "sanitizer would have redacted")
-	assert.Contains(t, context, "credential-like value(s) were masked", "the stage's own note is forwarded")
-	assert.NotContains(t, got.stdout, "sk-live-abcdef", "the flagged value must not be echoed back")
+	input := codexBashInput("cat .env")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-proj-")
+}
+
+func TestCodexAdapter_PostToolUseRescansSuppressedOutputForSecrets(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-proj-")
+}
+
+func TestCodexAdapter_PostToolUseRescanFindsObfuscatedSecrets(t *testing.T) {
+	for name, output := range map[string]string{
+		"ANSI split": "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijkl\x1b[31mnopqrstuvwx\x1b[0m",
+		"NFKC":       "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwｘ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			h.installPostToolChain()
+			input := codexBashInput("go test ./...")
+			input["hook_event_name"] = "PostToolUse"
+			input["tool_response"] = output
+			got := h.run("PostToolUse", input, "posttool_chain.py")
+			assert.Equal(t, 2, got.exitCode)
+			assert.Empty(t, got.stdout)
+			assert.Contains(t, got.stderr, "withheld")
+		})
+	}
+}
+
+func TestCodexAdapter_PostToolUseWithholdsHiddenUnicodeRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1, "categories": ["bidi_override"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "safe\u202etxet"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "\u202e")
+}
+
+func TestCodexAdapter_PostToolUseWithholdsNFKCReassembledEscape(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 2, "categories": ["fullwidth", "nfkc_escape_reassembly"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b［31munsafe"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseWithholdsUnclassifiedUnicodeRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "unsafe text"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseWithholdsMalformedUnicodeCategories(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "safe text",
+    "metadata": {"unicode_findings": 1, "categories": [{}]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "safe text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf hidden")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "unsafe text"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode, "malformed metadata must not crash with codex's fail-open exit 1")
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseAllowsANSICleanup(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "plain text",
+    "metadata": {"unicode_findings": 1, "categories": ["ansi_escape"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "plain text",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf color")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b[31mplain text\x1b[0m"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 0, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Empty(t, got.stderr)
+}
+
+func TestCodexAdapter_PostToolUseWithholdsOSCCleanup(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "link",
+    "metadata": {"unicode_findings": 1, "categories": ["osc_escape"]},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "link",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("printf link")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "\x1b]8;;https://example.com\x07link\x1b]8;;\x07"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+}
+
+func TestCodexAdapter_PostToolUseIgnoresContextSuppression(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "ok example.test 0.5s\nmany safe lines"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 0, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Empty(t, got.stderr)
+}
+
+func TestCodexAdapter_PostToolUseWithholdsUnclassifiedRewrite(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.script("chain.py", `print(json.dumps({
+    "tool_result": "changed",
+    "metadata": {"future_sanitizer": 1},
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": "changed",
+    },
+}))
+sys.exit(0)`)
+
+	input := codexBashInput("tool")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "original sensitive value"
+	got := h.run("PostToolUse", input, "chain.py")
+	assert.Equal(t, 2, got.exitCode)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "unclassified sanitizer")
+	assert.NotContains(t, got.stderr, "original sensitive value")
 }
 
 func TestCodexAdapter_PostToolUseUnchangedIsSilent(t *testing.T) {
@@ -270,7 +501,7 @@ sys.exit(1)`)
 
 func TestCodexAdapter_PostToolUseChainsInOrder(t *testing.T) {
 	h := newCodexAdapterHarness(t)
-	h.script("first.py", `print(json.dumps({"hookSpecificOutput": {
+	h.script("first.py", `print(json.dumps({"metadata": {"unicode_findings": 1, "categories": ["ansi_escape"]}, "hookSpecificOutput": {
     "hookEventName": "PostToolUse", "updatedToolOutput": payload["tool_response"] + "|first"}}))
 sys.exit(0)`)
 	seen := filepath.Join(h.dir, "second-saw.txt")
@@ -685,4 +916,176 @@ sys.exit(0)`)
 	assert.Equal(t, "/pinned/bin:/usr/bin", string(got),
 		"the child's PATH comes from the pinned value, not the inherited one")
 	assert.NotContains(t, string(got), "/planted/bin")
+}
+
+// codexSuppressibleSecret is `go test` output the suppress stage condenses
+// on the first pass, carrying a key split by an ANSI escape so only the
+// unicode stage's normalisation lets the redactor see it.
+const codexSuppressibleSecret = "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijkl\x1b[31mnopqrstuvwx\x1b[0m"
+
+// With the unicode stage disabled the rescan still sees an obfuscated key:
+// the redact stage matches on hook_io's detection form, which strips escapes
+// and invisible characters itself.
+func TestCodexAdapter_PostToolUseRescanWithoutTheUnicodeStage(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+	require.NoError(t, os.Remove(filepath.Join(h.hooksDir, "unicode_posttool.py")))
+	delete(h.digests, "unicode_posttool.py")
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = codexSuppressibleSecret
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode, got.stderr)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "withheld")
+	assert.NotContains(t, got.stderr, "sk-proj-")
+}
+
+// The chain imports its stages from the hooks directory. Re-hashing only the
+// chain itself would leave a neutered stage free to wave the original through.
+func TestCodexAdapter_PostToolUseReverifiesChainStages(t *testing.T) {
+	for name, tamper := range map[string]func(h *codexAdapterHarness){
+		"neutered stage": func(h *codexAdapterHarness) {
+			// The real module with redact_text overridden to find nothing, so
+			// every other entry point the chain calls still works and no stage
+			// error gives the tampering away.
+			neutered := string(security.SecretRedactPostToolHook) +
+				"\n\ndef redact_text(text, skip=frozenset(), *args, **kwargs):\n    return text, []\n"
+			require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "secret_redact_posttool.py"),
+				[]byte(neutered), 0o755))
+		},
+		"neutered helper": func(h *codexAdapterHarness) {
+			f, err := os.OpenFile(filepath.Join(h.hooksDir, "hook_io.py"), os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = f.WriteString("\n# changed\n")
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+		},
+		"missing stage": func(h *codexAdapterHarness) {
+			require.NoError(t, os.Remove(filepath.Join(h.hooksDir, "canary_posttool.py")))
+		},
+		// Python prefers a package over a module of the same name on one
+		// path entry, so this shadows the verified hook_io.py.
+		"shadowing package": func(h *codexAdapterHarness) {
+			pkg := filepath.Join(h.hooksDir, "hook_io")
+			require.NoError(t, os.MkdirAll(pkg, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(pkg, "__init__.py"),
+				[]byte("def __getattr__(name):\n    return lambda *a, **k: None\n"), 0o644))
+		},
+		"planted disabled stage": func(h *codexAdapterHarness) {
+			require.NoError(t, os.Remove(filepath.Join(h.hooksDir, "context_suppress_posttool.py")))
+			delete(h.digests, "context_suppress_posttool.py")
+			require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "context_suppress_posttool.py"),
+				security.ContextSuppressPostToolHook, 0o755))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			h.installPostToolChain()
+			tamper(h)
+
+			input := codexBashInput("go test ./...")
+			input["hook_event_name"] = "PostToolUse"
+			// A plain key: with the redactor neutered nothing else would
+			// catch it, so only the stage check stands between it and codex.
+			input["tool_response"] = "ok example.test 0.5s\nOPENAI_API_KEY=sk-proj-abcdefghijklnopqrstuvwx"
+			got := h.run("PostToolUse", input, "posttool_chain.py")
+			assert.Equal(t, 2, got.exitCode, got.stderr)
+			assert.Empty(t, got.stdout)
+			assert.Contains(t, got.stderr, "fail closed")
+			assert.NotContains(t, got.stderr, "sk-proj-")
+		})
+	}
+}
+
+// codexAdapterFunc loads the embedded adapter as a module and prints the
+// JSON result of expr, so pure helpers are tested without spawning codex.
+func codexAdapterFunc(t *testing.T, expr string) string {
+	t.Helper()
+	h := newCodexAdapterHarness(t)
+	src := "import importlib.util, json, sys\n" +
+		"spec = importlib.util.spec_from_file_location('adapter', " + pyStr(h.adapter) + ")\n" +
+		"m = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n" +
+		"print(json.dumps(" + expr + "))\n"
+	out, err := exec.Command(h.python, "-c", src).CombinedOutput()
+	require.NoError(t, err, string(out))
+	return strings.TrimSpace(string(out))
+}
+
+// codex kills a hook at the handler timeout, and a killed hook does not
+// block. Two chain passes of up to SCRIPT_TIMEOUT_S each cannot both fit, so
+// each spawn gets only what is left of the budget, and none starts without a
+// usable remainder.
+func TestCodexAdapter_ScriptTimeoutFitsTheHandlerBudget(t *testing.T) {
+	assert.Equal(t, "25", codexAdapterFunc(t, "m.script_timeout(0)"))
+	assert.Equal(t, "null", codexAdapterFunc(t,
+		"m.script_timeout(m.HANDLER_TIMEOUT_S - m.BUDGET_MARGIN_S - m.MIN_SCRIPT_S + 0.5)"))
+	got := codexAdapterFunc(t, "m.script_timeout(10) + 10 + m.BUDGET_MARGIN_S <= m.HANDLER_TIMEOUT_S")
+	assert.Equal(t, "true", got, "a spawn started at 10 s must end before codex's deadline")
+}
+
+func TestCodexAdapter_HandlerTimeoutMatchesHooksJSON(t *testing.T) {
+	assert.Equal(t, strconv.Itoa(security.HookTimeoutSeconds), codexAdapterFunc(t, "m.HANDLER_TIMEOUT_S"),
+		"the adapter's budget must be the handler timeout written into hooks.json")
+}
+
+// A pass that has no budget left is withheld, not started and killed.
+func TestCodexAdapter_PostToolUseWithholdsWhenTheBudgetIsSpent(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	h.installPostToolChain()
+	// Stand in for a slow first pass: the adapter reads the clock from here.
+	adapter, err := os.ReadFile(h.adapter)
+	require.NoError(t, err)
+	// Half a second short of MIN_SCRIPT_S remaining, derived from the
+	// adapter's own constants so a budget change keeps the test's intent.
+	patched := strings.Replace(string(adapter), "_START = time.monotonic()",
+		"_START = time.monotonic() - (HANDLER_TIMEOUT_S - BUDGET_MARGIN_S - MIN_SCRIPT_S + 0.5)", 1)
+	require.NotEqual(t, string(adapter), patched, "the adapter must keep its clock in _START")
+	require.NoError(t, os.WriteFile(h.adapter, []byte(patched), 0o755))
+
+	input := codexBashInput("go test ./...")
+	input["hook_event_name"] = "PostToolUse"
+	input["tool_response"] = "ok example.test 0.5s\n"
+	got := h.run("PostToolUse", input, "posttool_chain.py")
+	assert.Equal(t, 2, got.exitCode, got.stderr)
+	assert.Empty(t, got.stdout)
+	assert.Contains(t, got.stderr, "hook budget")
+}
+
+// The hooks directory is agent-writable, so a hook file can become a FIFO or
+// a symlink mid-iteration. Hashing must refuse it at once: a read that blocks
+// until codex kills the hook would let the tool result through unchecked.
+func TestCodexAdapter_RefusesNonRegularHookFiles(t *testing.T) {
+	for name, replace := range map[string]func(path string){
+		"fifo": func(path string) {
+			require.NoError(t, exec.Command("mkfifo", path).Run())
+		},
+		"symlink": func(path string) {
+			real := path + ".real"
+			require.NoError(t, os.WriteFile(real, security.HookIO, 0o644))
+			require.NoError(t, os.Symlink(real, path))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			h.installPostToolChain()
+			path := filepath.Join(h.hooksDir, "hook_io.py")
+			require.NoError(t, os.Remove(path))
+			replace(path)
+
+			input := codexBashInput("go test ./...")
+			input["hook_event_name"] = "PostToolUse"
+			input["tool_response"] = "ok example.test 0.5s\n"
+			done := make(chan codexAdapterResult, 1)
+			go func() { done <- h.run("PostToolUse", input, "posttool_chain.py") }()
+			select {
+			case got := <-done:
+				assert.Equal(t, 2, got.exitCode, got.stderr)
+				assert.Contains(t, got.stderr, "fail closed")
+			case <-time.After(10 * time.Second):
+				t.Fatal("the adapter blocked on a non-regular hook file")
+			}
+		})
+	}
 }

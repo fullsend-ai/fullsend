@@ -819,7 +819,10 @@ func (h *Harness) ValidateFilesExist() error {
 		return err
 	}
 	if err := check("policy", h.Policy); err != nil {
-		return err
+		// CI layers no policy, so a relative path resolves only if the file is
+		// committed (#6834). Re-running `agent new` is no fix: it refuses on
+		// the existing agent's files before writing the policy.
+		return fmt.Errorf("%w (commit a copy of the fleet policy in fullsend-ai/agents at that path, or set policy: to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
 	}
 	if err := check("pre_script", h.PreScript); err != nil {
 		return err

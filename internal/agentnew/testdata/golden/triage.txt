@@ -162,7 +162,8 @@ trigger: |
 #
 # Optional env:
 #   FULLSEND_VALIDATED_ITERATION_DIR — set by fullsend when a validation_loop
-#     is configured and an iteration passed it. When present it names the
+#     is configured and an iteration passed it. Always an absolute path, so
+#     it is independent of the post-script cwd. When present it names the
 #     iteration whose output was validated, which is not necessarily the last
 #     one, so it wins over the scan below.
 #

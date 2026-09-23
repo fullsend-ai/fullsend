@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // writeTree writes a rendered file set into dir, as the command does.
@@ -101,6 +102,29 @@ func TestGeneratedHarnessHasNoDeprecatedShapes(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "policy: policies/base.yaml") {
 		t.Error("generated harness must always set policy:")
+	}
+}
+
+// TestSharedPolicyIsTheOnlyPolicy: the scaffold ships no policy and CI layers
+// none, so the policies/base.yaml written here is the one a repo-local agent
+// runs with (#6834). OpenShell 0.0.116+ refuses a policy without run_as_user.
+func TestSharedPolicyIsTheOnlyPolicy(t *testing.T) {
+	if _, err := scaffold.FullsendRepoFile("policies/base.yaml"); err == nil {
+		t.Fatal("scaffold ships policies/base.yaml; agent new must not become a second copy (#7268)")
+	}
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fileByPath(t, files, "policies/base.yaml")
+	if !got.Shared {
+		t.Error("policies/base.yaml must be a shared asset")
+	}
+	policy := string(got.Data)
+	for _, want := range []string{"version: 1", "filesystem_policy:", "landlock:", "process:", "run_as_user: sandbox", "run_as_group: sandbox"} {
+		if !strings.Contains(policy, want) {
+			t.Errorf("generated policies/base.yaml lacks %q", want)
+		}
 	}
 }
 

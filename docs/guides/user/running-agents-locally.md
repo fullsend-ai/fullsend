@@ -468,7 +468,9 @@ output to iterate on network policy allowlists.
 ### Run directory structure
 
 Every `fullsend run` creates a run directory. By default this is under
-`/tmp/fullsend/`; override it with `--output-dir`:
+`/tmp/fullsend/`; override it with `--output-dir`. Relative `--output-dir`
+values are resolved to an absolute path so post-script env vars such as
+`FULLSEND_VALIDATED_ITERATION_DIR` do not depend on the process cwd:
 
 ```bash
 fullsend run triage \

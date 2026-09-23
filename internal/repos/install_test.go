@@ -1013,6 +1013,18 @@ func TestRequiredSecretsForForge(t *testing.T) {
 	if len(secrets) == 0 {
 		t.Fatal("expected non-empty required secrets")
 	}
+	if got := requiredSecretsForForgeMode(ForgeGitLab, "enforced", true); len(got) != len(requiredSecrets) {
+		t.Errorf("enforced GitLab mode should omit the shared credential, got %v", got)
+	}
+	if got := requiredSecretsForForgeMode(ForgeGitLab, "migrating", true); len(got) != len(requiredSecrets)+1 {
+		t.Errorf("migrating GitLab mode should require the shared credential, got %v", got)
+	}
+	if got := requiredSecretsForForgeMode(ForgeGitLab, " EnFoRcEd ", true); len(got) != len(requiredSecrets) {
+		t.Errorf("normalized enforced GitLab mode should omit the shared credential, got %v", got)
+	}
+	if got := requiredSecretsForForgeMode(ForgeGitLab, "unknown", true); len(got) != len(requiredSecrets) {
+		t.Errorf("unknown GitLab mode should not require the shared credential, got %v", got)
+	}
 }
 
 func TestInstall_InvalidInferenceProject(t *testing.T) {

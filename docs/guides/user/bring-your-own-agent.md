@@ -76,7 +76,7 @@ Building and deploying a custom agent takes four steps:
 ## Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. Note that a per-repo install does **not** vendor `policies/`, `providers/` or `profiles/` into the repository; [`fullsend agent new`](#step-0-generate-the-skeleton) writes the ones your agent needs, and CI layers providers in at run time. If you are writing a harness by hand, create them yourself (see [Minimum viable agent](#minimum-viable-agent)). GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use `FULLSEND_FORGE_TOKEN` rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`, `providers/` or `profiles/`; [`fullsend agent new`](#step-0-generate-the-skeleton) writes those, and you commit them with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use `FULLSEND_FORGE_TOKEN` rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
 - **GCP inference provisioned (CI only).** For agents running in GitHub Actions, run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
@@ -116,20 +116,22 @@ You do not need to write a GitHub Actions workflow file for each custom agent. T
 
 For local development and debugging, you can also run an agent directly with `fullsend run my-agent` — see [Testing locally](#testing-locally).
 
-**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
+**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the shared `policies/base.yaml` that `agent new` writes contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
 
 ## Minimum viable agent
 
-You need a harness, an agent definition, and supporting scaffold files. [`fullsend agent new`](#step-0-generate-the-skeleton) writes all of them for you; the layout below is what it produces, and what you need to create by hand if you are building a harness from scratch. A per-repo install does not vendor `policies/`, `providers/` or `profiles/`, so a hand-written agent must supply them:
+You need a harness, an agent definition, and three supporting files. [`fullsend agent new`](#step-0-generate-the-skeleton) writes all of them; the layout below is what it produces, and what you create yourself if you are building from scratch:
 
 ```
 .fullsend/
-+-- harness/my-agent.yaml                  # Execution config (you create)
-+-- agents/my-agent.md                     # Agent prompt (you create)
-+-- providers/vertex-ai.yaml               # Provider definition (from scaffold)
-+-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold; see note below)
-+-- policies/base.yaml                     # Sandbox policy (from scaffold)
++-- harness/my-agent.yaml                  # Execution config (you write)
++-- agents/my-agent.md                     # Agent prompt (you write)
++-- providers/vertex-ai.yaml               # Provider definition — commit it; CI re-layers it from the scaffold
++-- profiles/fullsend-vertex-ai.yaml       # Profile definition — commit it; CI never supplies one (see note below)
++-- policies/base.yaml                     # Sandbox policy — commit it; CI never supplies one
 ```
+
+Commit all five. `fullsend github setup` creates none of the three supporting files, and in CI only `providers/` is layered in from the scaffold — the policy and the profile a run uses are the ones in your repository.
 
 **`harness/my-agent.yaml`:**
 ```yaml
@@ -170,7 +172,7 @@ credentials:
   _NOOP_VERTEX_AI: ""
 ```
 
-**`profiles/fullsend-vertex-ai.yaml`** — profile definition (tells OpenShell what endpoints the `fullsend-vertex-ai` type grants access to). Copy this from the scaffold or [fullsend-ai/agents](https://github.com/fullsend-ai/agents):
+**`profiles/fullsend-vertex-ai.yaml`** — profile definition (tells OpenShell what endpoints the `fullsend-vertex-ai` type grants access to). `agent new` writes this; by hand, copy it from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), which holds the fleet's copy:
 ```yaml
 id: fullsend-vertex-ai
 display_name: Fullsend Vertex AI
@@ -393,6 +395,7 @@ fullsend agent add harness/my-agent.yaml --name my-agent --fullsend-dir .fullsen
 # List / update / remove:
 fullsend agent list --fullsend-dir .fullsend
 fullsend agent update triage <sha> --fullsend-dir .fullsend
+fullsend agent update code --fullsend-dir .fullsend   # re-pins base: in a local harness
 fullsend agent remove triage --fullsend-dir .fullsend
 ```
 

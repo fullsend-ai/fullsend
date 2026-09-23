@@ -63,6 +63,9 @@ type RoleProvisionConfig struct {
 	// Empty means ModeMigrating. ModeDisabled and ModeRollback write
 	// the gate without creating or revoking tokens.
 	DesiredMode gitlabroles.Mode
+	// RollbackConfirmed authorizes replacing an enforced gate with a
+	// shared-token-only mode.
+	RollbackConfirmed bool
 	// ProvidedTokens maps a role name to an administrator-supplied
 	// PAT (free-tier enrollment or a custom own credential). Values
 	// must never be logged.
@@ -117,6 +120,29 @@ func IsGitLabRoleManagedVar(name string) bool {
 	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
+// appendBuiltinRoleReadiness adds Poller/Analyst/Coder verification
+// lines from CheckBuiltinReadiness. Names only; never token values.
+func appendBuiltinRoleReadiness(status *RepoStatus, present map[string]bool, reg gitlabroles.Registry, lifecycle map[gitlabroles.Role]gitlabroles.LifecycleState) gitlabroles.BuiltinReadiness {
+	if status == nil {
+		return gitlabroles.BuiltinReadiness{}
+	}
+	check := gitlabroles.CheckBuiltinReadiness(present, reg).WithLifecycle(lifecycle)
+	status.GitLabRoleDiagnostics = append(status.GitLabRoleDiagnostics, check.Diagnostics...)
+	return check
+}
+
+// appendRegisteredRoleReadiness adds readiness diagnostics for every role in
+// the trusted registry, including custom roles. This keeps repos status honest
+// about the same mapping checks that cutover will enforce.
+func appendRegisteredRoleReadiness(status *RepoStatus, present map[string]bool, reg gitlabroles.Registry, lifecycle map[gitlabroles.Role]gitlabroles.LifecycleState) gitlabroles.RegisteredReadiness {
+	if status == nil {
+		return gitlabroles.RegisteredReadiness{}
+	}
+	check := gitlabroles.CheckRegisteredReadiness(present, reg).WithLifecycle(lifecycle)
+	status.GitLabRoleDiagnostics = append(status.GitLabRoleDiagnostics, check.Diagnostics...)
+	return check
+}
+
 // gitLabRoleUninstallVars is the static role-credential variable set
 // deleted on uninstall. Custom FULLSEND_GITLAB_ROLE_*_TOKEN names are
 // discovered at uninstall time from ListRepoVariables.
@@ -143,6 +169,9 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role provisioning requires a forge client")
 	}
+	operationLock := gitlabRoleOperationLock(cfg.Owner, cfg.Repo)
+	operationLock.Lock()
+	defer operationLock.Unlock()
 	mode := cfg.DesiredMode
 	if mode == "" {
 		mode = gitlabroles.ModeMigrating
@@ -343,10 +372,33 @@ func writeGitLabRoleGate(ctx context.Context, cfg RoleProvisionConfig, mode gitl
 		}
 		return nil
 	}
-	if err := cfg.Client.UpdateCIVariable(ctx, cfg.Owner, cfg.Repo, forge.VarGitLabRoleMigration, string(mode), true); err != nil {
-		return fmt.Errorf("writing %s: %w", forge.VarGitLabRoleMigration, err)
+	// ProvisionGitLabRoleCredentials holds gitlabRoleOperationLock while it
+	// calls this helper. Re-read the gate inside that lock so a stale mode
+	// sampled by the caller cannot overwrite a concurrent cutover. Once the
+	// gate is enforced, only an explicit rollback or disable operation may
+	// replace it; ordinary provisioning must never reopen the shared-token
+	// path.
+	liveRaw, _, err := cfg.Client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, forge.VarGitLabRoleMigration)
+	if err != nil {
+		return fmt.Errorf("reading %s before write: %w", forge.VarGitLabRoleMigration, err)
 	}
-	result.GateWritten = true
+	liveMode, parseErr := gitlabroles.ParseMode(liveRaw)
+	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode == gitlabroles.ModeMigrating {
+		return fmt.Errorf("refusing to replace enforced %s with migrating; request rollback or disabled explicitly", forge.VarGitLabRoleMigration)
+	}
+	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode.UsesSharedOnly() && !cfg.RollbackConfirmed {
+		return fmt.Errorf("leaving enforced %s requires explicit rollback confirmation", forge.VarGitLabRoleMigration)
+	}
+	if parseErr == nil && liveMode == mode {
+		// Avoid rewriting an already-current gate. This decision is made
+		// while holding the per-repository operation lock.
+		result.GateWritten = true
+	} else {
+		if err := cfg.Client.UpdateCIVariable(ctx, cfg.Owner, cfg.Repo, forge.VarGitLabRoleMigration, string(mode), true); err != nil {
+			return fmt.Errorf("writing %s: %w", forge.VarGitLabRoleMigration, err)
+		}
+		result.GateWritten = true
+	}
 	if skipTokens {
 		return nil
 	}
@@ -407,25 +459,61 @@ func gitLabRolePresence(ctx context.Context, client forge.Client, owner, repo st
 }
 
 func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owner, repo string, already []string) []string {
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(already))
+	seen := make(map[string]struct{}, len(already)+8)
 	for _, n := range already {
 		seen[n] = struct{}{}
 	}
 	var extra []string
-	for name := range vars {
-		if _, ok := seen[name]; ok {
-			continue
+	add := func(name string) {
+		if name == "" {
+			return
 		}
-		if IsGitLabRoleManagedVar(name) {
-			extra = append(extra, name)
+		if !IsGitLabRoleManagedVar(name) {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		extra = append(extra, name)
+	}
+	// ListRepoVariables is best-effort: a list error must not hide names we
+	// can still recover from the stored registry. Built-in secrets stay on
+	// the static uninstall list either way.
+	if vars, err := client.ListRepoVariables(ctx, owner, repo); err == nil {
+		for name := range vars {
+			add(name)
+		}
+	}
+	if raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry); err == nil && exists {
+		if reg, perr := gitlabroles.ParseRegistry(raw); perr == nil {
+			for _, rec := range reg.Registrations() {
+				add(rec.Credential.SecretName)
+			}
 		}
 	}
 	sort.Strings(extra)
 	return extra
+}
+
+func gitlabRoleIdentityVarNames(ctx context.Context, client forge.Client, owner, repo string) []string {
+	already := make([]string, 0, 1+len(gitLabRoleUninstallVars))
+	already = append(already, forge.SecretForgeToken)
+	already = append(already, gitLabRoleUninstallVars...)
+	return append(already, extraGitLabRoleUninstallVars(ctx, client, owner, repo, already)...)
+}
+
+func isGitLabIdentityUninstallVar(name string) bool {
+	return name == forge.SecretForgeToken || IsGitLabRoleManagedVar(name)
+}
+
+func isGitLabRoleSecretName(name string) bool {
+	switch name {
+	case forge.SecretForgeToken, forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		return true
+	}
+	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
 func secretLeak(result RoleProvisionResult) string {

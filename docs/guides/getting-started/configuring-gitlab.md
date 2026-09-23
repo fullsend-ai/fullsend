@@ -101,9 +101,12 @@ then converges the project:
   workflow rules into `.gitlab-ci.yml` without overwriting unrelated CI.
 * Creates a shared `fullsend-bot` project access token at Developer (30)
   access with `api` scope and stores it as the protected CI/CD variable
-  `FULLSEND_FORGE_TOKEN`. Fresh installs also provision the built-in role
-  credentials and migration gate; see the [CLI reference](../../cli/repos.md#gitlab-bot-token)
-  for the role-credential options and protected-branch caveat.
+  `FULLSEND_FORGE_TOKEN`, then provisions the built-in role credentials.
+  When those roles are ready, the same unflagged install enables `enforced`
+  mode and deletes `FULLSEND_FORGE_TOKEN`; see the [CLI reference](../../cli/repos.md#gitlab-bot-token)
+  for the role-credential options, emergency rollback, and protected-branch
+  caveat. Missing role credentials are drift while the migration gate is
+  `enforced`.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
   and `fullsend event poll` (at minutes 2, 17, 32, 47).
 * Writes inference CI/CD variables when `--inference-project` is set.

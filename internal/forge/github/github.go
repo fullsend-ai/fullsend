@@ -3677,6 +3677,21 @@ func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo,
 	return perm.RoleName, nil
 }
 
+func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.put(ctx, path, map[string]string{"permission": permission})
+	if err != nil {
+		return fmt.Errorf("add collaborator %s: %w", username, err)
+	}
+	resp.Body.Close()
+	// 201 means GitHub sent an invitation; access starts only once it is accepted.
+	if resp.StatusCode == http.StatusCreated {
+		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+	}
+	return nil
+}
+
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption

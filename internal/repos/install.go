@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/preset"
@@ -720,7 +721,18 @@ func requiredVarsForForge(forgeName string) []string {
 // under an enabled gate are reported by Diagnose / repos status, not
 // by requiredSecretsForForge. See internal/gitlabroles.
 func requiredSecretsForForge(forgeName string) []string {
+	return requiredSecretsForForgeMode(forgeName, "", false)
+}
+
+func requiredSecretsForForgeMode(forgeName, migrationMode string, migrationExists bool) []string {
 	if forgeName == ForgeGitLab {
+		mode, err := gitlabroles.ParseMode(migrationMode)
+		if migrationExists && err == nil && mode == gitlabroles.ModeEnforced {
+			return requiredSecrets
+		}
+		if migrationExists && err != nil {
+			return requiredSecrets
+		}
 		return slices.Concat(requiredSecrets, []string{forge.SecretForgeToken})
 	}
 	return requiredSecrets

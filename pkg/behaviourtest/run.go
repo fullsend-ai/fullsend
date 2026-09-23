@@ -106,6 +106,34 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		RepoOwner:    org,
 	}
 
+	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
+		outsiderClient := e2etest.NewLiveClient(outsiderPAT)
+		outsiderSCM, err := newSCMDriver(cfg.SCM, outsiderClient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.OutsiderSCM = outsiderSCM
+		login, err := outsiderClient.GetAuthenticatedUser(ctx)
+		if err != nil {
+			t.Fatalf("resolving outsider login: %v", err)
+		}
+		template.OutsiderLogin = login
+	}
+
+	if writePAT := os.Getenv("TEST_ACTOR_WRITE_PAT"); writePAT != "" {
+		writeClient := e2etest.NewLiveClient(writePAT)
+		writeSCM, err := newSCMDriver(cfg.SCM, writeClient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.WriteSCM = writeSCM
+		login, err := writeClient.GetAuthenticatedUser(ctx)
+		if err != nil {
+			t.Fatalf("resolving write actor login: %v", err)
+		}
+		template.WriteLogin = login
+	}
+
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },

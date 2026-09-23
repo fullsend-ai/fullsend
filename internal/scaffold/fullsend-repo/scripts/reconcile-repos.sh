@@ -179,6 +179,33 @@ managed_content_b64() {
   fi
 }
 
+# normalize_sha_pins rewrites SHA-pinned GitHub Actions uses: refs of the
+# form `@<40-hex-sha> # <ref>` to `@<ref>`. Renovate and pinact manage pins
+# this way; treating them as equivalent to the named ref prevents
+# reconciliation from stripping a SHA pin back to a mutable branch (a
+# security regression on workflows granting id-token: write). Tolerates an
+# optional closing quote between the SHA and the `#` annotation (e.g.
+# `uses: "owner/repo@<sha>" # main`) so a quoted uses: value normalizes the
+# same way as an unquoted one; no quoted uses: line exists in this repo
+# today, but this keeps the comparison correct if the template ever quotes
+# one.
+# Reads stdin, writes stdout.
+normalize_sha_pins() {
+  sed -E 's/^([[:space:]]*uses:[[:space:]]+[^[:space:]@]+)@([0-9a-fA-F]{40})(["'"'"']?)[[:space:]]+#[[:space:]]+([A-Za-z0-9._-]+)/\1@\4\3/'
+}
+
+# comparable_managed_b64 returns the fullsend-managed portion of a shim with
+# SHA-pinned uses: refs normalized so `@<sha> # <ref>` compares equal to
+# `@<ref>`. Used only for drift comparison — the write path still emits the
+# template as-is when other content has drifted.
+# Args: $1 = base64-encoded file content
+# Prints: base64-encoded normalized managed portion
+comparable_managed_b64() {
+  local managed
+  managed=$(managed_content_b64 "$1")
+  printf '%s' "$managed" | base64 -d | tr -d '\r' | normalize_sha_pins | base64 -w0
+}
+
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
 PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
 
@@ -482,11 +509,14 @@ if [ -n "$ENABLED_REPOS" ]; then
     if [ -n "$REMOTE_CONTENT" ]; then
       # File exists — compare only the managed portion (from sentinel onward)
       # so user-added headers (e.g. license) do not trigger false drift.
+      # SHA-pinned uses: refs of the form `@<sha> # <ref>` are treated as
+      # equivalent to `@<ref>` so Renovate-managed pins of the template's
+      # named ref are not stripped back to a mutable branch.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
-      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      REMOTE_MANAGED=$(comparable_managed_b64 "$REMOTE_B64")
+      EXPECTED_MANAGED=$(comparable_managed_b64 "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Shim already matches the current template"; then
           FAILED=$((FAILED + 1))

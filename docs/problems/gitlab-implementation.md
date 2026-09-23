@@ -541,9 +541,11 @@ Modified packages (minimized via forge.Client abstraction):
 > with `FULLSEND_GITLAB_*_TOKEN` identifiers, a trusted install-state
 > registry, and an explicit migration gate — is defined in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
-> `repos install` can provision built-in and custom role credentials
-> additively without revoking the shared token. When the migration gate
-> is `migrating` or `enforced`, `fullsend poll` and `fullsend run` select
+> `repos install` provisions built-in and custom role credentials on
+> fresh and existing shared-token installs and, when every registered
+> role is ready, cuts over to `enforced` mode and retires
+> `FULLSEND_FORGE_TOKEN` automatically. When the migration gate is
+> `migrating` or `enforced`, `fullsend poll` and `fullsend run` select
 > the registered role credential; disabled and rollback keep
 > `FULLSEND_FORGE_TOKEN`. Role registration is not accepted from
 > repository or merge-request content.

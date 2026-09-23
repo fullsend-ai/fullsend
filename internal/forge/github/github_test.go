@@ -4243,6 +4243,45 @@ func TestGetCollaboratorPermission(t *testing.T) {
 	})
 }
 
+func TestAddCollaborator(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPut, r.Method)
+			assert.Equal(t, "/repos/o/r/collaborators/alice", r.URL.Path)
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "push", body["permission"])
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		require.NoError(t, client.AddCollaborator(context.Background(), "o", "r", "alice", "push"))
+	})
+
+	t.Run("invitation pending", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.AddCollaborator(context.Background(), "o", "r", "alice", "push")
+		require.ErrorContains(t, err, "invitation pending")
+	})
+
+	t.Run("forbidden", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.AddCollaborator(context.Background(), "o", "r", "alice", "push")
+		require.ErrorContains(t, err, "add collaborator alice")
+	})
+}
+
 func TestIsProtectedBranch(t *testing.T) {
 	t.Run("protected", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
