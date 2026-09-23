@@ -25,13 +25,14 @@ agents:
       runtime: pi
       model: xai/grok-4.6
     - name: fix
-      model: sonnet
+      runtime: pi
+      model: google-vertex/gemini-3.8-flash
     - name: prioritize
       runtime: pi
       model: google-vertex/gemini-3.8-flash
     - name: review
       runtime: pi
-      model: sonnet
+      model: google-vertex/gemini-3.8-flash
       subagents:
         challenger: xai/grok-4.6
         correctness: xai/grok-4.6
@@ -41,9 +42,11 @@ agents:
         security: xai/grok-4.6
         style-conventions: google-vertex/gemini-3.8-flash
     - name: retro
-      model: sonnet
+      runtime: pi
+      model: google-vertex/gemini-3.8-flash
     - name: triage
-      model: sonnet
+      runtime: pi
+      model: google-vertex/gemini-3.8-flash
 allowed_remote_resources:
     - https://raw.githubusercontent.com/redhat-community-ai-tools/qualityflow-fullsend/
 create_issues:
