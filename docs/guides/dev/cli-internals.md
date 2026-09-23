@@ -556,7 +556,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                   │ instead of pushing (known limitation,    │
 │  │                   │ see #5393).                              │
 │  │                   │                                          │
-│  │                   │ After the post-script, a fix-role run    │
+│  │                   │ After the post-script, a fix-agent run   │
 │  │                   │ compares extracted HEAD to PRE_AGENT_HEAD│
 │  │                   │ (or target-repo HEAD if unset). Matching │
 │  │                   │ SHAs flip the status comment from        │

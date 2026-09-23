@@ -249,7 +249,7 @@ func shouldPostReactionCompletion(val, status string) bool {
 // convention, so a routine failure could be misread as the bot disliking
 // the issue. Rocket is reserved for future use.
 func reactionForStatus(status string) string {
-	if status == "success" {
+	if status == StatusSuccess {
 		return "+1"
 	}
 	return "confused"
