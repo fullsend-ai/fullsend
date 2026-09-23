@@ -12,7 +12,7 @@ Traditional CI/CD systems are already complex to operate, but they are determini
 
 **Opaque reasoning.** An agent's decision is the product of a system prompt, user input, model weights, temperature, and context window contents. Without capturing the full prompt/completion pairs, you cannot reconstruct why an agent did what it did. The reasoning is not in the code — it is in the model interaction. This is fundamentally different from debugging traditional software where you can read the source and step through the logic.
 
-**Distributed agency.** In a multi-agent system (see [code-review.md](code-review.md), [agent-architecture.md](agent-architecture.md)), a single PR review involves multiple independent agents — correctness, security, intent-coherence, style-conventions, docs-currency, cross-repo-contracts — each making separate decisions that compose into an outcome. Understanding "why did this PR get approved" requires tracing across all of them. This is analogous to distributed tracing in microservices, but harder because each "service" is non-deterministic.
+**Distributed agency.** In a multi-agent system (see [code-review.md](code-review.md), [agent-architecture.md](agent-architecture.md)), a single PR review involves multiple independent agents — correctness, security, intent-coherence, style-conventions, docs-currency, cross-repo-contracts — each making separate decisions that compose into an outcome. Understanding "why did this PR get approved" requires tracing across all of them. This is analogous to distributed tracing in microservices, but harder because each "service" is non-deterministic. A distinct observability question is whether a sub-agent's finding is *true of its own input* — [the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description) is a false claim about the PR body, not a composition or miss — which aggregated "false positive rate" metrics currently do not separate from genuine disagreements.
 
 **Scale of activity.** A mid-to-large org may have dozens of repos with heterogeneous languages, frameworks, and deployment patterns. Agents operating across all of them generate a volume of decisions, reviews, and changes that no human can read in full. The operators need aggregated views, anomaly detection, and drill-down capabilities — not raw logs.
 
@@ -51,7 +51,7 @@ This is the debugging use case. It requires structured traces of individual agen
 
 Beyond individual incidents, operators need trend-level visibility:
 
-- Are agent decisions improving over time (fewer human overrides, fewer reverts, fewer false positives)?
+- Are agent decisions improving over time (fewer human overrides, fewer reverts, fewer false positives)? Fabricated claims about PR title or body content ([the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)) are a distinct false-positive class: they are checkable against input the agent already had, so they should not be mixed with genuine description-vs-diff disagreements.
 - Is cost per decision stable, increasing, or decreasing? Did a recent prompt change affect token usage?
 - Are certain repos or agent types consuming disproportionate resources?
 - Has a model update changed agent behavior? (See [testing-agents.md](testing-agents.md), "Measuring agent capability drift.")

@@ -98,6 +98,7 @@ Evaluates whether the change matches an authorized intent and whether its scope 
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
 - Are there simpler alternatives that achieve the same goal?
+- When a finding claims the PR title or body omits a diff change, is that claim true of the actual text? (See [the grounding problem](#the-grounding-problem-fabricated-claims-about-the-pr-description).)
 
 **Context needed:** The diff summary, the linked issue/feature file, surrounding module architecture, design docs, the intent repo state, the intent authorization tier classification criteria.
 
@@ -189,6 +190,44 @@ This pattern is most valuable at escalation boundaries — where the system has 
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) has a concrete version of this idea in its `implement_review` flow: review comments are treated as their own task type, classified as actionable or contested before the agent acts, and contested comments trigger a structured response rather than silent compliance. That is a useful precedent for fullsend's review loops, especially when an agent should push back on incorrect feedback while still respecting the reviewer's blocking authority. When review loops fail to converge (review ping-pong), see [flapping-convergence.md](flapping-convergence.md).
 
+## The grounding problem: fabricated claims about the PR description
+
+The intent & coherence sub-agent compares the diff to the PR title, body, and linked issue. A distinct failure mode is not a miscalibrated judgment about a real discrepancy — it is a **false claim about input the agent already has**. A narrow title ("add X") can frame the narrative so strongly that the model reports the body omits a change the body explicitly lists ("add X, remove Y"). A second run on the same diff may get it right. Related issue [#2280](https://github.com/fullsend-ai/fullsend/issues/2280) covers severity for *genuine* description-vs-diff mismatches; it does not cover fabricating a mismatch.
+
+This is worse than a typical false positive. Reviewers waste time falsifying a claim they can check by reading the description the agent was given, and the error erodes trust in every other finding. See [review autonomy evidence](review-autonomy-evidence.md#counter-evidence-fabricated-discrepancy) for a recorded instance, and [human factors](human-factors.md#trust-erosion-from-agent-generated-voice) for why fabricated review comments specifically damage trust. [Testing the agents](testing-agents.md) is where a regression of this capability would be caught, if a golden set or contract existed for it.
+
+Options for addressing it, none of which is sufficient alone:
+
+### Quote-and-verify instruction in the sub-agent prompt
+
+Before reporting that the title or body omits a diff change, require the sub-agent to quote the PR body and search it for references to that change. If the body mentions it, suppress the finding or rewrite it as a title-only omission.
+
+**Pros:** Smallest change. Lives with the sub-agent that produces the claim. Matches how a human would check.
+**Cons:** Prompt instructions are non-deterministic — the same failure can recur. The current intent-coherence persona lives in [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents), not this repository, so the instruction change is a cross-repo follow-up. Title-framing is a known LLM failure mode; an instruction may not override it.
+
+### Orchestrator-level verification pass
+
+The review orchestrator already verifies sub-agent claims about draft status and labels against forge API metadata before including them. Extend that pass to claims about PR title and body content: if a finding asserts the body omits a change, check the body text before posting.
+
+**Pros:** Reuses an existing "don't trust the sub-agent about metadata" pattern. Catches the error even if the sub-agent ignores its own instructions. One place for all dimensions, not just intent-coherence.
+**Cons:** Still LLM-mediated unless the orchestrator does a literal search. Adds a serial step after parallel sub-agents. The orchestrator skill also lives in `fullsend-ai/agents`.
+
+### Deterministic post-review filter
+
+Have `fullsend post-review` fetch the PR title and body and drop or rewrite findings whose text claims the body omits a token that is present in the body.
+
+**Pros:** Deterministic, testable in Go, independent of model non-determinism. This repository owns `post-review`.
+**Cons:** Extracting "the omitted change" from free-form finding text is heuristic — usernames and quoted strings are easy, paraphrases are not. Does not rewrite the narrative review body, so the sticky comment can still call a documented change "undocumented." False suppressions if a finding mentions a token in a different sense.
+
+### Golden-set / contract coverage
+
+Add a fixture PR whose title names one change and whose body names all of them, and assert the agent does not claim the body omits the extra change. Express it as a contract: MUST NOT claim the PR body omits a change the body text mentions.
+
+**Pros:** Catches regressions when instructions or models change. Documents the expected behavior. See [testing-agents.md](testing-agents.md).
+**Cons:** Does not prevent the first occurrence. Statistical, not a guarantee. Review eval coverage is currently empty ([agents#209](https://github.com/fullsend-ai/agents/issues/209)).
+
+A prompt instruction without a test can regress silently. A test without a prompt change never fires. A post-review filter without a prompt change leaves the sticky-comment narrative wrong. Combinations are the interesting design space, not a single layer.
+
 ## Review as salvage
 
 The sub-agent model above assumes a binary outcome: approve or reject. But when reviewing external contributions (especially AI-generated ones), a third outcome becomes important: *salvage* — extracting the valuable idea from a poor implementation and having a project agent rewrite it properly.
@@ -200,6 +239,7 @@ Whether this belongs in the review system or is a separate workflow operating on
 ## Open questions
 
 - Can we quantify review quality? How do we know if an agent's review is as good as a human's? [Review autonomy evidence](review-autonomy-evidence.md) tracks empirical observations from PRs where both agents and humans reviewed the same change.
+- How should review findings that make factual claims about PR title or body content be grounded — a prompt instruction, an orchestrator check, deterministic post-processing, or some combination? See [the grounding problem](#the-grounding-problem-fabricated-claims-about-the-pr-description).
 - How do we handle the case where an agent approves a PR that a human would have caught? (Learning from mistakes.)
 - Should review agents have access to the full repo context, or just the diff? Full context is more accurate but more expensive and more vulnerable to injection from existing code.
 - How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput? (PR-level risk scoring provides one input — high-risk PRs can require stricter review thresholds; see [ADR 0089](../ADRs/0089-pr-risk-assessment-scoring.md). Risk gating of review outcomes is deferred until scoring confidence is established.)

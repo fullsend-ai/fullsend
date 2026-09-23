@@ -46,7 +46,7 @@ Behavioral evidence includes:
 
 - **Functional test results.** Given a controlled scenario (a bug to triage, a PR to review, an issue to implement), does the agent produce the expected outcome? Scored by deterministic assertions and LLM judges.
 - **Behavioral thresholds.** Does the agent complete tasks within acceptable bounds: number of turns, token cost, time to completion? An agent that produces correct output but burns $15 per triage is not trustworthy at scale.
-- **Regression signals.** When the agent's configuration changes, do previously passing test cases still pass? Behavioral regression testing catches capabilities that silently disappear after instruction changes (the "absence detection" problem from [testing-agents.md](testing-agents.md)).
+- **Regression signals.** When the agent's configuration changes, do previously passing test cases still pass? Behavioral regression testing catches capabilities that silently disappear after instruction changes (the "absence detection" problem from [testing-agents.md](testing-agents.md)). It also needs cases for capabilities that must *not* appear: an intent-coherence finding that claims the PR body omits a change the body lists ([the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)). Absence-of-a-false-claim is as much a regression signal as presence-of-a-true-finding.
 
 Behavioral evaluation is expensive and non-deterministic. It requires running the agent against real or simulated environments with real LLM calls. But it is the only way to verify that a configuration produces the intended behavior, not just that it avoids known-bad patterns.
 

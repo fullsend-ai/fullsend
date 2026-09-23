@@ -5,7 +5,7 @@ What empirical evidence exists for and against granting autonomous merge authori
 **Related:**
 - [autonomy-spectrum.md](autonomy-spectrum.md) -- the binary per-repo autonomy model and graduation criteria
 - [trustworthiness-evidence.md](trustworthiness-evidence.md) -- the structured portfolio model for composing trust signals
-- [code-review.md](code-review.md) -- review sub-agent decomposition and the confidence problem
+- [code-review.md](code-review.md) -- review sub-agent decomposition, the confidence problem, and [grounding claims about PR descriptions](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)
 - [human-factors.md](human-factors.md) -- how human oversight effectiveness changes under automation
 
 ## The problem
@@ -119,6 +119,29 @@ The following PRs provide positive evidence that the review agent can match or e
 
 These PRs demonstrate that for simpler, more mechanical changes the review agent's findings align well with -- and in some cases exceed -- human review.
 
+### Counter-evidence (fabricated discrepancy)
+
+The entries above are misses: the agent failed to find a real issue a human found. A different failure mode is a finding that is factually false about input the agent already had. That does not show a depth gap; it shows an attention/framing gap. Options for addressing it are in [code-review.md](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description).
+
+#### konflux-ci/konflux-test#867: CODEOWNERS add+remove, narrow title (intent-coherence)
+
+**PR:** [konflux-ci/konflux-test#867](https://github.com/konflux-ci/konflux-test/pull/867)
+**Change type:** CODEOWNERS membership edit -- add one owner, remove another.
+**Tracking issue:** [#4553](https://github.com/fullsend-ai/fullsend/issues/4553)
+
+The PR body stated both changes from creation ("Add ainephelan365" and "Remove hongweiliu17"); the timeline has no body edits. The title framed only the addition.
+
+| Run | Workflow | Result |
+|-----|----------|--------|
+| 1 | [29020326246](https://github.com/konflux-ci/.fullsend/actions/runs/29020326246) (2026-07-09) | Inline [low] intent-coherence finding: "PR title and body only mention adding Aine Phelan (@ainephelan365), but the diff also removes @hongweiliu17." The sticky review body called the removal "undocumented." |
+| 2 | [29246542274](https://github.com/konflux-ci/.fullsend/actions/runs/29246542274) (2026-07-13) | Same diff after a rebase force-push. Intent-coherence marked clean: "Mechanical change -- scope authorization inferred." |
+
+An independent Gemini review bot made the same body-omission error on run 1, which suggests title-framing is a common LLM failure rather than a fullsend-specific prompt bug.
+
+**Implication:** For PRs whose title names a subset of the body, intent-coherence can invent a description-vs-diff discrepancy. The false positive is cheap to dismiss but expensive in trust: it is a claim the reviewer can falsify without leaving the PR page. Non-determinism (wrong, then right, on the same diff) makes the finding even less usable as a signal. Related issue [#2280](https://github.com/fullsend-ai/fullsend/issues/2280) covers severity for genuine description-vs-diff mismatches and does not subsume this case.
+
+**Confidence:** High for the observation (body text is unambiguous and was never edited). Medium for generalization: one PR, two runs, two models agreeing on the first run.
+
 ## Patterns emerging from the evidence
 
 ### Change types where agents underperform
@@ -133,6 +156,7 @@ Based on the counter-evidence, the review agent struggles with:
 6. **Semver and version comparison** -- domain-specific edge cases (partial version refs, prerelease ordering) require specialized knowledge the agent does not reliably apply.
 7. **Cross-document consistency** -- verifying that ADRs, design docs, plan specs, and implementation agree requires holistic project understanding.
 8. **Security-relevant operational reasoning** -- understanding how a code change interacts with deployment constraints (SHA pinning, Actions enforcement) is beyond current agent capabilities.
+9. **Grounding claims about the PR description** -- a narrow title can cause the intent-coherence sub-agent to assert that the body omits a change the body explicitly lists. Unlike the depth gaps above, this is a false statement about input the agent already had, not a missed issue. See [#4553](https://github.com/fullsend-ai/fullsend/issues/4553) and [the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description).
 
 ### Change types where agents perform well
 
@@ -167,11 +191,11 @@ Implementing such gates would require:
 2. Integration into the `post-review.sh` downgrade logic, parallel to the existing protected-path check
 3. A mechanism for periodic reassessment as agent capabilities improve
 
-These are not proposed as immediate implementations -- the evidence corpus is still small (3 counter-evidence, 3 positive-evidence data points). As more observations accumulate, the case for or against additional gates will strengthen.
+These are not proposed as immediate implementations -- the evidence corpus is still small (3 miss-type counter-evidence, 1 fabricated-discrepancy, 3 positive-evidence data points). As more observations accumulate, the case for or against additional gates will strengthen.
 
 ## Open questions
 
-- How many observations constitute a statistically meaningful sample for a given change type? Three counter-evidence PRs show a consistent pattern, but the threshold for policy action is undefined.
+- How many observations constitute a statistically meaningful sample for a given change type? Three miss-type counter-evidence PRs show a consistent depth-gap pattern, but the threshold for policy action is undefined. Fabricated description-vs-diff claims are a separate pattern (see [the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)); one high-confidence instance is not yet a sample.
 - Can spec cross-referencing (agents#269) and fix side-effect analysis (agents#270) close the most critical gaps? After these are implemented, the review agent should be re-run against PR #4079's diff to measure improvement.
 - Can agent improvements (better impact reasoning, domain-specific skills) close the gaps identified here? After improvements from [#4680](https://github.com/fullsend-ai/fullsend/issues/4680) (stacked PR scoping) and impact-reasoning enhancements are deployed, the evidence should be reassessed.
 - Should change-type gates be repo-specific (configured per-repo like protected paths) or global (applied across all fullsend-managed repos)?
