@@ -893,13 +893,12 @@ func (h *Harness) ValidateFilesExist() error {
 // (#7567) — so both callers wrap through this one place to keep the hint
 // text in sync.
 func MissingProviderHint(err error) error {
-	// CI layers providers/, so a missing path is a local-only miss. A bare
-	// name is not offered as an alternative here: only the OpenAI provider
-	// is filled in from the embedded scaffold fallback
+	// A bare name is not offered as an alternative here: only the OpenAI
+	// provider is filled in from the embedded scaffold fallback
 	// (appendEmbeddedProviderDefs in cli/run.go); other bare names still
 	// degrade to a warning and a sandbox that cannot reach the provider,
 	// which is the silent failure #7567 exists to make loud.
-	return fmt.Errorf("%w (commit the provider file at that path; CI layers providers/ from the scaffold on every run)", err)
+	return fmt.Errorf("%w (commit the provider file at that path)", err)
 }
 
 // MissingProfileHint wraps err (typically a missing-file error from
@@ -908,11 +907,10 @@ func MissingProviderHint(err error) error {
 // MissingProviderHint for why both ValidateFilesExist and
 // resolve.ResolveHarness route through a shared helper.
 func MissingProfileHint(err error) error {
-	// CI never layers profiles/, so a missing path is the same class of
-	// committed-file error as policy: (#6834, #7567). Re-running agent new
-	// is no fix: it refuses on an existing agent's files before writing
-	// the profile.
-	return fmt.Errorf("%w (commit the profile file at that path next to the harness, or set openshell.profiles to its URL with a #sha256= hash under allowed_remote_resources; CI never layers profiles/; `fullsend agent new` only writes one when generating a new agent)", err)
+	// A missing path is the same class of committed-file error as policy:
+	// (#6834, #7567). Re-running agent new is no fix: it refuses on an
+	// existing agent's files before writing the profile.
+	return fmt.Errorf("%w (commit the profile file at that path next to the harness, or set openshell.profiles to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
 }
 
 // validateResourceFilesExist stats the provider and profile files the

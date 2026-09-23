@@ -91,9 +91,8 @@ func assertDoesNotSuggestAgentNew(t *testing.T, err error) {
 
 // TestValidateFilesExist_MissingProfileFailsLoudly: a hand-written harness
 // naming a missing openshell.profiles path fails with an actionable error
-// rather than succeeding and only warning later (#7567). CI never layers
-// profiles/, so the hint must say so and must not suggest re-running
-// agent new.
+// rather than succeeding and only warning later (#7567). The hint must not
+// suggest re-running agent new.
 func TestValidateFilesExist_MissingProfileFailsLoudly(t *testing.T) {
 	dir, agent := writeTestAgent(t)
 	profile := filepath.Join(dir, "profiles", "fullsend-vertex-ai.yaml")
@@ -108,7 +107,6 @@ func TestValidateFilesExist_MissingProfileFailsLoudly(t *testing.T) {
 		"openshell.profiles[0]: stat",
 		"no such file or directory",
 		"commit the profile file at that path",
-		"CI never layers profiles/",
 		"set openshell.profiles to its URL with a #sha256= hash",
 	})
 	assertDoesNotSuggestAgentNew(t, err)
@@ -137,7 +135,6 @@ func TestValidateFilesExist_MissingProviderFailsLoudly(t *testing.T) {
 		"providers[0]: stat",
 		"no such file or directory",
 		"commit the provider file at that path",
-		"CI layers providers/",
 	})
 	assertDoesNotSuggestAgentNew(t, err)
 

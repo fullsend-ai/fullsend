@@ -129,7 +129,7 @@ surfacing missing-file errors at that point.
 
 > **Note (#7567):** `ValidateFilesExist` now also stats local profile and provider
 > paths so a hand-written harness fails as loudly as `agent new`, with an
-> actionable hint (CI never layers `profiles/`). On the `fullsend run` path,
+> actionable hint that names the missing file. On the `fullsend run` path,
 > `ResolveHarness` reads these paths first and strips them before
 > `ValidateFilesExist` runs, so its own `os.ReadFile` errors carry the same
 > hint (`harness.MissingProfileHint` / `MissingProviderHint`) rather than

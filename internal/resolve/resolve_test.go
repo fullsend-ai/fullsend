@@ -2394,7 +2394,6 @@ func TestResolveHarness_LocalProfileReadError(t *testing.T) {
 	// ValidateFilesExist's stat check ever runs, so the actionable hint
 	// must be attached here too, not only in ValidateFilesExist.
 	assert.Contains(t, err.Error(), "commit the profile file at that path")
-	assert.Contains(t, err.Error(), "CI never layers profiles/")
 }
 
 // TestResolveHarness_MissingLocalProfileMatchesRunCallOrder mirrors the
@@ -2428,7 +2427,6 @@ func TestResolveHarness_MissingLocalProfileMatchesRunCallOrder(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading profile")
 	assert.Contains(t, err.Error(), "commit the profile file at that path")
-	assert.Contains(t, err.Error(), "CI never layers profiles/")
 }
 
 func TestResolveHarness_LocalProfileBadID(t *testing.T) {
@@ -2468,7 +2466,6 @@ func TestResolveHarness_LocalProviderReadError(t *testing.T) {
 	// #7567: matches the profile case above — this is the error a
 	// `fullsend run` user actually sees for a missing local provider path.
 	assert.Contains(t, err.Error(), "commit the provider file at that path")
-	assert.Contains(t, err.Error(), "CI layers providers/")
 }
 
 func TestResolveHarness_LocalProviderParseError(t *testing.T) {
