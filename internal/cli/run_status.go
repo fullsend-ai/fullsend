@@ -3,18 +3,21 @@ package cli
 import (
 	"context"
 	"os"
+	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// Status strings posted by the completion-comment defer. They must match
-// the values statuscomment.statusEmoji / isFailureStatus understand.
+// Status strings posted by the completion-comment defer. These alias
+// statuscomment's exported constants rather than keeping an independent
+// copy, so they can't drift out of sync with statusEmoji / isFailureStatus.
 const (
-	statusSuccess       = "success"
-	statusFailure       = "failure"
-	statusCancelled     = "cancelled"
-	statusSkipped       = "skipped"
-	statusNoChangesMade = "no changes made"
+	statusSuccess       = statuscomment.StatusSuccess
+	statusFailure       = statuscomment.StatusFailure
+	statusCancelled     = statuscomment.StatusCancelled
+	statusSkipped       = statuscomment.StatusSkipped
+	statusNoChangesMade = statuscomment.StatusNoChangesMade
 
 	// noChangesMadeDetail is the status-comment explanation when a fix
 	// agent run finished without producing a new commit (#3419). Kept
@@ -38,6 +41,16 @@ func completionStatus(ctx context.Context, runErr error, skipped bool, skipReaso
 		return statusNoChangesMade, noChangesMadeDetail
 	}
 	return statusSuccess, ""
+}
+
+// isZeroCommitCheckAgent reports whether agentName is the fix agent for
+// purposes of the zero-commit outcome check (#3419). This is keyed on the
+// agent name passed to `fullsend run <agent>`, not harness role: "code" and
+// "fix" both carry role: coder (config.ValidAgentNames), so a role-based
+// gate would fire for code-agent runs too and never for a real
+// `fullsend run fix` invocation.
+func isZeroCommitCheckAgent(agentName string) bool {
+	return strings.EqualFold(agentName, "fix")
 }
 
 // resolvePreAgentHead returns the SHA recorded before the agent ran.

@@ -1741,13 +1741,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}()
 
-	// Detect zero-commit fix-agent outcomes (#3419). Registered after
-	// download-dir cleanup so LIFO runs this after the post-script (which
-	// may rewrite HEAD) and before the directory is removed. The status
-	// notifier defer is registered earlier, so it runs last and observes
+	// Detect zero-commit fix-agent outcomes (#3419). Gated on the agent
+	// name passed to `fullsend run`, not harness role: "code" and "fix"
+	// both carry role: coder (config.ValidAgentNames), so a role check
+	// here would also fire for code-agent runs and never for fix-agent
+	// runs invoked as `fullsend run fix`. Registered after download-dir
+	// cleanup so LIFO runs this after the post-script (which may rewrite
+	// HEAD) and before the directory is removed. The status notifier
+	// defer is registered earlier, so it runs last and observes
 	// runNoChanges. Snapshot pre-agent HEAD now, before the sandbox mutates
 	// the extracted copy; PRE_AGENT_HEAD is set by the fix workflow.
-	if h.Role == "fix" {
+	if isZeroCommitCheckAgent(agentName) {
 		preAgentHead := resolvePreAgentHead(printer, targetRepo)
 		defer func() {
 			if runErr != nil || runSkipped || ctx.Err() != nil {

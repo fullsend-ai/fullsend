@@ -200,13 +200,26 @@ func reactionEnabled(val string) bool {
 	return val == "enabled"
 }
 
+// Status values accepted by PostCompletion/PostCompletionWithDetail.
+// Exported so callers that decide the outcome (e.g. internal/cli) can
+// reference these instead of keeping their own parallel string copies,
+// which would otherwise need to stay hand-synced with statusEmoji and
+// isFailureStatus below.
+const (
+	StatusSuccess       = "success"
+	StatusFailure       = "failure"
+	StatusCancelled     = "cancelled"
+	StatusSkipped       = "skipped"
+	StatusNoChangesMade = "no changes made"
+)
+
 // isFailureStatus reports whether status represents a non-success outcome,
 // used by the "on_failure" completion mode shared by comments and reactions.
 // "no changes made" is included so a fix agent that produced no commits
 // still surfaces a comment when completion is on_failure (#3419) — hiding
 // that outcome is the false-success this status exists to prevent.
 func isFailureStatus(status string) bool {
-	return status == "failure" || status == "cancelled" || status == "skipped" || status == "no changes made"
+	return status == StatusFailure || status == StatusCancelled || status == StatusSkipped || status == StatusNoChangesMade
 }
 
 // shouldPostCompletion reports whether a completion comment should be
@@ -701,15 +714,15 @@ func mustBuildMarker(runID string) string {
 
 func statusEmoji(status string) string {
 	switch status {
-	case "success":
+	case StatusSuccess:
 		return "✅"
-	case "failure":
+	case StatusFailure:
 		return "❌"
-	case "skipped":
+	case StatusSkipped:
 		return "⏭️"
-	case "cancelled":
+	case StatusCancelled:
 		return "⚠️"
-	case "no changes made":
+	case StatusNoChangesMade:
 		return "⚠️"
 	default:
 		return "⚠️"

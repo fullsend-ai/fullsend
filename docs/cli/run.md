@@ -312,7 +312,7 @@ Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 
 ## Fix agent completion status
 
-A `role: fix` run that exits without error still compares the extracted repo
+A `fullsend run fix` run that exits without error still compares the extracted repo
 HEAD to `PRE_AGENT_HEAD` (set by the fix workflow before the sandbox starts;
 falls back to `--target-repo` HEAD when unset). If the SHAs match — the agent
 produced no new commit — the completion status comment reports

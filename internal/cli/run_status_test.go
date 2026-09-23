@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 )
@@ -81,6 +82,43 @@ func TestNoChangesMadeDetailFitsStatusCap(t *testing.T) {
 	// statuscomment.maxDetailLen is 200 runes; keep this assertion in
 	// lockstep so a longer message is truncated in the comment.
 	assert.LessOrEqual(t, len([]rune(noChangesMadeDetail)), 200)
+}
+
+func TestIsZeroCommitCheckAgent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		agentName string
+		want      bool
+	}{
+		{name: "fix agent", agentName: "fix", want: true},
+		{name: "fix agent name is case-insensitive", agentName: "FIX", want: true},
+		{name: "code agent is not gated", agentName: "code", want: false},
+		{name: "unrelated agent name", agentName: "review", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isZeroCommitCheckAgent(tt.agentName))
+		})
+	}
+}
+
+// TestIsZeroCommitCheckAgent_IndependentOfHarnessRole guards against
+// regressing to a harness-role-based gate (the bug fixed for #3419's
+// review): "code" and "fix" both carry role: coder
+// (config.ValidAgentNames), so a real `fullsend run fix` invocation has
+// h.Role == "coder", identical to a `fullsend run code` invocation. Only
+// the agent name passed to `fullsend run` distinguishes them, so the gate
+// must key off that, never off h.Role.
+func TestIsZeroCommitCheckAgent_IndependentOfHarnessRole(t *testing.T) {
+	t.Parallel()
+	fixHarness := &harness.Harness{Role: "coder"}
+	codeHarness := &harness.Harness{Role: "coder"}
+
+	assert.Equal(t, fixHarness.Role, codeHarness.Role, "both agents share role: coder in this repo's harnesses")
+	assert.True(t, isZeroCommitCheckAgent("fix"), "fix agent must be gated even though h.Role is %q", fixHarness.Role)
+	assert.False(t, isZeroCommitCheckAgent("code"), "code agent must not be gated even though h.Role is %q", codeHarness.Role)
 }
 
 func TestResolvePreAgentHead_PrefersEnv(t *testing.T) {
