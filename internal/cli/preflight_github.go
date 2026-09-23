@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -53,7 +54,8 @@ const (
 const githubConnectScript = `const net=require("net");
 const host="api.github.com",port=443;
 const proxy=process.env.HTTPS_PROXY||process.env.https_proxy||process.env.HTTP_PROXY||process.env.http_proxy;
-function done(ok,msg){console.log(ok?"CONNECT_OK":"CONNECT_FAIL",msg||"");process.exit(ok?0:1);}
+let decided=false;
+function done(ok,msg){if(decided){return;}decided=true;console.log(ok?"CONNECT_OK":"CONNECT_FAIL",msg||"");process.exit(ok?0:1);}
 try{
   if(!proxy){
     const s=net.connect({host:host,port:port,timeout:10000});
@@ -69,14 +71,16 @@ try{
     s.on("data",function(chunk){
       buf+=chunk.toString("latin1");
       const idx=buf.indexOf("\r\n");
-      const line=idx>=0?buf.slice(0,idx):buf;
+      if(idx<0){return;}
+      const line=buf.slice(0,idx);
       s.destroy();
       const parts=line.split(" ");
       const code=parts[1]||"";
-      done(code.indexOf("2")===0,line);
+      done(/^2\d\d$/.test(code),line);
     });
     s.on("timeout",function(){s.destroy();done(false,"timeout");});
     s.on("error",function(e){done(false,String(e&&e.message||e));});
+    s.on("close",function(){done(false,"connection closed before a complete status line: "+JSON.stringify(buf));});
   }
 }catch(e){done(false,String(e&&e.message||e));}`
 
@@ -209,11 +213,21 @@ func checkSandboxGitHubConnectivityWith(
 	finish := func(err error) (*preflightGitHubResult, error) {
 		if err != nil {
 			result.Outcome = preflightOutcomeFail
-			result.Error = err.Error()
+			result.Error = sanitizePreflightText(err.Error())
 		} else if result.Skipped {
 			result.Outcome = preflightOutcomeSkip
 		} else {
 			result.Outcome = preflightOutcomePass
+		}
+		// The check details above are raw combined stdout+stderr from the
+		// sandbox's gh/node probe commands (#4016 follow-up). Unlike the
+		// PR/issue status comment path (sanitizeDetail in
+		// internal/statuscomment), this is a new persisted file with no
+		// existing length cap or secret redaction, so apply the same class
+		// of protection here before it is written to disk.
+		for name, check := range result.Checks {
+			check.Detail = sanitizePreflightText(check.Detail)
+			result.Checks[name] = check
 		}
 		if persist != nil {
 			if perr := persist(sandboxName, result); perr != nil {
@@ -415,6 +429,32 @@ func combinedOutput(stdout, stderr string) string {
 	return strings.TrimSpace(stdout + "\n" + stderr)
 }
 
+// maxPreflightTextLen caps free-form probe output before it is persisted to
+// preflightResultsPath. This file is diagnostic context for the agent and
+// retro analyses (#4016), not a one-line status comment, so the cap is more
+// generous than statuscomment's maxDetailLen — but it still needs a bound,
+// since the underlying text is raw combined stdout+stderr from sandbox
+// gh/node commands with no other size limit.
+const maxPreflightTextLen = 4000
+
+// sanitizePreflightText scrubs recognizable credentials out of probe-derived
+// free text and caps its length before persisting it to
+// preflightResultsPath. Mirrors the protection sanitizeDetail
+// (internal/statuscomment) already applies on the PR/issue status-comment
+// path, which this new results file otherwise lacks.
+func sanitizePreflightText(s string) string {
+	if s == "" {
+		return s
+	}
+	if res := security.NewSecretRedactor().Scan(s); res.Sanitized != "" {
+		s = res.Sanitized
+	}
+	if len(s) > maxPreflightTextLen {
+		s = s[:maxPreflightTextLen] + "... [truncated]"
+	}
+	return s
+}
+
 func classifyGitHubAPIFailure(output string) githubFailKind {
 	o := strings.ToLower(output)
 	switch {
@@ -448,7 +488,13 @@ func classifyGitHubAPIFailure(output string) githubFailKind {
 func diagnoseGitHubAPIFailure(stage, output string, exitCode int) error {
 	output = strings.TrimSpace(output)
 	kind := classifyGitHubAPIFailure(output)
-	if stage == preflightCheckGraphQL {
+	// Only report the GraphQL-specific "proxy allows REST but blocks
+	// GraphQL" diagnosis for kinds that actually indicate an HTTP/proxy
+	// block. A plain exec timeout or DNS/connection error is not evidence
+	// of an L7 GraphQL allow-list gap — that's the same misdiagnosis this
+	// PR already fixed for the CONNECT stage below.
+	if stage == preflightCheckGraphQL &&
+		(kind == githubFailForbidden || kind == githubFailProxyCONNECT || kind == githubFailAuth) {
 		return fmt.Errorf(
 			"GitHub GraphQL API unreachable from sandbox:\n%s\n\n"+
 				"REST GET /rate_limit succeeded but GraphQL POST /graphql failed. "+

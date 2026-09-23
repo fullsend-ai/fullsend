@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,20 @@ func TestDiagnoseGitHubAPIFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GraphQL")
 	assert.Contains(t, err.Error(), "POST /graphql")
+
+	// A GraphQL-stage failure that isn't evidence of an HTTP/proxy block
+	// (a plain exec timeout, or a DNS failure) must not be reported as the
+	// "proxy allows REST but blocks GraphQL" L7 diagnosis — that's the same
+	// misdiagnosis already fixed for the CONNECT stage above.
+	err = diagnoseGitHubAPIFailure(preflightCheckGraphQL, "command timed out after 30s", -1)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "REST GET /rate_limit succeeded but GraphQL POST /graphql failed")
+	assert.Contains(t, err.Error(), "GitHub API connectivity check failed")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckGraphQL, "Could not resolve host: api.github.com", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DNS resolution failed")
+	assert.NotContains(t, err.Error(), "REST GET /rate_limit succeeded but GraphQL POST /graphql failed")
 
 	err = diagnoseGitHubAPIFailure(preflightCheckREST, "HTTP 401: Bad credentials", 1)
 	require.Error(t, err)
@@ -327,6 +343,57 @@ func TestCheckSandboxGitHubConnectivity_SkipProbeNonZero(t *testing.T) {
 	assert.Equal(t, "GH_TOKEN not set in sandbox", result.SkipReason)
 }
 
+func TestCheckSandboxGitHubConnectivity_SanitizesPersistedError(t *testing.T) {
+	// result.Error and each Checks[...].Detail are raw combined stdout+stderr
+	// from sandbox-run gh/node commands (#4016 follow-up). Before this fix
+	// neither was redacted or length-capped before being written to
+	// preflightResultsPath, unlike the equivalent PR/issue status-comment
+	// path (sanitizeDetail). Use a fake-but-pattern-matching GitHub PAT to
+	// verify redaction, and an oversized blob to verify the length cap.
+	fakeToken := "ghp_" + strings.Repeat("a", 40)
+	resp := successPreflightResps()
+	resp["connect"] = preflightExecResp{
+		stdout: "CONNECT_FAIL HTTP/1.1 403 Forbidden token=" + fakeToken + " " + strings.Repeat("x", maxPreflightTextLen+500),
+		exit:   1,
+	}
+	var persisted *preflightGitHubResult
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp),
+		func(_ string, r *preflightGitHubResult) error {
+			persisted = r
+			return nil
+		})
+	require.Error(t, err)
+	require.NotNil(t, persisted)
+
+	// The error returned to the caller is not mangled by persistence-time
+	// sanitization.
+	assert.Contains(t, err.Error(), fakeToken)
+
+	assert.NotContains(t, result.Error, fakeToken)
+	assert.NotContains(t, result.Checks[preflightCheckConnect].Detail, fakeToken)
+	assert.LessOrEqual(t, len(result.Error), maxPreflightTextLen+len("... [truncated]"))
+	assert.LessOrEqual(t, len(result.Checks[preflightCheckConnect].Detail), maxPreflightTextLen+len("... [truncated]"))
+
+	js, marshalErr := json.Marshal(persisted)
+	require.NoError(t, marshalErr)
+	assert.NotContains(t, string(js), fakeToken)
+}
+
+func TestSanitizePreflightText(t *testing.T) {
+	t.Parallel()
+	assert.Empty(t, sanitizePreflightText(""))
+
+	fakeToken := "ghp_" + strings.Repeat("b", 40)
+	assert.NotContains(t, sanitizePreflightText("leaked "+fakeToken+" here"), fakeToken)
+
+	long := strings.Repeat("z", maxPreflightTextLen+100)
+	out := sanitizePreflightText(long)
+	assert.LessOrEqual(t, len(out), maxPreflightTextLen+len("... [truncated]"))
+	assert.Contains(t, out, "[truncated]")
+
+	assert.Equal(t, "short detail", sanitizePreflightText("short detail"))
+}
+
 func TestCheckSandboxGitHubConnectivity_ConnectBlocked(t *testing.T) {
 	resp := successPreflightResps()
 	resp["connect"] = preflightExecResp{
@@ -414,12 +481,16 @@ func TestCheckSandboxGitHubConnectivity_GraphQLBlocked(t *testing.T) {
 }
 
 func TestCheckSandboxGitHubConnectivity_GraphQLExecError(t *testing.T) {
+	// A plain exec error (e.g. an exec-layer timeout) is not evidence that
+	// the proxy allows REST but blocks GraphQL, so it must fall through to
+	// the generic diagnostic rather than the GraphQL-specific L7 message.
 	resp := successPreflightResps()
 	resp["graphql"] = preflightExecResp{err: fmt.Errorf("command timed out after 30s")}
 	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
 	require.Error(t, err)
 	assert.False(t, result.Checks[preflightCheckGraphQL].OK)
-	assert.Contains(t, err.Error(), "GraphQL")
+	assert.NotContains(t, err.Error(), "REST GET /rate_limit succeeded but GraphQL POST /graphql failed")
+	assert.Contains(t, err.Error(), "GitHub API connectivity check failed")
 }
 
 func TestCheckSandboxGitHubConnectivity_PersistErrorOnPass(t *testing.T) {
@@ -490,6 +561,107 @@ func TestPersistPreflightGitHubResult(t *testing.T) {
 	err = persistPreflightGitHubResult(execFn)("sb", doc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exit 2")
+}
+
+// TestGithubConnectScript_StatusLineParsing runs the actual node CONNECT
+// probe script (not a Go re-implementation of its logic) against a fake
+// local proxy, to lock in that status-code matching is a proper 3-digit
+// "2xx" check rather than a leading-"2" substring match, and that the
+// pass/fail decision waits for a complete CRLF-terminated status line
+// instead of deciding off the first, possibly-partial, data event.
+func TestGithubConnectScript_StatusLineParsing(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+
+	cases := []struct {
+		name    string
+		respond func(conn net.Conn)
+		wantOK  bool
+	}{
+		{
+			name: "200 is a pass",
+			respond: func(conn net.Conn) {
+				_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+			},
+			wantOK: true,
+		},
+		{
+			name: "403 is a fail",
+			respond: func(conn net.Conn) {
+				_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\n"))
+			},
+			wantOK: false,
+		},
+		{
+			name: "500 is a fail",
+			respond: func(conn net.Conn) {
+				_, _ = conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
+			},
+			wantOK: false,
+		},
+		{
+			name: "a truncated leading 2 with no complete status line is a fail",
+			respond: func(conn net.Conn) {
+				// No CRLF is ever sent, so a leading "2" byte must not be
+				// mistaken for a 2xx status the way the old
+				// code.indexOf("2")===0 check would.
+				_, _ = conn.Write([]byte("HTTP/1.1 2"))
+				_ = conn.Close()
+			},
+			wantOK: false,
+		},
+		{
+			name: "a status line split across TCP segments still resolves",
+			respond: func(conn net.Conn) {
+				_, _ = conn.Write([]byte("HTTP/1.1 2"))
+				time.Sleep(20 * time.Millisecond)
+				_, _ = conn.Write([]byte("00 Connection Established\r\n\r\n"))
+			},
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer ln.Close()
+
+			accepted := make(chan struct{})
+			go func() {
+				defer close(accepted)
+				conn, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				buf := make([]byte, 4096)
+				for {
+					n, readErr := conn.Read(buf)
+					if readErr != nil {
+						return
+					}
+					if bytes.Contains(buf[:n], []byte("\r\n\r\n")) {
+						break
+					}
+				}
+				tc.respond(conn)
+			}()
+
+			cmd := exec.Command("node", "-e", githubConnectScript)
+			cmd.Env = append(cmd.Environ(), "HTTPS_PROXY=http://"+ln.Addr().String())
+			out, _ := cmd.CombinedOutput()
+			<-accepted
+
+			if tc.wantOK {
+				assert.Contains(t, string(out), "CONNECT_OK", "output: %s", out)
+			} else {
+				assert.Contains(t, string(out), "CONNECT_FAIL", "output: %s", out)
+			}
+		})
+	}
 }
 
 func TestGitHubPreflightCommands(t *testing.T) {
