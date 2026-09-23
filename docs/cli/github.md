@@ -49,8 +49,12 @@ existing file and keeps the rest (the file is re-serialized, so comments are not
 that case). `--config` rewrites `config.base.yaml` from the preset (byte-for-byte) and keeps
 the existing overlay unless a persistent setup flag is also passed, in which case that flag is
 written into the overlay. Persistent setup flags may be combined with `--config`; they override
-the corresponding preset values. A `config.yaml` that no longer parses fails the re-run rather
-than being regenerated.
+the corresponding preset values. When an explicitly passed persistent flag equals the value the
+overlay would otherwise inherit from `config.base.yaml` or a compiled default, setup still writes
+it and warns that the key is now pinned locally and will not receive later changes from that
+layer. Remove the key from `.fullsend/config.yaml` to inherit again. Omitted flags and per-run
+flags (`--dry-run`, `--direct`, `--vendor`, …) do not pin or warn. A `config.yaml` that no longer
+parses fails the re-run rather than being regenerated.
 
 ### Flags
 
