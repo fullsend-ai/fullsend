@@ -48,9 +48,9 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 ## Runtime selection
 
-The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi and codex ignore it with a warning.
+The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
 
-The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written, and pi ignores the chain with a warning. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
+The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; pi uses the chain for aliased models when Vertex does not serve the model and ignores it for pinned ids. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
 
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
@@ -293,10 +293,22 @@ troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-work
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential and exports `GITLAB_TOKEN` from that CI/CD variable:
 
-- Gate unset/`disabled`/`rollback`: shared `FULLSEND_FORGE_TOKEN` (existing installations). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged).
+- Gate unset/`disabled`/`rollback`: shared `FULLSEND_FORGE_TOKEN` (legacy shared-token runtime, or explicit rollback/disabled recovery — ordinary unflagged `repos install` now converges existing shared-token installs to `migrating` and then `enforced` once roles are ready, so it no longer keeps them on this gate by default). If `FULLSEND_FORGE_TOKEN` is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged).
 - `migrating`/`enforced`: Poller/Analyst/Coder (or a registered custom role) via `gitlabroles.SelectAgent`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
+
+## GitHub Packages credentials
+
+On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
+`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
+credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
+pre/post/validation child environments never receive it. Outside Actions the variable is not
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
+the minted App identity.
+
+Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
+[Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
 
 ## Related
 

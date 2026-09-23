@@ -473,37 +473,53 @@ function in `internal/cli/run.go` is the canonical implementation.
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
    or `"true"` cause false-positive mangling.
 
-2. **Apply `security.SecretRedactor` as a second-pass fallback.**
-   The `RunnerEnv` scan only catches credentials the harness declared.
-   A `security.NewSecretRedactor().Scan(content)` call catches
+2. **Scan `providerOnlyKeys` from the process environment
+   (`os.Getenv`) for credential literal values.** Provider-only
+   credentials such as `GH_WORKFLOW_TOKEN` are intentionally kept
+   out of `RunnerEnv` (see #6649) so harness-controlled `${}` expansion
+   can't reach them, which means the `RunnerEnv` scan in invariant 1
+   never sees them. Iterate `providerOnlyKeys`, read each value with
+   `os.Getenv`, and replace it the same way (skipping values shorter
+   than `minRedactableSecretLen`). A future credential class kept out
+   of `RunnerEnv` for the same reason needs the same treatment here.
+
+3. **Apply `security.SecretRedactor` as a fallback pass.**
+   The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
+   the runner explicitly declared. A
+   `security.NewSecretRedactor().Scan(content)` call catches
    credentials with recognizable shapes (known-prefix tokens such as
    `ghp_`, `sk-ant-`, `AKIA`, PEM blocks, connection strings) that
-   never passed through the runner
-   environment — for example, a key baked into a test fixture or a
-   pre-commit hook printing its own secrets.
+   never passed through either source — for example, a key baked into
+   a test fixture or a pre-commit hook printing its own secrets.
 
-3. **Use `truncateUTF8` when enforcing size limits on external
+4. **Use `truncateUTF8` when enforcing size limits on external
    content.** Naive byte slicing (`s[:max]`) can split a multi-byte
    UTF-8 rune, producing invalid text that breaks downstream JSON
    serialization or LLM tokenization. Use `truncateUTF8(s, max)`
    (defined in `internal/cli/run.go`), which backs up to the last
    valid rune boundary before appending a `[truncated]` marker.
 
-4. **Write files containing potential secrets with mode `0600`.**
+5. **Write files containing potential secrets with mode `0600`.**
    Feedback files, redacted logs, and any file derived from external
    content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
    The run directory is uploaded as a CI artifact; restrictive
    permissions limit exposure if the artifact is downloaded to a
    shared filesystem.
 
-### Why both passes are needed
+### Why all three passes are needed
 
-Neither pass alone is sufficient. Opaque tokens (e.g., a GitHub
-installation token with no recognizable prefix) have no pattern for the
-`SecretRedactor` to match — only the literal `RunnerEnv` scan catches
-those. Conversely, credentials that never entered the runner environment
-(a PEM key printed by a repo hook, a fixture secret) are invisible to
-the env scan — only the pattern-based `SecretRedactor` catches those.
+No single pass is sufficient. Opaque tokens declared in `RunnerEnv`
+(e.g., a GitHub installation token with no recognizable prefix) have no
+pattern for the `SecretRedactor` to match — only the literal `RunnerEnv`
+scan catches those. Provider-only credentials such as
+`GH_WORKFLOW_TOKEN` are deliberately excluded from `RunnerEnv`, so
+neither the `RunnerEnv` scan nor an unrelated `SecretRedactor` pattern
+match is guaranteed to catch them — only the `providerOnlyKeys` scan of
+the process environment does, though `SecretRedactor` may also match
+this token's shape as a fallback. Conversely, credentials that never
+entered either the runner environment or `providerOnlyKeys` (a PEM key
+printed by a repo hook, a fixture secret) are invisible to both env
+scans — only the pattern-based `SecretRedactor` catches those.
 
 ### When this applies
 

@@ -57,6 +57,10 @@ create_issues:
     repos:                           # Specific repos (owner/name) agents may create issues in
       - fullsend-ai/fullsend
 
+# ── Authorization ────────────────────────────────────────────
+authorization:                       # Extra sources of slash-command permission, checked before the collaborator API
+  - provider: owners_file            # Grant access from the repo-root Prow OWNERS file (only provider)
+
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
   comment:
@@ -204,6 +208,30 @@ restricts which orgs and repos agents may create issues in.
 
 When omitted, agents cannot create issues outside the repository they are
 running in.
+
+### `authorization`
+
+Lists extra sources of permission for triggering agents. The GitHub
+collaborator API always applies; a provider listed here is checked first.
+The only provider is `owners_file`:
+
+- An `approvers` entry in the repo-root `OWNERS` file gets write-level access
+  (every slash command and custom agent). A `reviewers` entry gets
+  triage-level access, which covers `/fs-triage` and `/fs-review` only:
+  custom agents under `agents:` still require write.
+- An entry that names a key in `OWNERS_ALIASES` stands for that alias's
+  members. A GitHub login equal to any alias key never matches, and nested
+  aliases are not expanded.
+- A user not found in `OWNERS` falls through to the collaborator API.
+- If `OWNERS` or `OWNERS_ALIASES` cannot be parsed, or two alias keys differ
+  only by case, the OWNERS check is skipped and only the collaborator API
+  decides.
+- Only the flat root `approvers`/`reviewers` lists are read. Prow `filters:`
+  blocks and per-directory `OWNERS` files are ignored.
+
+Default: absent (collaborator API only). The field is not inherited from
+`config.base.yaml`: each repo opts in in its own `config.yaml`. Unknown or
+duplicate providers fail config validation.
 
 ### `status_notifications`
 

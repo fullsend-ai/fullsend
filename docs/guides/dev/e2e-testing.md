@@ -179,7 +179,10 @@ e2e testing of permission-sensitive behaviour:
 | `fstest-triage` | member | triage |
 | `fstest-outsider` | none | public read only (no collaborator grant) |
 
-Elevated access uses direct collaborator grants (not team membership). Fork repos
+Elevated access uses direct collaborator grants (not team membership). The
+behaviour suite deletes and recreates each pool repo at the start of a run, which
+drops these grants, so it re-applies the `fstest-write` and `fstest-triage` grants
+for every actor whose PAT is set. Fork repos
 (`test-repo-fork`) are intentionally excluded — they are not base/enrolled
 targets for permission grants.
 
@@ -220,9 +223,11 @@ see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer apply the
-**`ok-to-test`** label **after** the latest push. The label must be created once
-in GitHub repo settings (Settings → Labels).
+External contributors and fork PR authors must have a maintainer with write
+access apply the **`ok-to-test`** label **after** the latest push. A label from
+anyone else (for example a triage-role user) is removed and does not authorize
+the run. The label must be created once in GitHub repo settings (Settings →
+Labels).
 
 ### Stale labels
 

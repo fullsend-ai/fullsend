@@ -925,4 +925,10 @@ type GitHubExtensions interface {
 	// permission role_name for username on owner/repo.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+
+	// AddCollaborator grants username a direct collaborator permission
+	// (pull, triage, push, maintain, admin) on owner/repo. It returns an
+	// error when GitHub only sends an invitation (the user is not an org
+	// member), because access does not start until it is accepted.
+	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 }

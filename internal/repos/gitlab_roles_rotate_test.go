@@ -890,6 +890,19 @@ func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 	joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
 	assert.Contains(t, joined, "expired")
 	assert.Contains(t, joined, "revoked")
+	// Poller's PAT is expired and Coder's is revoked, so the built-in
+	// readiness check must not report them ready even though their
+	// secrets, capabilities, and identity mapping all check out —
+	// otherwise an operator could see "ready" for credentials that will
+	// fail closed under enforced mode. Only Analyst's still-active,
+	// non-expiring PAT counts as ready.
+	assert.Contains(t, joined, "builtin poller: not ready")
+	assert.Contains(t, joined, "builtin analyst: ready")
+	assert.Contains(t, joined, "builtin coder: not ready")
+	assert.Contains(t, joined, "credential lifecycle is expired")
+	assert.Contains(t, joined, "credential lifecycle is revoked")
+	assert.Contains(t, joined, "builtin roles ready: 1/3; missing=poller,coder")
+	assert.NotContains(t, joined, "builtin roles ready: 3/3")
 	var actuals []string
 	for _, d := range status.Drifts {
 		actuals = append(actuals, d.Field+"="+d.Actual)
@@ -898,6 +911,69 @@ func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 	}
 	assert.Contains(t, strings.Join(actuals, ","), "gitlab-role:poller=expired")
 	assert.Contains(t, strings.Join(actuals, ","), "gitlab-role:coder=revoked")
+}
+
+func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+
+	status := &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{}, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
+	assert.True(t, status.GitLabRolesReady)
+	assert.NotContains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
+}
+
+func TestEnrichGitLabRoleStatusSharedOnlyOmitsRoleReadinessDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []gitlabroles.Mode{gitlabroles.ModeDisabled, gitlabroles.ModeRollback} {
+		t.Run(string(mode), func(t *testing.T) {
+			fc := provisionClient(t)
+			fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(mode)
+			fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+			status := &RepoStatus{}
+			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", nil, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
+			joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
+			assert.NotContains(t, joined, "builtin poller:")
+			assert.NotContains(t, joined, "builtin roles ready:")
+			assert.NotContains(t, joined, "registered role")
+			assert.True(t, status.GitLabRolesReady)
+		})
+	}
+}
+
+func TestEnrichGitLabRoleStatusIncludesRegisteredReadiness(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		fc.Secrets["group/project/"+name] = true
+	}
+
+	status := &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{
+		{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"},
+		{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, ExpiresAt: "2027-09-21"},
+		{ID: 3, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-09-21"},
+		{ID: 4, Name: gitlabroles.CustomTokenName("scanner"), Active: true, ExpiresAt: "2027-09-21"},
+	}, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
+
+	assert.False(t, status.GitLabRolesReady)
+	assert.Contains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "registered role scanner: not ready")
 }
 
 func TestRotateGitLabRoleCredentials_RecoveryAfterPartialDistribution(t *testing.T) {

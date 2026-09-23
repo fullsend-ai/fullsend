@@ -78,11 +78,13 @@ fullsend
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
-│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (migrating|rollback|disabled)
+│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (migrating|enforced|rollback|disabled); ordinary install auto-enforces
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
-│   │   └── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
+│   │   ├── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
+│   │   ├── --gitlab-role-cutover            #   Verify roles, enforce routing, and retire the shared credential
+│   │   └── --gitlab-role-cutover-drained    #   Confirm in-flight shared-token jobs have drained
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -634,7 +636,7 @@ fullsend-repo/                      (embedded template)
 ├── skills/                         → Layered (runtime, not installed)
 ├── schemas/                        → Layered (runtime, not installed)
 ├── harness/                        → Layered (runtime, not installed)
-├── policies/                       → Layered (runtime, not installed)
+├── providers/                      → Layered (runtime, not installed)
 ├── scripts/                        → Layered (runtime, not installed)
 ├── env/                            → Layered (runtime, not installed)
 ├── templates/
@@ -647,7 +649,7 @@ fullsend-repo/                      (embedded template)
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
+| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, providers/, scripts/, schemas/, env/ |
 | **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
 
 Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@main` into `.defaults/`.

@@ -90,9 +90,16 @@ it ships with marked sections to fill in. Everything else is complete.
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
 The policy, provider and profile files are shared by every agent in the
-directory, so they are never overwritten — including with `--force`.
-`fullsend github setup` does not copy these into your repository, which is why
-`agent new` writes them when they are absent.
+directory. `agent new` writes them once, never overwrites them (not even with
+`--force`), and `fullsend github setup` does not create them — so commit
+them with the agent. In CI they behave differently, which matters when you
+want to change one:
+
+| Directory | In CI | To customize |
+|-----------|-------|--------------|
+| `policies/` | Your committed copy is used as-is | Edit `policies/base.yaml`, or add another policy file and point the harness `policy:` at it |
+| `profiles/` | Your committed copy is used as-is | Edit the file |
+| `providers/` | Replaced with the scaffold's copies on every run | Add a provider under a new name; edits to a scaffold-named file are overwritten |
 
 ### Flags
 
@@ -367,8 +374,8 @@ request.
 | `unknown --on preset "..."` followed by the preset list | `--on` is not one of the four presets | Use a listed preset, or pass raw CEL with `--trigger` |
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
-| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | A hand-edited harness references a file that is not there | Re-run `agent new`, which writes the policy when absent |
-| Agent crashes at 0s in CI | The sandbox cannot reach Vertex — a provider or profile file is missing | Confirm `providers/` and `profiles/` exist next to the harness |
+| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
+| Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
 | `runner env ... is not set` at `fullsend run` | A `${VAR}` in the harness `env` block is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
 
 ## `agent add`

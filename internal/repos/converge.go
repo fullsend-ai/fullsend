@@ -9,6 +9,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -117,9 +118,12 @@ type ConvergeResult struct {
 	// the schedules are missing (or vice versa).
 	NeedsGitLabPostInstall bool
 
-	// NeedsGitLabBotToken is true when the fullsend-bot PAT secret
-	// (secret:FULLSEND_FORGE_TOKEN) was not already present before this
-	// run. Callers must gate bot-token setup on this field specifically,
+	// NeedsGitLabBotToken is true only when the shared credential is still
+	// required by the live migration gate and the fullsend-bot PAT secret
+	// (secret:FULLSEND_FORGE_TOKEN) was not already present before this run.
+	// In enforced mode the shared credential is intentionally not required,
+	// so this remains false even when FULLSEND_FORGE_TOKEN is absent. Callers
+	// must gate bot-token setup on this field specifically,
 	// not on NeedsGitLabPostInstall, so a retry where the token already
 	// exists does not revoke and recreate the live PAT merely because a
 	// pipeline schedule is still missing.
@@ -656,14 +660,34 @@ func convergeRepo(ctx context.Context,
 	// bot-token setup and pipeline-schedule setup independently: a retry
 	// where one artifact already exists must not redo that one just
 	// because the other is still missing.
-	needsBotToken := !gitlabBotTokenPresent(d.components)
+	sharedCredentialRequired := true
+	if resolved.Forge == ForgeGitLab {
+		migrationMode, exists, modeErr := resolved.ForgeConfig.Client.GetRepoVariable(ctx, rr.Owner, rr.Repo, forge.VarGitLabRoleMigration)
+		if modeErr != nil {
+			cr.Error = fmt.Errorf("reading GitLab role migration mode: %w", modeErr)
+			return cr
+		}
+		if exists {
+			if _, parseErr := gitlabroles.ParseMode(migrationMode); parseErr != nil {
+				cr.Error = fmt.Errorf("invalid GitLab role migration mode: %w", parseErr)
+				return cr
+			}
+		}
+		if !exists || strings.TrimSpace(migrationMode) == "" {
+			sharedCredentialRequired = !gitlabRoleCredentialPresent(d.components)
+		} else {
+			sharedCredentialRequired = gitlabSharedCredentialRequired(migrationMode, exists)
+		}
+	}
+	needsBotToken := sharedCredentialRequired && !gitlabBotTokenPresent(d.components)
 	needsSchedules := !gitlabSchedulesPresent(d.components)
-	// Computed via gitlabPostInstallDone (rather than needsBotToken ||
-	// needsSchedules, though the two are equivalent by De Morgan's law)
-	// so the existing gitlabPostInstallDone test coverage actually
-	// constrains this production value instead of only testing an
-	// otherwise-unused helper.
-	needsPostInstall := !gitlabPostInstallDone(d.components)
+	// Track whether either independently gated post-install action is needed.
+	// The shared bot-token requirement is intentionally migration-aware, so
+	// gitlabPostInstallDone cannot be used here after enforced cutover.
+	needsPostInstall := needsBotToken || needsSchedules
+	cr.NeedsGitLabPostInstall = needsPostInstall
+	cr.NeedsGitLabBotToken = needsBotToken
+	cr.NeedsGitLabPipelineSchedules = needsSchedules
 
 	// Case 1: Workflow not on the default branch — full install via
 	// Install(), which always uses fresh-install PR metadata.
@@ -672,9 +696,6 @@ func convergeRepo(ctx context.Context,
 
 		if cfg.DryRun {
 			cr.Installed = true
-			cr.NeedsGitLabPostInstall = needsPostInstall
-			cr.NeedsGitLabBotToken = needsBotToken
-			cr.NeedsGitLabPipelineSchedules = needsSchedules
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "all",
 				Action:    "add",
@@ -762,9 +783,6 @@ func convergeRepo(ctx context.Context,
 		}
 
 		cr.Installed = true
-		cr.NeedsGitLabPostInstall = needsPostInstall
-		cr.NeedsGitLabBotToken = needsBotToken
-		cr.NeedsGitLabPipelineSchedules = needsSchedules
 		cr.WIFProvider = installResult.WIFProvider
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
@@ -969,6 +987,28 @@ func convergeRepo(ctx context.Context,
 	}
 
 	return cr
+}
+
+func gitlabRoleCredentialPresent(components []ComponentStatus) bool {
+	for _, component := range components {
+		switch component.Name {
+		case "secret:" + forge.SecretGitLabPollerToken,
+			"secret:" + forge.SecretGitLabAnalystToken,
+			"secret:" + forge.SecretGitLabCoderToken:
+			if component.Present {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gitlabSharedCredentialRequired(migrationMode string, exists bool) bool {
+	if !exists {
+		return true
+	}
+	mode, err := gitlabroles.ParseMode(migrationMode)
+	return err == nil && mode != gitlabroles.ModeEnforced
 }
 
 // convergeVariables checks and repairs variable drift for an installed repo.

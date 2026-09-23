@@ -2006,6 +2006,78 @@ gitlab:
 		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
 }
 
+type recordingUninstallTokens struct {
+	listed  []repos.ProjectAccessToken
+	revoked []int
+}
+
+func (r *recordingUninstallTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (r *recordingUninstallTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return r.listed, nil
+}
+
+func (r *recordingUninstallTokens) RevokeProjectAccessToken(_ context.Context, _, _ string, tokenID int) error {
+	r.revoked = append(r.revoked, tokenID)
+	return nil
+}
+
+func TestRunReposUninstall_GitLabIdentityCleanup(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	for _, name := range []string{
+		forge.SecretForgeToken,
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fc.Secrets["group/project/"+name] = true
+	}
+
+	tokens := &recordingUninstallTokens{listed: []repos.ProjectAccessToken{
+		{ID: 1, Name: "fullsend-poller", Active: true},
+		{ID: 2, Name: "fullsend-bot", Active: true},
+		{ID: 3, Name: "unrelated", Active: true},
+	}}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:         manifestPath,
+		yes:              true,
+		direct:           true,
+		concurrency:      4,
+		testClient:       fc,
+		testGitLabTokens: tokens,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []int{1, 2}, tokens.revoked)
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
 	gitlabManifest := `version: 1
 gitlab:

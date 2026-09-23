@@ -10,6 +10,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -3963,6 +3964,20 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 		wantPostInstall bool
 	}{
 		{
+			name: "enforced mode with schedules and no shared token",
+			seed: func(fc *forge.FakeClient, full string) {
+				fc.VariableValues[full+"/"+forge.VarGitLabRoleMigration] = " EnFoRcEd "
+				fc.VariablesExist[full+"/"+forge.VarGitLabRoleMigration] = true
+				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
+					{Description: "fullsend slash poll"},
+					{Description: "fullsend event poll"},
+				}
+			},
+			wantBotToken:    false,
+			wantSchedules:   false,
+			wantPostInstall: false,
+		},
+		{
 			name: "bot token present, schedules missing",
 			seed: func(fc *forge.FakeClient, full string) {
 				fc.Secrets[full+"/"+forge.SecretForgeToken] = true
@@ -4026,6 +4041,55 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 				t.Errorf("NeedsGitLabPostInstall = %v, want %v", got.NeedsGitLabPostInstall, tt.wantPostInstall)
 			}
 		})
+	}
+}
+
+func TestConverge_GitLab_ExistingRepoReportsSharedCredentialRecovery(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	delete(fc.Secrets, "acme/api/"+forge.SecretForgeToken)
+	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeRollback)
+	fc.VariablesExist["acme/api/"+forge.VarGitLabRoleMigration] = true
+
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("Converge() failed: %v", result.Failed()[0].Error)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("expected one result, got installed=%d converged=%d current=%d", len(result.Installed()), len(result.Converged()), len(result.AlreadyCurrent()))
+	}
+	got := result.Results[0]
+	if !got.NeedsGitLabBotToken || !got.NeedsGitLabPostInstall {
+		t.Fatalf("recovery flags = bot:%v post-install:%v, want both true", got.NeedsGitLabBotToken, got.NeedsGitLabPostInstall)
+	}
+}
+
+func TestConverge_GitLab_ExistingRepoAddsMissingScheduleWithoutDeletingExisting(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{{ID: 41, Description: "fullsend slash poll", Active: true}}
+
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("Converge() failed: %v", result.Failed()[0].Error)
+	}
+	if len(fc.DeletedScheduleIDs) != 0 {
+		t.Fatalf("convergence deleted existing schedules: %v", fc.DeletedScheduleIDs)
+	}
+	var found bool
+	for _, schedule := range fc.PipelineSchedules["acme/api"] {
+		if schedule.ID == 41 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("convergence removed the existing schedule")
 	}
 }
 
@@ -4118,6 +4182,40 @@ func TestGitlabPostInstallDone(t *testing.T) {
 				t.Errorf("gitlabPostInstallDone(%+v) = %v, want %v", tt.components, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGitlabSharedCredentialRequired(t *testing.T) {
+	if !gitlabSharedCredentialRequired("", false) {
+		t.Error("missing migration mode should require the shared credential")
+	}
+	if !gitlabSharedCredentialRequired("migrating", true) {
+		t.Error("migrating mode should require the shared credential")
+	}
+	if gitlabSharedCredentialRequired("enforced", true) {
+		t.Error("enforced mode should not require the shared credential")
+	}
+	if gitlabSharedCredentialRequired(" EnFoRcEd ", true) {
+		t.Error("case- and whitespace-normalized enforced mode should not require the shared credential")
+	}
+	if gitlabSharedCredentialRequired("unknown", true) {
+		t.Error("unknown migration mode must not permit shared credential recreation")
+	}
+}
+
+func TestGitlabRoleCredentialPresent(t *testing.T) {
+	if gitlabRoleCredentialPresent(nil) {
+		t.Fatal("nil components must not report an enrolled role credential")
+	}
+	if !gitlabRoleCredentialPresent([]ComponentStatus{{
+		Name: "secret:" + forge.SecretGitLabPollerToken, Present: true,
+	}}) {
+		t.Fatal("any present built-in role credential must report enrollment")
+	}
+	if gitlabRoleCredentialPresent([]ComponentStatus{{
+		Name: "secret:" + forge.SecretGitLabPollerToken, Present: false,
+	}}) {
+		t.Fatal("an absent role credential must not report enrollment")
 	}
 }
 

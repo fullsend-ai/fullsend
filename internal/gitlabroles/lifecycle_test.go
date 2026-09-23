@@ -120,6 +120,16 @@ func TestDiagnoseLifecycleUnverifiedAndCustom(t *testing.T) {
 	assert.Contains(t, strings.Join(rep.Diagnostics, "\n"), "scanner (custom): secret present")
 }
 
+func TestRefreshLifecycleDiagnosticsAfterProof(t *testing.T) {
+	t.Parallel()
+	report := Report{
+		Diagnostics: []string{"mode=enforced", "coder: secret present but no matching project access token (FULLSEND_GITLAB_CODER_TOKEN)"},
+		Roles:       []RoleReport{{Name: RoleCoder, SecretName: forge.SecretGitLabCoderToken, Lifecycle: LifecycleOK}},
+	}
+	RefreshLifecycleDiagnostics(&report, 1)
+	assert.Equal(t, []string{"mode=enforced"}, report.Diagnostics)
+}
+
 func TestDiagnoseLifecycleReuseFollowsTarget(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
@@ -145,6 +155,21 @@ func TestDiagnoseLifecycleReuseFollowsTarget(t *testing.T) {
 	}
 	assert.Equal(t, LifecycleExpiring, deployer.Lifecycle)
 	assert.Equal(t, forge.SecretGitLabCoderToken, deployer.SecretName)
+}
+
+func TestDiagnoseLifecycleReuseFollowsMultipleTargets(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	reg, err := ParseRegistry(`{"roles":[{"name":"bridge","credential":"reuse","reuse":"coder","capabilities":["write_repository"],"agents":["bridge"]},{"name":"deployer","credential":"reuse","reuse":"bridge","capabilities":["write_repository"],"agents":["deploy"]}]}`)
+	require.NoError(t, err)
+	present := map[string]bool{forge.SecretForgeToken: true, forge.SecretGitLabPollerToken: true, forge.SecretGitLabAnalystToken: true, forge.SecretGitLabCoderToken: true}
+	tokens := []TokenSnapshot{{ID: 1, Name: PollerTokenName, Active: true, ExpiresAt: "2027-09-21"}, {ID: 2, Name: AnalystTokenName, Active: true, ExpiresAt: "2027-09-21"}, {ID: 3, Name: CoderTokenName, Active: true, ExpiresAt: "2027-09-21"}}
+	rep := DiagnoseLifecycle(ModeEnforced, present, reg, tokens, now, DefaultRotationLead)
+	for _, rr := range rep.Roles {
+		if rr.Name == Role("bridge") || rr.Name == Role("deployer") {
+			assert.Equal(t, LifecycleOK, rr.Lifecycle, rr.Name)
+		}
+	}
 }
 
 func TestRoleDueForRotationUnconfiguredAndOK(t *testing.T) {

@@ -58,7 +58,7 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 	w.RepoName = repoName
 	w.RepoFull = w.Org + "/" + repoName
 
-	return nil
+	return ValidateSlotClean(w)
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {

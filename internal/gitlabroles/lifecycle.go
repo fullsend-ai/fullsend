@@ -86,16 +86,20 @@ func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens 
 		byName[tok.Name] = append(byName[tok.Name], tok)
 	}
 	tokenNameByRole := make(map[Role]string, len(rep.Roles))
+	reuseOfByRole := make(map[Role]Role, len(rep.Roles))
 	for _, rr := range rep.Roles {
 		if rr.TokenName != "" {
 			tokenNameByRole[rr.Name] = rr.TokenName
+		}
+		if rr.ReuseOf != "" {
+			reuseOfByRole[rr.Name] = rr.ReuseOf
 		}
 	}
 	for i := range rep.Roles {
 		rr := &rep.Roles[i]
 		name := rr.TokenName
 		if name == "" && rr.ReuseOf != "" {
-			name = tokenNameByRole[rr.ReuseOf]
+			name = tokenNameForRole(rr.ReuseOf, tokenNameByRole, reuseOfByRole)
 		}
 		if rr.State == RoleStateUnconfigured {
 			rr.Lifecycle = LifecycleUnconfigured
@@ -105,6 +109,18 @@ func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens 
 	}
 	rep.Diagnostics = append(rep.Diagnostics, lifecycleMessages(rep)...)
 	return rep
+}
+
+func tokenNameForRole(role Role, tokenNameByRole map[Role]string, reuseOfByRole map[Role]Role) string {
+	seen := map[Role]bool{}
+	for role != "" && !seen[role] {
+		seen[role] = true
+		if name := tokenNameByRole[role]; name != "" {
+			return name
+		}
+		role = reuseOfByRole[role]
+	}
+	return ""
 }
 
 // RoleDueForRotation reports whether a role should be rotated: expired,
@@ -250,4 +266,19 @@ func lifecycleMessages(rep Report) []string {
 		}
 	}
 	return msgs
+}
+
+// RefreshLifecycleDiagnostics rebuilds the lifecycle portion of a report's
+// diagnostics after callers change a role lifecycle based on trusted proof.
+// oldCount is the lifecycle-message count before those changes. DiagnoseLifecycle
+// appends lifecycle messages after the base diagnosis, so trimming that count
+// preserves the base diagnostics.
+func RefreshLifecycleDiagnostics(rep *Report, oldCount int) {
+	if rep == nil {
+		return
+	}
+	if oldCount >= 0 && oldCount <= len(rep.Diagnostics) {
+		rep.Diagnostics = rep.Diagnostics[:len(rep.Diagnostics)-oldCount]
+	}
+	rep.Diagnostics = append(rep.Diagnostics, lifecycleMessages(*rep)...)
 }

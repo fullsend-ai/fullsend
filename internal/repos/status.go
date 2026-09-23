@@ -358,6 +358,12 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	status.GitLabRolesReady = rep.Ready
 	status.GitLabRolesPartial = rep.Partial
 	status.GitLabRoleDiagnostics = rep.Diagnostics
+	if !gitLabRoleReadinessRequired(mode) {
+		return
+	}
+	builtin := appendBuiltinRoleReadiness(status, present, reg, nil)
+	registered := appendRegisteredRoleReadiness(status, present, reg, nil)
+	status.GitLabRolesReady = status.GitLabRolesReady && builtin.Ready && registered.Ready
 	if !mode.RequiresRoleCredentials() {
 		return
 	}
@@ -368,6 +374,10 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 			Actual:   "missing",
 		})
 	}
+}
+
+func gitLabRoleReadinessRequired(mode gitlabroles.Mode) bool {
+	return mode.RequiresRoleCredentials() || mode.AllowsSharedFallback()
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
