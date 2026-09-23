@@ -187,6 +187,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env
 ```
