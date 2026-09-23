@@ -4706,7 +4706,7 @@ func excludeAgentWorkingDirs(sandboxName, repoDir string, extra []string, printe
 // hasAgentsMD checks whether the repo directory contains an AGENTS.md file
 // in any common casing.
 func hasAgentsMD(repoDir string) bool {
-	for _, name := range []string{"AGENTS.md", "agents.md", "Agents.md"} {
+	for _, name := range agentsMDFilenames {
 		if _, err := os.Stat(filepath.Join(repoDir, name)); err == nil {
 			return true
 		}
@@ -4717,7 +4717,7 @@ func hasAgentsMD(repoDir string) bool {
 // hasClaudeMD checks whether the repo directory contains a CLAUDE.md file
 // in any common casing.
 func hasClaudeMD(repoDir string) bool {
-	for _, name := range []string{"CLAUDE.md", "claude.md", "Claude.md", ".claude.md"} {
+	for _, name := range claudeMDFilenames {
 		if _, err := os.Stat(filepath.Join(repoDir, name)); err == nil {
 			return true
 		}

@@ -99,6 +99,26 @@ func TestProhibitsCoAuthoredBy(t *testing.T) {
 			content: "Never add Co-Authored-By; use Assisted-by: Claude instead.",
 			want:    true,
 		},
+		{
+			name:    "never merge without is a requirement, not a ban",
+			content: "Never merge without Co-authored-by trailers.",
+			want:    false,
+		},
+		{
+			name:    "is not forbidden",
+			content: "Co-authored-by is not forbidden here.",
+			want:    false,
+		},
+		{
+			name:    "required not forbidden",
+			content: "Co-authored-by trailers are required, not forbidden.",
+			want:    false,
+		},
+		{
+			name:    "do not commit without is a requirement, not a ban",
+			content: "Do not commit without Co-authored-by trailers.",
+			want:    false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

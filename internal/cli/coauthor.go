@@ -11,21 +11,47 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// agentsMDFilenames are the accepted root-directory casings for AGENTS.md.
+// Shared with hasAgentsMD (run.go) so the two lists cannot drift apart.
+var agentsMDFilenames = []string{"AGENTS.md", "agents.md", "Agents.md"}
+
+// claudeMDFilenames are the accepted root-directory casings for CLAUDE.md.
+// Shared with hasClaudeMD (run.go) so the two lists cannot drift apart.
+var claudeMDFilenames = []string{"CLAUDE.md", "claude.md", "Claude.md", ".claude.md"}
+
 // contextInstructionFiles are the root instruction files where a repo
-// states contributor conventions. Names match hasAgentsMD / hasClaudeMD.
-var contextInstructionFiles = []string{
-	"AGENTS.md", "agents.md", "Agents.md",
-	"CLAUDE.md", "claude.md", "Claude.md", ".claude.md",
-}
+// states contributor conventions.
+var contextInstructionFiles = append(append([]string{}, agentsMDFilenames...), claudeMDFilenames...)
 
 // coAuthoredByProhibitRe matches an explicit ban on Co-authored-by trailers.
-// It requires a negation ("do not", "don't", "never", "no", "without") next
-// to the trailer name so a repo that requires or merely mentions
-// Co-authored-by is not treated as a ban.
+// It requires a negation ("do not", "don't", "never", "no") next to the
+// trailer name, or "co-authored-by" followed by a forbidden/prohibited/
+// disallowed/banned clause across a short, whitespace-only gap, so a repo
+// that requires or merely mentions Co-authored-by is not treated as a ban.
+// The gap is bounded to a couple of words and cannot itself contain "not" —
+// unlike a free-form `.{0,80}` gap, it cannot bridge across an intervening
+// negation such as "Co-authored-by is not forbidden". A bare "without" is
+// handled separately by coAuthoredByWithoutRe below, since "without" alone
+// is ambiguous without also checking what precedes the verb it attaches to.
 var coAuthoredByProhibitRe = regexp.MustCompile(`(?i)` +
 	`(?:do\s+not|don['’]t|never)\s+(?:add|include|use)\s+(?:a\s+|any\s+|the\s+)?` + "`*" + `co-authored-by` +
-	`|\b(?:no|without)\s+` + "`*" + `co-authored-by` +
-	`|co-authored-by.{0,80}(?:is\s+)?(?:forbidden|prohibited|disallowed|banned)`)
+	`|\bno\s+` + "`*" + `co-authored-by` +
+	`|co-authored-by\s*(?:trailers?|lines?|tags?|entries?)?\s{0,20}(?:is\s+|are\s+)?(?:forbidden|prohibited|disallowed|banned)`)
+
+// coAuthoredByWithoutRe matches "commit/merge without Co-authored-by",
+// which reads as a ban on the trailer only when the verb itself is not
+// negated. It requires a verb before "without" so unrelated uses of the
+// word elsewhere in the file are ignored.
+var coAuthoredByWithoutRe = regexp.MustCompile(`(?i)\b(?:commit(?:s|ting)?|merg(?:e|ing))\s+without\s+(?:a\s+|any\s+|the\s+)?` + "`*" + `co-authored-by`)
+
+// negatedVerbBeforeRe matches a negation word ("never", "not", "don't", ...)
+// shortly before a position. Used to check the text preceding a
+// coAuthoredByWithoutRe match: "never merge without Co-authored-by" is a
+// requirement (the trailer is mandatory), not a ban, because the negation
+// applies to the verb rather than to the trailer. Go's RE2 engine has no
+// lookbehind, so this is applied against a slice of the preceding text
+// instead of embedded in coAuthoredByWithoutRe directly.
+var negatedVerbBeforeRe = regexp.MustCompile(`(?i)\b(?:never|not|don['’]t|doesn['’]t|won['’]t|wouldn['’]t|shouldn['’]t|didn['’]t|isn['’]t)\s*\S{0,30}$`)
 
 // coAuthorStripHookScript is a commit-msg hook that drops Co-authored-by
 // trailers. Other trailers (Assisted-by, Signed-off-by, Closes) are left
@@ -75,7 +101,19 @@ func fileProhibitsCoAuthoredBy(path string) bool {
 }
 
 func prohibitsCoAuthoredBy(content string) bool {
-	return coAuthoredByProhibitRe.MatchString(content)
+	if coAuthoredByProhibitRe.MatchString(content) {
+		return true
+	}
+	loc := coAuthoredByWithoutRe.FindStringIndex(content)
+	if loc == nil {
+		return false
+	}
+	const window = 40
+	prefix := content[:loc[0]]
+	if len(prefix) > window {
+		prefix = prefix[len(prefix)-window:]
+	}
+	return !negatedVerbBeforeRe.MatchString(prefix)
 }
 
 // applyCoAuthorSuppress flags Claude Code's --settings file to disable the
