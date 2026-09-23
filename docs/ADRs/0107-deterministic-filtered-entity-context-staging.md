@@ -1,17 +1,17 @@
 ---
-title: "107. Deterministic filtered entity-context staging"
+title: "107. Deterministic filtered entity-context-snapshot staging"
 status: Accepted
 relates_to:
   - agent-architecture
   - security-threat-model
 topics:
-  - entity-context
+  - entity-context-snapshot
   - security
   - harness
   - token-cost
 ---
 
-# 107. Deterministic filtered entity-context staging
+# 107. Deterministic filtered entity-context-snapshot staging
 
 Date: 2026-09-07
 
@@ -34,12 +34,11 @@ the preferred prefetch model from
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md) to every issue and
 change-proposal run.
 
-This ADR's *forge entity snapshot* is the staged data snapshot. It is distinct
+This ADR's *entity-context-snapshot* is the staged data snapshot. It is distinct
 from the dispatch-layer routing category called entity context in
-[ADR 0076](0076-slash-command-entity-context-separation.md). The v1
-compatibility path and schema identifiers retain the `entity-context` name;
-this is known naming debt, and implementation work should evaluate renaming
-those identifiers before they become public compatibility commitments.
+[ADR 0076](0076-slash-command-entity-context-separation.md). The qualified
+name is intentional: it identifies the data structure without redefining ADR
+0076's established routing term.
 
 ## Decision
 
@@ -57,7 +56,7 @@ The snapshot is written outside the repository clone. Host-side pre- and
 post-scripts receive `FULLSEND_CONTEXT_DIR` pointing to an access-restricted
 temporary directory outside the retained run-output tree; inside the sandbox
 the same variable points to the runner-owned reserved sibling path
-`/sandbox/entity-context`. Fullsend must reject any checkout or `host_files`
+`/sandbox/entity-context-snapshot`. Fullsend must reject any checkout or `host_files`
 destination that would overlap that path, and must abort if the reserved path
 already exists with unexpected contents. Fullsend uploads that directory after
 sandbox creation and before repository/runtime execution. Consumers therefore
@@ -67,7 +66,7 @@ files.
 
 The exact tree, schemas, canonical serialization, stable record-key derivation,
 filter statuses, and compatibility rules are the versioned
-[entity-context v1 specification](../normative/entity-context/v1/README.md).
+[entity-context-snapshot v1 specification](../normative/entity-context-snapshot/v1/README.md).
 Content records and mutable observation state are separate: resolving or
 reordering a thread changes its state/index files, never an unchanged comment
 or review body. No runner-clock timestamp enters the staged tree. Given the
@@ -78,8 +77,9 @@ The snapshot contains forge state that cannot be reconstructed from the target
 Git checkout. It does not copy diffs, commit history, changed-file manifests,
 or repository revision metadata. Fullsend provisions sufficient Git objects and
 refs separately; controllers derive and filter diffs or commit projections for
-agents and sub-agents that need them. Git object IDs appear in entity context
-only to relate reviews, threads, comments, and agent runs to repository state.
+agents and sub-agents that need them. Git object IDs appear in the
+entity-context-snapshot only to relate reviews, threads, comments, and agent runs
+to repository state.
 
 Each comment and review is a self-contained attributed record whose filename
 sorts chronologically. The initial body uses the same record format and sorts
@@ -110,12 +110,12 @@ the records into one changing prompt block when cache reuse is intended.
 Provider prompt caching remains an optimization, not a conformance guarantee;
 agents that read records through tools still pay the corresponding tool-result
 tokens. Deterministic order projections remain navigation aids for selective
-reads. Runtime forge reads for entity-context source kinds are denied by
+reads. Runtime forge reads for entity-context-snapshot source kinds are denied by
 default. An explicitly configured host-side extension may fetch a kind outside
 the snapshot only when it applies the same versioned pipeline and fail-closed
 rules and exposes no raw payload to the sandbox; it records the omission and
 extension result outside the immutable v1 snapshot. A present extension
-configuration that cannot be parsed denies every runtime entity-context fetch.
+configuration that cannot be parsed denies every runtime entity-context-snapshot fetch.
 Extension output uses the snapshot's `filter_version`, filter statuses
 including `rejected`, and the same detector-failure abort rules. V1 extension
 output outside the manifest is host-only and never sandbox-visible. Making an
@@ -135,6 +135,6 @@ only bounded counts, digests, and filtering findings, never bodies or logs.
 
 - Agents start with one filtered, versioned view and avoid duplicate forge reads, but token and provider-cache savings are conditional on selective projections and segmented runtime injection rather than automatic consequences of staging files.
 - Fullsend must provision the Git objects and refs required by each run, let controllers derive and filter repository projections on demand, and add segmented context input, cache-boundary support, and efficiency telemetry before claiming an improvement.
-- Shipped and custom review, fix, and code agents must migrate from mutable sticky summaries and single-body hand-offs to discovered entity-context projections, publish immutable per-run result receipts while retaining human-facing summaries, and anchor decisions to record keys and revisions.
+- Shipped and custom review, fix, and code agents must migrate from mutable sticky summaries and single-body hand-offs to discovered entity-context-snapshot projections, publish immutable per-run result receipts while retaining human-facing summaries, and anchor decisions to record keys and revisions.
 - Forge adapters must expose review/reply relationships, locations, reviewed-revision references, checks, and immutable agent-result references through `forge.Client`; unavailable or unrecoverable forge history is an explicit manifest gap, not a silent omission.
 - Snapshot assembly adds bounded startup latency and storage and can become stale, so collection profiles avoid indiscriminate log/history fetching and deterministic post-processing still validates relevant revisions before any forge mutation.

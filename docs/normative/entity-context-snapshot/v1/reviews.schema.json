@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fullsend.ai/normative/entity-context/v1/reviews.schema.json",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/reviews.schema.json",
   "title": "ReviewRelationships",
   "type": "object",
   "required": ["reviews", "threads"],

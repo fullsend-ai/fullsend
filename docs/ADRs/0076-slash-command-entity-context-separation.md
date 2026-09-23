@@ -22,8 +22,8 @@ Extends entity-context rules for conversation surfaces in
 
 Terminology note: this ADR uses *entity context* for a dispatch-layer routing
 category. [ADR 0107](0107-deterministic-filtered-entity-context-staging.md)
-later uses the same phrase for the distinct filtered data snapshot staged for
-a handled Git-forge entity.
+later names the distinct filtered data snapshot staged for a handled Git-forge
+entity *entity-context-snapshot*.
 
 Refines [ADR 0002](0002-initial-fullsend-design.md) (initial design) and
 reinforces [ADR 0020](0020-composable-single-responsibility-agents-with-individual-sandboxes.md)

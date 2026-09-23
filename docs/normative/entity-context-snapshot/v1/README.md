@@ -1,25 +1,24 @@
-# Entity context v1
+# Entity-context-snapshot v1
 
-This specification defines the deterministic, filtered entity snapshot adopted
-by [ADR 0107](../../../ADRs/0107-deterministic-filtered-entity-context-staging.md).
+This specification defines the deterministic, filtered entity-context-snapshot
+adopted by [ADR 0107](../../../ADRs/0107-deterministic-filtered-entity-context-staging.md).
 It is the contract between forge adapters, `fullsend run`, harness scripts, and
 agent runtimes.
 
-Here, *forge entity snapshot* means the staged data snapshot for a handled
-Git-forge entity. The compatibility path and schema identifiers retain the
-`entity-context` name for v1; implementation work should evaluate renaming
-those identifiers before they become a public compatibility commitment.
-[ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md) uses
-*entity context* for the distinct routing category that determines which agent
-or slash command may handle an issue, change proposal, or conversation.
-Entity-context v1 applies only to GitHub, GitLab, and Forgejo work items and
-change proposals. A non-forge `work_item`, such as Jira, does not start v1
+Here, *entity-context-snapshot* means the staged data snapshot for a handled
+Git-forge entity. The qualified name distinguishes this data structure from
+the dispatch-layer routing category called *entity context* in
+[ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md),
+which determines the agent or slash command that may handle an issue, change
+proposal, or conversation. Entity-context-snapshot v1 applies only to GitHub,
+GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
+such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
 outside the tree and continues under that integration's existing input
 contract. This host-only `unsupported_entity` diagnostic is unrelated to the
 `gaps[].code` value `unsupported` for an omitted or partial in-tree scope and
-never appears in a schema document. Runtime entity-context forge reads remain
-denied.
+never appears in a schema document. Runtime entity-context-snapshot forge reads
+remain denied.
 
 ## Tree
 
@@ -623,7 +622,7 @@ after the runtime's last use and the host copy after the post-script on every
 controlled exit, including skip, failure, and cancellation. Fullsend also
 scavenges abandoned context trees on startup after an unclean termination.
 
-Artifact collectors must exclude entity-context trees. Retained diagnostics
+Artifact collectors must exclude entity-context-snapshot trees. Retained diagnostics
 may contain bounded record counts, content digests, filter codes/counts, and
 cleanup errors, but never entity bodies, comment/review bodies, or logs.
 
@@ -634,7 +633,7 @@ must validate `index.json`, `collection.json`, `entity/metadata.json`,
 `relations/reviews.json`, `history/agent-runs.json`, check metadata documents,
 `state/actors.json`, and `state/threads.json` against their v1 schemas. Other
 emitted files follow the byte contracts above. The files under
-`docs/normative/entity-context/v1/` form one local schema bundle: consumers
+`docs/normative/entity-context-snapshot/v1/` form one local schema bundle: consumers
 must load every sibling `*.schema.json` file into the same resolver registry,
 keyed by its `$id` and filename, before validating any document. Relative
 references such as `common.schema.json#/$defs/timestamp` resolve to sibling
@@ -645,7 +644,7 @@ schemas are closed:
 adding a property, record kind, enum value, or status is a breaking change.
 Changing path derivation, canonical bytes, required fields, field meaning, or
 ordering likewise requires
-`docs/normative/entity-context/v2/` and a superseding ADR.
+`docs/normative/entity-context-snapshot/v2/` and a superseding ADR.
 
 The schema committed with the accepting ADR defines v1. Subsequent additions,
 even an optional property, require v2: older closed-schema consumers would

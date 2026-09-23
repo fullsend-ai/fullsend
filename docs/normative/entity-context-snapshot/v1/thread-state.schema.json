@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fullsend.ai/normative/entity-context/v1/thread-state.schema.json",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/thread-state.schema.json",
   "title": "ThreadState",
   "type": "object",
   "required": ["threads"],

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fullsend.ai/normative/entity-context/v1/entity.schema.json",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/entity.schema.json",
   "title": "EntityMetadata",
   "type": "object",
   "required": ["kind", "id", "number", "title", "state", "author_id", "author", "created_at", "updated_at", "labels"],
