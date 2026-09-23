@@ -1120,6 +1120,57 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	})
 }
 
+// TestReviewDispatchDedupGate verifies that review requests are arbitrated
+// before the long-running review job starts. Without this gate, a manual
+// /fs-review request can cancel an already-running review of the same PR head
+// late enough that both agent invocations consume inference time (#7554).
+func TestReviewDispatchDedupGate(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	gateStart := strings.Index(s, "  review-dedup:\n")
+	require.NotEqual(t, -1, gateStart,
+		"reusable-dispatch.yml must arbitrate duplicate review dispatches before the review job")
+	reviewStart := strings.Index(s, "  review:\n")
+	require.NotEqual(t, -1, reviewStart)
+	require.Less(t, gateStart, reviewStart,
+		"review-dedup must run before review")
+
+	gate := s[gateStart:reviewStart]
+	assert.Contains(t, gate, "fullsend-review-gate-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}",
+		"the short gate must serialize decisions per PR")
+	assert.Contains(t, gate, "cancel-in-progress: false",
+		"a same-SHA request must inspect the first gate instead of cancelling it")
+	assert.Contains(t, gate, "actions: read",
+		"the gate needs only read access to inspect active workflow runs")
+	assert.Contains(t, gate, "contents: read",
+		"the gate checks out its trusted arbitration script")
+	assert.Contains(t, gate, "Review dispatch gate #",
+		"active gates must expose their PR and reviewed SHA to later requests")
+	assert.Contains(t, gate, "review-dispatch-gate.sh",
+		"the gate must use the tested active-review arbitration script")
+	assert.NotContains(t, gate, "startswith(\".github/workflows/fullsend.yaml@\")",
+		"deduplication must support repositories with custom reusable-workflow callers")
+
+	review := s[reviewStart:]
+	assert.Contains(t, review, "needs: [route, review-dedup]",
+		"the review job must wait for the duplicate-dispatch decision")
+	assert.Contains(t, review, "needs.review-dedup.outputs.skip != 'true'",
+		"a same-SHA in-flight review must prevent a second agent invocation")
+}
+
+func TestReviewDispatchGateScript(t *testing.T) {
+	cmd := exec.Command("bash", filepath.Join("fullsend-repo", "scripts", "review-dispatch-gate-test.sh"))
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "review dispatch gate behavior tests failed:\n%s", output)
+	assert.Contains(t, string(output), "PASS: same-head-active-review-is-skipped")
+	assert.Contains(t, string(output), "PASS: same-head-review-is-found-among-unrelated-jobs")
+	assert.Contains(t, string(output), "PASS: older-head-active-review-is-not-skipped")
+	assert.Contains(t, string(output), "PASS: stale-request-is-skipped")
+	assert.Contains(t, string(output), "PASS: no-active-review-is-allowed")
+}
+
 // TestWorkItemKeyEnvCompatibility validates that legacy code dispatch and the
 // common harness-dispatch path expose the forge-neutral key alongside the
 // backwards-compatible GitHub issue number (#6760).
