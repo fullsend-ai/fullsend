@@ -2410,6 +2410,32 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		iterSteerOpts := baseSteerOpts
 		iterSteerOpts.runtime = rt
 		iterSteerOpts.sandboxName = sandboxName
+		// Built once so the runtime is asked whether it will take steers
+		// about the very params it then runs with. Steerable and OnEvent
+		// depend on the watcher and are set below.
+		hooksSettings := ""
+		if h.SecurityEnabled() {
+			hooksSettings = security.SandboxHooksSettings
+		}
+		runParams := agentruntime.RunParams{
+			SandboxName:       sandboxName,
+			AgentBaseName:     agentBaseName,
+			Model:             h.Model,
+			Effort:            h.Effort,
+			FallbackModels:    overrides.fallbackModels,
+			RepoDir:           remoteRepositoryDir,
+			FullsendDir:       absFullsendDir,
+			PluginDirs:        pluginDirs,
+			Plugins:           boot.Plugins(),
+			Debug:             debug,
+			HooksSettingsPath: hooksSettings,
+			Timeout:           timeout,
+			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
+			Prompt:            agentPrompt,
+			Forge:             forgePlatform,
+			ModelAliases:      configModelAliases,
+		}
+		iterSteerOpts.runParams = runParams
 		iterSteerOpts.timeout = timeout
 		iterSteerOpts.seen = steerSeen
 		iterSteerOpts.observed = steerObserved
@@ -2470,31 +2496,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		collector := newContentCollectorIfEnabled()
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		var metrics agentruntime.RunMetrics
-		hooksSettings := ""
-		if h.SecurityEnabled() {
-			hooksSettings = security.SandboxHooksSettings
-		}
-		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
-			SandboxName:       sandboxName,
-			AgentBaseName:     agentBaseName,
-			Model:             h.Model,
-			Effort:            h.Effort,
-			FallbackModels:    overrides.fallbackModels,
-			RepoDir:           remoteRepositoryDir,
-			FullsendDir:       absFullsendDir,
-			PluginDirs:        pluginDirs,
-			Plugins:           boot.Plugins(),
-			Debug:             debug,
-			HooksSettingsPath: hooksSettings,
-			Timeout:           timeout,
-			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
-			Prompt:            agentPrompt,
-			Forge:             forgePlatform,
-			ModelAliases:      configModelAliases,
-			Steerable:         steerSess != nil,
-			OnEvent: steerTurnEndHandler(
-				iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), steerSess),
-		}, printer, agentStart, &metrics)
+		runParams.Steerable = steerSess != nil
+		runParams.OnEvent = steerTurnEndHandler(
+			iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), steerSess)
+		exitCode, runErr := rt.Run(agentCtx, runParams, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		if steerSess != nil {
 			// After rt.Run returns, so metrics.Steers is complete and has

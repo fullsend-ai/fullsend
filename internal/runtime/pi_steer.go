@@ -112,21 +112,63 @@ var piSteerDeclines sync.Map // sandboxName -> string
 // run redoing the work.
 const piSteerFallbackReason = "pi falls back across models on this run, and a steered pi session and its mailbox are bound to one launch; updates go to the queued run"
 
-// piSteerGate reports whether a pi run over chain may be steered. A chain
+// piSteerDecline reports why a pi run over chain declines steering. A chain
 // longer than one model means the run can fall back, which steering cannot
-// survive; that run is announced once, recorded so Steer declines it, and
+// survive. piSteerGate and SteerDeclineReason both ask it, so Run and the
+// runner's eligibility check cannot disagree.
+func piSteerDecline(chain []string) (string, bool) {
+	if len(chain) <= 1 {
+		return "", false
+	}
+	return piSteerFallbackReason, true
+}
+
+// piRunChain is the model chain Run attempts for params, given the manifest
+// Bootstrap wrote.
+func piRunChain(params RunParams, m *piManifest) (chain, skipped []string) {
+	return piFallbackChain(EffectiveModel(params.Model, m.Model), params.FallbackModels, params.ModelAliases)
+}
+
+// readPiManifestFn is readPiManifest, replaceable in tests.
+var readPiManifestFn = readPiManifest
+
+// SteerDeclineReason implements SteerDecliner. The manifest is read only
+// when the run names no model of its own, and a manifest that cannot be read
+// is not a decline: Run reports that failure itself.
+func (r PiRuntime) SteerDeclineReason(params RunParams) (string, bool) {
+	m := &piManifest{}
+	if params.Model == "" {
+		read, err := readPiManifestFn(params.SandboxName, r.piManifestPath())
+		if err != nil {
+			return "", false
+		}
+		m = read
+	}
+	chain, _ := piRunChain(params, m)
+	return piSteerDecline(chain)
+}
+
+// piSteerGate reports whether a pi run over chain may be steered. A run
+// that can fall back is announced once, recorded so Steer declines it, and
 // run exactly as an unsteered one. The chain itself is left untouched.
 func piSteerGate(steerable bool, sandboxName string, chain []string, printer *ui.Printer) bool {
-	if !steerable || len(chain) <= 1 {
-		return steerable
+	if !steerable {
+		return false
 	}
-	printer.StepWarn("Steering disabled: " + piSteerFallbackReason)
-	piSteerDeclines.Store(sandboxName, piSteerFallbackReason)
+	reason, declined := piSteerDecline(chain)
+	if !declined {
+		return true
+	}
+	printer.StepWarn("Steering disabled: " + reason)
+	piSteerDeclines.Store(sandboxName, reason)
 	return false
 }
 
 // clearPiSteerDecline forgets a decline once its run has returned.
 func clearPiSteerDecline(sandboxName string) { piSteerDeclines.Delete(sandboxName) }
 
-// Ensure PiRuntime implements Steerer.
-var _ Steerer = PiRuntime{}
+// Ensure PiRuntime implements Steerer and SteerDecliner.
+var (
+	_ Steerer       = PiRuntime{}
+	_ SteerDecliner = PiRuntime{}
+)

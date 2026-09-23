@@ -131,6 +131,10 @@ type Steerer interface {
 after `Settle` and the agent's current turn. A runtime that does not implement `Steerer` ignores
 the field, and its command line is unchanged.
 
+A `Steerer` that refuses some runs outright also implements `runtime.SteerDecliner`. The runner
+asks `SteerDeclineReason` before it starts the watcher, so the refusal is announced once and no
+poll or steer slot is spent discovering it. Pi uses it for a run that can fall back across models.
+
 Both methods are called **with `sandboxMu` held**. They write into the sandbox — a mailbox
 append, or on Codex the sandbox stop and start that interrupt the turn — and would otherwise race
 the credential refreshers the runner already serializes through that lock. The lock lives in
@@ -169,8 +173,8 @@ fallback every other failure path takes.
 
 On pi, steering and model fallback are exclusive, and fallback wins. A steered pi session and its
 mailbox are bound to one launch of pi, and a fallback relaunches pi on the next model. So a pi run
-that can fall back is not steerable. It logs one line naming the reason, and its updates go to
-the queued run. A pi run with no fallback models steers as described above.
+that can fall back is not steerable: the runner declines it before its watcher starts, logs one
+line naming the reason, and its updates go to the queued run. A pi run with no fallback models steers as described above.
 
 The runner learns there is something to send by listing the platform's own records rather than by
 being told: it polls `GET /repos/{repo}/actions/workflows/{shim}/runs?created>=<my start>` with

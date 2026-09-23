@@ -1086,3 +1086,56 @@ func TestSteerDeliver_CodexRefreshesOIDCInsideTheHold(t *testing.T) {
 		})
 	}
 }
+
+// decliningRuntime is a steerable runtime that refuses some runs up front,
+// as pi does for a model chain that can fall back. It records the params it
+// was asked about.
+type decliningRuntime struct {
+	steerableRuntime
+	reason string
+	asked  *agentruntime.RunParams
+}
+
+func (r decliningRuntime) SteerDeclineReason(p agentruntime.RunParams) (string, bool) {
+	if r.asked != nil {
+		*r.asked = p
+	}
+	return r.reason, r.reason != ""
+}
+
+// TestSteerEligible_RuntimeDeclineStopsTheWatcher pins that a run its runtime
+// would refuse never gets a watcher. Left to Steer, the refusal would surface
+// only after a poll had found an update and spent a steer slot on it.
+func TestSteerEligible_RuntimeDeclineStopsTheWatcher(t *testing.T) {
+	var out strings.Builder
+	var asked agentruntime.RunParams
+	o := baseOpts(t)
+	o.runtime = decliningRuntime{reason: "pi falls back across models on this run", asked: &asked}
+	o.runParams = agentruntime.RunParams{SandboxName: "sbx", Model: "opus", FallbackModels: []string{"sonnet"}}
+	o.printer = ui.New(&out)
+
+	d := steerEligible(o)
+	assert.Equal(t, "pi falls back across models on this run", d.reason)
+	assert.False(t, d.defect, "a configured fallback chain is not an environment defect")
+	assert.True(t, d.announce)
+	assert.Equal(t, o.runParams, asked, "the runtime must be asked about this run's own params")
+
+	assert.Nil(t, startSteerWatcher(context.Background(), o))
+	assert.Equal(t, 1, strings.Count(out.String(), "Steering disabled: pi falls back across models"),
+		"the decline is logged once, before any watcher starts")
+
+	// A runtime that declines nothing leaves the run eligible.
+	o.runtime = decliningRuntime{}
+	assert.True(t, steerEligible(o).ok())
+}
+
+// TestSteerDeclineAnnounced pins who hears about a decline. A runtime's own
+// refusal reaches a harness that never named steering, which is every
+// harness once steering is on by default.
+func TestSteerDeclineAnnounced(t *testing.T) {
+	implicit := &harness.Harness{Agent: "agents/review.md", Role: "review"}
+	assert.False(t, steerDecline{reason: "not in GitHub Actions"}.announced(implicit))
+	assert.True(t, steerDecline{reason: "no job token", defect: true}.announced(implicit))
+	assert.True(t, steerDecline{reason: "pi falls back", announce: true}.announced(implicit))
+	assert.True(t, steerDecline{reason: "not in GitHub Actions"}.announced(steerHarness(true)))
+}

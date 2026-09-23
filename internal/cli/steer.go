@@ -96,6 +96,9 @@ type steerOpts struct {
 	// implements agentruntime.Steerer.
 	runtime     agentruntime.Runtime
 	sandboxName string
+	// runParams carries what a SteerDecliner reads: the sandbox, the model,
+	// its fallbacks and the config's aliases.
+	runParams agentruntime.RunParams
 	// forgePlatform gates the watcher to GitHub: GitLab pipelines queue
 	// rather than cancel, so the same wiring there is a later step.
 	forgePlatform string
@@ -149,9 +152,21 @@ type steerOpts struct {
 // the step, a run id that never got exported, or a login the run cannot
 // resolve. Those are announced whatever the harness says, because suppressing
 // them would hide a plumbing regression behind silence.
+//
+// A runtime's own refusal is announced too, without being a defect: it
+// follows from the run's configuration, such as a pi model chain that can
+// fall back, and the operator should learn why that run was not steered.
 type steerDecline struct {
-	reason string
-	defect bool
+	reason   string
+	defect   bool
+	announce bool
+}
+
+// announced reports whether the operator hears about this decline. An
+// ordinary decline reaches only a harness that named steering itself; an
+// environment defect or a runtime's own refusal reaches everyone.
+func (d steerDecline) announced(h *harness.Harness) bool {
+	return d.defect || d.announce || h.SteerExplicitlyEnabled()
 }
 
 // ok reports whether steering may run. The zero steerDecline means eligible,
@@ -172,6 +187,14 @@ func steerEligible(o steerOpts) steerDecline {
 		return steerDecline{
 			reason: "this run cannot resolve the login its own output is posted under",
 			defect: true,
+		}
+	}
+	// Asked here rather than left to Steer, so a run the runtime would
+	// refuse never starts a watcher that polls and spends a steer slot to
+	// find out.
+	if d, ok := o.runtime.(agentruntime.SteerDecliner); ok {
+		if reason, declined := d.SteerDeclineReason(o.runParams); declined {
+			return steerDecline{reason: reason, announce: true}
 		}
 	}
 	return steerDecline{}
@@ -362,10 +385,7 @@ func startSteerWatcher(ctx context.Context, o steerOpts) *steerSession {
 		return nil
 	}
 	if d := steerEligible(o); !d.ok() {
-		// An ordinary decline is announced only to a harness that named
-		// steering itself; an environment defect is announced to everyone.
-		// See steerDecline for which is which and why.
-		if d.defect || o.harness.SteerExplicitlyEnabled() {
+		if d.announced(o.harness) {
 			o.printer.StepWarn("Steering disabled: " + d.reason)
 		}
 		return nil
