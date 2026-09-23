@@ -4,6 +4,7 @@ package e2etest
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -60,10 +61,20 @@ func buildCLIBinary(t *testing.T, modRoot string) string {
 	return binary
 }
 
-// gitHeadSHA returns the full HEAD SHA of dir, or "" if dir is not a git
-// checkout. Used to stamp e2e/behaviour CLI builds; an empty result is
-// non-fatal so module-cache consumers still compile.
+// gitHeadSHA returns the full HEAD SHA of dir, or "" if dir is not itself a
+// git checkout root. Used to stamp e2e/behaviour CLI builds; an empty result
+// is non-fatal so module-cache consumers still compile.
+//
+// Git discovers .git by walking ancestor directories, so `git -C dir
+// rev-parse HEAD` would happily return an enclosing checkout's HEAD for a
+// non-git dir nested inside one (e.g. a t.TempDir() under a git work tree).
+// Requiring dir itself to contain .git (a directory in normal checkouts, a
+// file in worktrees/submodules) keeps the stamp tied to the intended
+// checkout root instead of an unrelated ancestor.
 func gitHeadSHA(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return ""
+	}
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return ""
