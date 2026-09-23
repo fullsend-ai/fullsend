@@ -360,7 +360,7 @@ healthy leftover shared-token install.
 
 `gitlabroles.CheckBuiltinReadiness(present, registry)` is the
 verification check for the three built-in roles. It is independent of
-the migration gate and does **not** enable `enforced` or retire the
+the role-identity gate and does **not** enable `enforced` or retire the
 shared token.
 
 For each of Poller, Analyst, and Coder it confirms:
@@ -654,7 +654,7 @@ These two are described independently in four documents:
 - [`docs/guides/user/running-agents-locally.md`](../guides/user/running-agents-locally.md)
 - [`docs/problems/security-threat-model.md`](../problems/security-threat-model.md)
 
-- [ ] Any change that touches fallback or migration-gate behavior
+- [ ] Any change that touches fallback or role-identity gate behavior
       re-reads all four documents and updates them with the same
       terms. Do not edit only the file under your cursor.
 

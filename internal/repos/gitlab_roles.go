@@ -388,8 +388,8 @@ func writeGitLabRoleGate(ctx context.Context, cfg RoleProvisionConfig, mode gitl
 	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode == gitlabroles.ModeMigrating {
 		return fmt.Errorf("refusing to replace enforced %s with migrating; request rollback explicitly", forge.VarGitLabRoleMigration)
 	}
-	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode.UsesSharedOnly() && !cfg.RollbackConfirmed {
-		return fmt.Errorf("leaving enforced %s requires explicit rollback confirmation", forge.VarGitLabRoleMigration)
+	if parseErr == nil && liveMode.RequiresRoleCredentials() && mode.UsesSharedOnly() && !cfg.RollbackConfirmed {
+		return fmt.Errorf("leaving role-required %s requires explicit rollback confirmation", forge.VarGitLabRoleMigration)
 	}
 	if parseErr == nil && liveMode == mode {
 		// Avoid rewriting an already-current gate. This decision is made

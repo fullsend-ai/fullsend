@@ -1164,6 +1164,28 @@ func TestProvisionGitLabRoleCredentials_RequiresRollbackConfirmation(t *testing.
 	assert.Equal(t, gitlabroles.ModeRollback, result.Mode)
 }
 
+func TestProvisionGitLabRoleCredentials_MigratingRequiresRollbackConfirmation(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	key := "group/project/" + forge.VarGitLabRoleMigration
+	fc.VariableValues[key] = string(gitlabroles.ModeMigrating)
+	_, err := ProvisionGitLabRoleCredentials(context.Background(), RoleProvisionConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
+		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeRollback,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicit rollback confirmation")
+	assert.Equal(t, string(gitlabroles.ModeMigrating), fc.VariableValues[key])
+
+	result, err := ProvisionGitLabRoleCredentials(context.Background(), RoleProvisionConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
+		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeRollback,
+		RollbackConfirmed: true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, gitlabroles.ModeRollback, result.Mode)
+}
+
 func TestExtraGitLabRoleUninstallVarsListError(t *testing.T) {
 	t.Parallel()
 	fc := forge.NewFakeClient()

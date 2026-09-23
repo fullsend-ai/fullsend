@@ -364,9 +364,6 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	builtin := appendBuiltinRoleReadiness(status, present, reg, nil)
 	registered := appendRegisteredRoleReadiness(status, present, reg, nil)
 	status.GitLabRolesReady = status.GitLabRolesReady && builtin.Ready && registered.Ready
-	if !mode.RequiresRoleCredentials() {
-		return
-	}
 	for _, role := range rep.Missing {
 		status.Drifts = append(status.Drifts, Drift{
 			Field:    "gitlab-role:" + string(role),

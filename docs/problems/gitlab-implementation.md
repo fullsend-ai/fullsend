@@ -539,7 +539,7 @@ Modified packages (minimized via forge.Client abstraction):
 > (one PAT per agent). The current registered-role contract — built-in
 > Poller, Analyst, and Coder plus administrator-registered custom roles,
 > with `FULLSEND_GITLAB_*_TOKEN` identifiers, a trusted install-state
-> registry, and an explicit migration gate — is defined in
+> registry, and an explicit role-identity gate — is defined in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 > `repos install` provisions built-in and custom role credentials on
 > fresh and existing shared-token installs and, when every registered

@@ -832,6 +832,26 @@ func TestGitLabRoleWorkNeededExistingEnforced(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestGitLabRoleWorkNeededExistingMigratingRequiresRollbackConfirmation(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.VariableValues["g/p/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["g/p/"+forge.VarGitLabRoleMigration] = true
+
+	needed, _, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeRollback}, "g", "p")
+	require.Error(t, err)
+	assert.False(t, needed)
+	assert.Contains(t, err.Error(), "gitlab-role-rollback-confirmed")
+
+	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{
+		gitlabRoleModeFlag:          gitlabroles.ModeRollback,
+		gitlabRoleRollbackConfirmed: true,
+	}, "g", "p")
+	require.NoError(t, err)
+	assert.True(t, needed)
+	assert.Equal(t, gitlabroles.ModeRollback, mode)
+}
+
 func TestGitLabRoleWorkNeededFreshPreservesEnforcedGate(t *testing.T) {
 	t.Parallel()
 	fake := &forge.FakeClient{
