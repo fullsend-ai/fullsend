@@ -1,14 +1,21 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func TestPreflightGitHubResult_SkippedFields(t *testing.T) {
-	// Verify the result struct reports skip reasons correctly.
 	r := &preflightGitHubResult{Skipped: true, SkipReason: "GH_TOKEN not set in sandbox"}
 	assert.True(t, r.Skipped)
 	assert.Equal(t, "GH_TOKEN not set in sandbox", r.SkipReason)
@@ -21,7 +28,489 @@ func TestPreflightGitHubResult_NotSkipped(t *testing.T) {
 }
 
 func TestPreflightGitHubTimeout(t *testing.T) {
-	// Ensure the timeout constant is set to a reasonable value.
 	require.Greater(t, preflightGitHubTimeout.Seconds(), float64(0))
 	require.LessOrEqual(t, preflightGitHubTimeout.Seconds(), float64(60))
+}
+
+func TestSanitizeTokenPrefix(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "ghs_", sanitizeTokenPrefix("ghs_"))
+	assert.Equal(t, "ghs_", sanitizeTokenPrefix("ghs_THIS_IS_A_SECRET_TOKEN"))
+	assert.Equal(t, "ab", sanitizeTokenPrefix("ab"))
+	assert.Equal(t, "", sanitizeTokenPrefix("  "))
+}
+
+func TestTokenTypeFromPrefix(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "installation", tokenTypeFromPrefix("ghs_"))
+	assert.Equal(t, "pat", tokenTypeFromPrefix("ghp_"))
+	assert.Equal(t, "oauth", tokenTypeFromPrefix("gho_"))
+	assert.Equal(t, "user-to-server", tokenTypeFromPrefix("ghu_"))
+	assert.Equal(t, "refresh", tokenTypeFromPrefix("ghr_"))
+	assert.Equal(t, "fine-grained", tokenTypeFromPrefix("gith"))
+	assert.Equal(t, "unknown", tokenTypeFromPrefix("xxxx"))
+}
+
+func TestParseTokenProbe(t *testing.T) {
+	t.Parallel()
+	pref, n, status := parseTokenProbe("TOKEN_PREFIX ghs_\nTOKEN_LEN 40\nOK\n")
+	assert.Equal(t, "ghs_", pref)
+	assert.Equal(t, 40, n)
+	assert.Equal(t, "OK", status)
+
+	pref, n, status = parseTokenProbe("NOTOKEN\n")
+	assert.Empty(t, pref)
+	assert.Zero(t, n)
+	assert.Equal(t, "NOTOKEN", status)
+
+	pref, n, status = parseTokenProbe("NOGH\n")
+	assert.Equal(t, "NOGH", status)
+
+	_, n, _ = parseTokenProbe("TOKEN_PREFIX ghs_SECRETOKENVALUE\nTOKEN_LEN notanumber\nOK")
+	assert.Zero(t, n)
+	pref, _, _ = parseTokenProbe("TOKEN_PREFIX ghs_SECRETOKENVALUE\nOK")
+	assert.Equal(t, "ghs_", pref)
+}
+
+func TestClassifyGitHubAPIFailure(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		kind githubFailKind
+	}{
+		{"HTTP 401: Bad credentials", githubFailAuth},
+		{"401 Unauthorized", githubFailAuth},
+		{"Requires authentication", githubFailAuth},
+		{"Resource not accessible by integration", githubFailAuth},
+		{"Could not resolve host: api.github.com", githubFailDNS},
+		{"Name or service not known", githubFailDNS},
+		{"Connection refused", githubFailConnection},
+		{"Connection timed out", githubFailConnection},
+		{"Network is unreachable", githubFailConnection},
+		{"Received HTTP code 403 from proxy after CONNECT", githubFailProxyCONNECT},
+		{"Tunnel connection failed: 403 Forbidden", githubFailProxyCONNECT},
+		{"CONNECT tunnel to api.github.com failed", githubFailProxyCONNECT},
+		{"proxy returned 403", githubFailProxyCONNECT},
+		{"HTTP 403 Forbidden", githubFailForbidden},
+		{"something else entirely", githubFailUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.kind, classifyGitHubAPIFailure(tc.in))
+		})
+	}
+}
+
+func TestDiagnoseGitHubAPIFailure(t *testing.T) {
+	t.Parallel()
+	err := diagnoseGitHubAPIFailure(preflightCheckConnect, "CONNECT_FAIL 403", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy allowlist")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckConnect, "Connection refused", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection failed")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckConnect, "Could not resolve host: api.github.com", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DNS resolution failed")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckGraphQL, "HTTP 403 Forbidden", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GraphQL")
+	assert.Contains(t, err.Error(), "POST /graphql")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "HTTP 401: Bad credentials", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.NotContains(t, err.Error(), "proxy allowlist")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "Could not resolve host: api.github.com", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DNS resolution failed")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "Connection refused", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection failed")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "Received HTTP code 403 from proxy after CONNECT", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy allowlist")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "HTTP 403 Forbidden", 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after proxy CONNECT succeeded")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "weird failure", 7)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit 7")
+	assert.Contains(t, err.Error(), "weird failure")
+
+	err = diagnoseGitHubAPIFailure(preflightCheckREST, "", 9)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit 9")
+}
+
+func TestRecordGitHubTokenMint(t *testing.T) {
+	recordGitHubTokenMint("", time.Time{})
+	t.Cleanup(func() { recordGitHubTokenMint("", time.Time{}) })
+
+	expires, minted := recordedGitHubTokenMintCopy()
+	assert.Empty(t, expires)
+	assert.True(t, minted.IsZero())
+
+	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)
+	recordGitHubTokenMint("2026-06-15T12:00:00Z", ts)
+	expires, minted = recordedGitHubTokenMintCopy()
+	assert.Equal(t, "2026-06-15T12:00:00Z", expires)
+	assert.Equal(t, ts, minted)
+
+	meta := enrichTokenMeta(&preflightTokenMeta{Prefix: "ghs_", Type: "installation", Length: 40})
+	require.NotNil(t, meta)
+	assert.Equal(t, "2026-06-15T12:00:00Z", meta.ExpiresAt)
+	assert.Equal(t, "2026-06-15T11:00:00Z", meta.MintedAt)
+
+	nilMeta := enrichTokenMeta(nil)
+	require.NotNil(t, nilMeta)
+	assert.Equal(t, "2026-06-15T12:00:00Z", nilMeta.ExpiresAt)
+	assert.Equal(t, "2026-06-15T11:00:00Z", nilMeta.MintedAt)
+
+	recordGitHubTokenMint("", time.Time{})
+	assert.Nil(t, enrichTokenMeta(&preflightTokenMeta{}))
+}
+
+func TestLogGitHubPreflight(t *testing.T) {
+	t.Parallel()
+	logGitHubPreflight(nil, &preflightGitHubResult{Outcome: preflightOutcomePass})
+	var buf bytes.Buffer
+	p := ui.New(&buf)
+	logGitHubPreflight(p, nil)
+	assert.Empty(t, buf.String())
+
+	logGitHubPreflight(p, &preflightGitHubResult{
+		Outcome: preflightOutcomePass,
+		Token: &preflightTokenMeta{
+			Prefix:    "ghs_",
+			Type:      "installation",
+			ExpiresAt: "2026-06-15T12:00:00Z",
+			MintedAt:  "2026-06-15T11:00:00Z",
+		},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "ghs_")
+	assert.Contains(t, out, "installation")
+	assert.Contains(t, out, "2026-06-15T12:00:00Z")
+	assert.Contains(t, out, "2026-06-15T11:00:00Z")
+	assert.Contains(t, out, preflightResultsPath)
+	assert.NotContains(t, out, "ghs_secret")
+
+	buf.Reset()
+	logGitHubPreflight(p, &preflightGitHubResult{PersistError: "disk full"})
+	assert.Contains(t, buf.String(), "Could not write preflight results")
+	assert.Contains(t, buf.String(), "disk full")
+}
+
+type preflightExecResp struct {
+	stdout, stderr string
+	exit           int
+	err            error
+}
+
+func stubPreflightExec(t *testing.T, resp map[string]preflightExecResp) sandboxExecFunc {
+	t.Helper()
+	return func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		key := preflightExecKey(cmd)
+		r, ok := resp[key]
+		if !ok {
+			t.Fatalf("unexpected preflight command %q (key %q)", cmd, key)
+		}
+		return r.stdout, r.stderr, r.exit, r.err
+	}
+}
+
+func preflightExecKey(cmd string) string {
+	switch {
+	case strings.Contains(cmd, "TOKEN_PREFIX"):
+		return "probe"
+	case strings.Contains(cmd, "CONNECT %s:%d") || strings.Contains(cmd, "CONNECT_SKIP"):
+		return "connect"
+	case strings.Contains(cmd, "gh api graphql"):
+		return "graphql"
+	case strings.Contains(cmd, "gh api "+githubPreflightRESTEndpoint):
+		return "rest"
+	default:
+		return "other"
+	}
+}
+
+func successPreflightResps() map[string]preflightExecResp {
+	return map[string]preflightExecResp{
+		"probe":   {stdout: "TOKEN_PREFIX ghs_\nTOKEN_LEN 40\nOK\n"},
+		"connect": {stdout: "CONNECT_OK HTTP/1.1 200 Connection Established\n"},
+		"rest":    {stdout: `{"rate":{}}`},
+		"graphql": {stdout: `{"data":{"rateLimit":{"remaining":5000}}}`},
+	}
+}
+
+func TestCheckSandboxGitHubConnectivity_Success(t *testing.T) {
+	recordGitHubTokenMint("2026-06-15T12:00:00Z", time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC))
+	t.Cleanup(func() { recordGitHubTokenMint("", time.Time{}) })
+	preflightClock = func() time.Time { return time.Date(2026, 6, 15, 11, 30, 0, 0, time.UTC) }
+	t.Cleanup(func() { preflightClock = func() time.Time { return time.Now().UTC() } })
+
+	var persisted *preflightGitHubResult
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, successPreflightResps()),
+		func(_ string, r *preflightGitHubResult) error {
+			persisted = r
+			return nil
+		})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.Skipped)
+	assert.Equal(t, preflightOutcomePass, result.Outcome)
+	require.NotNil(t, result.Token)
+	assert.Equal(t, "ghs_", result.Token.Prefix)
+	assert.Equal(t, "installation", result.Token.Type)
+	assert.Equal(t, 40, result.Token.Length)
+	assert.Equal(t, "2026-06-15T12:00:00Z", result.Token.ExpiresAt)
+	assert.Equal(t, "2026-06-15T11:00:00Z", result.Token.MintedAt)
+	assert.Equal(t, "2026-06-15T11:30:00Z", result.CheckedAt)
+	assert.True(t, result.Checks[preflightCheckConnect].OK)
+	assert.True(t, result.Checks[preflightCheckREST].OK)
+	assert.True(t, result.Checks[preflightCheckGraphQL].OK)
+	require.NotNil(t, persisted)
+	assert.Equal(t, preflightOutcomePass, persisted.Outcome)
+
+	js, marshalErr := json.Marshal(result)
+	require.NoError(t, marshalErr)
+	assert.NotContains(t, string(js), "ghs_secret")
+	assert.NotContains(t, string(js), "GH_TOKEN=")
+}
+
+func TestCheckSandboxGitHubConnectivity_SkipNoToken(t *testing.T) {
+	resp := map[string]preflightExecResp{"probe": {stdout: "NOTOKEN\n"}}
+	var persisted *preflightGitHubResult
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp),
+		func(_ string, r *preflightGitHubResult) error {
+			persisted = r
+			return nil
+		})
+	require.NoError(t, err)
+	assert.True(t, result.Skipped)
+	assert.Equal(t, preflightOutcomeSkip, result.Outcome)
+	assert.Equal(t, "GH_TOKEN not set in sandbox", result.SkipReason)
+	require.NotNil(t, persisted)
+}
+
+func TestCheckSandboxGitHubConnectivity_SkipNoGh(t *testing.T) {
+	resp := map[string]preflightExecResp{"probe": {stdout: "NOGH\n"}}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Skipped)
+	assert.Equal(t, "gh CLI not available in sandbox", result.SkipReason)
+}
+
+func TestCheckSandboxGitHubConnectivity_SkipProbeError(t *testing.T) {
+	resp := map[string]preflightExecResp{"probe": {err: fmt.Errorf("openshell exec failed to start")}}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Skipped)
+	assert.Contains(t, result.SkipReason, "probe command failed")
+}
+
+func TestCheckSandboxGitHubConnectivity_SkipProbeNonZero(t *testing.T) {
+	resp := map[string]preflightExecResp{"probe": {stdout: "oops", exit: 1}}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Skipped)
+	assert.Equal(t, "GH_TOKEN not set in sandbox", result.SkipReason)
+}
+
+func TestCheckSandboxGitHubConnectivity_ConnectBlocked(t *testing.T) {
+	resp := successPreflightResps()
+	resp["connect"] = preflightExecResp{
+		stdout: "CONNECT_FAIL HTTP/1.1 403 Forbidden",
+		exit:   1,
+	}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp),
+		func(string, *preflightGitHubResult) error { return nil })
+	require.Error(t, err)
+	assert.Equal(t, preflightOutcomeFail, result.Outcome)
+	assert.False(t, result.Checks[preflightCheckConnect].OK)
+	assert.Contains(t, err.Error(), "proxy allowlist")
+	assert.Contains(t, result.Error, "proxy allowlist")
+	_, restRan := result.Checks[preflightCheckREST]
+	assert.False(t, restRan, "REST must not run after CONNECT failure")
+}
+
+func TestCheckSandboxGitHubConnectivity_ConnectExecError(t *testing.T) {
+	resp := successPreflightResps()
+	resp["connect"] = preflightExecResp{err: fmt.Errorf("command timed out after 30s")}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.Error(t, err)
+	assert.False(t, result.Checks[preflightCheckConnect].OK)
+	assert.Contains(t, err.Error(), "proxy allowlist")
+}
+
+func TestCheckSandboxGitHubConnectivity_ConnectSkipPython(t *testing.T) {
+	resp := successPreflightResps()
+	resp["connect"] = preflightExecResp{stdout: "CONNECT_SKIP nopython\n"}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Checks[preflightCheckConnect].OK)
+	assert.Contains(t, result.Checks[preflightCheckConnect].Detail, "skipped")
+	assert.True(t, result.Checks[preflightCheckREST].OK)
+	assert.True(t, result.Checks[preflightCheckGraphQL].OK)
+}
+
+func TestCheckSandboxGitHubConnectivity_RESTUnauthorized(t *testing.T) {
+	resp := successPreflightResps()
+	resp["rest"] = preflightExecResp{stdout: "HTTP 401: Bad credentials", exit: 1}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.NotContains(t, err.Error(), "proxy allowlist")
+	assert.True(t, result.Checks[preflightCheckConnect].OK)
+	assert.False(t, result.Checks[preflightCheckREST].OK)
+	_, graphqlRan := result.Checks[preflightCheckGraphQL]
+	assert.False(t, graphqlRan, "GraphQL must not run after REST auth failure")
+}
+
+func TestCheckSandboxGitHubConnectivity_RESTDNS(t *testing.T) {
+	resp := successPreflightResps()
+	resp["rest"] = preflightExecResp{stdout: "Could not resolve host: api.github.com", exit: 1}
+	_, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DNS resolution failed")
+}
+
+func TestCheckSandboxGitHubConnectivity_RESTExecError(t *testing.T) {
+	resp := successPreflightResps()
+	resp["rest"] = preflightExecResp{err: fmt.Errorf("command timed out after 30s")}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.Error(t, err)
+	assert.False(t, result.Checks[preflightCheckREST].OK)
+}
+
+func TestCheckSandboxGitHubConnectivity_GraphQLBlocked(t *testing.T) {
+	resp := successPreflightResps()
+	resp["graphql"] = preflightExecResp{
+		stdout: "HTTP 403: Forbidden from L7 policy",
+		exit:   1,
+	}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp),
+		func(string, *preflightGitHubResult) error { return nil })
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GraphQL")
+	assert.Contains(t, err.Error(), "POST /graphql")
+	assert.True(t, result.Checks[preflightCheckConnect].OK)
+	assert.True(t, result.Checks[preflightCheckREST].OK)
+	assert.False(t, result.Checks[preflightCheckGraphQL].OK)
+}
+
+func TestCheckSandboxGitHubConnectivity_GraphQLExecError(t *testing.T) {
+	resp := successPreflightResps()
+	resp["graphql"] = preflightExecResp{err: fmt.Errorf("command timed out after 30s")}
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
+	require.Error(t, err)
+	assert.False(t, result.Checks[preflightCheckGraphQL].OK)
+	assert.Contains(t, err.Error(), "GraphQL")
+}
+
+func TestCheckSandboxGitHubConnectivity_PersistErrorOnPass(t *testing.T) {
+	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, successPreflightResps()),
+		func(string, *preflightGitHubResult) error {
+			return fmt.Errorf("upload failed")
+		})
+	require.NoError(t, err)
+	assert.Equal(t, preflightOutcomePass, result.Outcome)
+	assert.Equal(t, "upload failed", result.PersistError)
+}
+
+func TestCheckSandboxGitHubConnectivity_WrapperSkip(t *testing.T) {
+	orig := sandboxExec
+	t.Cleanup(func() { sandboxExec = orig })
+	sandboxExec = func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "TOKEN_PREFIX") {
+			return "NOTOKEN\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	result, err := checkSandboxGitHubConnectivity("sb")
+	require.NoError(t, err)
+	assert.True(t, result.Skipped)
+	assert.Equal(t, preflightOutcomeSkip, result.Outcome)
+}
+
+func TestPersistPreflightGitHubResult(t *testing.T) {
+	doc := &preflightGitHubResult{
+		Outcome:   preflightOutcomePass,
+		CheckedAt: "2026-06-15T11:30:00Z",
+		Token:     &preflightTokenMeta{Prefix: "ghs_", Type: "installation", Length: 40},
+	}
+	var gotCmd string
+	execFn := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		gotCmd = cmd
+		return "", "", 0, nil
+	}
+	require.NoError(t, persistPreflightGitHubResult(execFn)("sb", doc))
+	assert.Contains(t, gotCmd, preflightResultsPath)
+	assert.Contains(t, gotCmd, "base64 -d")
+
+	decoded := decodePersistPayload(t, gotCmd)
+	var got preflightGitHubResult
+	require.NoError(t, json.Unmarshal(decoded, &got))
+	assert.Equal(t, preflightOutcomePass, got.Outcome)
+	require.NotNil(t, got.Token)
+	assert.Equal(t, "ghs_", got.Token.Prefix)
+	assert.NotContains(t, string(decoded), "ghs_secretvalue")
+
+	execFn = func(string, string, time.Duration) (string, string, int, error) {
+		return "", "", 0, fmt.Errorf("exec failed")
+	}
+	err := persistPreflightGitHubResult(execFn)("sb", doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exec failed")
+
+	execFn = func(string, string, time.Duration) (string, string, int, error) {
+		return "", "permission denied", 1, nil
+	}
+	err = persistPreflightGitHubResult(execFn)("sb", doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+
+	execFn = func(string, string, time.Duration) (string, string, int, error) {
+		return "", "", 2, nil
+	}
+	err = persistPreflightGitHubResult(execFn)("sb", doc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit 2")
+}
+
+func TestGitHubPreflightCommands(t *testing.T) {
+	t.Parallel()
+	env := "/sandbox/workspace/.env"
+	assert.Contains(t, githubPreflightProbeCmd(env), env)
+	assert.Contains(t, githubPreflightProbeCmd(env), "TOKEN_PREFIX")
+	assert.Contains(t, githubPreflightConnectCmd(env), "python3 -c")
+	assert.Contains(t, githubPreflightConnectCmd(env), "CONNECT %s:%d")
+	assert.Contains(t, githubPreflightRESTCmd(env), "gh api "+githubPreflightRESTEndpoint)
+	assert.Contains(t, githubPreflightGraphQLCmd(env), "gh api graphql")
+	assert.Contains(t, githubPreflightGraphQLCmd(env), githubPreflightGraphQLQuery)
+	assert.NotContains(t, githubPreflightProbeCmd(env), "gh api "+githubPreflightRESTEndpoint,
+		"probe must not conflate token presence with REST reachability")
+}
+
+func decodePersistPayload(t *testing.T, cmd string) []byte {
+	t.Helper()
+	const prefix = "printf '%s' '"
+	start := strings.Index(cmd, prefix)
+	require.GreaterOrEqual(t, start, 0, cmd)
+	rest := cmd[start+len(prefix):]
+	end := strings.Index(rest, "'")
+	require.GreaterOrEqual(t, end, 0, cmd)
+	decoded, err := base64.StdEncoding.DecodeString(rest[:end])
+	require.NoError(t, err)
+	return decoded
 }

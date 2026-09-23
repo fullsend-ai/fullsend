@@ -310,6 +310,17 @@ the minted App identity.
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
 
+## GitHub API preflight
+
+Before the agent starts, `fullsend run` checks that the sandbox can actually use
+GitHub: a raw HTTPS CONNECT to `api.github.com`, an authenticated REST GET to
+`/rate_limit`, and a GraphQL query (the path `gh` uses for most reads). Any of
+those failing aborts the run so the agent does not burn its timeout on doomed
+API calls. The check is skipped when the sandbox has no `GH_TOKEN` or no `gh`
+binary. Workflow logs print token prefix, type, expiry, and mint time (never
+the token). The same outcome is written to
+`/sandbox/workspace/.preflight-results.json` inside the sandbox.
+
 ## Related
 
 - [Running Agents Locally](../guides/user/running-agents-locally.md) for a step-by-step walkthrough

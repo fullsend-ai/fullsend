@@ -461,6 +461,7 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 └── workspace/                       ← SandboxWorkspace
     ├── .env                            Environment variables (sourced before claude)
     ├── .env.d/                         Additional env files (host_files expand)
+    ├── .preflight-results.json         GitHub API preflight outcome (pass/skip/fail)
     │
     └── <repo-name>/                 ← Claude Code's working directory (cd target)
         ├── CLAUDE.md                   Project instructions (repo's own or injected bridge)
@@ -527,6 +528,18 @@ defense-in-depth passes before the agent starts:
    `fullsend scan context` inside the sandbox after all files are assembled.
 
 Critical findings block the run in `fail_mode: closed`.
+
+### GitHub API preflight
+
+`run.go` step 9b-2 (`checkSandboxGitHubConnectivity`) runs after the pre-agent
+scan and before the agent loop. It sources `/sandbox/workspace/.env` and
+probes, in order: HTTPS CONNECT to `api.github.com:443`, `gh api /rate_limit`,
+and `gh api graphql`. REST success is not enough — an L7 proxy can allow GET
+while blocking POST `/graphql`. Failures are fatal. Skip (no `GH_TOKEN` / no
+`gh`) is not. The JSON outcome is written to
+`/sandbox/workspace/.preflight-results.json` so the agent and retro analysis
+can see what the harness determined, including token prefix/type/expiry
+(never the token itself).
 
 ## Dummy runtime operations
 
