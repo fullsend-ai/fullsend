@@ -300,9 +300,9 @@ propagation path in `internal/cli/run.go` or `internal/telemetry/`:
 flag any outbound traceparent built from a local `SpanContext()`
 without this flag preservation as a **medium-severity** finding. The
 fix is to reuse `resolveTraceIdentity()`'s preserved flags or
-`telemetry.TraceparentWithFlags` with the preserved inbound flags — the
-regression this catches is hardcoding the unsampled case, not that the
-inbound parent is always unsampled.
+`telemetry.TraceparentWithFlags` with the preserved inbound flags
+(preventing an unsampled parent decision from being re-advertised as
+sampled via the local `AlwaysSample` flag).
 
 ## File exporter output format
 
