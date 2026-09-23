@@ -811,6 +811,13 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 			// start comment as Terminated. See #4058.
 			for _, c := range leftover {
 				if delErr := client.DeleteComment(ctx, project, number, c.ID); delErr != nil {
+					// A prior cleanup pass (e.g. a retried or concurrent
+					// reconcile-status run) may have already deleted this
+					// comment; treat that as success, mirroring
+					// JiraClient.DeleteNonTerminalStatusComments.
+					if tracker.IsNotFound(delErr) {
+						continue
+					}
 					return fmt.Errorf("deleting leftover start comment %s: %w", c.ID, delErr)
 				}
 			}

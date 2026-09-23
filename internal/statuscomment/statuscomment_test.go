@@ -798,6 +798,34 @@ func TestReconcileOrphaned_DeleteLeftoverStartError(t *testing.T) {
 	assert.Empty(t, fc.UpdatedComments, "must not fall back to marking the start comment Terminated")
 }
 
+func TestReconcileOrphaned_DeleteLeftoverStartNotFoundIsSwallowed(t *testing.T) {
+	// A prior cleanup pass (a retried or concurrent reconcile-status run)
+	// may have already deleted the leftover start comment. That must not
+	// fail the overall reconcile.
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {
+			{
+				ID:     10,
+				Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 10:00 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+			{
+				ID: 12,
+				Body: "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n" +
+					"🤖 Finished Code · ✅ Success · Started 10:00 AM UTC · Completed 10:11 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+		},
+	}
+	fc.Errors = map[string]error{"DeleteIssueComment": fmt.Errorf("%w: comment 10", forge.ErrNotFound)}
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.UpdatedComments, "must not fall back to marking the start comment Terminated")
+}
+
 func TestReconcileOrphaned_JiraDeletesLeftoverWhenTerminalSiblingExists(t *testing.T) {
 	jiraClient, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)

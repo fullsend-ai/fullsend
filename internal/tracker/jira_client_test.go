@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -428,6 +430,121 @@ func TestJiraClient_FindStatusComment_PrefersTerminalSibling(t *testing.T) {
 	if !terminal {
 		t.Error("expected terminal=true when a completion comment exists for the same run")
 	}
+}
+
+func TestJiraClient_DeleteNonTerminalStatusComments(t *testing.T) {
+	t.Run("property-backed leftover is deleted", func(t *testing.T) {
+		fc := &FakeJiraClient{}
+		c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+		ctx := context.Background()
+		marker := "<!-- fullsend:agent-status:run-99 -->"
+
+		start, err := c.CreateStatusComment(ctx, "PROJ", 42, "started", marker, false)
+		if err != nil {
+			t.Fatalf("CreateStatusComment start: %v", err)
+		}
+		completion, err := c.CreateStatusComment(ctx, "PROJ", 42, "finished", marker, true)
+		if err != nil {
+			t.Fatalf("CreateStatusComment completion: %v", err)
+		}
+
+		if err := c.DeleteNonTerminalStatusComments(ctx, "PROJ", 42, marker); err != nil {
+			t.Fatalf("DeleteNonTerminalStatusComments: %v", err)
+		}
+
+		remaining, err := c.ListComments(ctx, "PROJ", 42)
+		if err != nil {
+			t.Fatalf("ListComments: %v", err)
+		}
+		if len(remaining) != 1 || remaining[0].ID != completion.ID {
+			t.Fatalf("remaining comments = %+v, want only completion comment %s", remaining, completion.ID)
+		}
+		for _, c := range remaining {
+			if c.ID == start.ID {
+				t.Errorf("leftover start comment %s was not deleted", start.ID)
+			}
+		}
+	})
+
+	t.Run("not-found delete error is swallowed", func(t *testing.T) {
+		fc := &FakeJiraClient{}
+		c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+		ctx := context.Background()
+		marker := "<!-- fullsend:agent-status:run-99 -->"
+
+		if _, err := c.CreateStatusComment(ctx, "PROJ", 42, "started", marker, false); err != nil {
+			t.Fatalf("CreateStatusComment start: %v", err)
+		}
+		if _, err := c.CreateStatusComment(ctx, "PROJ", 42, "finished", marker, true); err != nil {
+			t.Fatalf("CreateStatusComment completion: %v", err)
+		}
+
+		// Simulate a concurrent/retried cleanup pass that already deleted
+		// the leftover start comment by the time this call's DeleteComment
+		// runs.
+		fc.DeleteError = fmt.Errorf("delete comment 1 on PROJ-42: %w", forge.ErrNotFound)
+
+		if err := c.DeleteNonTerminalStatusComments(ctx, "PROJ", 42, marker); err != nil {
+			t.Fatalf("DeleteNonTerminalStatusComments returned error for a not-found delete: %v", err)
+		}
+	})
+
+	t.Run("non-not-found delete error propagates", func(t *testing.T) {
+		fc := &FakeJiraClient{}
+		c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+		ctx := context.Background()
+		marker := "<!-- fullsend:agent-status:run-99 -->"
+
+		if _, err := c.CreateStatusComment(ctx, "PROJ", 42, "started", marker, false); err != nil {
+			t.Fatalf("CreateStatusComment start: %v", err)
+		}
+		if _, err := c.CreateStatusComment(ctx, "PROJ", 42, "finished", marker, true); err != nil {
+			t.Fatalf("CreateStatusComment completion: %v", err)
+		}
+
+		fc.DeleteError = errors.New("jira api rate limited")
+
+		err := c.DeleteNonTerminalStatusComments(ctx, "PROJ", 42, marker)
+		if err == nil {
+			t.Fatal("DeleteNonTerminalStatusComments: got nil error, want propagated delete error")
+		}
+		if !strings.Contains(err.Error(), "deleting leftover status comment") {
+			t.Errorf("error = %q, want it to mention deleting leftover status comment", err.Error())
+		}
+	})
+
+	t.Run("legacy no-property leftover is deleted via body scan", func(t *testing.T) {
+		fc := &FakeJiraClient{}
+		c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+		ctx := context.Background()
+		marker := "<!-- fullsend:agent-status:legacy-run -->"
+
+		legacyStart, err := fc.CreateComment(ctx, "PROJ-42", marker+"\nstarted")
+		if err != nil {
+			t.Fatalf("CreateComment legacy start: %v", err)
+		}
+		legacyCompletion, err := fc.CreateComment(ctx, "PROJ-42", marker+"\n<!-- fullsend:status:terminal -->\nfinished")
+		if err != nil {
+			t.Fatalf("CreateComment legacy completion: %v", err)
+		}
+
+		if err := c.DeleteNonTerminalStatusComments(ctx, "PROJ", 42, marker); err != nil {
+			t.Fatalf("DeleteNonTerminalStatusComments: %v", err)
+		}
+
+		remaining, err := c.ListComments(ctx, "PROJ", 42)
+		if err != nil {
+			t.Fatalf("ListComments: %v", err)
+		}
+		if len(remaining) != 1 || remaining[0].ID != legacyCompletion.ID {
+			t.Fatalf("remaining comments = %+v, want only legacy completion comment %s", remaining, legacyCompletion.ID)
+		}
+		for _, c := range remaining {
+			if c.ID == legacyStart.ID {
+				t.Errorf("legacy leftover start comment %s was not deleted", legacyStart.ID)
+			}
+		}
+	})
 }
 
 func TestJiraClient_FindStatusComment_LegacyFallback(t *testing.T) {

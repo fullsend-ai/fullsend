@@ -232,14 +232,16 @@ func (c *JiraClient) FindStatusComment(ctx context.Context, project string, numb
 	return nil, false, nil
 }
 
-// DeleteNonTerminalStatusComments implements StatusCommentClient. It mirrors
-// FindStatusComment's lookup order — property lookup first, falling back to
-// legacy body scanning only when no comment carries the status property —
-// so the two methods agree on which comments belong to marker. visibleStatusBody
-// strips the marker/terminal tag from a property-backed comment's stored
-// body, so once any comment matches by property, body scanning is skipped
-// entirely to avoid missing property-backed leftovers whose visible body no
-// longer carries the marker.
+// DeleteNonTerminalStatusComments implements StatusCommentClient. Both the
+// property scan and the legacy body scan run unconditionally and their
+// non-terminal matches are combined (deduped by comment ID): a
+// property-backed comment's visible body has the marker/terminal tag
+// stripped by visibleStatusBody, so the body scan alone would miss it, but
+// a pre-property (legacy) comment has no property to match, so the
+// property scan alone would miss it too. Gating one scan on the other
+// finding a match — as FindStatusComment does for its single best match —
+// would risk leaving a legacy leftover undeleted whenever a property-backed
+// sibling for the same marker also exists.
 func (c *JiraClient) DeleteNonTerminalStatusComments(ctx context.Context, project string, number int, marker string) error {
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
@@ -248,7 +250,13 @@ func (c *JiraClient) DeleteNonTerminalStatusComments(ctx context.Context, projec
 	}
 
 	var toDelete []string
-	matchedByProperty := false
+	seen := make(map[string]bool)
+	addToDelete := func(id string) {
+		if !seen[id] {
+			seen[id] = true
+			toDelete = append(toDelete, id)
+		}
+	}
 	for i := range comments {
 		for _, prop := range comments[i].Properties {
 			if prop.Key != statusPropertyKey {
@@ -258,21 +266,18 @@ func (c *JiraClient) DeleteNonTerminalStatusComments(ctx context.Context, projec
 			if json.Unmarshal(prop.Value, &stored) != nil || stored.Marker != marker {
 				continue
 			}
-			matchedByProperty = true
 			if !stored.Terminal {
-				toDelete = append(toDelete, comments[i].ID)
+				addToDelete(comments[i].ID)
 			}
 		}
 	}
-	if !matchedByProperty {
-		for i := range comments {
-			body := jira.ADFToMarkdown(comments[i].Body)
-			if !strings.Contains(body, marker) {
-				continue
-			}
-			if !strings.Contains(body, "fullsend:status:terminal") {
-				toDelete = append(toDelete, comments[i].ID)
-			}
+	for i := range comments {
+		body := jira.ADFToMarkdown(comments[i].Body)
+		if !strings.Contains(body, marker) {
+			continue
+		}
+		if !strings.Contains(body, "fullsend:status:terminal") {
+			addToDelete(comments[i].ID)
 		}
 	}
 
