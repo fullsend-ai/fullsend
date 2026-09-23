@@ -38,30 +38,47 @@ const (
 	githubPreflightTokenPrefixLen = 4
 )
 
-// githubConnectPython is a raw CONNECT probe: it talks to the HTTPS proxy
+// githubConnectScript is a raw CONNECT probe: it talks to the HTTPS proxy
 // (or the origin, when no proxy is set) without issuing an HTTP method or
 // path. REST GET /rate_limit can succeed while POST /graphql is blocked
 // (#4016), so the CONNECT probe must not itself be a REST GET.
-const githubConnectPython = `import os,socket,sys
-from urllib.parse import urlparse
-host,port="api.github.com",443
-proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-try:
-    if not proxy:
-        s=socket.create_connection((host,port),10); s.close()
-        print("CONNECT_OK direct"); sys.exit(0)
-    u=urlparse(proxy)
-    s=socket.create_connection((u.hostname, u.port or 80),10)
-    s.sendall(("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n"%(host,port,host,port)).encode())
-    line=s.recv(1024).decode("iso-8859-1","replace").split("\r\n",1)[0]
-    s.close()
-    parts=line.split(" ",2)
-    code=parts[1] if len(parts)>1 else ""
-    if code.startswith("2"):
-        print("CONNECT_OK", line); sys.exit(0)
-    print("CONNECT_FAIL", line); sys.exit(1)
-except Exception as e:
-    print("CONNECT_FAIL", e); sys.exit(1)`
+//
+// It runs under `node`, not `python3`: the sandbox's GitHub egress profile
+// allowlists connections opened by `gh` and `node` (see
+// profiles/fullsend-github-ro.yaml `binaries:`), and OpenShell's OPA policy
+// denies a raw socket opened by any other binary regardless of the target
+// host — including python3. A python3-based probe is blocked by that binary
+// check before it ever exercises the proxy, so it always reports a false
+// "proxy allowlist" failure in a correctly locked-down sandbox.
+const githubConnectScript = `const net=require("net");
+const host="api.github.com",port=443;
+const proxy=process.env.HTTPS_PROXY||process.env.https_proxy||process.env.HTTP_PROXY||process.env.http_proxy;
+function done(ok,msg){console.log(ok?"CONNECT_OK":"CONNECT_FAIL",msg||"");process.exit(ok?0:1);}
+try{
+  if(!proxy){
+    const s=net.connect({host:host,port:port,timeout:10000});
+    s.on("connect",function(){s.destroy();done(true,"direct");});
+    s.on("timeout",function(){s.destroy();done(false,"timeout");});
+    s.on("error",function(e){done(false,String(e&&e.message||e));});
+  } else {
+    const u=new URL(proxy);
+    const phost=u.hostname,pport=Number(u.port)||80;
+    const s=net.connect({host:phost,port:pport,timeout:10000});
+    let buf="";
+    s.on("connect",function(){s.write("CONNECT "+host+":"+port+" HTTP/1.1\r\nHost: "+host+":"+port+"\r\n\r\n");});
+    s.on("data",function(chunk){
+      buf+=chunk.toString("latin1");
+      const idx=buf.indexOf("\r\n");
+      const line=idx>=0?buf.slice(0,idx):buf;
+      s.destroy();
+      const parts=line.split(" ");
+      const code=parts[1]||"";
+      done(code.indexOf("2")===0,line);
+    });
+    s.on("timeout",function(){s.destroy();done(false,"timeout");});
+    s.on("error",function(e){done(false,String(e&&e.message||e));});
+  }
+}catch(e){done(false,String(e&&e.message||e));}`
 
 // sandboxExec is the sandbox exec used by the GitHub preflight. Tests
 // substitute a fake.
@@ -239,8 +256,11 @@ func checkSandboxGitHubConnectivityWith(
 		result.Checks[preflightCheckConnect] = preflightCheckResult{OK: false, Detail: err.Error()}
 		return finish(diagnoseGitHubAPIFailure(preflightCheckConnect, err.Error(), -1))
 	case strings.HasPrefix(strings.TrimSpace(stdout), "CONNECT_SKIP"):
+		// The probe never ran (e.g., no node on PATH), so this is not a pass —
+		// report OK:false so a consumer branching only on Checks[...].OK does
+		// not conclude the CONNECT stage succeeded. Detail still explains why.
 		result.Checks[preflightCheckConnect] = preflightCheckResult{
-			OK:     true,
+			OK:     false,
 			Detail: "skipped: " + strings.TrimSpace(output),
 		}
 	case exitCode != 0 || strings.Contains(output, "CONNECT_FAIL"):
@@ -290,8 +310,8 @@ func githubPreflightProbeCmd(envFile string) string {
 
 func githubPreflightConnectCmd(envFile string) string {
 	return fmt.Sprintf(". %s 2>/dev/null; "+
-		"if ! command -v python3 >/dev/null 2>&1; then echo CONNECT_SKIP nopython; exit 0; fi; "+
-		"python3 -c '%s'", envFile, githubConnectPython)
+		"if ! command -v node >/dev/null 2>&1; then echo CONNECT_SKIP nonode; exit 0; fi; "+
+		"node -e '%s'", envFile, githubConnectScript)
 }
 
 func githubPreflightRESTCmd(envFile string) string {
@@ -437,7 +457,7 @@ func diagnoseGitHubAPIFailure(stage, output string, exitCode int) error {
 				"Check the OpenShell L7 policy for POST /graphql on api.github.com",
 			output)
 	}
-	if stage == preflightCheckConnect && kind != githubFailDNS && kind != githubFailConnection {
+	if stage == preflightCheckConnect && (kind == githubFailProxyCONNECT || kind == githubFailForbidden) {
 		return fmt.Errorf(
 			"GitHub API unreachable from sandbox (HTTP 403 — proxy allowlist issue):\n%s\n\n"+
 				"The sandbox proxy is blocking HTTPS CONNECT to api.github.com. "+

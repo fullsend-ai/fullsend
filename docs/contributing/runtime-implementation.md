@@ -541,6 +541,15 @@ while blocking POST `/graphql`. Failures are fatal. Skip (no `GH_TOKEN` / no
 can see what the harness determined, including token prefix/type/expiry
 (never the token itself).
 
+The CONNECT probe runs a small script under `node`, not `python3`: the
+GitHub egress profiles (e.g. `profiles/fullsend-github-ro.yaml`) allowlist
+`binaries: ["**/gh", "**/node"]`, and OpenShell's OPA policy denies a raw
+socket opened by any other binary regardless of the target host. `node` is
+required by every sandbox image already (for `pi`), so this adds no new
+dependency. When `node` is not on `PATH`, the CONNECT check is reported as
+skipped (`OK: false`, detail `"skipped: ..."`) rather than as a pass, and
+the REST/GraphQL probes still run.
+
 ## Dummy runtime operations
 
 The `dummy` runtime executes a YAML script of operations inside the real sandbox (behaviour tests only). Besides `write_fixture` and `fail`, dispatch behaviour tests use:

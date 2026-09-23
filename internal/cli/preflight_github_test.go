@@ -233,7 +233,7 @@ func preflightExecKey(cmd string) string {
 	switch {
 	case strings.Contains(cmd, "TOKEN_PREFIX"):
 		return "probe"
-	case strings.Contains(cmd, "CONNECT %s:%d") || strings.Contains(cmd, "CONNECT_SKIP"):
+	case strings.Contains(cmd, "require(\"net\")") || strings.Contains(cmd, "CONNECT_SKIP"):
 		return "connect"
 	case strings.Contains(cmd, "gh api graphql"):
 		return "graphql"
@@ -345,20 +345,24 @@ func TestCheckSandboxGitHubConnectivity_ConnectBlocked(t *testing.T) {
 }
 
 func TestCheckSandboxGitHubConnectivity_ConnectExecError(t *testing.T) {
+	// A plain exec error (e.g. an exec-layer timeout) does not classify as a
+	// proxy CONNECT/forbidden failure, so it must fall through to the generic
+	// diagnostic rather than being reported as a proxy-allowlist 403.
 	resp := successPreflightResps()
 	resp["connect"] = preflightExecResp{err: fmt.Errorf("command timed out after 30s")}
 	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
 	require.Error(t, err)
 	assert.False(t, result.Checks[preflightCheckConnect].OK)
-	assert.Contains(t, err.Error(), "proxy allowlist")
+	assert.NotContains(t, err.Error(), "proxy allowlist")
+	assert.Contains(t, err.Error(), "GitHub API connectivity check failed")
 }
 
-func TestCheckSandboxGitHubConnectivity_ConnectSkipPython(t *testing.T) {
+func TestCheckSandboxGitHubConnectivity_ConnectSkipNoNode(t *testing.T) {
 	resp := successPreflightResps()
-	resp["connect"] = preflightExecResp{stdout: "CONNECT_SKIP nopython\n"}
+	resp["connect"] = preflightExecResp{stdout: "CONNECT_SKIP nonode\n"}
 	result, err := checkSandboxGitHubConnectivityWith("sb", stubPreflightExec(t, resp), nil)
 	require.NoError(t, err)
-	assert.True(t, result.Checks[preflightCheckConnect].OK)
+	assert.False(t, result.Checks[preflightCheckConnect].OK, "a skipped probe never ran and must not be reported as a pass")
 	assert.Contains(t, result.Checks[preflightCheckConnect].Detail, "skipped")
 	assert.True(t, result.Checks[preflightCheckREST].OK)
 	assert.True(t, result.Checks[preflightCheckGraphQL].OK)
@@ -493,8 +497,9 @@ func TestGitHubPreflightCommands(t *testing.T) {
 	env := "/sandbox/workspace/.env"
 	assert.Contains(t, githubPreflightProbeCmd(env), env)
 	assert.Contains(t, githubPreflightProbeCmd(env), "TOKEN_PREFIX")
-	assert.Contains(t, githubPreflightConnectCmd(env), "python3 -c")
-	assert.Contains(t, githubPreflightConnectCmd(env), "CONNECT %s:%d")
+	assert.Contains(t, githubPreflightConnectCmd(env), "node -e")
+	assert.Contains(t, githubPreflightConnectCmd(env), "require(\"net\")")
+	assert.Contains(t, githubPreflightConnectCmd(env), "CONNECT_SKIP nonode")
 	assert.Contains(t, githubPreflightRESTCmd(env), "gh api "+githubPreflightRESTEndpoint)
 	assert.Contains(t, githubPreflightGraphQLCmd(env), "gh api graphql")
 	assert.Contains(t, githubPreflightGraphQLCmd(env), githubPreflightGraphQLQuery)
