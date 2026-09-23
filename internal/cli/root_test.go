@@ -69,7 +69,12 @@ func TestResolveUpstreamRef(t *testing.T) {
 		{"empty SHA", "", "dev", "", ""},
 		{"release", "abc123def456", "0.19.0", "abc123def456", "v0.19.0"},
 		{"release with v prefix", "abc123def456", "v0.19.0", "abc123def456", "v0.19.0"},
-		{"real SHA, dev version", "abc123def456", "dev", "", ""},
+		// SHA-stamped non-release builds (e2e) pin scaffold refs to the
+		// commit even when version is still "dev". Agents-repo pinning
+		// stays on main because resolveBuildVersion still returns empty.
+		{"real SHA, dev version", "abc123def456", "dev", "abc123def456", ""},
+		{"real SHA, empty version", "abc123def456", "", "abc123def456", ""},
+		{"real SHA, bare v prefix", "abc123def456", "v", "abc123def456", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -23,9 +23,11 @@ func CommitSHA() string {
 // resolveBuildVersion returns the commit SHA and normalized version tag
 // from build-time ldflags. Release builds (commitSHA is a real SHA)
 // return ("abc123def", "v0.42.0"). Dev builds return ("", "").
-// This is the single source of truth for CLI version resolution — both
-// scaffold pinning (resolveUpstreamRef) and agents-repo pinning
-// (resolveAgentsRef) derive their values from it.
+// This is the release-build source of truth: agents-repo pinning
+// (resolveAgentsRef) uses it exclusively, and scaffold pinning
+// (resolveUpstreamRef) uses it for release builds. SHA-stamped
+// non-release builds are handled by resolveUpstreamRef so e2e can pin
+// workflow refs without retargeting harness fetches away from main.
 func resolveBuildVersion() (sha, tag string) {
 	if commitSHA != "" && commitSHA != "dev" {
 		v := strings.TrimPrefix(version, "v")
@@ -38,10 +40,23 @@ func resolveBuildVersion() (sha, tag string) {
 }
 
 // resolveUpstreamRef returns the SHA and version tag for pinning scaffold
-// workflow refs. Delegates to resolveBuildVersion; dev builds return empty
-// strings, causing the render layer to fall back to config.DefaultUpstreamRef.
+// workflow refs. Release builds delegate to resolveBuildVersion. SHA-stamped
+// non-release builds (e2e, local checkouts) still pin to the stamped commit
+// so rendered workflows check out the commit under test rather than falling
+// back to config.DefaultUpstreamRef ("main"). Unstamped dev builds return
+// empty strings, and the render layer falls back to DefaultUpstreamRef.
+// Agents-repo pinning (resolveAgentsRef) continues to require a release
+// version via resolveBuildVersion, so a SHA-only stamp does not retarget
+// harness fetches away from main.
 func resolveUpstreamRef() (ref, tag string) {
-	return resolveBuildVersion()
+	sha, tag := resolveBuildVersion()
+	if sha != "" {
+		return sha, tag
+	}
+	if commitSHA != "" && commitSHA != "dev" {
+		return commitSHA, ""
+	}
+	return "", ""
 }
 
 func newRootCmd() *cobra.Command {

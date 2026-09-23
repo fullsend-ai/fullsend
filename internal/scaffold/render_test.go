@@ -231,6 +231,22 @@ func TestRenderPerRepoShimRunner(t *testing.T) {
 	assert.NotContains(t, out, "__GH_RUNNER__")
 }
 
+func TestRenderRepoMaintenancePinnedSHA(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/repo-maintenance.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/repo-maintenance.yml", raw, RenderOptions{
+		UpstreamRef: "abc123def456",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "ref: abc123def456")
+	assert.Contains(t, out, "mint-token@abc123def456")
+	assert.NotContains(t, out, "ref: main")
+	assert.NotContains(t, out, "mint-token@main")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
 func TestRenderFallbackToDefaultRef(t *testing.T) {
 	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)

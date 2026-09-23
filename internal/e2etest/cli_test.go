@@ -14,6 +14,12 @@ func TestBuildCLI(t *testing.T) {
 	if _, err := os.Stat(binary); err != nil {
 		t.Fatalf("binary not found at %s: %v", binary, err)
 	}
+	if sha := gitHeadSHA(ModuleRoot(t)); sha != "" {
+		data, err := os.ReadFile(binary)
+		require.NoError(t, err)
+		require.Contains(t, string(data), sha,
+			"e2e CLI must stamp commitSHA with HEAD so scaffold refs pin to the commit under test")
+	}
 }
 
 func TestBuildModuleBinary(t *testing.T) {
@@ -26,4 +32,8 @@ func TestBuildModuleBinary(t *testing.T) {
 func TestModuleDir_Invalid(t *testing.T) {
 	_, err := moduleDir("github.com/fullsend-ai/fullsend/not-a-real-module-path")
 	require.Error(t, err)
+}
+
+func TestGitHeadSHA_NonGitDir(t *testing.T) {
+	require.Empty(t, gitHeadSHA(t.TempDir()))
 }

@@ -45,6 +45,13 @@ Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 
 Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
 
+The e2e CLI is built from the checkout with `commitSHA` stamped to `HEAD`.
+That pin is what `repo-maintenance.yml` uses to check out scaffold scripts
+from `fullsend-ai/fullsend`, so a PR that changes those scripts is tested
+against its own commit rather than `main`. The stamped SHA must be reachable
+on `fullsend-ai/fullsend` (pushed same-repo commits and merge-queue SHAs);
+unpushed local commits and fork-only SHAs cannot be checked out there.
+
 ## CI runs
 
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
