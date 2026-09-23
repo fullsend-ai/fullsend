@@ -979,10 +979,10 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
-// TestDispatchPRHeadResolution validates that both dispatch workflows contain
-// the "Resolve PR head for issue_comment events" step and the pull_request
-// merge into event_payload, ensuring issue_comment-triggered agents receive
-// the correct PR head SHA.
+// TestDispatchPRHeadResolution validates that both dispatch workflows resolve
+// the PR head for every issue-backed PR event and merge it into event_payload.
+// In particular, a ready-for-review label has no top-level pull_request in
+// GitHub's payload, but must still dispatch a review with its head SHA.
 func TestDispatchPRHeadResolution(t *testing.T) {
 	type workflowCase struct {
 		name    string
@@ -1004,7 +1004,7 @@ func TestDispatchPRHeadResolution(t *testing.T) {
 		t.Run(wc.name, func(t *testing.T) {
 			s := string(wc.content(t))
 
-			assert.Contains(t, s, "Resolve PR head for issue_comment events",
+			assert.Contains(t, s, "Resolve PR head for issue-backed events",
 				"must contain the PR head resolution step")
 
 			assert.Contains(t, s, "id: pr-head",
@@ -1012,6 +1012,10 @@ func TestDispatchPRHeadResolution(t *testing.T) {
 
 			assert.Contains(t, s, `steps.pr-check.outputs.skipped != 'true'`,
 				"resolve step if: must include pr-check guard")
+			assert.NotContains(t, s, `github.event_name == 'issue_comment' && github.event.issue.pull_request`,
+				"PR head resolution must not exclude labeled pull requests")
+			assert.Contains(t, s, `github.event.issue.pull_request`,
+				"PR head resolution must run for every issue-backed pull request event")
 
 			assert.Contains(t, s, `'.pull_request = $pr'`,
 				"must merge PR JSON into event_payload via jq")
@@ -1158,6 +1162,8 @@ func TestReviewDispatchDedupGate(t *testing.T) {
 		"the review job must wait for the duplicate-dispatch decision")
 	assert.Contains(t, review, "needs.review-dedup.outputs.skip != 'true'",
 		"a same-SHA in-flight review must prevent a second agent invocation")
+	assert.NotContains(t, review, "completed-review",
+		"an explicit /fs-review must remain able to re-run after a completed review")
 }
 
 func TestReviewDispatchGateScript(t *testing.T) {
@@ -1169,6 +1175,7 @@ func TestReviewDispatchGateScript(t *testing.T) {
 	assert.Contains(t, string(output), "PASS: older-head-active-review-is-not-skipped")
 	assert.Contains(t, string(output), "PASS: stale-request-is-skipped")
 	assert.Contains(t, string(output), "PASS: no-active-review-is-allowed")
+	assert.Contains(t, string(output), "PASS: jobs-api-failure-stops-gate")
 }
 
 // TestWorkItemKeyEnvCompatibility validates that legacy code dispatch and the

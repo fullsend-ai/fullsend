@@ -31,13 +31,18 @@ OTHER_RUN_IDS="$(gh api --paginate "repos/${SOURCE_REPO}/actions/runs?status=in_
 
 while IFS= read -r run_id; do
   [[ -z "${run_id}" ]] && continue
-  if gh api --paginate "repos/${SOURCE_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
-    --jq '.jobs[].name' \
-    | grep -Fq -- "${GATE_NAME}"; then
-    echo "::notice::A review of ${EXPECTED_HEAD_SHA} is already in progress (workflow run ${run_id}); skipping duplicate dispatch"
-    echo "skip=true" >> "${GITHUB_OUTPUT}"
-    exit 0
-  fi
+  JOB_NAMES="$(gh api --paginate "repos/${SOURCE_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
+    --jq '.jobs[].name')" || {
+    echo "::error::Could not inspect jobs for workflow run ${run_id}"
+    exit 1
+  }
+  while IFS= read -r job_name; do
+    if [[ "${job_name}" == "${GATE_NAME}" || "${job_name}" == *" / ${GATE_NAME}" ]]; then
+      echo "::notice::A review of ${EXPECTED_HEAD_SHA} is already in progress (workflow run ${run_id}); skipping duplicate dispatch"
+      echo "skip=true" >> "${GITHUB_OUTPUT}"
+      exit 0
+    fi
+  done <<< "${JOB_NAMES}"
 done <<< "${OTHER_RUN_IDS}"
 
 echo "skip=false" >> "${GITHUB_OUTPUT}"

@@ -516,9 +516,9 @@ jobs:
             exit 0
           fi
 
-      - name: Resolve PR head for issue_comment events
+      - name: Resolve PR head for issue-backed events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -577,8 +577,8 @@ jobs:
             comment: (.comment // null | if . then {id, body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH")
 
-          # For issue_comment events on PRs, the raw event has no top-level
-          # pull_request with head SHA. Merge the API-fetched PR info.
+          # Issue-backed PR events have no top-level pull_request with head
+          # SHA. Merge the API-fetched PR info.
           if [[ -n "${PR_HEAD_JSON}" ]]; then
             EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" | jq -c --argjson pr "${PR_HEAD_JSON}" '.pull_request = $pr')
           fi
