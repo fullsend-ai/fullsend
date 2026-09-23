@@ -377,7 +377,7 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 }
 
 func gitLabRoleReadinessRequired(mode gitlabroles.Mode) bool {
-	return mode.RequiresRoleCredentials() || mode.AllowsSharedFallback()
+	return mode.RequiresRoleCredentials()
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {

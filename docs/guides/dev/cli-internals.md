@@ -78,7 +78,7 @@ fullsend
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-bot-token <token>       #   GitLab bot PAT for free-tier instances
-│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (migrating|enforced|rollback|disabled); ordinary install auto-enforces
+│   │   ├── --gitlab-role-migration <mode>   #   GitLab role-credential gate (enforced|rollback); ordinary install auto-enforces
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials

@@ -125,18 +125,18 @@ When repos are specified as positional arguments, only those repos are processed
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
 | `--gitlab-url` | | GitLab instance URL (e.g. `https://gitlab.example.com`); sets `gitlab.url` in the manifest and implies `--forge=gitlab` when no forge is specified. Private-CA instances also need runner `tls-ca-file` / `CI_SERVER_TLS_CA_FILE` — see [Private CA (self-hosted GitLab)](../guides/getting-started/operations.md#private-ca-self-hosted-gitlab) |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
-| `--gitlab-role-migration` | | Emergency/administrative GitLab role-credential gate: `migrating`, `enforced`, `rollback`, or `disabled`. Ordinary unflagged `repos install` provisions role credentials and cuts over to `enforced` automatically. Passing `enforced` explicitly assumes drain the same way ordinary install does and does not require `--gitlab-role-cutover-drained`, unlike `--gitlab-role-cutover`. Use `rollback` or `disabled` only for explicit recovery (with `--gitlab-role-rollback-confirmed` when leaving `enforced`). |
+| `--gitlab-role-migration` | | GitLab role-credential gate: `enforced` or `rollback`. Ordinary unflagged `repos install` provisions role credentials and cuts over to `enforced` automatically. Passing `enforced` explicitly assumes drain the same way ordinary install does and does not require `--gitlab-role-cutover-drained`, unlike `--gitlab-role-cutover`. Use `rollback` only for explicit emergency recovery (with `--gitlab-role-rollback-confirmed` when leaving `enforced`). Leftover `migrating` and `disabled` values are not operator-settable. |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
 | `--gitlab-role-token` | | Administrator-provided GitLab role PAT (`role=token`, repeatable) for free-tier enrollment or a custom `own` credential. Values are never logged. |
 | `--gitlab-role-cutover` | `false` | Explicit retry of GitLab role cutover: verify every registered role, enable fail-closed `enforced` mode, and retire the shared `FULLSEND_FORGE_TOKEN`. Ordinary install already does this when roles are ready; this flag fails closed instead of deferring when cutover is not ready. |
 | `--gitlab-role-cutover-drained` | `false` | Confirm that in-flight jobs using the shared credential have drained; required with `--gitlab-role-cutover`. Ordinary unflagged install treats drain as part of converging to the enforced desired state. |
-| `--gitlab-role-rollback-confirmed` | `false` | Confirm reopening the shared-credential path when changing an enforced role gate to `rollback` or `disabled`; required for that reverse transition. |
+| `--gitlab-role-rollback-confirmed` | `false` | Confirm reopening the shared-credential path when changing an enforced role gate to `rollback`; required for that reverse transition. |
 | `--rotate-gitlab-roles` | `false` | Force-rotate GitLab role credentials even if they are not near expiry. Auto-rotation of expiring, expired, revoked, or unverified own-credential roles already runs during `repos install` when the gate is `migrating` or `enforced`. |
 | `--rotate-gitlab-role` | | Rotate a specific GitLab role (repeatable). Default is all own-credential roles that are due. A `reuse` role follows its target. |
 
 ### GitLab bot token
 
-For GitLab repos, `repos install` automatically creates a project access token at Developer (30) access with `api` scope and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable, then provisions built-in Poller, Analyst, and Coder project access tokens (`FULLSEND_GITLAB_*_TOKEN`) on both fresh and existing shared-token installs. When every registered role is ready, the same unflagged run enables `FULLSEND_GITLAB_ROLE_MIGRATION=enforced` and retires `FULLSEND_FORGE_TOKEN`. If role credentials are only partially enrolled, cutover is deferred: the gate stays `migrating`, the shared credential is left in place (never recreated), and a later unflagged `repos install` retries. An explicit emergency rollback (`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`) is the only supported way to reopen the shared-token path after enforced cutover. Custom roles are registered with `--gitlab-role-registry`; a custom role may reuse another registered credential or enroll its own token via `--gitlab-role-token`. When the gate is `migrating` or `enforced`, `fullsend poll` and `fullsend run` select the registered role credential instead of always reading `FULLSEND_FORGE_TOKEN`. The same `repos install` run rotates any own-credential role whose project access token is expiring, expired, revoked, or unverified: it creates a replacement PAT, writes it to the existing masked CI variable, and leaves the previous PAT active for 24 hours so in-flight jobs can finish. `--rotate-gitlab-roles` force-rotates every own-credential role; `--rotate-gitlab-role=poller` limits the run to one role. A failed rotation revokes only the unused replacement and leaves the previous secret in place. The shared `FULLSEND_FORGE_TOKEN` is never rotated or selected as a fallback. See [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md). Developer is sufficient because poller state lives on dedicated unprotected branches rather than Maintainer-only CI/CD variables. Creating project access tokens requires GitLab Premium or Ultimate. The token expiry is computed in UTC so a local-timezone date cannot produce a token that GitLab already considers expired (`active: false`).
+For GitLab repos, `repos install` automatically creates a project access token at Developer (30) access with `api` scope and stores it as the `FULLSEND_FORGE_TOKEN` protected CI/CD variable, then provisions built-in Poller, Analyst, and Coder project access tokens (`FULLSEND_GITLAB_*_TOKEN`) on both fresh and existing shared-token installs. When every registered role is ready, the same unflagged run enables `FULLSEND_GITLAB_ROLE_MIGRATION=enforced` and retires `FULLSEND_FORGE_TOKEN`. If role credentials are only partially enrolled, cutover is deferred: the gate stays at the internal `migrating` intermediate (jobs fail closed on a missing role secret), the shared credential is left in place (never recreated), and a later unflagged `repos install` retries. An explicit emergency rollback (`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`) is the only supported way to reopen the shared-token path after enforced cutover. Custom roles are registered with `--gitlab-role-registry`; a custom role may reuse another registered credential or enroll its own token via `--gitlab-role-token`. When the gate is `migrating` or `enforced`, `fullsend poll` and `fullsend run` select the registered role credential and fail closed if that secret is missing; they do not fall back to `FULLSEND_FORGE_TOKEN`. The same `repos install` run rotates any own-credential role whose project access token is expiring, expired, revoked, or unverified: it creates a replacement PAT, writes it to the existing masked CI variable, and leaves the previous PAT active for 24 hours so in-flight jobs can finish. `--rotate-gitlab-roles` force-rotates every own-credential role; `--rotate-gitlab-role=poller` limits the run to one role. A failed rotation revokes only the unused replacement and leaves the previous secret in place. The shared `FULLSEND_FORGE_TOKEN` is never rotated or selected as a fallback. See [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md). Developer is sufficient because poller state lives on dedicated unprotected branches rather than Maintainer-only CI/CD variables. Creating project access tokens requires GitLab Premium or Ultimate. The token expiry is computed in UTC so a local-timezone date cannot produce a token that GitLab already considers expired (`active: false`).
 
 Developer (30) access also depends on the default branch's protection settings: the poller creates pipelines via the API (`CreatePipeline`), which requires merge or push access to the protected default branch (see [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)). GitLab's default "Protected" preset grants Developers merge access, so this works out of the box, but a repo whose branch protection restricts both merge and push to Maintainers will get a 403 on pipeline creation and dispatch will silently stop working. If your repo uses that stricter configuration, either grant Developers merge (or push) access to the default branch, or replace `FULLSEND_FORGE_TOKEN` with a Maintainer-level PAT manually in GitLab after install (converge does not rotate an existing token). `--gitlab-bot-token` will not help here: on Premium/Ultimate instances, `repos install` always creates its own Developer (30) project access token and ignores `--gitlab-bot-token` when that creation succeeds; the flag is only used as a fallback when project access tokens are unavailable (see below).
 
@@ -210,15 +210,16 @@ the checks without writing the gate or secrets.
 In `fullsend repos status --json`, `gitlab_roles_ready` is true only when the
 base role diagnosis, built-in role readiness, and every registered-role mapping
 are all ready when role credentials are required (`migrating` or `enforced`).
-Shared-token-only installations (`disabled` or `rollback`) retain the legacy
-shared-credential readiness meaning and are not penalized for unprovisioned
-role secrets; their diagnostics likewise do not include built-in or registered
-role-readiness lines. In role-credential modes, the field may be false for an
-installation that previously reported ready while a custom-agent mapping was
-incomplete.
+Shared-token-only installations (leftover `disabled` or explicit `rollback`)
+retain the shared-credential readiness meaning and are not penalized for
+unprovisioned role secrets; their diagnostics likewise do not include built-in
+or registered role-readiness lines. In role-credential modes, the field may be
+false for an installation that previously reported ready while a custom-agent
+mapping was incomplete. Missing role secrets are drift in `migrating` and
+`enforced`.
 
 Leaving an enforced gate requires the explicit
-`--gitlab-role-migration=rollback` (or `disabled`) plus
+`--gitlab-role-migration=rollback` plus
 `--gitlab-role-rollback-confirmed` acknowledgement because it reopens the
 shared-credential path. That emergency recovery path is separate from
 ordinary unflagged converge.
@@ -255,9 +256,9 @@ fullsend repos status --repo "acme/*" --json
 For GitLab repos, table and JSON output also include per-role credential
 lifecycle diagnostic lines for roles needing attention (`expiring`,
 `expired`, `revoked`, `unverified`, or `overlapping`); roles that are
-`ok` or `unconfigured` do not get a diagnostic line. In enforced
-role-migration mode, expired or revoked role credentials are reported
-as `gitlab-role:<name>` drift. Status also appends built-in
+`ok` or `unconfigured` do not get a diagnostic line. In `migrating` and
+`enforced` role-identity modes, missing, expired, or revoked role credentials
+are reported as `gitlab-role:<name>` drift. Status also appends built-in
 Poller/Analyst/Coder and registered-role readiness checks (secret presence,
 capability contract, and job-to-identity mapping). When token inventory is
 available, expired, revoked, or unverified role credentials also downgrade
@@ -265,7 +266,7 @@ readiness; the base status path has no inventory and does not apply that
 lifecycle refinement. A present shared
 `FULLSEND_FORGE_TOKEN` is not treated as a substitute for a missing
 built-in role. Registered roles with no agent mapping are also reported as
-not ready. These checks do not change the migration gate or retire the shared
+not ready. These checks do not change the role-identity gate or retire the shared
 token.
 
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.

@@ -59,11 +59,11 @@ const (
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
 	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
-	// These are not required on existing installations. Probe/converge must
-	// not treat their absence as health drift while migration mode is
-	// disabled. Built-in names are fixed; custom roles derive
-	// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning is #7498; job
-	// routing is #7499 (`internal/gitlabroles.Select`).
+	// These are not required on leftover shared-token installations.
+	// Probe/converge must not treat their absence as health drift while
+	// the gate is leftover disabled or rollback. Built-in names are fixed;
+	// custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning
+	// is #7498; job routing is #7499 (`internal/gitlabroles.Select`).
 	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
 	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
 	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
@@ -100,10 +100,12 @@ const (
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
 
-	// VarGitLabRoleMigration is the explicit role-credential migration
-	// and rollback gate. Absent or empty means disabled: jobs use only
-	// FULLSEND_FORGE_TOKEN. Valid values: disabled, migrating, rollback,
-	// enforced. See internal/gitlabroles.
+	// VarGitLabRoleMigration is the GitLab role-identity gate. Absent or
+	// empty means disabled: leftover shared-token jobs use only
+	// FULLSEND_FORGE_TOKEN until ordinary repos install converges them.
+	// Operator-settable values are enforced and rollback. Leftover
+	// disabled and migrating values remain parseable. See
+	// internal/gitlabroles.
 	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role

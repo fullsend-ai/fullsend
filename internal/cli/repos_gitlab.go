@@ -384,6 +384,9 @@ func prepareGitLabRoleFlags(opts *reposInstallConfig) error {
 		if err != nil {
 			return fmt.Errorf("--gitlab-role-migration: %w", err)
 		}
+		if !mode.OperatorSettable() {
+			return fmt.Errorf("--gitlab-role-migration %q is not operator-settable; ordinary repos install converges to enforced, and emergency recovery is --gitlab-role-migration=rollback --gitlab-role-rollback-confirmed", s)
+		}
 		opts.gitlabRoleModeFlag = mode
 	}
 	if opts.gitlabRoleRegistry != "" {
@@ -436,11 +439,11 @@ func maybeProvisionGitLabRoles(ctx context.Context, opts *reposInstallConfig, cl
 		return nil
 	}
 	// gitLabRoleWorkNeeded already resolves the mode to provision with,
-	// including preserving an explicit rollback gate, promoting legacy
-	// disabled/unset installs to migrating, and keeping an explicit
-	// --gitlab-role-migration=enforced request from writing the enforced
-	// gate directly (CutoverGitLabRoleCredentials is the sole writer of
-	// enforced, once role readiness has been verified).
+	// including preserving an explicit rollback gate, promoting leftover
+	// disabled/unset installs to the internal migrating intermediate, and
+	// keeping an explicit --gitlab-role-migration=enforced request from
+	// writing the enforced gate directly (CutoverGitLabRoleCredentials is
+	// the sole writer of enforced, once role readiness has been verified).
 	return setupGitLabRoleCredentials(ctx, opts, client, printer, owner, repo, mode)
 }
 
@@ -460,7 +463,7 @@ func gitLabRoleWorkNeeded(ctx context.Context, client forge.Client, opts *reposI
 	if opts.gitlabRoleModeFlag != "" {
 		if exists {
 			if current == gitlabroles.ModeEnforced && opts.gitlabRoleModeFlag == gitlabroles.ModeMigrating {
-				return false, "", fmt.Errorf("refusing to replace enforced GitLab role migration mode with migrating; request rollback or disabled explicitly")
+				return false, "", fmt.Errorf("refusing to replace enforced GitLab role migration mode with migrating; request rollback explicitly")
 			}
 			if current == gitlabroles.ModeEnforced && opts.gitlabRoleModeFlag.UsesSharedOnly() && !opts.gitlabRoleRollbackConfirmed {
 				return false, "", fmt.Errorf("leaving enforced GitLab role migration mode requires --gitlab-role-rollback-confirmed")
@@ -485,9 +488,10 @@ func gitLabRoleWorkNeeded(ctx context.Context, client forge.Client, opts *reposI
 		return true, opts.gitlabRoleModeFlag, nil
 	}
 	// Unflagged install: emergency rollback stays rolled back until the
-	// operator explicitly re-enables a role-aware mode. Legacy shared-token
-	// (disabled/unset) installs are promoted to migrating so a later
-	// automatic cutover can retire FULLSEND_FORGE_TOKEN once roles are ready.
+	// operator explicitly re-enables a role-aware mode. Leftover shared-token
+	// (disabled/unset) installs are promoted to the internal migrating
+	// intermediate so a later automatic cutover can retire
+	// FULLSEND_FORGE_TOKEN once roles are ready.
 	if current == gitlabroles.ModeRollback {
 		if opts.gitlabRoleRegistryJSON != "" || len(opts.gitlabRoleProvided) > 0 {
 			return true, current, nil
@@ -602,7 +606,7 @@ func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, clien
 }
 
 func maybeCutoverGitLabRoles(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
-	if opts.gitlabRoleModeFlag == gitlabroles.ModeRollback || opts.gitlabRoleModeFlag == gitlabroles.ModeDisabled {
+	if opts.gitlabRoleModeFlag == gitlabroles.ModeRollback {
 		return nil
 	}
 	explicit := opts.gitlabRoleCutover || opts.gitlabRoleModeFlag == gitlabroles.ModeEnforced

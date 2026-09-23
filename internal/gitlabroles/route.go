@@ -160,16 +160,12 @@ func (s Selection) Token(getenv func(string) string) (string, error) {
 }
 
 // IdentitySource is a non-secret label for how the credential was
-// chosen: "role", "shared", or "migration-fallback".
+// chosen: "role" or "shared".
 func (s Selection) IdentitySource() string {
-	switch {
-	case s.Source.Fallback:
-		return "migration-fallback"
-	case s.Source.Shared:
+	if s.Source.Shared {
 		return "shared"
-	default:
-		return "role"
 	}
+	return "role"
 }
 
 // Diagnostics returns human-readable identity lines with names only.

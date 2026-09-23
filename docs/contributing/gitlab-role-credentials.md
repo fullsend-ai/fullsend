@@ -29,13 +29,16 @@ Built-in and custom roles are the same kind of registry entry. Job
 credential selection walks that registry; it does not switch on a
 three-role enum.
 
-**Disabled-mode runtime is unchanged.** When the migration gate is unset
-or `disabled` (and on explicit `rollback`), jobs continue to authenticate
+**Enforced is the desired runtime.** When the gate is `enforced` or the
+internal `migrating` install intermediate, `fullsend poll` and
+`fullsend run` select the registered role credential via
+`gitlabroles.Select` / `SelectAgent` and fail closed if that secret is
+missing. There is no shared-token fallback for an unconfigured role.
+Leftover unset/`disabled` gates and explicit `rollback` still authenticate
 with the shared `FULLSEND_FORGE_TOKEN` project access token described in
-[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md). When the
-gate is `migrating` or `enforced`, `fullsend poll` and `fullsend run`
-select the registered role credential via `gitlabroles.Select` /
-`SelectAgent`. Custom roles are not required on existing installations.
+[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md). Ordinary
+`repos install` converges leftover shared-token installs. Custom roles are
+not required on existing installations.
 
 ## Registered roles
 
@@ -75,7 +78,7 @@ Stable Go names: `poller`, `analyst`, `coder`
 An administrator may register additional roles. A custom role is a
 first-class registry entry: the same `Resolve` path, the same
 unconfigured / unregistered / auth-failed distinction, and the same
-migration gate as the built-ins.
+role-identity gate as the built-ins.
 
 Custom roles are optional. An empty registry variable means built-ins
 only.
@@ -106,8 +109,8 @@ A custom role cannot:
 Harness `role:` and custom-agent names are validated with
 `Registry.ValidateAgent`. An unregistered name returns
 `ErrUnregistered`. `fullsend poll` / `fullsend run` call that check at
-dispatch time when the gate is `migrating` or `enforced`; this contract
-defines the check.
+dispatch time when the gate is `migrating` or `enforced` (role-credential
+modes); this contract defines the check.
 
 ## Credential references
 
@@ -148,18 +151,18 @@ capabilities the administrator declared.
 ### CI/CD variables
 
 Role tokens are **masked, protected** project CI/CD variables, same
-storage as today's shared bot PAT. The migration gate and the registry
+storage as today's shared bot PAT. The role-identity gate and the registry
 document are **protected and unmasked** so status and logs can print
 mode and policy without exposing secrets.
 
 | Name | Kind | Purpose |
 | --- | --- | --- |
-| `FULLSEND_FORGE_TOKEN` | masked secret | Shared bot PAT. Unchanged default path. |
-| `FULLSEND_GITLAB_POLLER_TOKEN` | masked secret | Poller PAT. Provisioned by `repos install`; optional on existing installs until migration. |
-| `FULLSEND_GITLAB_ANALYST_TOKEN` | masked secret | Analyst PAT. Provisioned by `repos install`; optional on existing installs until migration. |
-| `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`; optional on existing installs until migration. |
+| `FULLSEND_FORGE_TOKEN` | masked secret | Shared bot PAT. Used only on leftover `disabled` installs and explicit `rollback`. Retired by ordinary `repos install` cutover. |
+| `FULLSEND_GITLAB_POLLER_TOKEN` | masked secret | Poller PAT. Provisioned by `repos install`. |
+| `FULLSEND_GITLAB_ANALYST_TOKEN` | masked secret | Analyst PAT. Provisioned by `repos install`. |
+| `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | masked secret | Custom role PAT when `credential` is `own`. Provisioned when the role is registered. |
-| `FULLSEND_GITLAB_ROLE_MIGRATION` | unmasked variable | Feature gate. Absent or empty = `disabled`. |
+| `FULLSEND_GITLAB_ROLE_MIGRATION` | unmasked variable | Role-identity gate. Absent or empty = leftover `disabled`. Operator-settable values are `enforced` and `rollback`. |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. |
 
@@ -171,9 +174,9 @@ Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/for
 are derived by `gitlabroles.CustomSecretName`.
 
 Role secrets and the registry **must not** be added to
-`requiredSecretsForForge` while the gate is disabled. Existing
-installations would otherwise fail health checks for secrets they do
-not have.
+`requiredSecretsForForge` while the gate is leftover `disabled` or
+`rollback`. Existing shared-token installations would otherwise fail
+health checks for secrets they do not have.
 
 ### Project access token names
 
@@ -205,43 +208,47 @@ claim finer GitLab permissions than the implementation uses.
 value. Built-in aliases and custom agent names share this lookup.
 
 Unmapped jobs (for example `e2e` or an unregistered custom agent) keep
-working on the shared token when the gate is `disabled` or `rollback`.
-In `migrating` and `enforced` they fail closed (`ErrUnregistered`)
-rather than guessing an identity. `ValidateAgent` itself takes no mode
-and always rejects an unmapped name, so `Select` / `SelectAgent` only
-call it as a pre-check ahead of `Resolve` when the migration gate is
-`migrating` or `enforced`; calling it unconditionally ahead of the
-legacy `disabled`/`rollback` path would break existing installations
-that rely on unmapped jobs falling back to the shared token.
+working on the shared token when the gate is leftover `disabled` or
+explicit `rollback`. In `migrating` and `enforced` they fail closed
+(`ErrUnregistered`) rather than guessing an identity. `ValidateAgent`
+itself takes no mode and always rejects an unmapped name, so `Select` /
+`SelectAgent` only call it as a pre-check ahead of `Resolve` when the
+gate is `migrating` or `enforced`; calling it unconditionally ahead of
+the leftover `disabled`/`rollback` path would break local runs and
+not-yet-converged installs that still use the shared token.
 
-## Migration gate
+## Role-identity gate
 
 `FULLSEND_GITLAB_ROLE_MIGRATION` is the only switch that changes
 credential selection. Values are case-insensitive; unknown values fail
 closed (`ErrInvalidMode`) so a typo cannot silently disable the gate.
+`--gitlab-role-migration` accepts only `enforced` and `rollback`.
+Leftover `disabled` and `migrating` values remain parseable so ordinary
+`repos install` can converge them.
 
 | Mode | When | Shared token used | Missing role secret |
 | --- | --- | --- | --- |
-| `disabled` (unset) | Legacy shared-token runtime, or explicit `--gitlab-role-migration=disabled` | Always | Ignored |
-| `migrating` | Additive provisioning before roles are ready | Only as **explicit** fallback when that role is unconfigured | Use shared token; report pending |
-| `rollback` | Operator-initiated emergency recovery | Always | Ignored (role secrets unused) |
+| `disabled` (unset) | Leftover shared-token runtime (not operator-settable) | Always | Ignored |
+| `migrating` | Internal install intermediate before cutover (not operator-settable) | Never | Fail (`ErrUnconfigured`) |
+| `rollback` | Operator-initiated emergency recovery (`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`) | Always | Ignored (role secrets unused) |
 | `enforced` | Desired state after ordinary `repos install` | Never | Fail (`ErrUnconfigured`) |
 
 The shared token is **not** selected after an arbitrary
 role-credential failure. The only legitimate shared-token uses are:
 
-1. `disabled` (legacy path)
+1. leftover `disabled` / unset (until ordinary install converges the repo)
 2. `rollback` (explicit operator action)
-3. `migrating` **and** the role secret is absent/empty (not yet provisioned)
 
 An unregistered name is never a reason to use the shared token in a
-role-aware mode.
+role-aware mode. There is no shared-token fallback for an unconfigured
+role in `migrating` or `enforced`.
 
 ## How a job selects its credential
 
 Call `gitlabroles.Select` (poller) or `gitlabroles.SelectAgent` (agent
 jobs). Those helpers load the gate, registry, and presence map, call
-`ValidateAgent` in `migrating`/`enforced`, then `Resolve`:
+`ValidateAgent` in role-credential modes (`migrating`/`enforced`), then
+`Resolve`:
 
 - `Mode` from `gitlabroles.ModeFrom` (the gate variable)
 - `Job` (`PollerJob()` or `AgentJob(name)`)
@@ -288,12 +295,10 @@ These are different errors. Do not collapse them.
 | Gate value is not a known mode | `ErrInvalidMode` | Fail closed |
 | Registry JSON is malformed or untrusted | `ErrInvalidRegistry` | Fail closed; do not load custom roles |
 
-In `migrating`, a registered role whose secret is absent but whose
-shared token is present is **not** `ErrUnconfigured` — `Resolve`
-returns a successful `Source` with `Fallback` set (explicit migration
-fallback). `ErrUnconfigured` in `migrating` means both the role secret
-and the shared token are absent. `ErrUnregistered` and `ErrAuthFailed`
-never fall back to the shared token in any mode.
+In `migrating` and `enforced`, a registered role whose secret is absent
+is `ErrUnconfigured` even when `FULLSEND_FORGE_TOKEN` is present.
+`ErrUnregistered` and `ErrAuthFailed` never fall back to the shared
+token in any mode.
 
 ## No silent fallback on authentication failure
 
@@ -324,8 +329,7 @@ report:
 Classification of a missing role secret:
 
 - `disabled` / `rollback`: not required (not drift)
-- `migrating`: pending (informational; expected during rollout)
-- `enforced`: missing/required (drift / fail closed)
+- `migrating` / `enforced`: missing/required (drift / fail closed)
 
 A role secret that is present while the gate is `disabled` or
 `rollback` is reported as "configured but unused". That is not an
@@ -346,10 +350,11 @@ writes a new role-aware gate.
 safe signals.
 
 `repos status` reports per-role diagnostics (names only). Missing role
-secrets are not health drift while the gate is `disabled` or
-`migrating`; they are drift when the gate is `enforced`. Converge
-health checks stay on the shared-token required set so a partial
-migration cannot fail an otherwise healthy install.
+secrets are not health drift while the gate is leftover `disabled` or
+`rollback`; they are drift when the gate is `migrating` or `enforced`.
+Converge health checks stay on the shared-token required set until
+cutover writes `enforced`, so a partial install cannot fail an otherwise
+healthy leftover shared-token install.
 
 ## Built-in role readiness (#7501)
 
@@ -396,8 +401,9 @@ changing the gate.
 Ordinary unflagged `repos install` calls `repos.CutoverGitLabRoleCredentials`
 after provisioning when the live gate is `migrating` or `enforced`. If roles
 are not ready, inventory is unavailable, or state changes during verification,
-cutover is deferred: the gate stays `migrating`, `FULLSEND_FORGE_TOKEN` is not
-recreated, and a later unflagged install retries. Explicit
+cutover is deferred: the gate stays at the internal `migrating` intermediate,
+`FULLSEND_FORGE_TOKEN` is not recreated, and a later unflagged install retries.
+Jobs in that intermediate fail closed on a missing role secret. Explicit
 `--gitlab-role-cutover --gitlab-role-cutover-drained` is a fail-closed retry
 that does not defer.
 
@@ -464,7 +470,7 @@ expiring (within 30 days), expired, revoked, or unverified (secret
 present but no matching project access token), and the gate is
 `migrating` or `enforced`. `--rotate-gitlab-roles` force-rotates every
 own-credential role. `--rotate-gitlab-role=<name>` limits the run to
-that role (repeatable). `--rotate-gitlab-roles` on `disabled` or
+that role (repeatable). `--rotate-gitlab-roles` on leftover `disabled` or
 `rollback` refreshes leftover role secrets without changing the gate.
 
 **Create-then-distribute, not GitLab's rotate-in-place API.** GitLab's
@@ -493,7 +499,7 @@ distributed. The preserved token is revoked only after the normal
 **No silent shared-token fallback.** Rotation never writes
 `FULLSEND_FORGE_TOKEN` and never selects the shared credential because
 a role rotation failed. The shared token remains available only through
-the explicit migration/rollback gate. Runtime 401/403 of a selected
+leftover `disabled` or explicit `rollback`. Runtime 401/403 of a selected
 role credential is still `ErrAuthFailed`.
 
 **Administrator-provided replacement does not auto-revoke leftovers.**
@@ -517,8 +523,8 @@ It is not read or displayed by `repos status`.
 
 **Diagnostics.** `DiagnoseLifecycle` classifies each role as `ok`,
 `expiring`, `expired`, `revoked`, `unverified`, `overlapping`, or
-`unconfigured`. `repos status` reports those names and, in `enforced`
-mode, treats expired and revoked credentials as drift. Lines carry role
+`unconfigured`. `repos status` reports those names and, in `migrating` and `enforced`
+modes, treats expired and revoked credentials as drift. Lines carry role
 names, secret names, and dates only.
 
 ## What this contract does not do
@@ -533,6 +539,7 @@ Leave these to the follow-up issues.
 | [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented locally.** Built-in and registered-role readiness is surfaced on `repos status`; guarded `--gitlab-role-cutover` enables `enforced` and retires the shared-token secret with rollback on retirement failure. Live GitLab ACL/operation probes, deployment branch-rule verification, and in-flight drain remain deployment prerequisites. Hold the [credential-routing security checklist](#credential-routing-security-checklist) |
 | [#7524](https://github.com/fullsend-ai/fullsend/issues/7524) | **Implemented.** Ordinary unflagged `repos install` detects shared-token installs, provisions role credentials, and cuts over to `enforced` when ready. Partial enrollment fails closed (defers cutover, never recreates `FULLSEND_FORGE_TOKEN`). Drift repair preserves enforced mode. `--gitlab-role-migration=enforced` is accepted. Emergency rollback remains explicit (`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`). |
 | [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes migration-era GitLab identity state (gate, registry, rotation, built-in and custom role secrets, leftover shared token, and matching project access tokens) and fails closed if token revocation cannot complete. Ordinary install still converges leftover shared-token or partial installs to `enforced` without recreating retired shared-token artifacts. Partial enrollment, retries, drift, revoked credentials, custom roles, and uninstall/reinstall are covered by lifecycle tests. |
+| [#7559](https://github.com/fullsend-ai/fullsend/issues/7559) | **Implemented.** Shared-token fallback in `migrating` is removed; `--gitlab-role-migration` accepts only `enforced` and `rollback`. Leftover `disabled`/`migrating` values remain parseable for converge. |
 | [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | ADR 0067 status annotation and operator-facing lifecycle docs |
 
 ## Credential-routing security checklist
@@ -613,30 +620,30 @@ when the only error is `gitlabroles.ErrSharedUnconfigured`, so a
 directly-set `GITLAB_TOKEN` (no `FULLSEND_FORGE_TOKEN`) still works.
 Role-aware modes (`migrating` / `enforced`) still fail closed.
 
-Retiring the **shared-token** fallback is the point of ordinary
-`repos install` cutover (#7524) after role checks pass — not a silent
-tightening of `disabled`/`rollback` or of the local `GITLAB_TOKEN`
-fallback. Emergency rollback remains an explicit, confirmed flag.
+Retiring the **shared-token** fallback for role-credential modes is the
+point of #7559. Leftover `disabled` and explicit `rollback` still use
+the shared token; the local `GITLAB_TOKEN` fallback stays on that
+shared-only path. Emergency rollback remains an explicit, confirmed flag.
 
-- [ ] `disabled`/`rollback` still accept a directly-set `GITLAB_TOKEN`
-      when `FULLSEND_FORGE_TOKEN` is absent, unless this change is
-      marked breaking.
-- [ ] Shared-token fallback is removed only in the #7524 cutover, after
-      role checks pass, and is marked `!`.
+- [ ] leftover `disabled`/`rollback` still accept a directly-set
+      `GITLAB_TOKEN` when `FULLSEND_FORGE_TOKEN` is absent, unless this
+      change is marked breaking.
+- [ ] Shared-token fallback is not used in `migrating` or `enforced`.
+      Ordinary `repos install` cutover (#7524) retires the shared secret
+      after role checks pass.
 
 ### Keep fallback terminology consistent across docs
 
 Two distinct fallback mechanisms share similar wording and are easy to
 conflate. Use these terms, and do not mix them:
 
-- **shared-token fallback** — selecting `FULLSEND_FORGE_TOKEN` as the
-  credential. This is the always-on path in `disabled` / `rollback`,
-  and the explicit fallback in `migrating` when that role's secret is
-  unconfigured. It does not apply in `enforced`.
+- **shared-token path** — selecting `FULLSEND_FORGE_TOKEN` as the
+  credential. This is the always-on path in leftover `disabled` /
+  explicit `rollback`. It does not apply in `migrating` or `enforced`.
 - **local direct-GITLAB_TOKEN fallback** — the documented local-dev
   workflow where `GITLAB_TOKEN` is set with no `FULLSEND_FORGE_TOKEN`.
   `fullsend run --forge gitlab` treats
-  `gitlabroles.ErrSharedUnconfigured` as a no-op in `disabled` /
+  `gitlabroles.ErrSharedUnconfigured` as a no-op in leftover `disabled` /
   `rollback` so the pre-set token still works. This path does **not**
   apply in `migrating` or `enforced`.
 

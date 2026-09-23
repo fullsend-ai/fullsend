@@ -58,15 +58,15 @@ func TestModePredicates(t *testing.T) {
 	assert.False(t, ModeMigrating.UsesSharedOnly())
 	assert.False(t, ModeEnforced.UsesSharedOnly())
 
-	assert.True(t, ModeMigrating.AllowsSharedFallback())
-	assert.False(t, ModeDisabled.AllowsSharedFallback())
-	assert.False(t, ModeRollback.AllowsSharedFallback())
-	assert.False(t, ModeEnforced.AllowsSharedFallback())
-
 	assert.True(t, ModeEnforced.RequiresRoleCredentials())
+	assert.True(t, ModeMigrating.RequiresRoleCredentials())
 	assert.False(t, ModeDisabled.RequiresRoleCredentials())
-	assert.False(t, ModeMigrating.RequiresRoleCredentials())
 	assert.False(t, ModeRollback.RequiresRoleCredentials())
+
+	assert.True(t, ModeEnforced.OperatorSettable())
+	assert.True(t, ModeRollback.OperatorSettable())
+	assert.False(t, ModeDisabled.OperatorSettable())
+	assert.False(t, ModeMigrating.OperatorSettable())
 }
 
 func TestModeFromAndPresenceFrom(t *testing.T) {
@@ -127,7 +127,6 @@ func TestResolveDisabledMatchesExistingInstall(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, forge.SecretForgeToken, src.SecretName)
 			assert.True(t, src.Shared)
-			assert.False(t, src.Fallback)
 			assert.Contains(t, src.Reason, "disabled")
 		})
 	}
@@ -154,7 +153,6 @@ func TestResolveRollbackIgnoresRoleSecrets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, forge.SecretForgeToken, src.SecretName)
 	assert.True(t, src.Shared)
-	assert.False(t, src.Fallback)
 	assert.Equal(t, RoleCoder, src.Role)
 	assert.Equal(t, RoleKindBuiltin, src.Kind)
 	assert.Contains(t, src.Reason, "rollback")
@@ -175,18 +173,15 @@ func TestResolveMigrating(t *testing.T) {
 		assert.Equal(t, RoleKindBuiltin, src.Kind)
 		assert.Equal(t, forge.SecretGitLabCoderToken, src.SecretName)
 		assert.False(t, src.Shared)
-		assert.False(t, src.Fallback)
 	})
-	t.Run("role unconfigured falls back to shared", func(t *testing.T) {
+	t.Run("role unconfigured does not fall back to shared", func(t *testing.T) {
 		t.Parallel()
 		present := map[string]bool{forge.SecretForgeToken: true}
-		src, err := Resolve(Request{Mode: ModeMigrating, Job: AgentJob("review"), Present: present})
-		require.NoError(t, err)
-		assert.Equal(t, RoleAnalyst, src.Role)
-		assert.Equal(t, forge.SecretForgeToken, src.SecretName)
-		assert.True(t, src.Shared)
-		assert.True(t, src.Fallback)
-		assert.Contains(t, src.Reason, "unconfigured")
+		_, err := Resolve(Request{Mode: ModeMigrating, Job: AgentJob("review"), Present: present})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnconfigured)
+		assert.Contains(t, err.Error(), forge.SecretGitLabAnalystToken)
+		assert.NotContains(t, err.Error(), "fallback")
 	})
 	t.Run("role and shared unconfigured", func(t *testing.T) {
 		t.Parallel()
@@ -223,7 +218,6 @@ func TestResolveEnforced(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, forge.SecretGitLabAnalystToken, src.SecretName)
 		assert.False(t, src.Shared)
-		assert.False(t, src.Fallback)
 	})
 	t.Run("missing role does not use shared", func(t *testing.T) {
 		t.Parallel()
@@ -318,7 +312,7 @@ func TestDiagnosePartialMigrating(t *testing.T) {
 	assert.Equal(t, []Role{RoleAnalyst, RoleCoder}, rep.Missing)
 	joined := strings.Join(rep.Diagnostics, "\n")
 	assert.Contains(t, joined, "partial role configuration: 1/3")
-	assert.Contains(t, joined, "pending")
+	assert.Contains(t, joined, "missing (required)")
 }
 
 func TestDiagnoseEnforcedMissing(t *testing.T) {
@@ -441,7 +435,6 @@ func TestContractDistinguishableOutcomes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, forge.SecretForgeToken, src.SecretName)
 		assert.True(t, src.Shared)
-		assert.False(t, src.Fallback)
 	})
 
 	t.Run("builtin and custom share resolve path", func(t *testing.T) {
@@ -458,8 +451,6 @@ func TestContractDistinguishableOutcomes(t *testing.T) {
 		assert.Equal(t, CustomSecretName(Role("scanner")), scanner.SecretName)
 		assert.False(t, coder.Shared)
 		assert.False(t, scanner.Shared)
-		assert.False(t, coder.Fallback)
-		assert.False(t, scanner.Fallback)
 	})
 
 	t.Run("unregistered vs unconfigured vs auth-failed", func(t *testing.T) {

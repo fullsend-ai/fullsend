@@ -607,20 +607,18 @@ func TestChainedReuseResolvesToBuiltinSecret(t *testing.T) {
 	assert.True(t, src.Reused)
 }
 
-func TestResolveCustomUnconfiguredMigratingFallback(t *testing.T) {
+func TestResolveCustomUnconfiguredMigratingFailsClosed(t *testing.T) {
 	t.Parallel()
 	reg := mustParseRegistry(t, `{"roles":[{"name":"scanner","agents":["scanner"]}]}`)
-	src, err := Resolve(Request{
+	_, err := Resolve(Request{
 		Mode:     ModeMigrating,
 		Job:      AgentJob("scanner"),
 		Registry: reg,
 		Present:  map[string]bool{forge.SecretForgeToken: true},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, Role("scanner"), src.Role)
-	assert.Equal(t, RoleKindCustom, src.Kind)
-	assert.True(t, src.Shared)
-	assert.True(t, src.Fallback)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnconfigured)
+	assert.Contains(t, err.Error(), CustomSecretName(Role("scanner")))
 }
 
 func TestResolveMalformedRegistryMissingPoller(t *testing.T) {

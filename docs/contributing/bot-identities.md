@@ -57,10 +57,11 @@ shared-token installs and, when every registered role is ready, enables
 `enforced` mode and retires `FULLSEND_FORGE_TOKEN`.
 When `FULLSEND_GITLAB_ROLE_MIGRATION` is `migrating` or `enforced`,
 `fullsend poll` and `fullsend run` select the registered role credential
-instead of the shared token (see
-[gitlab-role-credentials.md](gitlab-role-credentials.md)). Disabled and
-rollback keep the shared `fullsend-bot` identity and are emergency recovery
-only. Role registration is install-state only; repository and merge-request
-content cannot create or elevate a GitLab role.
+and fail closed if that secret is missing (see
+[gitlab-role-credentials.md](gitlab-role-credentials.md)). Leftover
+`disabled` and explicit `rollback` keep the shared `fullsend-bot` identity;
+rollback is the only operator-settable emergency recovery. Role registration
+is install-state only; repository and merge-request content cannot create or
+elevate a GitLab role.
 The explicit [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../cli/repos.md#gitlab-role-cutover)
 operation remains a fail-closed retry of that same cutover.

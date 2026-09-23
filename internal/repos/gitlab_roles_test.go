@@ -932,7 +932,7 @@ func TestAppendGitLabRoleStatus_EnforcedMissingIsDrift(t *testing.T) {
 	}
 }
 
-func TestAppendGitLabRoleStatus_MigratingMissingIsNotDrift(t *testing.T) {
+func TestAppendGitLabRoleStatus_MigratingMissingIsDrift(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
@@ -940,10 +940,14 @@ func TestAppendGitLabRoleStatus_MigratingMissingIsNotDrift(t *testing.T) {
 	appendGitLabRoleStatus(context.Background(), fc, "group", "project", status)
 	assert.Equal(t, "migrating", status.GitLabRoleMode)
 	assert.False(t, status.GitLabRolesReady)
-	assert.Empty(t, status.Drifts)
+	var fields []string
+	for _, d := range status.Drifts {
+		fields = append(fields, d.Field)
+	}
+	assert.Contains(t, strings.Join(fields, ","), "gitlab-role:poller")
 	require.NotEmpty(t, status.GitLabRoleDiagnostics)
 	joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
-	assert.Contains(t, joined, "pending")
+	assert.Contains(t, joined, "missing (required)")
 	for _, d := range status.GitLabRoleDiagnostics {
 		assertNoLeak(t, d)
 		assert.NotContains(t, d, leakToken)
