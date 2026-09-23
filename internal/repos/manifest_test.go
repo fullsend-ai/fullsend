@@ -2112,11 +2112,14 @@ func TestValidate_HTTPSConfigAccepted(t *testing.T) {
 }
 
 func TestLoadManifest_LegacyConfigFieldsRejected(t *testing.T) {
+	// The legacy string form of defaults.config (a preset URL before
+	// config_base) is now a typed overlay mapping, so a URL scalar is
+	// rejected as the wrong shape. The retired config_hash key is covered
+	// by TestLoadManifest_LegacyConfigHashStillUnknown.
 	input := `
 version: 1
 defaults:
   config: https://example.com/preset.yaml
-  config_hash: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 github:
   repos:
     - name: acme/app
@@ -2126,7 +2129,7 @@ github:
 	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
 	_, err := LoadManifest(context.Background(), p)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in type")
+	assert.Contains(t, err.Error(), "must be a YAML mapping")
 }
 
 func TestParseManifest_ConfigFieldsRoundTrip(t *testing.T) {

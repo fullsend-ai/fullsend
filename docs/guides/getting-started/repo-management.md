@@ -189,6 +189,46 @@ the `repos install` command line — so the preset's own roles (rather
 than the fleet-wide `--roles` default) take effect through the layered
 config.
 
+### Configuration overlays
+
+`repos.yaml` can also declare a sparse `.fullsend/config.yaml` overlay
+([ADR 0122](../../ADRs/0122-declarative-repos-config-overlays.md)). The
+block uses the same schema as per-repo `config.yaml` except `runtime`
+and `allowed_remote_resources`, which stay on their existing manifest
+shorthands.
+
+```yaml
+version: 1
+defaults:
+  runtime: pi
+  config:
+    kill_switch: false
+    inference:
+      region: us-east1
+github:
+  repos:
+    - name: acme/api              # opted in by defaults.config
+    - name: acme/special
+      config:
+        kill_switch: true         # repository values win
+    - name: acme/unmanaged        # would be unmanaged without defaults.config
+```
+
+`defaults.config` opts every repository into overlay management. A
+repository `config` block (including `config: {}`) opts in only that
+repository. A repository with neither declaration is not overlay-managed.
+Resolution is code defaults, then `config_base`, then `defaults.config`,
+then the repository `config`; more specific values win and unspecified
+keys inherit. The managed overlay contains only explicitly supplied
+values (plus the `runtime` / `allowed_remote_resources` shorthands) —
+code defaults and `config.base.yaml` are not baked into the file.
+Unknown fields and the forbidden shorthand keys fail manifest validation
+with field-specific errors.
+
+Install, convergence, and overlay drift for these blocks land with the
+rest of [ADR 0122](../../ADRs/0122-declarative-repos-config-overlays.md);
+this release parses, validates, and resolves them.
+
 ### Manifest paths and URLs
 
 The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
