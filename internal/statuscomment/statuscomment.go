@@ -719,11 +719,12 @@ func statusEmoji(status string) string {
 //
 // PostCompletionWithDetail may legitimately leave the start comment
 // non-terminal and post a separate completion comment (when other activity
-// pushed past the start, but the agent posted no output of its own). The
-// HTML-marker scan therefore inspects every matching comment: if any sibling
-// already carries the terminal tag, leftover start comments are deleted
-// rather than rewritten as Terminated. That avoids contradictory
-// Terminated + Success (or Failure) states for the same run. See #4058.
+// pushed past the start, but the agent posted no output of its own). Both
+// the HTML-marker scan (GitHub, GitLab) and the StatusCommentClient lookup
+// (Jira) therefore inspect every matching comment: if any sibling already
+// carries the terminal tag, leftover start comments are deleted rather
+// than rewritten as Terminated. That avoids contradictory Terminated +
+// Success (or Failure) states for the same run. See #4058.
 //
 // completionMode is the configured comment.completion value ("enabled",
 // "on_failure", or "disabled"). It changes what an absent marker means:
@@ -776,6 +777,16 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		matched, terminal, err = statusClient.FindStatusComment(ctx, project, number, marker)
 		if err != nil {
 			return fmt.Errorf("finding status comment: %w", err)
+		}
+		if terminal {
+			// A completion comment already exists for this run. Delete any
+			// leftover non-terminal comments so the timeline does not show
+			// both Started and a terminal outcome, mirroring the
+			// HTML-marker branch below. See #4058.
+			if delErr := statusClient.DeleteNonTerminalStatusComments(ctx, project, number, marker); delErr != nil {
+				return fmt.Errorf("deleting leftover status comments: %w", delErr)
+			}
+			return nil
 		}
 	} else {
 		comments, listErr := client.ListComments(ctx, project, number)

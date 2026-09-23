@@ -232,6 +232,62 @@ func (c *JiraClient) FindStatusComment(ctx context.Context, project string, numb
 	return nil, false, nil
 }
 
+// DeleteNonTerminalStatusComments implements StatusCommentClient. It mirrors
+// FindStatusComment's lookup order — property lookup first, falling back to
+// legacy body scanning only when no comment carries the status property —
+// so the two methods agree on which comments belong to marker. visibleStatusBody
+// strips the marker/terminal tag from a property-backed comment's stored
+// body, so once any comment matches by property, body scanning is skipped
+// entirely to avoid missing property-backed leftovers whose visible body no
+// longer carries the marker.
+func (c *JiraClient) DeleteNonTerminalStatusComments(ctx context.Context, project string, number int, marker string) error {
+	key := issueKey(project, number)
+	comments, err := c.jira.ListComments(ctx, key)
+	if err != nil {
+		return wrapNotFound(err)
+	}
+
+	var toDelete []string
+	matchedByProperty := false
+	for i := range comments {
+		for _, prop := range comments[i].Properties {
+			if prop.Key != statusPropertyKey {
+				continue
+			}
+			var stored statusCommentProperty
+			if json.Unmarshal(prop.Value, &stored) != nil || stored.Marker != marker {
+				continue
+			}
+			matchedByProperty = true
+			if !stored.Terminal {
+				toDelete = append(toDelete, comments[i].ID)
+			}
+		}
+	}
+	if !matchedByProperty {
+		for i := range comments {
+			body := jira.ADFToMarkdown(comments[i].Body)
+			if !strings.Contains(body, marker) {
+				continue
+			}
+			if !strings.Contains(body, "fullsend:status:terminal") {
+				toDelete = append(toDelete, comments[i].ID)
+			}
+		}
+	}
+
+	for _, id := range toDelete {
+		if delErr := c.jira.DeleteComment(ctx, key, id); delErr != nil {
+			wrapped := wrapNotFound(delErr)
+			if IsNotFound(wrapped) {
+				continue
+			}
+			return fmt.Errorf("deleting leftover status comment %s of %s: %w", id, key, wrapped)
+		}
+	}
+	return nil
+}
+
 // IsStatusComment implements StatusCommentClient. The legacy body check keeps
 // timeline analysis correct while older marker-bearing comments are present.
 func (c *JiraClient) IsStatusComment(ctx context.Context, project string, number int, commentID string) (bool, error) {

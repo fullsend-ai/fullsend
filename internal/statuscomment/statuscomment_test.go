@@ -798,15 +798,15 @@ func TestReconcileOrphaned_DeleteLeftoverStartError(t *testing.T) {
 	assert.Empty(t, fc.UpdatedComments, "must not fall back to marking the start comment Terminated")
 }
 
-func TestReconcileOrphaned_JiraDoesNotTerminateWhenTerminalSiblingExists(t *testing.T) {
+func TestReconcileOrphaned_JiraDeletesLeftoverWhenTerminalSiblingExists(t *testing.T) {
 	jiraClient, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	marker := mustBuildMarker("run-99")
-	_, err = jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Code · Started 10:00 AM UTC", marker, false)
+	start, err := jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Code · Started 10:00 AM UTC", marker, false)
 	require.NoError(t, err)
-	_, err = jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Finished Code · ✅ Success · Completed 10:11 AM UTC", marker, true)
+	completion, err := jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Finished Code · ✅ Success · Completed 10:11 AM UTC", marker, true)
 	require.NoError(t, err)
 
 	err = ReconcileOrphaned(ctx, jiraClient, "PROJ", 42, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "Code")
@@ -816,8 +816,10 @@ func TestReconcileOrphaned_JiraDoesNotTerminateWhenTerminalSiblingExists(t *test
 
 	comments, listErr := jiraClient.ListComments(ctx, "PROJ", 42)
 	require.NoError(t, listErr)
-	require.Len(t, comments, 2)
+	require.Len(t, comments, 1, "leftover start comment must be deleted, leaving only the terminal completion comment")
+	assert.Equal(t, completion.ID, comments[0].ID)
 	for _, c := range comments {
+		assert.NotEqual(t, start.ID, c.ID, "leftover start comment must not remain")
 		assert.NotContains(t, string(c.Body), "Terminated")
 	}
 }
