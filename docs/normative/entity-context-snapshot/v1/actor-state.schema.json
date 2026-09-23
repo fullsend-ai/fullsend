@@ -25,6 +25,19 @@
         },
         "allOf": [
           {
+            "if": { "properties": { "kind": { "const": "bot" } }, "required": ["kind"] },
+            "then": {
+              "properties": {
+                "role": { "const": "bot" },
+                "role_verified": { "const": true }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+            "then": { "properties": { "role": { "not": { "const": "bot" } } } }
+          },
+          {
             "if": { "properties": { "role_verified": { "const": true } }, "required": ["role_verified"] },
             "then": { "properties": { "role": { "$ref": "common.schema.json#/$defs/actor_role" } } },
             "else": { "properties": { "role": { "type": "null" } } }

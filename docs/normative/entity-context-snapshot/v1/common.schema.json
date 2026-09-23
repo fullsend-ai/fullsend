@@ -44,7 +44,7 @@
       ]
     },
     "actor_role": {
-      "enum": ["admin", "maintain", "write", "triage", "read", "none", "external"]
+      "enum": ["admin", "maintain", "write", "triage", "read", "none", "external", "bot"]
     }
   }
 }

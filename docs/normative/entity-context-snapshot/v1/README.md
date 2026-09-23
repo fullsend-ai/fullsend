@@ -343,25 +343,24 @@ rows make the `reviews` scope unusable and add an `invalid_metadata` gap.
 permission for each referenced author, resolver, and dismisser. Roles use the
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
 and normalized-event v1 vocabulary: `admin`, `maintain`, `write`,
-`triage`, `read`, `none`, and `external`. `role_verified: false` is paired with
-`role: null` and means consumers must fail closed rather than infer authority
-from forge association labels such as GitHub `authorAssociation`. Each row
-states whether the actor is a `human` or `bot`. A bot's role is that bot
-identity's own effective permission on the target repository, never Fullsend's
-installation permission. A permission lookup failure, including a collaborator
-API 404, emits `role_verified: false` and `role: null`. These roles are still
-needed for auditability and for ordinary authorization decisions about human
-authors, resolvers, and dismissers; they are not a content-trust signal. The
-authorization contract documents the narrow transition-specific exceptions
-for GitHub label changes and submitted bot reviews, which do not turn an
-unverified bot role into Fullsend's installation role or authorize arbitrary
-bot comments.
+`triage`, `read`, `none`, and `external`; snapshot actor state additionally
+uses `bot` as an explicit non-authority marker. Each row states whether the
+actor is a `human` or `bot`. For `kind: bot`, producers set `role: bot` and
+`role_verified: true`: this records the known actor kind, not a repository
+permission, and consumers must not use it to satisfy a human role gate. For
+`kind: human`, `role_verified: false` is paired with `role: null` and means
+consumers must fail closed rather than infer authority from forge association
+labels such as GitHub `authorAssociation`; a permission lookup failure,
+including a collaborator API 404, uses that representation. A future ADR may
+define a verifiable bot-permission mapping. Until then, the authorization
+contract's narrow transition-specific exceptions for GitHub label changes and
+submitted bot reviews remain the only bot authorization paths; they do not
+authorize arbitrary bot comments.
 
 Entity-context-snapshot and normalized-event v1 carry independently versioned
-copies of the actor-role vocabulary. They match when this version is accepted, but a
-non-breaking role addition to normalized-event v1 does not extend this closed
-schema; a value must validate against the schema of every document that uses
-it.
+copies of the actor-role vocabulary. The snapshot-only `bot` marker is not a
+normalized-event repository permission and must not be projected into one;
+each value must validate against the schema of the document that uses it.
 
 Every non-null `author_id`, `resolved_by_actor_id`, and
 `dismissed_by_actor_id` referenced anywhere in the snapshot appears exactly
