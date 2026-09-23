@@ -46,16 +46,11 @@ func moduleDir(modulePath string) (string, error) {
 func buildCLIBinary(t *testing.T, modRoot string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "fullsend")
-	args := []string{"build", "-o", binary, "./cmd/fullsend/"}
-	if sha := gitHeadSHA(modRoot); sha != "" {
+	sha := gitHeadSHA(modRoot)
+	if sha != "" {
 		t.Logf("stamping CLI commitSHA=%s", sha)
-		args = []string{
-			"build",
-			"-ldflags", commitSHALdflags(sha),
-			"-o", binary,
-			"./cmd/fullsend/",
-		}
 	}
+	args := cliBuildArgs(binary, sha)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = modRoot
 	out, err := cmd.CombinedOutput()
