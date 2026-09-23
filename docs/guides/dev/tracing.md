@@ -250,10 +250,13 @@ steps:
    `AlwaysSample` flag. This prevents child runs from re-advertising as
    sampled when the parent trace opted out.
 
-The resulting `TRACEPARENT` string is passed to pre-scripts, post-scripts,
-and the sandbox environment via `childScriptEnv()`. That function strips
-any inherited `TRACEPARENT` from `os.Environ()` and `runner_env` before
-appending fullsend's own value (issue #2779).
+The resulting `TRACEPARENT` string is passed to pre-scripts and
+post-scripts (both host-side `exec.Command` invocations) via
+`childScriptEnv()`. That function strips any inherited `TRACEPARENT`
+from `os.Environ()` and `runner_env` before appending fullsend's own
+value (issue #2779). `childScriptEnv()` does not touch the sandbox: the
+sandbox's `.env` is built by `bootstrapEnv()`, which does not currently
+inject `TRACEPARENT` at all.
 
 ### Sampled-flag preservation invariant
 
@@ -263,12 +266,18 @@ sampled-flag decision extracted from the remote parent context. It must
 never substitute a locally-sampled `SpanContext`'s flags directly.
 
 This is a contract binding every TRACEPARENT-emission path, not a
-description of one helper. Current and expected consumers include:
+description of one helper. Currently covered consumers:
 
-- pre/post scripts and the sandbox environment via `childScriptEnv()`
-- a runtime env / `iteration.env` injection, if added
-- any future path that formats a W3C traceparent for a child process,
-  sandbox, or dispatched run
+- pre/post scripts (and the preflight check) via `childScriptEnv()` —
+  all host-side `exec.Command` invocations, not the sandbox
+
+Future consumers that still need their own flag-preservation fix when
+added — `childScriptEnv()` does not cover them today:
+
+- a sandbox / runtime-env / `iteration.env` injection into the sandbox
+  itself (`bootstrapEnv()` does not currently inject `TRACEPARENT`)
+- any other future path that formats a W3C traceparent for a child
+  process, sandbox, or dispatched run
 
 The local tracer uses `AlwaysSample` so the file exporter records every
 span. That local decision is **not** the outbound sampling decision.
@@ -291,8 +300,9 @@ propagation path in `internal/cli/run.go` or `internal/telemetry/`:
 flag any outbound traceparent built from a local `SpanContext()`
 without this flag preservation as a **medium-severity** finding. The
 fix is to reuse `resolveTraceIdentity()`'s preserved flags or
-`telemetry.TraceparentWithFlags` with the inbound remote parent's
-unsampled flags.
+`telemetry.TraceparentWithFlags` with the preserved inbound flags — the
+regression this catches is hardcoding the unsampled case, not that the
+inbound parent is always unsampled.
 
 ## File exporter output format
 
