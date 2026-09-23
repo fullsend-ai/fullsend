@@ -37,7 +37,7 @@
           "if": { "properties": { "forge": { "const": "github" } }, "required": ["forge"] },
           "then": {
             "properties": {
-              "repository_id": { "pattern": "^[A-Za-z0-9_=/+-]+$" },
+              "repository_id": { "$ref": "common.schema.json#/$defs/github_node_id" },
               "repository": { "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$" }
             }
           }
@@ -80,6 +80,46 @@
       "description": "At most one row per (scope, code) pair; producers aggregate counts before canonical serialization and sort by scope then code."
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": { "forge": { "const": "github" } },
+            "required": ["forge"]
+          }
+        },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "repository_id": { "$ref": "common.schema.json#/$defs/github_node_id" }
+            }
+          },
+          "entity": {
+            "properties": {
+              "id": { "$ref": "common.schema.json#/$defs/github_node_id" }
+            }
+          },
+          "records": {
+            "items": {
+              "properties": {
+                "id": { "$ref": "common.schema.json#/$defs/github_node_id" },
+                "author_id": {
+                  "oneOf": [
+                    { "$ref": "common.schema.json#/$defs/github_node_id" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false,
   "$defs": {
     "filter": {

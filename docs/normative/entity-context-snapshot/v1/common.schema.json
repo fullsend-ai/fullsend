@@ -18,8 +18,13 @@
     },
     "structural_id": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:+,=@-]*$",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
       "description": "Forge or receipt identifier. Structural IDs use a printable, separator-safe ASCII alphabet and are never rewritten. Forge-specific mappings further restrict this alphabet."
+    },
+    "github_node_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_=-]*$",
+      "description": "GitHub GraphQL node_id. Every GitHub-sourced structural ID uses this adapter mapping before schema validation."
     },
     "finding_code": {
       "type": "string",

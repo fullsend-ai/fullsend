@@ -555,10 +555,14 @@ never emitted after filtering or truncation.
 All structural IDs use the schema's `common.schema.json` `structural_id`
 definition, which excludes whitespace, control characters, slashes, and shell
 separators. Adapters apply the narrower forge mapping before schema validation:
-GitHub node IDs use `[A-Za-z0-9_=-]+`; GitLab and Forgejo numeric IDs use
+GitHub node IDs use `[A-Za-z0-9][A-Za-z0-9_=-]*` (the schema's
+`github_node_id` definition); GitLab and Forgejo numeric IDs use
 `[1-9][0-9]*`; GitLab discussion IDs use
 `[A-Za-z0-9][A-Za-z0-9._:-]*`; and filter finding codes use
-`[a-z][a-z0-9._-]*`. A value outside its forge mapping is `invalid_metadata`;
+`[a-z][a-z0-9._-]*`. Every GitHub-sourced structural ID uses the same
+`github_node_id` mapping, including entity, record, actor, review, thread,
+check, and agent-run IDs; the standalone child schemas rely on the adapter
+check because they do not carry `source.forge`. A value outside its forge mapping is `invalid_metadata`;
 it is rejected or the affected optional record is omitted rather than
 rewritten. Unsafe required IDs abort assembly.
 
