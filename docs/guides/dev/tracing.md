@@ -250,10 +250,67 @@ steps:
    `AlwaysSample` flag. This prevents child runs from re-advertising as
    sampled when the parent trace opted out.
 
-The resulting `TRACEPARENT` string is passed to pre-scripts, post-scripts,
-and the sandbox environment via `childScriptEnv()`. That function strips
-any inherited `TRACEPARENT` from `os.Environ()` and `runner_env` before
-appending fullsend's own value (issue #2779).
+The resulting `TRACEPARENT` string is passed to pre-scripts and
+post-scripts (both host-side `exec.Command` invocations) via
+`childScriptEnv()`. That function strips any inherited `TRACEPARENT`
+from `os.Environ()` and `runner_env` before appending fullsend's own
+value (issue #2779). `childScriptEnv()` does not touch the sandbox: the
+sandbox's `.env` is built by `bootstrapEnv()`, which does not currently
+inject `TRACEPARENT` at all.
+
+### Sampled-flag preservation invariant
+
+**Invariant (issue #2779):** Any code path that emits or regenerates a
+`TRACEPARENT` value for a downstream consumer must preserve the inbound
+sampled-flag decision extracted from the remote parent context. It must
+never substitute a locally-sampled `SpanContext`'s flags directly.
+
+This is a contract binding every TRACEPARENT-emission path, not a
+description of one helper. Currently covered consumers:
+
+- pre/post scripts via `childScriptEnv()` — host-side `exec.Command`
+  invocations that receive a flag-preserved `TRACEPARENT`, not the
+  sandbox
+
+The preflight check also calls `childScriptEnv()`, but only to strip
+OIDC credential vars (issue #5832) — it passes an empty traceparent
+argument, and `childScriptEnv()` omits `TRACEPARENT` entirely when
+that argument is empty rather than emitting one. The preflight check
+therefore receives no `TRACEPARENT` and is not a consumer of this
+invariant.
+
+Future consumers that still need their own flag-preservation fix when
+added — `childScriptEnv()` does not cover them today:
+
+- a sandbox / runtime-env / `iteration.env` injection into the sandbox
+  itself (`bootstrapEnv()` does not currently inject `TRACEPARENT`)
+- any other future path that formats a W3C traceparent for a child
+  process, sandbox, or dispatched run
+
+The local tracer uses `AlwaysSample` so the file exporter records every
+span. That local decision is **not** the outbound sampling decision.
+`resolveTraceIdentity()` already applies the rule: when the inbound
+parent was valid, remote, and unsampled, it calls
+`telemetry.TraceparentWithFlags` with the inbound flags instead of
+`rootSpan.SpanContext().TraceFlags()`. New paths must reuse that logic.
+
+- Reuse `resolveTraceIdentity()`'s `Traceparent` string when the root
+  span is the intended parent.
+- When emitting a different span's IDs (for example an `agent` span),
+  call `telemetry.TraceparentWithFlags` with the same preserved inbound
+  flags. Do not call `telemetry.Traceparent(span.SpanContext())` or
+  format `span.SpanContext().TraceFlags()` directly — those always
+  carry the local `AlwaysSample` bit (`-01`) and re-advertise an
+  unsampled parent trace as sampled.
+
+**When reviewing PRs** that add or modify a TRACEPARENT emission or
+propagation path in `internal/cli/run.go` or `internal/telemetry/`:
+flag any outbound traceparent built from a local `SpanContext()`
+without this flag preservation as a **medium-severity** finding. The
+fix is to reuse `resolveTraceIdentity()`'s preserved flags or
+`telemetry.TraceparentWithFlags` with the preserved inbound flags
+(preventing an unsampled parent decision from being re-advertised as
+sampled via the local `AlwaysSample` flag).
 
 ## File exporter output format
 
