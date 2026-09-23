@@ -54,13 +54,16 @@ every truncation, replacement, finding, and fetch error without retaining
 rejected content.
 
 The snapshot is written outside the repository clone. Host-side pre- and
-post-scripts receive `FULLSEND_CONTEXT_DIR` pointing to
-an access-restricted temporary directory outside the retained run-output
-tree; inside the sandbox the same variable points to
-`/sandbox/workspace/context`. Fullsend uploads that directory after sandbox
-creation and before repository/runtime execution. Consumers therefore use the
-same variable and relative paths on both sides of the sandbox boundary, and
-the context cannot be staged or committed accidentally with repository files.
+post-scripts receive `FULLSEND_CONTEXT_DIR` pointing to an access-restricted
+temporary directory outside the retained run-output tree; inside the sandbox
+the same variable points to the runner-owned reserved sibling path
+`/sandbox/entity-context`. Fullsend must reject any checkout or `host_files`
+destination that would overlap that path, and must abort if the reserved path
+already exists with unexpected contents. Fullsend uploads that directory after
+sandbox creation and before repository/runtime execution. Consumers therefore
+use the same variable and relative paths on both sides of the sandbox boundary,
+and the context cannot be staged or committed accidentally with repository
+files.
 
 The exact tree, schemas, canonical serialization, stable record-key derivation,
 filter statuses, and compatibility rules are the versioned

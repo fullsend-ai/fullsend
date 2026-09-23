@@ -7,8 +7,7 @@
   "properties": {
     "kind": { "enum": ["work_item", "change_proposal"] },
     "id": {
-      "type": "string",
-      "minLength": 1,
+      "$ref": "common.schema.json#/$defs/structural_id",
       "description": "Immutable opaque forge object ID used for record keys; distinct from normalized-event v1 entity.id."
     },
     "number": {
@@ -18,7 +17,12 @@
     },
     "title": { "type": "string", "minLength": 1 },
     "state": { "enum": ["open", "closed", "merged"] },
-    "author_id": { "type": ["string", "null"], "minLength": 1 },
+    "author_id": {
+      "oneOf": [
+        { "$ref": "common.schema.json#/$defs/structural_id" },
+        { "type": "null" }
+      ]
+    },
     "author": { "type": ["string", "null"], "minLength": 1 },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },

@@ -11,7 +11,7 @@
         "type": "object",
         "required": ["id", "record_key", "state", "submitted_at"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
           "record_key": { "$ref": "common.schema.json#/$defs/record_key" },
           "state": { "enum": ["approved", "changes_requested", "commented", "dismissed"] },
           "reviewed_sha": { "$ref": "common.schema.json#/$defs/git_oid" },
@@ -22,7 +22,12 @@
               { "type": "null" }
             ]
           },
-          "dismissed_by_actor_id": { "type": ["string", "null"], "minLength": 1 }
+          "dismissed_by_actor_id": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/structural_id" },
+              { "type": "null" }
+            ]
+          }
         },
         "allOf": [
           {
@@ -40,7 +45,7 @@
         "type": "object",
         "required": ["id", "thread_key", "created_at", "order_path", "record_keys", "replies"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
           "thread_key": { "$ref": "common.schema.json#/$defs/record_key" },
           "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
           "order_path": { "type": "string", "pattern": "^threads/[0-9a-f]{64}[.]order$" },
@@ -61,7 +66,7 @@
               "additionalProperties": false
             }
           },
-          "review_id": { "type": "string", "minLength": 1 },
+          "review_id": { "$ref": "common.schema.json#/$defs/structural_id" },
           "review_record_key": { "$ref": "common.schema.json#/$defs/record_key" },
           "reviewed_sha": { "$ref": "common.schema.json#/$defs/git_oid" },
           "path": { "$ref": "common.schema.json#/$defs/repository_path" },

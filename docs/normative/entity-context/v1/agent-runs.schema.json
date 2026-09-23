@@ -11,7 +11,7 @@
         "type": "object",
         "required": ["id", "agent", "status", "input_revision", "result_record_keys", "completed_at"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
           "agent": { "type": "string", "minLength": 1 },
           "status": { "enum": ["success", "failure", "cancelled", "skipped", "timed_out"] },
           "input_revision": {

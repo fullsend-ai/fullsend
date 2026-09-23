@@ -11,10 +11,15 @@
         "type": "object",
         "required": ["id", "thread_key", "resolved", "outdated"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
           "thread_key": { "$ref": "common.schema.json#/$defs/record_key" },
           "resolved": { "type": "boolean" },
-          "resolved_by_actor_id": { "type": ["string", "null"], "minLength": 1 },
+          "resolved_by_actor_id": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/structural_id" },
+              { "type": "null" }
+            ]
+          },
           "outdated": { "type": "boolean" },
           "minimized": { "type": "boolean" }
         },

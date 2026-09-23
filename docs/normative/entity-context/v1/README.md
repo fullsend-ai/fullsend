@@ -16,7 +16,10 @@ Entity-context v1 applies only to GitHub, GitLab, and Forgejo work items and
 change proposals. A non-forge `work_item`, such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
 outside the tree and continues under that integration's existing input
-contract. Runtime entity-context forge reads remain denied.
+contract. This host-only `unsupported_entity` diagnostic is unrelated to the
+`gaps[].code` value `unsupported` for an omitted or partial in-tree scope and
+never appears in a schema document. Runtime entity-context forge reads remain
+denied.
 
 ## Tree
 
@@ -290,6 +293,18 @@ Review adapters use these exhaustive v1 mappings:
   `PENDING` and `REQUEST_REVIEW` rows are unsubmitted reviewer requests and are
   omitted.
 
+Formal review timestamp mapping is also exhaustive. The record's
+`created_at`, its filename order key, and the relationship `submitted_at` all
+use the canonical submission time. For GitHub this is native `submittedAt`;
+native `createdAt` is the start of a pending review and is not used for a
+submitted record. A submitted GitHub review without `submittedAt` is
+`invalid_metadata`. Forgejo uses native `submitted_at` when present and uses
+native `created_at` only when the completed review exposes no separate
+submission field; if neither is present it is `invalid_metadata`. GitLab has
+no formal v1 review records, so discussion notes use their native note
+`created_at` as comment time and have no `submitted_at`. Adapters must not use
+runner-observed time as a fallback.
+
 Any other native formal-review state is `invalid_metadata`. GitHub uses its
 native outdated observation. For GitLab and Forgejo thread APIs that expose no
 outdated equivalent, producers emit `outdated: false`; they never infer it from
@@ -346,6 +361,13 @@ Non-entity records first enter the corresponding canonical order from
 [Ordering and determinism](#ordering-and-determinism); `record_selection`
 retains either the oldest or newest `max_records_per_source` entries for each
 included source, then output ordering follows the same chronology rules.
+When a bound drops records, the producer emits exactly one `profile_bound` gap
+for each affected scope, with `count` equal to the number dropped. Counts from
+multiple bounds for the same scope and code are aggregated, and the gaps array
+contains at most one row for each `(scope, code)` pair, sorted by scope and
+code. Dropping labels because of `max_labels` emits an `entity`-scope
+`profile_bound` gap whose count is the number of dropped labels and sets the
+entity-metadata filter status to `truncated`; it is never silent.
 After comment and review record selection, thread `record_keys`, reply edges,
 thread order files, and review views contain only retained records that have an
 emitted `content_path`. A reply edge is emitted only when both endpoints remain
@@ -500,7 +522,13 @@ configured provider trust boundary, not by this cleanup guarantee.
 Structural strings are not rewritten because doing so could change identity or
 target a different resource. Canonical IDs use the mappings above. Repository
 paths and review file paths first undergo the Unicode-safety scan and then strict
-structural validation. v1 deliberately restricts `repository_path` to the
+structural validation. The `repository_path` and `source.host` schema patterns
+use only RE2-compatible syntax and enforce their printable alphabet; producers
+additionally enforce the documented segment, leading-slash, trailing-slash,
+port-range, and default-port rules. A validator that cannot compile or
+evaluate any security pattern must report a validation error and abort required
+snapshot assembly; it must never ignore the pattern or fall back to a weaker
+constraint. v1 deliberately restricts `repository_path` to the
 printable-ASCII allow-list encoded by `common.schema.json` (including its
 explicit punctuation set and excluding non-ASCII letters and apostrophes); this
 is an explicit compatibility and security boundary, not an implicit Unicode
@@ -508,8 +536,10 @@ normalization. Non-ASCII or other out-of-alphabet values are structurally
 invalid. Repository file paths are relative,
 slash-separated, contain no `.` or `..` segment, percent sign or percent-encoded
 dot, slash, or backslash, control character, or non-rendering class named above.
-These values are untrusted forge data and must never be interpolated into shell
-commands; generated order-file paths have a separate shell-safe contract.
+The host port is 1 through 65535, and `:443` is rejected because the default
+port is omitted. These values are untrusted forge data and must never be
+interpolated into shell commands; generated order-file paths have a separate
+shell-safe contract.
 Source URLs
 are intentionally not part of the agent-visible v1 tree; forge, host,
 repository, and immutable record IDs provide provenance without copying
@@ -522,6 +552,16 @@ index `source` field
 (`host`, `repository_id`, or `repository`), aborts snapshot assembly rather
 than emitting an invalid singleton or dangling manifest. Structural values are
 never emitted after filtering or truncation.
+
+All structural IDs use the schema's `common.schema.json` `structural_id`
+definition, which excludes whitespace, control characters, slashes, and shell
+separators. Adapters apply the narrower forge mapping before schema validation:
+GitHub node IDs use `[A-Za-z0-9_=-]+`; GitLab and Forgejo numeric IDs use
+`[1-9][0-9]*`; GitLab discussion IDs use
+`[A-Za-z0-9][A-Za-z0-9._:-]*`; and filter finding codes use
+`[a-z][a-z0-9._-]*`. A value outside its forge mapping is `invalid_metadata`;
+it is rejected or the affected optional record is omitted rather than
+rewritten. Unsafe required IDs abort assembly.
 
 `index.json.filter` records filtering of source-derived values in the index.
 Manifest file entries require `filter` for entity, review, agent-run, check
