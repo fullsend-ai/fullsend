@@ -180,30 +180,54 @@ func (c *JiraClient) UpdateStatusComment(ctx context.Context, project string, nu
 
 // FindStatusComment implements StatusCommentClient. Property lookup is the
 // primary path; visible-body scanning keeps pre-property comments compatible.
+// When more than one comment matches the marker, a terminal comment is
+// preferred so leftover start comments are not treated as orphans.
 func (c *JiraClient) FindStatusComment(ctx context.Context, project string, number int, marker string) (*Comment, bool, error) {
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
 	if err != nil {
 		return nil, false, wrapNotFound(err)
 	}
+	var firstNonTerminal Comment
+	hasNonTerminal := false
 	for i := range comments {
 		for _, prop := range comments[i].Properties {
 			if prop.Key != statusPropertyKey {
 				continue
 			}
 			var stored statusCommentProperty
-			if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
-				result := fromJiraComment(comments[i])
-				return &result, stored.Terminal, nil
+			if json.Unmarshal(prop.Value, &stored) != nil || stored.Marker != marker {
+				continue
+			}
+			result := fromJiraComment(comments[i])
+			if stored.Terminal {
+				return &result, true, nil
+			}
+			if !hasNonTerminal {
+				firstNonTerminal = result
+				hasNonTerminal = true
 			}
 		}
 	}
+	if hasNonTerminal {
+		return &firstNonTerminal, false, nil
+	}
 	for i := range comments {
 		body := jira.ADFToMarkdown(comments[i].Body)
-		if strings.Contains(body, marker) {
-			result := fromJiraComment(comments[i])
-			return &result, strings.Contains(body, "fullsend:status:terminal"), nil
+		if !strings.Contains(body, marker) {
+			continue
 		}
+		result := fromJiraComment(comments[i])
+		if strings.Contains(body, "fullsend:status:terminal") {
+			return &result, true, nil
+		}
+		if !hasNonTerminal {
+			firstNonTerminal = result
+			hasNonTerminal = true
+		}
+	}
+	if hasNonTerminal {
+		return &firstNonTerminal, false, nil
 	}
 	return nil, false, nil
 }

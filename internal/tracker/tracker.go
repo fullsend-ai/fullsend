@@ -97,6 +97,9 @@ type Client interface {
 type StatusCommentClient interface {
 	CreateStatusComment(ctx context.Context, project string, number int, body Body, marker string, terminal bool) (*Comment, error)
 	UpdateStatusComment(ctx context.Context, project string, number int, commentID string, body Body, marker string, terminal bool) error
+	// FindStatusComment locates the status comment for marker. When more
+	// than one comment matches, a terminal comment is preferred so leftover
+	// start comments are not treated as orphans.
 	FindStatusComment(ctx context.Context, project string, number int, marker string) (comment *Comment, terminal bool, err error)
 	IsStatusComment(ctx context.Context, project string, number int, commentID string) (bool, error)
 }

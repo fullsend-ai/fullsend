@@ -59,8 +59,11 @@ before its deferred PostCompletion call could run.
 Searches for a comment matching the run's HTML marker
 (<!-- fullsend:agent-status:<runID> -->) that does not contain the
 terminal tag (<!-- fullsend:status:terminal -->). If found, updates it
-to an "Interrupted" state and adds the terminal tag. If already
-finalized, this is a no-op.`,
+to an "Interrupted" state and adds the terminal tag. If a terminal
+comment already exists for the same run (the agent posted a separate
+completion comment rather than editing the start comment in place),
+leftover start comments are deleted instead of being rewritten as
+Terminated. If already finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
 			var project string

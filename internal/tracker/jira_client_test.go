@@ -397,6 +397,39 @@ func TestJiraClient_StatusCommentProperties(t *testing.T) {
 	}
 }
 
+func TestJiraClient_FindStatusComment_PrefersTerminalSibling(t *testing.T) {
+	fc := &FakeJiraClient{}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+	ctx := context.Background()
+	marker := "<!-- fullsend:agent-status:run-99 -->"
+
+	start, err := c.CreateStatusComment(ctx, "PROJ", 42, "started", marker, false)
+	if err != nil {
+		t.Fatalf("CreateStatusComment start: %v", err)
+	}
+	completion, err := c.CreateStatusComment(ctx, "PROJ", 42, "finished", marker, true)
+	if err != nil {
+		t.Fatalf("CreateStatusComment completion: %v", err)
+	}
+
+	found, terminal, err := c.FindStatusComment(ctx, "PROJ", 42, marker)
+	if err != nil {
+		t.Fatalf("FindStatusComment: %v", err)
+	}
+	if found == nil {
+		t.Fatal("FindStatusComment returned nil")
+	}
+	if found.ID == start.ID {
+		t.Fatalf("FindStatusComment returned leftover start comment %s, want terminal comment %s", found.ID, completion.ID)
+	}
+	if found.ID != completion.ID {
+		t.Errorf("found ID = %q, want %q", found.ID, completion.ID)
+	}
+	if !terminal {
+		t.Error("expected terminal=true when a completion comment exists for the same run")
+	}
+}
+
 func TestJiraClient_FindStatusComment_LegacyFallback(t *testing.T) {
 	fc := &FakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
@@ -424,6 +457,62 @@ func TestJiraClient_FindStatusComment_LegacyFallback(t *testing.T) {
 	}
 	if found != nil || terminal {
 		t.Errorf("missing marker returned comment=%+v terminal=%t", found, terminal)
+	}
+}
+
+func TestJiraClient_FindStatusComment_LegacyNonTerminal(t *testing.T) {
+	fc := &FakeJiraClient{}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+	ctx := context.Background()
+	marker := "<!-- fullsend:agent-status:legacy-start -->"
+
+	start, err := fc.CreateComment(ctx, "PROJ-42", marker+"\nstarted")
+	if err != nil {
+		t.Fatalf("CreateComment: %v", err)
+	}
+
+	found, terminal, err := c.FindStatusComment(ctx, "PROJ", 42, marker)
+	if err != nil {
+		t.Fatalf("FindStatusComment: %v", err)
+	}
+	if found == nil || found.ID != start.ID {
+		t.Fatalf("legacy start comment not found: %+v", found)
+	}
+	if terminal {
+		t.Error("legacy start comment unexpectedly terminal")
+	}
+}
+
+func TestJiraClient_FindStatusComment_LegacyPrefersTerminalSibling(t *testing.T) {
+	fc := &FakeJiraClient{}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+	ctx := context.Background()
+	marker := "<!-- fullsend:agent-status:legacy-run -->"
+
+	start, err := fc.CreateComment(ctx, "PROJ-42", marker+"\nstarted")
+	if err != nil {
+		t.Fatalf("CreateComment start: %v", err)
+	}
+	completion, err := fc.CreateComment(ctx, "PROJ-42", marker+"\n<!-- fullsend:status:terminal -->\nfinished")
+	if err != nil {
+		t.Fatalf("CreateComment completion: %v", err)
+	}
+
+	found, terminal, err := c.FindStatusComment(ctx, "PROJ", 42, marker)
+	if err != nil {
+		t.Fatalf("FindStatusComment: %v", err)
+	}
+	if found == nil {
+		t.Fatal("FindStatusComment returned nil")
+	}
+	if found.ID == start.ID {
+		t.Fatalf("FindStatusComment returned leftover start comment %s, want terminal comment %s", found.ID, completion.ID)
+	}
+	if found.ID != completion.ID {
+		t.Errorf("found ID = %q, want %q", found.ID, completion.ID)
+	}
+	if !terminal {
+		t.Error("expected terminal=true when a legacy completion comment exists for the same run")
 	}
 }
 
