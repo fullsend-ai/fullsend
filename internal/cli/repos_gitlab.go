@@ -462,9 +462,6 @@ func gitLabRoleWorkNeeded(ctx context.Context, client forge.Client, opts *reposI
 	}
 	if opts.gitlabRoleModeFlag != "" {
 		if exists {
-			if current == gitlabroles.ModeEnforced && opts.gitlabRoleModeFlag == gitlabroles.ModeMigrating {
-				return false, "", fmt.Errorf("refusing to replace enforced GitLab role migration mode with migrating; request rollback explicitly")
-			}
 			if current.RequiresRoleCredentials() && opts.gitlabRoleModeFlag.UsesSharedOnly() && !opts.gitlabRoleRollbackConfirmed {
 				return false, "", fmt.Errorf("leaving a role-required GitLab role migration mode requires --gitlab-role-rollback-confirmed")
 			}
