@@ -43,8 +43,11 @@ Some doc content lives in separate repositories linked as git submodules:
 | Submodule | Path | Docs symlink |
 |-----------|------|-------------|
 | [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` -> `../experiments` |
+| [fullsend-ai/agents](https://github.com/fullsend-ai/agents) | `_agents/` | `docs/agents` -> `../_agents/docs/` |
 
-The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step.
+`editLink.pattern` in `config.ts` is a function: pages under `docs/agents/` open in `fullsend-ai/agents` (the submodule source); every other page opens in `fullsend-ai/fullsend`. A string pattern would 404, because `docs/agents` is a symlink, not a blob in this repository.
+
+The `docs:dev` and `docs:build` scripts in the root `package.json` handle submodule initialization automatically. CI checkout in `.github/workflows/site-build.yml` uses `fetch-tags: true` and `fetch-depth: 0`; `git submodule update --init` runs in the build step. Note that when building locally or running `make lint`, you may need to run `git submodule update --init` manually.
 
 ## CI/CD
 
