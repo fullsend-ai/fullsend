@@ -327,8 +327,8 @@ identity's own effective permission on the target repository, never Fullsend's
 installation permission. A permission lookup failure, including a collaborator
 API 404, emits `role_verified: false` and `role: null`.
 
-Entity-context and normalized-event v1 carry independently versioned copies of
-the actor-role vocabulary. They match when this version is accepted, but a
+Entity-context-snapshot and normalized-event v1 carry independently versioned
+copies of the actor-role vocabulary. They match when this version is accepted, but a
 non-breaking role addition to normalized-event v1 does not extend this closed
 schema; a value must validate against the schema of every document that uses
 it.
@@ -593,10 +593,14 @@ requires a new filter version. Removing or reinterpreting a status requires v2.
 
 ## Ordering and determinism
 
-Manifest record arrays and record filenames are sorted by source `created_at`,
-then by the record key's ASCII byte order. The reserved entity-body order key
-sorts before them. Formal review arrays sort by `submitted_at` and then review
-ID. Relationship thread arrays sort by `created_at` and then thread ID; each
+Manifest `records[]` entries are sorted by each record's real source
+`created_at`, then by the record key's ASCII byte order; the reserved
+entity-body order key does not change this array order. Record filenames are
+sorted by their filename order key, which reserves
+`00000000T000000000000000Z` for the entity body so it sorts first. `files[]`
+remains path-sorted, and check paths do not embed an order key. Formal review
+arrays sort by `submitted_at` and then review ID. Relationship thread arrays
+sort by `created_at` and then thread ID; each
 thread's `record_keys`, `replies`, and `.order` lines preserve forge thread
 order. Mutable thread-state arrays sort by the thread key's ASCII byte order.
 Actor-state arrays sort by actor ID's UTF-8 byte order. Agent receipts sort by
@@ -656,10 +660,11 @@ reject them, and `schema_version` has no minor-version representation.
 
 ## Relationship to normalized-event v1
 
-Entity context stages only work items (issues) and change proposals (PRs or
-MRs); normalized-event's `conversation` entity kind from ADR 0086 is outside
-this version's scope. Entity-context `kind` uses normalized-event's `work_item`
-and `change_proposal` values. Entity-context `id` is the forge's immutable
+Entity-context-snapshot stages only work items (issues) and change proposals
+(PRs or MRs); normalized-event's `conversation` entity kind from ADR 0086 is
+outside this version's scope. Entity-context-snapshot `kind` uses
+normalized-event's `work_item` and `change_proposal` values.
+Entity-context-snapshot `id` is the forge's immutable
 opaque object ID because it participates in stable path derivation, while
 `number` is the positive display number projected into normalized-event
 `entity.id` for routing. Adapters must preserve that explicit mapping rather
