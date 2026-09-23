@@ -121,7 +121,7 @@ These PRs demonstrate that for simpler, more mechanical changes the review agent
 
 ### Counter-evidence (fabricated discrepancy)
 
-The entries above are misses: the agent failed to find a real issue a human found. A different failure mode is a finding that is factually false about input the agent already had. That does not show a depth gap; it shows an attention/framing gap. Options for addressing it are in [code-review.md](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description).
+The miss-type counter-evidence entries above (agent review insufficient) are misses: the agent failed to find a real issue a human found. A different failure mode is a finding that is factually false about input the agent already had. That does not show a depth gap; it shows an attention/framing gap. Options for addressing it are in [code-review.md](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description).
 
 #### konflux-ci/konflux-test#867: CODEOWNERS add+remove, narrow title (intent-coherence)
 
