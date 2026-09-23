@@ -153,7 +153,7 @@ The [fix agent](../../agents/fix.md):
 1. **Reads the review feedback.** For bot-triggered runs, the consolidated review body is the primary input. For human-triggered runs, the `/fs-fix` instruction text takes precedence.
 2. **Implements targeted fixes.** Addresses each actionable finding from the review, following repo conventions from `AGENTS.md`.
 3. **Verifies.** Runs the test suite and linters before committing.
-4. **Pushes a fix commit.** Posts a summary comment on the PR detailing what was fixed, what was disagreed with, and test results.
+4. **Pushes a fix commit.** Posts a summary comment on the PR detailing what was fixed, what was disagreed with, and test results. If the run produced no new commit, the status comment reports `⚠️ No changes made` instead of success — typical when the instruction asked for something outside the agent's code-change scope (for example a PR title edit).
 
 After the fix commit, the review agents automatically re-review. This loop repeats until the reviewers approve, the iteration cap is reached, or a human intervenes with `/fs-fix-stop`.
 

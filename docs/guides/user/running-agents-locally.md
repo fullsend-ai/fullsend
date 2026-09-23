@@ -320,6 +320,10 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
 | `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
 
+A local `fix` run uses the same completion statuses as CI. When the extracted
+HEAD still equals `PRE_AGENT_HEAD` (or `--target-repo` HEAD if that variable is
+unset), the comment shows `⚠️ No changes made` instead of success.
+
 Example:
 
 ```bash

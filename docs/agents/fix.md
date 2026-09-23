@@ -16,6 +16,11 @@ The fix agent is triggered when the [review agent](review.md) requests changes o
 2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
+   If the run produced no new commit (HEAD still equals the pre-agent SHA),
+   the status comment reports `⚠️ No changes made` instead of `✅ Success` so
+   a no-op is not mistaken for a landed fix. This happens when the request
+   is outside the agent's code-change scope (for example PR title or
+   metadata edits) or the agent otherwise had nothing to commit.
 
 ### What the agent reads
 
@@ -94,6 +99,9 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - When the cap is exceeded, the run fails before the sandbox starts and the
   status comment shows the escalation message (a human can still `/fs-fix`).
+- When the agent finishes without committing, the status comment shows
+  `⚠️ No changes made` rather than success. Re-run with a code-level
+  instruction, or apply the change (title, labels, description) yourself.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
 

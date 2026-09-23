@@ -202,8 +202,11 @@ func reactionEnabled(val string) bool {
 
 // isFailureStatus reports whether status represents a non-success outcome,
 // used by the "on_failure" completion mode shared by comments and reactions.
+// "no changes made" is included so a fix agent that produced no commits
+// still surfaces a comment when completion is on_failure (#3419) — hiding
+// that outcome is the false-success this status exists to prevent.
 func isFailureStatus(status string) bool {
-	return status == "failure" || status == "cancelled" || status == "skipped"
+	return status == "failure" || status == "cancelled" || status == "skipped" || status == "no changes made"
 }
 
 // shouldPostCompletion reports whether a completion comment should be
@@ -227,7 +230,8 @@ func shouldPostReactionCompletion(val, status string) bool {
 
 // reactionForStatus maps an agent outcome status to a GitHub reaction
 // content value. success gets a thumbs-up; anything else (failure,
-// cancelled, skipped, or unrecognized) gets a "confused" face. Thumbs-down
+// cancelled, skipped, no changes made, or unrecognized) gets a "confused"
+// face. Thumbs-down
 // is deliberately avoided: it overloads GitHub's native up/down-vote
 // convention, so a routine failure could be misread as the bot disliking
 // the issue. Rocket is reserved for future use.
@@ -321,7 +325,8 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 }
 
 // PostCompletionWithDetail posts or edits a completion comment.
-// status should be "success", "failure", "cancelled", or "skipped".
+// status should be "success", "failure", "cancelled", "skipped",
+// or "no changes made".
 //
 // detail is an optional short explanation rendered after the status label
 // (e.g. the pre-script's skip reason). It may come from script output, so
@@ -702,6 +707,8 @@ func statusEmoji(status string) string {
 		return "❌"
 	case "skipped":
 		return "⏭️"
+	case "no changes made":
+		return "⚠️"
 	default:
 		return "⚠️"
 	}

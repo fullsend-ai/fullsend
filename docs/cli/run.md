@@ -310,6 +310,16 @@ the minted App identity.
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
 
+## Fix agent completion status
+
+A `role: fix` run that exits without error still compares the extracted repo
+HEAD to `PRE_AGENT_HEAD` (set by the fix workflow before the sandbox starts;
+falls back to `--target-repo` HEAD when unset). If the SHAs match — the agent
+produced no new commit — the completion status comment reports
+`⚠️ No changes made` instead of `✅ Success`. Cancelled, failed, and pre-script
+skipped outcomes still take precedence. Runs that push at least one commit are
+unchanged.
+
 ## Related
 
 - [Running Agents Locally](../guides/user/running-agents-locally.md) for a step-by-step walkthrough

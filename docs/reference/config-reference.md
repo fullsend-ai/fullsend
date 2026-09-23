@@ -240,7 +240,8 @@ agents start and complete.
 
 - **`comment.start`** — `enabled` (default) or `disabled`.
 - **`comment.completion`** — `enabled` (default), `on_failure` (comment only
-  on failure), or `disabled`.
+  on non-success: failure, cancelled, skipped, or a fix agent that made no
+  commits), or `disabled`.
 - **`reaction.start`** — `enabled` or `disabled` (default). Reactions are
   an opt-in alternative that does not generate a GitHub notification.
 - **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
