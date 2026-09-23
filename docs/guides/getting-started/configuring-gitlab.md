@@ -105,8 +105,8 @@ then converges the project:
   When those roles are ready, the same unflagged install enables `enforced`
   mode and deletes `FULLSEND_FORGE_TOKEN`; see the [CLI reference](../../cli/repos.md#gitlab-bot-token)
   for the role-credential options, emergency rollback, and protected-branch
-  caveat. Missing role credentials are drift while the migration gate is
-  `enforced`.
+  caveat. Missing role credentials are drift while the role-identity gate is
+  `migrating` or `enforced`.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
   and `fullsend event poll` (at minutes 2, 17, 32, 47).
 * Writes inference CI/CD variables when `--inference-project` is set.
@@ -555,7 +555,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Topic | GitHub | GitLab |
 |---|---|---|
 | Install command | `fullsend github setup` | `fullsend repos install --forge gitlab` |
-| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token fallback |
+| Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); `fullsend-bot` or a dedicated PAT username on Free/shared-token path |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
 | Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |

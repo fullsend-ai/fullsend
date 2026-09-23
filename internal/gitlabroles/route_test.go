@@ -49,7 +49,6 @@ func TestSelectDisabledUsesSharedToken(t *testing.T) {
 	assert.Equal(t, ModeDisabled, sel.Mode)
 	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
 	assert.True(t, sel.Source.Shared)
-	assert.False(t, sel.Source.Fallback)
 	assert.Equal(t, RolePoller, sel.Source.Role)
 	assert.Equal(t, "shared", sel.IdentitySource())
 
@@ -195,24 +194,17 @@ func TestSelectUnregisteredFailsClosedInRoleAwareModes(t *testing.T) {
 	}
 }
 
-func TestSelectMigratingFallbackWhenRoleMissing(t *testing.T) {
+func TestSelectMigratingMissingRoleDoesNotFallback(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
 		forge.VarGitLabRoleMigration: "migrating",
 		forge.SecretForgeToken:       "glpat-SHARED-secret",
 	}
-	sel, err := Select(AgentJob("review"), testGetenv(env))
-	require.NoError(t, err)
-	assert.Equal(t, RoleAnalyst, sel.Source.Role)
-	assert.True(t, sel.Source.Fallback)
-	assert.Equal(t, "migration-fallback", sel.IdentitySource())
-	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
-	token, err := sel.Token(testGetenv(env))
-	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED-secret", token)
-	for _, line := range sel.Diagnostics() {
-		assert.NotContains(t, line, "glpat-")
-	}
+	_, err := Select(AgentJob("review"), testGetenv(env))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnconfigured)
+	assert.Contains(t, err.Error(), forge.SecretGitLabAnalystToken)
+	assert.NotContains(t, err.Error(), "glpat-")
 }
 
 func TestSelectEnforcedMissingRoleDoesNotFallback(t *testing.T) {

@@ -301,10 +301,11 @@ Credentials:
 > roles) is specified in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 > `repos install` can provision those credentials additively without
-> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499) selects the
-> registered role credential when the migration gate is `migrating` or
-> `enforced`; this ADR's single-bot identity remains the default while
-> the gate is unset, `disabled`, or `rollback`.
+> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499, #7559) selects the
+> registered role credential when the gate is `migrating` or `enforced`
+> and fails closed if that secret is missing; this ADR's single-bot
+> identity remains the leftover/`rollback` path while the gate is unset,
+> leftover `disabled`, or explicit `rollback`.
 
 ### Credential model
 

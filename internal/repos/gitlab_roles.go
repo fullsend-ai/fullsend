@@ -60,11 +60,14 @@ type RoleProvisionConfig struct {
 	// rollback/disabled and the supplied registry is not persisted.
 	RegistryProvided bool
 	// DesiredMode is written to FULLSEND_GITLAB_ROLE_MIGRATION.
-	// Empty means ModeMigrating. ModeDisabled and ModeRollback write
-	// the gate without creating or revoking tokens.
+	// Empty means ModeMigrating (internal install intermediate).
+	// ModeDisabled and ModeRollback write the gate without creating or
+	// revoking tokens. Operators cannot set ModeDisabled or ModeMigrating
+	// via --gitlab-role-migration; leftover values remain writable here so
+	// install can converge them.
 	DesiredMode gitlabroles.Mode
-	// RollbackConfirmed authorizes replacing an enforced gate with a
-	// shared-token-only mode.
+	// RollbackConfirmed authorizes replacing a role-required gate
+	// (migrating or enforced) with a shared-token-only mode.
 	RollbackConfirmed bool
 	// ProvidedTokens maps a role name to an administrator-supplied
 	// PAT (free-tier enrollment or a custom own credential). Values
@@ -375,19 +378,18 @@ func writeGitLabRoleGate(ctx context.Context, cfg RoleProvisionConfig, mode gitl
 	// ProvisionGitLabRoleCredentials holds gitlabRoleOperationLock while it
 	// calls this helper. Re-read the gate inside that lock so a stale mode
 	// sampled by the caller cannot overwrite a concurrent cutover. Once the
-	// gate is enforced, only an explicit rollback or disable operation may
-	// replace it; ordinary provisioning must never reopen the shared-token
-	// path.
+	// gate is enforced, only an explicit rollback operation may replace it;
+	// ordinary provisioning must never reopen the shared-token path.
 	liveRaw, _, err := cfg.Client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, forge.VarGitLabRoleMigration)
 	if err != nil {
 		return fmt.Errorf("reading %s before write: %w", forge.VarGitLabRoleMigration, err)
 	}
 	liveMode, parseErr := gitlabroles.ParseMode(liveRaw)
 	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode == gitlabroles.ModeMigrating {
-		return fmt.Errorf("refusing to replace enforced %s with migrating; request rollback or disabled explicitly", forge.VarGitLabRoleMigration)
+		return fmt.Errorf("refusing to replace enforced %s with migrating; request rollback explicitly", forge.VarGitLabRoleMigration)
 	}
-	if parseErr == nil && liveMode == gitlabroles.ModeEnforced && mode.UsesSharedOnly() && !cfg.RollbackConfirmed {
-		return fmt.Errorf("leaving enforced %s requires explicit rollback confirmation", forge.VarGitLabRoleMigration)
+	if parseErr == nil && liveMode.RequiresRoleCredentials() && mode.UsesSharedOnly() && !cfg.RollbackConfirmed {
+		return fmt.Errorf("leaving role-required %s requires explicit rollback confirmation", forge.VarGitLabRoleMigration)
 	}
 	if parseErr == nil && liveMode == mode {
 		// Avoid rewriting an already-current gate. This decision is made

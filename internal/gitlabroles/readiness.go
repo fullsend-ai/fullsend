@@ -127,7 +127,7 @@ func CheckRegisteredReadiness(present map[string]bool, reg Registry) RegisteredR
 				check.Reasons = append(check.Reasons, fmt.Sprintf("agent %q cannot resolve in enforced mode", agent))
 				continue
 			}
-			if src.Role != rec.Name || src.SecretName != rec.Credential.SecretName || src.Shared || src.Fallback {
+			if src.Role != rec.Name || src.SecretName != rec.Credential.SecretName || src.Shared {
 				check.Reasons = append(check.Reasons, fmt.Sprintf("agent %q resolves to %s %s (want %s %s)", agent, src.Role, src.SecretName, rec.Name, rec.Credential.SecretName))
 			}
 		}
@@ -301,13 +301,10 @@ func appendEnforcedResolveReasons(c *BuiltinRoleCheck, rec Registration, present
 		c.Reasons = append(c.Reasons, "enforced resolve failed for a provisioned role")
 		return
 	}
-	if src.Role != spec.role || src.SecretName != rec.Credential.SecretName || src.Shared || src.Fallback {
+	if src.Role != spec.role || src.SecretName != rec.Credential.SecretName || src.Shared {
 		var cause string
-		switch {
-		case src.Shared:
+		if src.Shared {
 			cause = "; selected the shared credential instead of a role credential"
-		case src.Fallback:
-			cause = "; selected via migration fallback instead of the role credential"
 		}
 		c.Reasons = append(c.Reasons, fmt.Sprintf("enforced resolve selected role %q secret %q (want role %q secret %q)%s",
 			src.Role, src.SecretName, spec.role, rec.Credential.SecretName, cause))

@@ -646,20 +646,31 @@ func TestPrepareGitLabRoleFlags(t *testing.T) {
 		assert.Equal(t, gitlabroles.ModeEnforced, opts.gitlabRoleModeFlag)
 	})
 
-	t.Run("parses migrating and registry file", func(t *testing.T) {
+	t.Run("parses registry file without a mode flag", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "registry.json")
 		raw := `{"roles":[{"name":"scanner","agents":["scanner"]}]}`
 		require.NoError(t, os.WriteFile(path, []byte(raw), 0o600))
 		opts := &reposInstallConfig{
-			gitlabRoleMigration: "migrating",
-			gitlabRoleRegistry:  path,
-			gitlabRoleTokens:    []string{"scanner=glpat-LEAKME-scanner"},
+			gitlabRoleRegistry: path,
+			gitlabRoleTokens:   []string{"scanner=glpat-LEAKME-scanner"},
 		}
 		require.NoError(t, prepareGitLabRoleFlags(opts))
-		assert.Equal(t, gitlabroles.ModeMigrating, opts.gitlabRoleModeFlag)
+		assert.Empty(t, opts.gitlabRoleModeFlag)
 		assert.Equal(t, raw, opts.gitlabRoleRegistryJSON)
 		assert.Equal(t, "glpat-LEAKME-scanner", opts.gitlabRoleProvided[gitlabroles.Role("scanner")])
+	})
+
+	t.Run("rejects leftover migrating flag", func(t *testing.T) {
+		err := prepareGitLabRoleFlags(&reposInstallConfig{gitlabRoleMigration: "migrating"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not operator-settable")
+	})
+
+	t.Run("rejects leftover disabled flag", func(t *testing.T) {
+		err := prepareGitLabRoleFlags(&reposInstallConfig{gitlabRoleMigration: "disabled"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not operator-settable")
 	})
 }
 
@@ -819,6 +830,26 @@ func TestGitLabRoleWorkNeededExistingEnforced(t *testing.T) {
 	fake.Errors["GetRepoVariable"] = fmt.Errorf("denied")
 	_, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
 	require.Error(t, err)
+}
+
+func TestGitLabRoleWorkNeededExistingMigratingRequiresRollbackConfirmation(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.VariableValues["g/p/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["g/p/"+forge.VarGitLabRoleMigration] = true
+
+	needed, _, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeRollback}, "g", "p")
+	require.Error(t, err)
+	assert.False(t, needed)
+	assert.Contains(t, err.Error(), "gitlab-role-rollback-confirmed")
+
+	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{
+		gitlabRoleModeFlag:          gitlabroles.ModeRollback,
+		gitlabRoleRollbackConfirmed: true,
+	}, "g", "p")
+	require.NoError(t, err)
+	assert.True(t, needed)
+	assert.Equal(t, gitlabroles.ModeRollback, mode)
 }
 
 func TestGitLabRoleWorkNeededFreshPreservesEnforcedGate(t *testing.T) {
@@ -1097,13 +1128,14 @@ func TestMaybeProvisionGitLabRoles_ReadError(t *testing.T) {
 	assert.Contains(t, err.Error(), forge.VarGitLabRoleMigration)
 }
 
-func TestMaybeProvisionGitLabRoles_ExplicitMigratingFlag(t *testing.T) {
+func TestMaybeProvisionGitLabRoles_LeftoverMigratingGateIsPreserved(t *testing.T) {
 	ctx := context.Background()
 	fake := forge.NewFakeClient()
 	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
+	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	var buf bytes.Buffer
-	opts := &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeMigrating}
-	require.NoError(t, maybeProvisionGitLabRoles(ctx, opts, fake, ui.New(&buf), "group", "project"))
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake, ui.New(&buf), "group", "project"))
 	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 }
 

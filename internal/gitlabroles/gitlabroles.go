@@ -1,5 +1,5 @@
 // Package gitlabroles defines the GitLab role-credential contract and
-// migration feature gates (#7497).
+// the remaining role-identity gate (#7497, #7559).
 //
 // Built-in Poller, Analyst, and Coder identities and administrator-
 // registered custom roles are the same kind of Registry entry. Resolve
@@ -12,9 +12,15 @@
 // poll, fullsend run, and post-review. DiagnoseLifecycle reports
 // expiry, revocation, and overlapping tokens. CheckBuiltinReadiness
 // is the #7501 verification for Poller, Analyst, and Coder; it does
-// not enable enforced mode or retire the shared token. When migration
-// mode is disabled (the default), Resolve selects the shared
-// FULLSEND_FORGE_TOKEN exactly as existing installations do.
+// not enable enforced mode or retire the shared token.
+//
+// The desired runtime is ModeEnforced: Resolve selects the registered
+// role credential and never the shared token. ModeMigrating is an
+// internal install intermediate that also requires role credentials
+// (no shared-token fallback). ModeRollback is the explicit emergency
+// recovery path. Leftover ModeDisabled / unset gates still select
+// FULLSEND_FORGE_TOKEN so local runs and not-yet-converged installs
+// keep working until ordinary repos install cuts them over.
 //
 // Canonical documentation: docs/contributing/gitlab-role-credentials.md.
 package gitlabroles
@@ -28,26 +34,30 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// Mode is the explicit migration/rollback feature gate stored in
-// FULLSEND_GITLAB_ROLE_MIGRATION. Absent or empty is ModeDisabled.
+// Mode is the role-identity gate stored in FULLSEND_GITLAB_ROLE_MIGRATION.
+// Absent or empty is ModeDisabled (leftover shared-token runtime).
 type Mode string
 
 const (
-	// ModeDisabled is the default. Jobs use only the shared
-	// FULLSEND_FORGE_TOKEN. Role secrets, if present, are ignored.
+	// ModeDisabled is leftover shared-token runtime (unset gate or an
+	// historical disabled value). Jobs use only FULLSEND_FORGE_TOKEN.
+	// Operators cannot set this via --gitlab-role-migration; emergency
+	// recovery is ModeRollback. Ordinary repos install converges leftover
+	// disabled installs to enforced.
 	ModeDisabled Mode = "disabled"
-	// ModeMigrating selects a role credential when it is provisioned
-	// and falls back to the shared token only when that role is not
-	// yet configured. An authentication failure of a configured role
-	// credential does not fall back.
+	// ModeMigrating is the internal install intermediate written while
+	// role credentials are being provisioned, before cutover enables
+	// enforced. Jobs require a provisioned role credential; there is no
+	// shared-token fallback. Operators cannot set this via
+	// --gitlab-role-migration.
 	ModeMigrating Mode = "migrating"
 	// ModeRollback forces the shared token even when role credentials
-	// exist. It is an operator-initiated rollback, not an implicit
-	// recovery path.
+	// exist. It is the operator-initiated emergency recovery path
+	// (--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed).
 	ModeRollback Mode = "rollback"
 	// ModeEnforced requires a provisioned role credential. The shared
-	// token is not used. Ordinary unflagged repos install (#7524) enables
-	// this mode once role checks pass.
+	// token is not used. Ordinary unflagged repos install enables this
+	// mode once role checks pass.
 	ModeEnforced Mode = "enforced"
 )
 
@@ -194,7 +204,6 @@ type Source struct {
 	Kind       RoleKind
 	SecretName string
 	Shared     bool
-	Fallback   bool
 	Reused     bool
 	Reason     string
 }
@@ -232,7 +241,7 @@ func SharedSecretName() string {
 	return forge.SecretForgeToken
 }
 
-// ModeVariableName is the non-masked migration-gate CI/CD variable.
+// ModeVariableName is the non-masked role-identity-gate CI/CD variable.
 func ModeVariableName() string {
 	return forge.VarGitLabRoleMigration
 }
@@ -243,8 +252,11 @@ func TokenScopes() []string {
 }
 
 // ParseMode interprets FULLSEND_GITLAB_ROLE_MIGRATION. Empty or
-// whitespace-only is ModeDisabled so existing installations stay on
-// the shared token. Unknown values fail closed.
+// whitespace-only is ModeDisabled so leftover shared-token installs and
+// local runs without the gate keep using FULLSEND_FORGE_TOKEN. Unknown
+// values fail closed. Leftover disabled and migrating strings remain
+// parseable so ordinary repos install can converge them; they are not
+// operator-settable.
 func ParseMode(raw string) (Mode, error) {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	switch s {
@@ -277,16 +289,18 @@ func (m Mode) UsesSharedOnly() bool {
 	return m == ModeDisabled || m == ModeRollback
 }
 
-// AllowsSharedFallback reports whether an unconfigured role may use
-// the shared token. Authentication failures never use this path.
-func (m Mode) AllowsSharedFallback() bool {
-	return m == ModeMigrating
+// RequiresRoleCredentials reports whether a missing role credential is
+// an error (no shared-token fallback). Both the desired enforced runtime
+// and the internal migrating install intermediate fail closed.
+func (m Mode) RequiresRoleCredentials() bool {
+	return m == ModeEnforced || m == ModeMigrating
 }
 
-// RequiresRoleCredentials reports whether a missing role credential is
-// an error (no shared-token fallback).
-func (m Mode) RequiresRoleCredentials() bool {
-	return m == ModeEnforced
+// OperatorSettable reports whether operators may pass this mode via
+// --gitlab-role-migration. Leftover disabled/migrating values remain
+// parseable for installed repositories but are not operator-settable.
+func (m Mode) OperatorSettable() bool {
+	return m == ModeEnforced || m == ModeRollback
 }
 
 // ModeFrom reads the migration gate via getenv. A nil getenv uses
@@ -320,11 +334,11 @@ func PresenceFrom(getenv func(string) string, reg Registry) map[string]bool {
 //
 // Rules:
 //   - ModeDisabled / ModeRollback: shared token only. Unmapped jobs
-//     still succeed so existing installations are unchanged.
-//   - ModeMigrating: role secret if present, otherwise explicit shared
+//     still succeed so leftover shared-token installs and emergency
+//     recovery keep working.
+//   - ModeMigrating / ModeEnforced: role secret required; no shared
 //     fallback. Unconfigured is distinct from unregistered and from
 //     authentication failure.
-//   - ModeEnforced: role secret required; no shared fallback.
 //   - FailedSecret set: fail closed with ErrAuthFailed. Never switch
 //     identities after a runtime authentication failure.
 func Resolve(req Request) (Source, error) {
@@ -351,7 +365,6 @@ func Resolve(req Request) (Source, error) {
 			src.Kind = rec.Kind
 			src.Reused = rec.Credential.Kind == CredentialReuse
 		}
-		src.Fallback = false
 		src.Reason = sharedOnlyReason(req.Mode)
 		return src, nil
 	}
@@ -367,27 +380,9 @@ func Resolve(req Request) (Source, error) {
 			Kind:       rec.Kind,
 			SecretName: secret,
 			Shared:     false,
-			Fallback:   false,
 			Reused:     rec.Credential.Kind == CredentialReuse,
 			Reason:     "role credential configured",
 		}, nil
-	}
-	if req.Mode.AllowsSharedFallback() {
-		src, sharedErr := resolveShared(req)
-		if sharedErr != nil {
-			return Source{}, &Error{
-				Role:   rec.Name,
-				Mode:   req.Mode,
-				Secret: secret,
-				Err:    ErrUnconfigured,
-			}
-		}
-		src.Role = rec.Name
-		src.Kind = rec.Kind
-		src.Reused = rec.Credential.Kind == CredentialReuse
-		src.Fallback = true
-		src.Reason = "role credential unconfigured; explicit migration fallback to shared token"
-		return src, nil
 	}
 	return Source{}, &Error{
 		Role:   rec.Name,
@@ -469,8 +464,6 @@ func diagnoseMessages(mode Mode, rep Report, configured, total int) []string {
 			msgs = append(msgs, fmt.Sprintf("%s: configured (%s)", label, rr.SecretName))
 		case mode.RequiresRoleCredentials():
 			msgs = append(msgs, fmt.Sprintf("%s: missing (required) (%s)", label, rr.SecretName))
-		case mode.AllowsSharedFallback():
-			msgs = append(msgs, fmt.Sprintf("%s: pending (%s)", label, rr.SecretName))
 		default:
 			msgs = append(msgs, fmt.Sprintf("%s: unconfigured (not required) (%s)", label, rr.SecretName))
 		}
