@@ -101,7 +101,19 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
 fi
 
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
-  echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":1,"estimatedTimeToMerge":60}}}}'
+  is_dequeue_query=0
+  for arg in "$@"; do
+    case "${arg}" in
+      *RemovedFromMergeQueueEvent*)
+        is_dequeue_query=1
+        ;;
+    esac
+  done
+  if [[ "${is_dequeue_query}" -eq 1 ]]; then
+    echo '{"data":{"repository":{"pullRequest":{"title":"Example PR","url":"https://github.com/owner/repo/pull/652","timelineItems":{"nodes":[{"createdAt":"2024-01-01T00:00:00Z","reason":"failed_checks","beforeCommit":{"abbreviatedOid":"abc1234"}}]}}}}}'
+  else
+    echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":1,"estimatedTimeToMerge":60}}}}'
+  fi
   exit 0
 fi
 
@@ -168,6 +180,13 @@ run_script() {
   local mock_bin="$1"
   shift
   PATH="${mock_bin}:${PATH}" POLL_INTERVAL=1 "$@"
+}
+
+# True if a `gh api graphql` invocation was logged with the given owner,
+# name, and PR number passed as -f/-F arguments (dequeue-reason.sh's query).
+graphql_has_owner_name_number() {
+  local owner="$1" name="$2" number="$3"
+  grep -Fq -- "-f owner=${owner} -f name=${name} -F number=${number}" "${TMPDIR}/gh.log"
 }
 
 echo "=== enqueue-pr.sh ==="
@@ -499,6 +518,48 @@ echo ""
 echo "=== dequeue-reason.sh ==="
 
 DEQUEUE="${SCRIPT_DIR}/dequeue-reason.sh"
+
+# URL argument → gh api graphql is called with owner/name/number extracted
+# from the URL, never with a raw URL, and the removal reason is printed.
+{
+  name="dequeue-reason URL argument"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${DEQUEUE}" \
+    "https://github.com/owner/repo/pull/652" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    fail "${name} — expected exit 0, got ${actual_exit}: ${output}"
+  elif grep -qE '^gh api graphql.*https://github.com/' "${TMPDIR}/gh.log"; then
+    fail "${name} — gh api graphql received a raw URL"
+  elif ! graphql_has_owner_name_number "owner" "repo" "652"; then
+    fail "${name} — expected gh api graphql -f owner=owner -f name=repo -F number=652"
+  elif [[ "${output}" != *"reason: failed_checks"* ]]; then
+    fail "${name} — expected removal reason in output, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
+
+# PR number + -R owner/repo → gh api graphql called with the same
+# owner/name/number, never a URL. This is the documented URL-free form for
+# a PR in a different repo — see SKILL.md.
+{
+  name="dequeue-reason number with -R flag"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${DEQUEUE}" "652" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    fail "${name} — expected exit 0, got ${actual_exit}: ${output}"
+  elif grep -qE '^gh api graphql.*https://github.com/' "${TMPDIR}/gh.log"; then
+    fail "${name} — gh api graphql received a raw URL"
+  elif ! graphql_has_owner_name_number "owner" "repo" "652"; then
+    fail "${name} — expected gh api graphql -f owner=owner -f name=repo -F number=652"
+  elif [[ "${output}" != *"reason: failed_checks"* ]]; then
+    fail "${name} — expected removal reason in output, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
 
 # A host-qualified -R value must be rejected before any gh call.
 for malformed in "evil.example.com/owner/repo" "../repo" "owner/.." "owner/repo/extra" "owner"; do

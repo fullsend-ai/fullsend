@@ -36,9 +36,23 @@ DNS-resolved and fail-closed (`github.com` is not egress-allowlisted) —
 regardless of how the script itself later parses its arguments. Always use
 the PR number (+ `-R owner/repo` for a PR outside the current repo). If all
 you have is a URL, extract the number and `owner/repo` first with an
-inert-only command (e.g. `echo "$URL" | grep -oE '[^/]+/[^/]+/pull/[0-9]+$'`
-plus `cut`), then invoke the script with the extracted number and `-R`
-value — never with the URL itself.
+inert-only Bash tool call (`echo`, `grep`, and `cut` only — no `bash` or
+`gh`):
+
+```
+match="$(echo "$URL" | grep -oE '[^/]+/[^/]+/pull/[0-9]+')"
+nwo="$(echo "$match" | cut -d/ -f1-2)"
+num="$(echo "$match" | cut -d/ -f4)"
+```
+
+The pattern is intentionally unanchored so it still matches URLs with a
+trailing path segment (e.g. `.../pull/652/files`, `/commits`, `/checks`).
+Then, as a **separate** Bash tool call containing no URL literal, invoke
+the script with the extracted values:
+
+```
+bash skills/merge-queue/scripts/enqueue-pr.sh "$num" -R "$nwo"
+```
 
 ## Check queue status
 
