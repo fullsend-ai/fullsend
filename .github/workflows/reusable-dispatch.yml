@@ -534,11 +534,21 @@ jobs:
           if [[ ! -f .fullsend/config.yaml ]]; then
             exit 0
           fi
+
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
             code|fix) STAGE_ROLE="coder" ;;
           esac
-          ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")
+
+          HAS_ROLES="$(yq '. | has("roles")' .fullsend/config.yaml 2>/dev/null)"
+          if [[ "$HAS_ROLES" = "false" ]]; then
+            echo "::notice::No roles key on config.yaml, dispatching $STAGE_ROLE..."
+            exit 0
+          else
+            echo "::notice::config.yaml has roles, checking if $STAGE_ROLE is allowed..."
+          fi
+
+          ROLES=$(yq '.roles[] // []' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
             # Backward compat: "fullsend" in roles implies retro + prioritize
             if [[ "$STAGE" =~ ^(retro|prioritize)$ ]] && echo "$ROLES" | grep -Fqx "fullsend"; then
