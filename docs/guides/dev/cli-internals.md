@@ -534,9 +534,8 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ if no inline pass:                       │                   │
 │  │   for i := latest..1 {                   │                   │
 │  │     run validation on iteration-i dir    │                   │
-│  │     TARGET_REPO_DIR = iteration-i        │                   │
-│  │       checkout if that iter extracted,   │                   │
-│  │       else "" (output-only rescue)       │                   │
+│  │     TARGET_REPO_DIR = that iteration's   │                   │
+│  │       checkout, or "" if not extracted   │                   │
 │  │     if pass → use this iteration; break  │                   │
 │  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
@@ -545,18 +544,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ Post-script       │ Run harness.post_script (host-side)      │
 │  │                   │ Each iteration extracts to its own       │
 │  │                   │ hostRepoRoot/iteration-N (#5553).        │
-│  │                   │ REPO_DIR is the validated iteration's    │
-│  │                   │ checkout when that iteration's           │
-│  │                   │ SafeDownload succeeded; empty otherwise  │
-│  │                   │ (output-only rescue after a failed       │
-│  │                   │ extract). post-fix.sh and post-code.sh   │
-│  │                   │ both fail closed on empty REPO_DIR in    │
-│  │                   │ their own script logic; the other        │
-│  │                   │ validation_loop post-scripts don't       │
-│  │                   │ reference REPO_DIR at all. code.yaml has │
-│  │                   │ no validation_loop, so post-code.sh      │
-│  │                   │ can't currently hit this path, but the   │
-│  │                   │ check is real, not dead code.            │
+│  │                   │ REPO_DIR is that checkout when           │
+│  │                   │ SafeDownload succeeded, else empty.      │
+│  │                   │ post-fix.sh and post-code.sh fail        │
+│  │                   │ closed on empty REPO_DIR; other          │
+│  │                   │ post-scripts don't reference it.         │
 │  │                   │                                          │
 │  │                   │ FULLSEND_VALIDATED_ITERATION_DIR is an   │
 │  │                   │ absolute path to the validated           │
