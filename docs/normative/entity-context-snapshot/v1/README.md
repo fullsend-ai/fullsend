@@ -163,20 +163,23 @@ body or immutable attribution ID changes that record's bytes and digest.
 Before a comment is admitted to the snapshot, the producer applies the
 current [authorization contract](../../../normative/authorization/v1/README.md),
 which implements ADR 0054 and its later, explicitly documented extensions.
-ADR 0054 is fundamentally a dispatch gate; this ADR deliberately reuses its
-run-specific handled-transition and target-agent policy as a narrower v1
-historical-comment admission gate. Comments whose authors do not satisfy the
-policy are omitted and count in the `comments` scope's `authorization_failed`
-gap, rather than exposing the conversation to an agent that could not have
-been triggered by that actor. The required entity body is always staged; this
-admission rule applies to conversation comments and reviews. The current
-GitHub exceptions for label transitions and submitted bot reviews authorize
-those specific transitions; they do not make arbitrary bot-authored comments
-trusted, and v1 has no general bot allow-list. A future ADR may broaden this
-trust boundary or add an additional trusted-bot mechanism. Every admitted
-comment still passes the complete filter pipeline below, including Unicode
-safety that removes invisible text and unnecessary control characters, secret
-redaction, prompt-injection scanning, and byte bounds.
+This ADR deliberately borrows only that contract's forge-neutral role ordering
+and minimum-role thresholds for the selected agent category: observation
+agents require `triage` or above, while mutation agents require `write` or
+above. It does not apply event-specific `transition.kind` rules or exceptions
+because comment admission is not event authorization. A comment author whose
+verified role meets the selected agent threshold is trusted as an eligible
+command source and the comment is admitted; lower or unverified roles are
+omitted and count in the `comments` scope's `authorization_failed` gap. This
+is the intentional v1 trust boundary: users who may invoke the agent may also
+provide its command inputs. The required entity body is always staged; this
+admission rule applies to conversation comments and reviews. Bot actors do not
+have a verified repository role in v1, so their comments remain outside this
+trust boundary until a future ADR defines bot-role resolution or an explicit
+allow-list. Every admitted comment still passes the complete filter pipeline
+below, including Unicode safety that removes invisible text and unnecessary
+control characters, secret redaction, prompt-injection scanning, and byte
+bounds.
 
 The initial issue or change-proposal body uses the same layout with
 `Fullsend-Record: "entity"`, the entity's stable ID, immutable author ID, and
