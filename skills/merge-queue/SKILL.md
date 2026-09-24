@@ -12,8 +12,8 @@ allowed-tools: Bash(bash skills/merge-queue/scripts/*:*)
 
 ## Enqueue a PR
 
-Run `bash skills/merge-queue/scripts/enqueue-pr.sh [PR_NUMBER_OR_URL]` to enqueue a PR.
-Omit the argument to enqueue the current branch's PR.
+Run `bash skills/merge-queue/scripts/enqueue-pr.sh [PR_NUMBER] [-R owner/repo]` to
+enqueue a PR. Omit the argument to enqueue the current branch's PR.
 
 If the PR is not yet eligible (checks pending, missing approvals), use
 `await-and-enqueue.sh` instead — see below.
@@ -21,10 +21,24 @@ If the PR is not yet eligible (checks pending, missing approvals), use
 ### Accepted input formats
 
 - **PR number:** `652` (uses the current repo context from `gh`)
-- **PR URL:** `https://github.com/owner/repo/pull/652`
+- **PR number + repo:** `652 -R owner/repo` (a PR in a different repo)
 - **Omitted:** uses the current branch's PR
 
-The `owner/repo#number` format is **not supported** — use a URL or number instead.
+The `owner/repo#number` format is **not supported** — use a number (with
+`-R` for another repo) instead.
+
+**Do not pass a raw PR URL** (`https://github.com/owner/repo/pull/652`) as
+the argument to this script's Bash tool invocation. The sandbox's SSRF
+PreToolUse hook inspects the *outer* `bash skills/merge-queue/scripts/...`
+command before the script runs; `bash` is not on the hook's inert-command
+list, so a `github.com` URL literal anywhere on that command line is
+DNS-resolved and fail-closed (`github.com` is not egress-allowlisted) —
+regardless of how the script itself later parses its arguments. Always use
+the PR number (+ `-R owner/repo` for a PR outside the current repo). If all
+you have is a URL, extract the number and `owner/repo` first with an
+inert-only command (e.g. `echo "$URL" | grep -oE '[^/]+/[^/]+/pull/[0-9]+$'`
+plus `cut`), then invoke the script with the extracted number and `-R`
+value — never with the URL itself.
 
 ## Check queue status
 
@@ -42,9 +56,11 @@ Shows each removal event's timestamp, reason (e.g. `failed_checks`, `merge_confl
 
 ## Await and enqueue
 
-Run `bash skills/merge-queue/scripts/await-and-enqueue.sh [PR_NUMBER_OR_URL]` to
-poll a PR until all required checks pass and the PR is approved, then
-automatically enqueue it. Exits early if any check fails.
+Run `bash skills/merge-queue/scripts/await-and-enqueue.sh [PR_NUMBER] [-R owner/repo]`
+to poll a PR until all required checks pass and the PR is approved, then
+automatically enqueue it. Exits early if any check fails. Accepts the same
+input formats as `enqueue-pr.sh` above — see the warning there about never
+passing a raw PR URL to the script's Bash tool invocation.
 
 Use this when `enqueue-pr.sh` rejects a PR because checks are still pending.
 GitHub's `auto-merge` API (`gh pr merge --auto`) does not work with merge

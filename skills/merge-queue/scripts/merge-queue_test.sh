@@ -256,6 +256,77 @@ echo "=== enqueue-pr.sh ==="
   fi
 }
 
+# PR number + -R owner/repo → gh pr view 652 -R owner/repo, never a URL.
+# This is the documented URL-free form for a PR in a different repo — see
+# SKILL.md — so it must never require a raw github.com URL argument.
+{
+  name="enqueue-pr number with -R flag"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${ENQUEUE}" "652" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    fail "${name} — expected exit 0, got ${actual_exit}: ${output}"
+  elif pr_view_has_url; then
+    fail "${name} — gh pr view received a raw URL"
+  elif ! pr_view_has_repo_and_number "owner/repo" "652"; then
+    fail "${name} — expected gh pr view 652 -R owner/repo"
+  else
+    pass "${name}"
+  fi
+}
+
+# -R owner/repo before the number is equivalent.
+{
+  name="enqueue-pr -R flag before number"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${ENQUEUE}" -R "owner/repo" "652" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    fail "${name} — expected exit 0, got ${actual_exit}: ${output}"
+  elif pr_view_has_url; then
+    fail "${name} — gh pr view received a raw URL"
+  elif ! pr_view_has_repo_and_number "owner/repo" "652"; then
+    fail "${name} — expected gh pr view 652 -R owner/repo"
+  else
+    pass "${name}"
+  fi
+}
+
+# -R without a PR number errors without calling gh pr view.
+{
+  name="enqueue-pr -R without number is rejected"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${ENQUEUE}" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh pr view ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh pr view should not be called"
+  elif [[ "${output}" != *"Error: -R/--repo requires a PR number"* ]]; then
+    fail "${name} — expected usage error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
+
+# A URL together with -R is ambiguous and must be rejected.
+{
+  name="enqueue-pr URL with -R is rejected"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${ENQUEUE}" \
+    "https://github.com/owner/repo/pull/652" -R "other/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh pr view ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh pr view should not be called"
+  elif [[ "${output}" != *"provide either a PR URL or -R/--repo"* ]]; then
+    fail "${name} — expected usage error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
+
 echo ""
 echo "=== await-and-enqueue.sh ==="
 
@@ -319,6 +390,48 @@ echo "=== await-and-enqueue.sh ==="
     fail "${name} — expected initial gh pr view --json with no positional"
   elif ! pr_view_has_repo_and_number "owner/repo" "652"; then
     fail "${name} — expected a later gh pr view 652 -R owner/repo"
+  else
+    pass "${name}"
+  fi
+}
+
+# PR number + -R owner/repo → every gh pr view call (including the
+# delegated enqueue-pr.sh call) uses -R owner/repo, never a URL. This is
+# the documented URL-free form for a PR in a different repo — see SKILL.md.
+{
+  name="await-and-enqueue number with -R flag"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${AWAIT}" "652" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 0 ]]; then
+    fail "${name} — expected exit 0, got ${actual_exit}: ${output}"
+  elif pr_view_has_url; then
+    fail "${name} — gh pr view received a raw URL"
+  else
+    view_count="$(grep -cE '^gh pr view ' "${TMPDIR}/gh.log" || true)"
+    repo_count="$(grep -cE '^gh pr view .* -R owner/repo ' "${TMPDIR}/gh.log" || true)"
+    if [[ "${view_count}" -lt 2 ]]; then
+      fail "${name} — expected multiple gh pr view calls, got ${view_count}"
+    elif [[ "${repo_count}" -ne "${view_count}" ]]; then
+      fail "${name} — every gh pr view should use -R owner/repo (view=${view_count} repo=${repo_count})"
+    else
+      pass "${name}"
+    fi
+  fi
+}
+
+# -R without a PR number errors without calling gh.
+{
+  name="await-and-enqueue -R without number is rejected"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${AWAIT}" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh pr view ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh pr view should not be called"
+  elif [[ "${output}" != *"Error: -R/--repo requires a PR number"* ]]; then
+    fail "${name} — expected usage error, got: ${output}"
   else
     pass "${name}"
   fi

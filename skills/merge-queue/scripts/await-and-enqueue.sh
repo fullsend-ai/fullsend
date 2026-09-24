@@ -2,21 +2,59 @@
 # Waits for a PR's required checks and approvals, then enqueues it.
 # Exits early if any required check fails.
 #
-# Usage: await-and-enqueue.sh [PR_NUMBER_OR_URL]
+# Usage: await-and-enqueue.sh [PR_NUMBER] [-R owner/repo]
+#        await-and-enqueue.sh [PR_URL]
 #
-# If no argument is given, uses the current branch's PR.
+# If no argument is given, uses the current branch's PR. PR_NUMBER defaults
+# to the current repo; pass -R/--repo owner/repo for a PR in another repo.
+# Prefer PR_NUMBER (+ -R) over PR_URL: an agent invoking this script through
+# the sandboxed Bash tool must never put a raw github.com URL on the
+# command line, or the SSRF PreToolUse hook fail-closes before this script
+# even runs (see SKILL.md).
 # Polls every 30 seconds. Requires: gh CLI, jq.
 
 set -euo pipefail
 
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
-pr="${1:-}"
+pr=""
 repo=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -R|--repo)
+      repo="${2:?Usage: -R/--repo requires an owner/repo value}"
+      shift 2
+      ;;
+    *)
+      if [[ -n "$pr" ]]; then
+        echo "Error: unexpected extra argument: $1" >&2
+        exit 1
+      fi
+      pr="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "$repo" && "$pr" =~ ^https://github.com/ ]]; then
+  echo "Error: provide either a PR URL or -R/--repo, not both" >&2
+  exit 1
+fi
 
 # Resolve PR URL, number, and repo without passing a github.com URL to gh.
 # The sandbox SSRF PreToolUse hook DNS-resolves https?:// literals on
 # non-inert commands, and github.com is not allowlisted.
-if [[ -z "$pr" ]]; then
+if [[ -n "$repo" ]]; then
+  if [[ -z "$pr" ]]; then
+    echo "Error: -R/--repo requires a PR number" >&2
+    exit 1
+  elif [[ "$pr" =~ ^[0-9]+$ ]]; then
+    pr_json_init="$(gh pr view "$pr" -R "$repo" --json url,baseRefName,number)"
+  else
+    echo "Error: provide a PR number or URL" >&2
+    exit 1
+  fi
+elif [[ -z "$pr" ]]; then
   pr_json_init="$(gh pr view --json url,baseRefName,number)"
 elif [[ "$pr" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
   repo="${BASH_REMATCH[1]}"
@@ -107,7 +145,7 @@ while true; do
   break
 done
 
-# Delegate to the enqueue script. Pass the PR URL so enqueue-pr.sh can parse
-# owner/repo itself (needed when the PR is not in the cwd repo).
+# Delegate to the enqueue script using the number and repo already resolved
+# above, never a URL (needed when the PR is not in the cwd repo).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/enqueue-pr.sh" "$pr_url"
+exec bash "$SCRIPT_DIR/enqueue-pr.sh" "$number" -R "$repo"
