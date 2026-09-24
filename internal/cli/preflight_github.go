@@ -2,11 +2,22 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+)
+
+// preflightAuth401Pattern and preflightNotFound404Pattern match HTTP 401/404
+// status codes as standalone tokens rather than bare substrings, so a
+// transient-403 response body that happens to also contain "401" or "404"
+// text (e.g. a proxy deny page, a request ID, or unrelated digits) is not
+// misclassified as a permanent auth/config failure. See #6855.
+var (
+	preflightAuth401Pattern     = regexp.MustCompile(`\b401\b`)
+	preflightNotFound404Pattern = regexp.MustCompile(`\b404\b`)
 )
 
 const (
@@ -154,10 +165,10 @@ func isRetryablePreflightGitHubFailure(exitCode int, err error, output string) b
 	}
 	// Auth/config failures take precedence even if the output also matches
 	// a retryable substring.
-	if strings.Contains(combined, "401") || strings.Contains(combined, "Unauthorized") {
+	if preflightAuth401Pattern.MatchString(combined) || strings.Contains(combined, "Unauthorized") {
 		return false
 	}
-	if strings.Contains(combined, "404") {
+	if preflightNotFound404Pattern.MatchString(combined) {
 		return false
 	}
 	if strings.Contains(combined, "403") || strings.Contains(combined, "Forbidden") {

@@ -279,7 +279,8 @@ func TestIsRetryablePreflightGitHubFailure(t *testing.T) {
 		{name: "404", output: "HTTP 404", want: false},
 		{name: "dns", output: "Could not resolve host", want: false},
 		{name: "generic", exitCode: 1, output: "something else went wrong", want: false},
-		{name: "401 wins over 403 substring", output: "HTTP 401 Unauthorized", want: false},
+		{name: "401 wins over 403 substring", output: "HTTP 401 Unauthorized (proxy also returned 403 earlier)", want: false},
+		{name: "403 body with unrelated digits resembling 401/404", output: "HTTP 403 Forbidden (ref 40199, trace 40404)", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
