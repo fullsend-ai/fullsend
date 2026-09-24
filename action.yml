@@ -15,6 +15,8 @@ inputs:
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
+      SHA-pinning this action does not pin the CLI; set version explicitly, especially with
+      agent: __install_only__.
     default: latest
   fullsend-dir:
     description: Path to fullsend config directory (default GITHUB_WORKSPACE).
@@ -75,6 +77,8 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
+        AGENT: ${{ inputs.agent }}
+        ACTION_REF: ${{ github.action_ref }}
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
@@ -119,6 +123,11 @@ runs:
 
         VERSION="$(printf '%s' "${VERSION:-latest}" | tr -d '[:space:]')"
         VERSION="${VERSION:-latest}"
+
+        # SHA-pinning the action does not pin the CLI; warn when __install_only__
+        # would silently resolve version to latest. See #6850. Skip vendored
+        # installs: those ignore the version input and do not fetch latest.
+        "$GITHUB_ACTION_PATH/.github/scripts/warn-install-only-unpinned-version.sh"
 
         # Resolve 'latest' to the actual tag before checking the release API.
         if [[ "${VERSION}" == "latest" ]]; then
