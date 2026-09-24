@@ -438,12 +438,20 @@ STATUS=$(jq -r '.status // ""' "${RESULT_FILE}")
 GREETING=$(jq -r '.greeting // ""' "${RESULT_FILE}")
 
 # Validate status against known values before acting on it.
+# `error` is the agent's signal that it could not do the job
+# (unreachable forge, missing credentials, blocked network).
+# Post any comment, then exit 1 so the CI job is red (#6621).
+error_exit=0
 case "${STATUS}" in
   complete)
     echo "Agent completed successfully"
     ;;
   needs_input)
     echo "Agent needs more information"
+    ;;
+  error)
+    echo "Agent could not complete the job"
+    error_exit=1
     ;;
   *)
     echo "ERROR: Unknown or missing status '${STATUS}'"
@@ -455,6 +463,11 @@ esac
 if [[ -n "${GREETING}" && "${STATUS}" == "complete" ]]; then
   gh issue comment "${ISSUE_KEY}" --repo "${REPO_FULL_NAME}" --body "${GREETING}"
   echo "Posted greeting to issue #${ISSUE_KEY}"
+fi
+
+if [[ "${error_exit}" -eq 1 ]]; then
+  echo "ERROR: agent reported status=error"
+  exit 1
 fi
 ```
 

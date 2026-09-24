@@ -22,6 +22,7 @@
 # Treat the result file as untrusted: it is model output. Only the three
 # fields below are ever read, each is required to be a string, and the
 # comment body is piped on stdin rather than interpolated into a command.
+# status=error still posts the comment, then exits 1 so the CI job is red.
 
 set -euo pipefail
 
@@ -107,6 +108,15 @@ if [[ "${status}" == "ok" ]]; then
   exit 0
 fi
 
+# status=error means the agent could not do the job (unreachable forge,
+# missing credentials, blocked network). Post the comment so the work item
+# records the failure, then exit non-zero so the CI job is red rather than
+# a structurally-valid-but-empty green check (#6621).
+error_exit=0
+if [[ "${status}" == "error" ]]; then
+  error_exit=1
+fi
+
 # Derive the repo and number from the work item URL rather than trusting extra
 # environment. The pattern also rejects anything that is not a github.com URL.
 url_re='^https://github[.]com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(issues|pull)/([0-9]+)$'
@@ -120,6 +130,10 @@ NUMBER="${BASH_REMATCH[3]}"
 if [[ "${__DRY_RUN_VAR__:-}" == "1" ]]; then
   printf '**%s**\n\n%s\n' "${summary}" "${comment}"
   echo "post-__AGENT_NAME__: dry run, not posting" >&2
+  if [[ "${error_exit}" -eq 1 ]]; then
+    echo "post-__AGENT_NAME__: status=error, exiting non-zero" >&2
+    exit 1
+  fi
   exit 0
 fi
 
@@ -133,3 +147,8 @@ printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
       --number "${NUMBER}" \
       --marker "${MARKER}" \
       --result -
+
+if [[ "${error_exit}" -eq 1 ]]; then
+  echo "post-__AGENT_NAME__: status=error, exiting non-zero" >&2
+  exit 1
+fi
