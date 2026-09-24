@@ -163,15 +163,20 @@ body or immutable attribution ID changes that record's bytes and digest.
 Before a comment is admitted to the snapshot, the producer applies the
 current [authorization contract](../../../normative/authorization/v1/README.md),
 which implements ADR 0054 and its later, explicitly documented extensions.
-Comments that are not authorized for the handled transition are omitted and
-count in the `comments` scope's `authorization_failed` gap. The current
+ADR 0054 is fundamentally a dispatch gate; this ADR deliberately reuses its
+run-specific handled-transition and target-agent policy as a narrower v1
+historical-comment admission gate. Comments whose authors do not satisfy the
+policy are omitted and count in the `comments` scope's `authorization_failed`
+gap, rather than exposing the conversation to an agent that could not have
+been triggered by that actor. The required entity body is always staged; this
+admission rule applies to conversation comments and reviews. The current
 GitHub exceptions for label transitions and submitted bot reviews authorize
 those specific transitions; they do not make arbitrary bot-authored comments
-trusted, and v1 has no general bot allow-list. A future ADR may add an
-additional trusted-bot mechanism. Every admitted comment still passes the
-complete filter pipeline below, including Unicode safety that removes
-invisible text and unnecessary control characters, secret redaction, prompt-
-injection scanning, and byte bounds.
+trusted, and v1 has no general bot allow-list. A future ADR may broaden this
+trust boundary or add an additional trusted-bot mechanism. Every admitted
+comment still passes the complete filter pipeline below, including Unicode
+safety that removes invisible text and unnecessary control characters, secret
+redaction, prompt-injection scanning, and byte bounds.
 
 The initial issue or change-proposal body uses the same layout with
 `Fullsend-Record: "entity"`, the entity's stable ID, immutable author ID, and
