@@ -62,6 +62,8 @@ per-overlay:
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
+| `schema_version`  | Schema contract version, forge-agnostic (ADR-0115); absent = version `1` |
+| `preflight_check` | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0116, ADR-0117) |
 
 ## Merge and inheritance rules
 
@@ -175,6 +177,8 @@ Overlay `when` expressions are evaluated with:
   harness schema — original architectural decision (Superseded by ADR-0088)
 - [ADR-0088](../ADRs/0088-cel-guarded-overlays.md): CEL-guarded overlays —
   current overlay mechanism
+- [ADR-0115](../ADRs/0115-harness-schema-versioning-and-field-types.md): Harness
+  schema versioning and field semantic types
 - [Harness Composition](harness-composition.md): Merge function checklist
   (step 6 references this document)
 - Issue #5579: Harness field integration pipeline (complementary checklist)
