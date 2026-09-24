@@ -58,14 +58,46 @@ Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and p
 
 `Finalize` (RepoPoolCFMintPreviews) abandons the preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs). The RepoPoolExternalMint driver's teardown is a no-op.
 
+## Platform-specific method semantics
+
+Most `scm.Driver` methods are thin wrappers around `forge.Client` and are safe to copy from a reference driver. A few methods encode platform API conventions in the driver itself — copying those verbatim produces invalid requests on other forges.
+
+| Category | Methods | How to implement |
+|----------|---------|------------------|
+| Pure delegation | Every `scm.Driver` method except those listed below | Mirror the reference driver: call the matching `forge.Client` method with the same arguments. |
+| Platform-specific | `CreateForkChangeProposal` | Adapt head-ref format, which repository you POST against, and which `forge.Client` method you call to the target forge's change-proposal API. |
+
+This classification is about **driver-layer** argument shaping, not about `forge.Client` internals. Platform differences that `forge.Client` already hides (issue comments, labels, file commits) stay in the Client implementation; do not re-encode them in the SCM driver. Conversely, a `forge.Client` method existing on GitHub does not mean every forge implements it — GitLab's `CreateCrossRepoChangeProposal` returns `forge.ErrNotSupported`.
+
+### `CreateForkChangeProposal`
+
+This is the primary method with platform-divergent behavior. Both drivers implement the same `scm.Driver` interface with different adaptations:
+
+**GitHub** (`pkg/behaviourtest/drivers/scm/github/`):
+
+- Cross-owner forks (`forkOwner != baseOwner`): `CreateChangeProposal` against the **base** repo with head `owner:branch` (GitHub REST convention).
+- Same-owner forks (`forkOwner == baseOwner`): `CreateCrossRepoChangeProposal`, because the REST `owner:branch` head format is ambiguous when both repos share an owner. The GraphQL `createPullRequest` mutation identifies the head repository explicitly.
+
+**GitLab** (`pkg/behaviourtest/drivers/scm/gitlab/`):
+
+- Always `CreateChangeProposal` against the **fork** project (`forkOwner`/`forkRepo`) with a **plain branch name** as `head` — not `owner:branch`.
+- GitLab uses the fork relationship to target the upstream project, so `baseOwner`/`baseRepo` are unused.
+- Do not call `CreateCrossRepoChangeProposal`; GitLab does not support it.
+
+> **Do not copy head-ref formatting or cross-repo API calls from the GitHub driver into other drivers without verifying they match the target platform's API conventions.**
+
+Future SCM drivers (this guide already anticipates a `forgejo` value) must check the target forge's pull-request / merge-request API rather than assuming GitHub REST semantics.
+
 ## Adding an SCM driver
+
+Before copying a reference driver, read [Platform-specific method semantics](#platform-specific-method-semantics) — some methods are not safe to mirror.
 
 1. Implement `scm.Driver` in `pkg/behaviourtest/drivers/scm/<vendor>/`.
 2. Register the driver in `behaviourtest.RunSuite` when `BEHAVIOUR_SCM=<vendor>`.
 3. Document the env var value here.
 4. Add `@skip:<vendor>` tags on scenarios that cannot run until the driver is complete.
 
-Use `forge.Client` for operations it already exposes; add REST helpers inside the driver package only when necessary (e.g. `GetIssue` with labels).
+Use `forge.Client` for operations it already exposes; add REST helpers inside the driver package only when necessary (e.g. `GetIssue` with labels). Some `scm.Driver` methods require platform-specific argument shaping even when they go through `forge.Client` — see [Platform-specific method semantics](#platform-specific-method-semantics) before copying a reference implementation.
 
 ## Adding a CI driver
 
