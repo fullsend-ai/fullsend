@@ -41,3 +41,7 @@ When the resource can be reached from more than one repo (for example fork-based
 - an ownership check whose result does not actually gate every subsequent related operation on that resource (check computed but not enforced)
 - a predictable-name occupancy check that matches by branch name and author without comparing repo identity (`owner/repo`)
 - a fail-closed skip that returns success (nil error) to a caller that treats nil as "delivered"
+
+## GitLab rule-based access APIs
+
+GitLab protected branches, tags, and environments match by exact name **and** wildcard, and effective access is the union of every matching rule. Never PATCH a wildcard rule to grant access to a single resource. See [GitLab API Quirks](gitlab-api-quirks.md).

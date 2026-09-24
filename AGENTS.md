@@ -42,7 +42,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
 | [Workflow Contracts](docs/contributing/workflow-contracts.md) | Changing GHA reusable workflows — covers dispatch sync, secret/input threading across installation-mode chains, and review rules |
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, and stdout contamination in command substitution |
-| [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
+| [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules. For GitLab protected branches, tags, environments, or other rule-based access APIs, also read [GitLab API Quirks](docs/contributing/gitlab-api-quirks.md) |
 | [Harness Composition](docs/contributing/harness-composition.md) | Changing merge functions in `internal/harness/` — covers the invariant between compose and forge merge functions |
 | [Harness Field Reference](docs/contributing/harness-fields.md) | Adding or modifying fields in `Harness` or `ForgeConfig` — covers field classifications, merge rules, and the `ForgeConfig` struct |
 | [Config Reference](docs/reference/config-reference.md) | Adding or modifying fields in `config.yaml` (`internal/config/`) — covers all per-repo config fields, valid values, defaults, and links to detailed guides |
@@ -52,6 +52,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |
 | [Bot Identities](docs/contributing/bot-identities.md) | Referencing bot identities in code — covers GitHub App logins and shared identities |
+| [GitLab API Quirks](docs/contributing/gitlab-api-quirks.md) | Changing GitLab protected-branch, protected-tag, protected-environment, or other rule-based access logic — exact-vs-wildcard matching, unioned access, and the PATCH-over-grant risk |
 | [GitLab Role Credentials](docs/contributing/gitlab-role-credentials.md) | GitLab registered-role credential contract (built-in Poller/Analyst/Coder plus administrator custom roles), trusted registry, migration gate, selection rules, and credential-routing security checklist |
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
