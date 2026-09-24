@@ -18,6 +18,7 @@
           "role": {
             "oneOf": [
               { "$ref": "common.schema.json#/$defs/actor_role" },
+              { "const": "bot" },
               { "type": "null" }
             ]
           },
@@ -29,7 +30,7 @@
             "then": {
               "properties": {
                 "role": { "const": "bot" },
-                "role_verified": { "const": true }
+                "role_verified": { "const": false }
               }
             }
           },
@@ -40,7 +41,11 @@
           {
             "if": { "properties": { "role_verified": { "const": true } }, "required": ["role_verified"] },
             "then": { "properties": { "role": { "$ref": "common.schema.json#/$defs/actor_role" } } },
-            "else": { "properties": { "role": { "type": "null" } } }
+            "else": {
+              "properties": {
+                "role": { "oneOf": [{ "const": "bot" }, { "type": "null" }] }
+              }
+            }
           }
         ],
         "additionalProperties": false
