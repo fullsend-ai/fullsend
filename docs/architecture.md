@@ -46,12 +46,11 @@ sole supported forge-native deployment model
 
 **Decided:**
 
-- GitOps tenant configuration: if Fullsend offers a centrally managed service,
-  each tenant's desired repository state will be an existing `repos.yaml` v1
-  manifest in Git. Service components will load and validate it into an
-  internal `TenantConfig` with trusted tenant and source revision metadata;
-  this does not define a new public tenant config or commit to offering the
-  service ([ADR 0123](ADRs/0123-gitops-managed-tenant-configuration.md)).
+- Tenant configuration for a possible centrally managed service reuses the
+  existing `repos.yaml` v1 format and wraps its validated `repos.Manifest` in
+  an internal `TenantConfig` with platform metadata such as tenant identity.
+  The source of truth and delivery mechanism remain open, as does whether to
+  offer the service ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
@@ -69,7 +68,7 @@ sole supported forge-native deployment model
 
 **Open questions:**
 
-- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The GitOps source and manifest format for a possible centrally managed offering are decided; the service, its infrastructure, and the poller/dispatch/runner boundary remain open ([ADR 0123](ADRs/0123-gitops-managed-tenant-configuration.md); see [agent-infrastructure.md](problems/agent-infrastructure.md)).
+- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The tenant manifest format is decided, while the source of truth, service, infrastructure, and poller/dispatch/runner boundary remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md); see [agent-infrastructure.md](problems/agent-infrastructure.md)).
 - Can different agent types (short-lived review vs. long-running code) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
 - Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway).)
@@ -622,10 +621,10 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 In the self-managed per-repository deployment model, each installation
 operates independently, with no shared control plane between installations.
-If Fullsend offers a centrally managed service, each tenant's desired
-repository state will be managed in Git as a `repos.yaml` v1 manifest. This
-configuration decision does not determine the service's runtime or
-deployment model ([ADR 0123](ADRs/0123-gitops-managed-tenant-configuration.md)).
+If Fullsend offers a centrally managed service, each tenant's repository
+configuration will use the existing `repos.yaml` v1 manifest. The source of
+truth and how service components consume it, along with the service's runtime
+and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 
 ```
   ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
