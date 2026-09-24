@@ -540,6 +540,9 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 // totals. Dollar cost is ResultEvent-only: Claude Code does not report
 // incremental cost, and fullsend does not estimate it from token counts.
 func applyClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
+	if metrics == nil {
+		return
+	}
 	switch e := evt.(type) {
 	case InitEvent:
 		if metrics.Model == "" {

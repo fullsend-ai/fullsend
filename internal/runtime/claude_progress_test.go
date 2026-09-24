@@ -653,6 +653,9 @@ func TestApplyClaudeMetricsTokensEventSetsTurns(t *testing.T) {
 	if metrics.InputTokens != 12000 {
 		t.Errorf("InputTokens = %d, want 12000 from ResultEvent", metrics.InputTokens)
 	}
+
+	// A nil *RunMetrics must not panic, matching applyCodexMetrics.
+	applyClaudeMetrics(nil, ResultEvent{})
 }
 
 func TestProgressParserNoResultEvent(t *testing.T) {
