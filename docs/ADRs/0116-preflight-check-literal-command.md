@@ -51,8 +51,8 @@ This ADR makes the semantics explicit and machine-checked.
 
 ## Consequences
 
-- The semantic type of `preflight_check` is now documented and machine-checked; the 2026-09-21 failure mode is flagged at load time.
-- Authors must inline self-contained dependency probes; `fullsend lock` and `run` flag path-like values via `Harness.Lint()`. These are non-fatal diagnostics today (the CLI prints them and continues); making SeverityError fail-fast in `lock`/`run` is a tracked follow-up.
+- The semantic type of `preflight_check` is now documented. The path-pattern Lint rule in Decision 2 will flag the 2026-09-21 failure mode at load time once it lands; until then a path-like value fails only at runtime when `sh -c` runs it.
+- Authors must inline self-contained dependency probes. The `Harness.Lint()` path-pattern flag is not yet implemented; when it lands, `fullsend lock` and `run` emit a non-fatal diagnostic (print and continue), and making SeverityError fail-fast in `lock`/`run` is a tracked follow-up.
 - agents#1418 (inline `python3 -c "import jsonschema"`) is the correct authoring pattern and needs no change.
 - Backward compatible: existing inline commands are unaffected.
 - Follow-ups out of scope here: extending coverage to `pre_script`/`post_script` ([ADR 0117](0117-extend-preflight-coverage-to-pre-and-post-scripts.md)), a resource-resolved `preflight_script` field, and making the SeverityError diagnostic fail-fast in `fullsend lock`/`run`.

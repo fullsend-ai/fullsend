@@ -186,12 +186,14 @@ repo baseline and overrides)
   = version `1`) makes the harness a versioned contract, and every field is
   classified by semantic type — inline command (`sh -c`), local file path,
   fetched resource, or scalar value — published in the
-  [Harness Field Reference](contributing/harness-fields.md) and flagged by
-  `Harness.Lint()` (non-fatal today; fail-fast is a tracked follow-up)
+  [Harness Field Reference](contributing/harness-fields.md). Type-flagging in
+  `Harness.Lint()` is planned, not yet implemented (non-fatal, with fail-fast
+  as a tracked follow-up)
   ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` with no working directory and is not resource-resolved;
-  `Harness.Lint()` flags path-like values (non-fatal)
+  `Harness.Lint()` will flag path-like values (planned, not yet implemented;
+  non-fatal when it lands)
   ([ADR 0116](ADRs/0116-preflight-check-literal-command.md)).
 - Preflight coverage for all scripts: a top-level `preflight_check` field is a
   single host-dependency gate for `pre_script`, `post_script`, and
