@@ -161,12 +161,15 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		cumulativeCacheWrite int
 		seenResult           bool
 		totalReasoning       int // accumulated thinking tokens across all messages (for ResultEvent)
+		numTurns             int // message_start count; carried on TokensEvent (#6806)
+		lastEmittedTurns     int
 	)
 
 	// Emit a final cumulative TokensEvent when the stream ends without
 	// a ResultEvent (cancelled/killed run) and the cumulative total
-	// exceeds the last emitted snapshot. The deferred call covers
-	// every exit path: EOF, read error, and normal return.
+	// exceeds the last emitted snapshot, or turns arrived after the
+	// last snapshot. The deferred call covers every exit path: EOF,
+	// read error, and normal return.
 	defer func() {
 		if seenResult {
 			return
@@ -176,12 +179,13 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		finalCacheRead := cumulativeCacheRead + totalCacheRead
 		finalCacheWrite := cumulativeCacheWrite + totalCacheWrite
 		total := finalInput + finalOutput + finalCacheRead + finalCacheWrite
-		if total > lastEmittedTotal {
+		if total > lastEmittedTotal || numTurns > lastEmittedTurns {
 			onEvent(TokensEvent{
 				InputTokens:  finalInput,
 				OutputTokens: finalOutput,
 				CacheRead:    finalCacheRead,
 				CacheWrite:   finalCacheWrite,
+				NumTurns:     numTurns,
 			})
 		}
 	}()
@@ -313,6 +317,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				})
 
 			case "message_start":
+				numTurns++
 				var msg struct {
 					Message struct {
 						Usage struct {
@@ -354,12 +359,14 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 						msgReasoning + cumulativeCacheRead + totalCacheRead + cumulativeCacheWrite + totalCacheWrite
 					if total-lastEmittedTotal >= tokenThreshold {
 						lastEmittedTotal = total
+						lastEmittedTurns = numTurns
 						onEvent(TokensEvent{
 							InputTokens:     cumulativeInput + totalInput,
 							OutputTokens:    cumulativeOutput + totalOutput,
 							ReasoningTokens: msgReasoning,
 							CacheRead:       cumulativeCacheRead + totalCacheRead,
 							CacheWrite:      cumulativeCacheWrite + totalCacheWrite,
+							NumTurns:        numTurns,
 						})
 					}
 				}
@@ -527,33 +534,45 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 	return strings.Join(texts, "\n"), partial
 }
 
+// applyClaudeMetrics folds a stream event into RunMetrics. TokensEvent is
+// the incremental snapshot used when the process dies before the terminal
+// result line (#6905, #6806); ResultEvent overwrites with authoritative
+// totals. Dollar cost is ResultEvent-only: Claude Code does not report
+// incremental cost, and fullsend does not estimate it from token counts.
+func applyClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
+	switch e := evt.(type) {
+	case InitEvent:
+		if metrics.Model == "" {
+			metrics.Model = e.Model
+		}
+	case TokensEvent:
+		metrics.InputTokens = e.InputTokens
+		metrics.OutputTokens = e.OutputTokens
+		metrics.CacheReadInputTokens = e.CacheRead
+		metrics.CacheCreationInputTokens = e.CacheWrite
+		if e.NumTurns > 0 {
+			metrics.NumTurns = e.NumTurns
+		}
+	case ResultEvent:
+		metrics.NumTurns = e.NumTurns
+		metrics.TotalCostUSD = e.TotalCostUSD
+		metrics.InputTokens = e.InputTokens
+		metrics.OutputTokens = e.OutputTokens
+		metrics.ReasoningTokens = e.ReasoningTokens
+		metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+		metrics.CacheReadInputTokens = e.CacheReadInputTokens
+	case ToolUseEvent:
+		metrics.ToolCalls.Add(1)
+	}
+}
+
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It is a thin wrapper around parseClaudeStream
 // that creates an EventRenderer and populates RunMetrics.
 func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
 	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {
-		switch e := evt.(type) {
-		case InitEvent:
-			if metrics.Model == "" {
-				metrics.Model = e.Model
-			}
-		case TokensEvent:
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.CacheReadInputTokens = e.CacheRead
-			metrics.CacheCreationInputTokens = e.CacheWrite
-		case ResultEvent:
-			metrics.NumTurns = e.NumTurns
-			metrics.TotalCostUSD = e.TotalCostUSD
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.ReasoningTokens = e.ReasoningTokens
-			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
-			metrics.CacheReadInputTokens = e.CacheReadInputTokens
-		case ToolUseEvent:
-			metrics.ToolCalls.Add(1)
-		}
+		applyClaudeMetrics(metrics, evt)
 		renderer.Handle(evt)
 	})
 }

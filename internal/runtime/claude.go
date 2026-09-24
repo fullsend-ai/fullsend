@@ -152,31 +152,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	// Always wrap handler to capture metrics regardless of custom/default path.
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
-		switch e := evt.(type) {
-		case InitEvent:
-			if metrics.Model == "" {
-				metrics.Model = e.Model
-			}
-		case TokensEvent:
-			// Capture cumulative token usage from the stream so cancelled
-			// runs (no ResultEvent) retain non-zero telemetry (#6905).
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.CacheReadInputTokens = e.CacheRead
-			metrics.CacheCreationInputTokens = e.CacheWrite
-		case ResultEvent:
-			// Authoritative totals from the terminal result event overwrite
-			// the incremental snapshot.
-			metrics.NumTurns = e.NumTurns
-			metrics.TotalCostUSD = e.TotalCostUSD
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.ReasoningTokens = e.ReasoningTokens
-			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
-			metrics.CacheReadInputTokens = e.CacheReadInputTokens
-		case ToolUseEvent:
-			metrics.ToolCalls.Add(1)
-		}
+		applyClaudeMetrics(metrics, evt)
 		innerHandler(evt)
 	}
 

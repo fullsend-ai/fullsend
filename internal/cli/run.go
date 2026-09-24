@@ -3930,8 +3930,8 @@ func transcriptErrorMessage(te agentruntime.TranscriptError) string {
 // NOTE: TotalCostUSD will be zero in the persisted metrics because dollar
 // cost is only available from the terminal ResultEvent, which a cancelled
 // run never emits. Token counts (input, output, cache_read, cache_creation)
-// are captured via the deferred TokensEvent and will be non-zero. See #6936
-// for background.
+// and NumTurns are captured via the deferred TokensEvent and will be
+// non-zero when the stream produced work. See #6936 and #6806.
 //
 // cancelled is false when ctx is still live, in which case the caller's
 // normal control flow continues unchanged; the other return values are
