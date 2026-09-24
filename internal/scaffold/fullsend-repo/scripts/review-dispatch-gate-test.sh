@@ -22,7 +22,7 @@ build_mock() {
   local bin="${TMPDIR}/bin"
   rm -rf "${bin}"
   mkdir -p "${bin}"
-  printf '%s' "${current_head}" > "${TMPDIR}/current-head"
+  jq -n --arg sha "${current_head}" '{head: {sha: $sha}}' > "${TMPDIR}/current-pr.json"
   printf '%s' "${runs_json}" > "${TMPDIR}/runs.json"
   printf '%s' "${pending_runs_json}" > "${TMPDIR}/pending-runs.json"
   printf '%s' "${queued_runs_json}" > "${TMPDIR}/queued-runs.json"
@@ -45,11 +45,19 @@ if [[ "${endpoint}" == *"/actions/runs?status=${run_status}&per_page=100" ]] && 
 fi
 case "${endpoint}" in
   repos/test-org/test-repo/pulls/42)
-    [[ " $* " == *" --jq .head.sha "* ]] || {
+    jq_filter=""
+    for ((i = 1; i <= $#; i++)); do
+      if [[ "${!i}" == "--jq" ]]; then
+        next=$((i + 1))
+        jq_filter="${!next}"
+        break
+      fi
+    done
+    [[ "${jq_filter}" == ".head.sha" ]] || {
       echo "expected pulls API to select .head.sha" >&2
       exit 1
     }
-    cat "${MOCK_ROOT}/current-head"
+    jq -r "${jq_filter}" "${MOCK_ROOT}/current-pr.json"
     ;;
   *'/actions/runs?status=in_progress&per_page=100') cat "${MOCK_ROOT}/runs.json" ;;
   *'/actions/runs?status=pending&per_page=100') cat "${MOCK_ROOT}/pending-runs.json" ;;
@@ -147,10 +155,10 @@ run_case "same-head-queued-workflow-run-is-skipped" \
   true 0 true 111 \
   '' \
   '{"workflow_runs":[{"id":111}]}'
-run_case "completed-review-is-not-skipped" \
+run_case "completed-review-with-active-harness-job-is-not-skipped" \
   "${EXPECTED_SHA}" \
   '{"workflow_runs":[{"id":111}]}' \
-  "{\"jobs\":[{\"name\":\"Dispatch / Review dispatch gate #42 ${EXPECTED_SHA}\",\"status\":\"completed\"},{\"name\":\"Dispatch / Review\",\"status\":\"completed\"}]}" \
+  "{\"jobs\":[{\"name\":\"Dispatch / Review dispatch gate #42 ${EXPECTED_SHA}\",\"status\":\"completed\"},{\"name\":\"Dispatch / Review\",\"status\":\"completed\"},{\"name\":\"Dispatch / Harness run\",\"status\":\"in_progress\"}]}" \
   false
 run_case "older-head-active-review-is-not-skipped" \
   "${EXPECTED_SHA}" \
