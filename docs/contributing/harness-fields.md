@@ -62,8 +62,25 @@ per-overlay:
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
-| `schema_version`  | Schema contract version, forge-agnostic (ADR-0115); absent = version `1` |
-| `preflight_check` | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0116, ADR-0117) |
+| `schema_version`   | Schema contract version, forge-agnostic (ADR-0115); absent = version `1` |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0116, ADR-0117). **Planned, not yet implemented** |
+
+## Semantic types (ADR 0115)
+
+Each harness field has a semantic type that governs how fullsend interprets
+its value ([ADR 0115](../ADRs/0115-harness-schema-versioning-and-field-types.md)):
+
+| Semantic type | Meaning | Fields |
+|---|---|---|
+| inline command | Executed via `sh -c` on the host; not a path, not resource-resolved | `validation_loop.preflight_check`, top-level `preflight_check` (planned) |
+| local file path | Resolved relative to the harness directory; the file runs or is read locally | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input`, `api_servers[].script`, `host_files[].src`, `doc` |
+| fetched resource | A local path or a pinned URL resolved through the resource-fetch pipeline | `agent`, `base`, `policy`, `skills[]`, `plugins[]`, `openshell.profiles[]`, `providers[]` |
+| scalar value | Neither a command nor a path; used verbatim as configuration | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `runner_env`, `env.runner`, `env.sandbox`, `privilege_levels`, `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches`, `schema_version` |
+| structural | Defines composition/conditional structure rather than a single value | `forge`, `overlays`, `trigger` |
+
+`schema_version` (absent = `1`) declares this contract; a version bump is the
+signal for a breaking field-type change and must update this table in the same
+change.
 
 ## Merge and inheritance rules
 

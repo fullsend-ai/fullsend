@@ -45,14 +45,14 @@ This ADR makes the semantics explicit and machine-checked.
 
 1. **`preflight_check` is a literal command.** It is executed via `sh -c` with no working directory, is not a script path, and is not resource-resolved.
 
-2. **Reject path-like values at load.** Extend `Harness.Lint()` (per [ADR 0115](0115-harness-schema-versioning-and-field-types.md)) to flag `preflight_check` values matching `^[./]?[\w./-]+\.(sh|py|rb|js)$` at SeverityError, guiding authors toward a self-contained inline command.
+2. **Flag path-like values at load.** Extend `Harness.Lint()` (per [ADR 0115](0115-harness-schema-versioning-and-field-types.md)) to flag `preflight_check` values matching `^[./]?[\w./-]+\.(sh|py|rb|js)$` at SeverityError, guiding authors toward a self-contained inline command. This regex is an authoring-mistake heuristic, not a security or sanitization control — it has known gaps (it misses a `.bash` extension, `sh scripts/foo.sh`, or a script name with trailing arguments) and does **not** constrain shell metacharacters in a value that is executed verbatim via `sh -c`.
 
 3. **Resource-resolved preflight is future work.** A script-based variant (e.g. `preflight_script`) is explicitly out of scope; if pursued, it must follow `pre_script` delivery semantics under [ADR 0038](0038-universal-harness-access.md).
 
 ## Consequences
 
-- The semantic type of `preflight_check` is now documented and machine-enforced; the 2026-09-21 failure mode is caught at load time.
-- Authors must inline self-contained dependency probes; `fullsend lock` fails on path-like values.
+- The semantic type of `preflight_check` is now documented and machine-checked; the 2026-09-21 failure mode is flagged at load time.
+- Authors must inline self-contained dependency probes; `fullsend lock` and `run` flag path-like values via `Harness.Lint()`. These are non-fatal diagnostics today (the CLI prints them and continues); making SeverityError fail-fast in `lock`/`run` is a tracked follow-up.
 - agents#1418 (inline `python3 -c "import jsonschema"`) is the correct authoring pattern and needs no change.
 - Backward compatible: existing inline commands are unaffected.
-- Follow-ups out of scope here: extending coverage to `pre_script`/`post_script` ([ADR 0117](0117-extend-preflight-coverage-to-pre-and-post-scripts.md)) and a resource-resolved `preflight_script` field.
+- Follow-ups out of scope here: extending coverage to `pre_script`/`post_script` ([ADR 0117](0117-extend-preflight-coverage-to-pre-and-post-scripts.md)), a resource-resolved `preflight_script` field, and making the SeverityError diagnostic fail-fast in `fullsend lock`/`run`.

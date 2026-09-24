@@ -184,18 +184,19 @@ repo baseline and overrides)
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Harness schema versioning and field types: a `schema_version` field (absent
   = version `1`) makes the harness a versioned contract, and every field is
-  classified by semantic type — inline command (`sh -c`), local file path, or
-  fetched resource — published in the
-  [Harness Field Reference](contributing/harness-fields.md) and enforced by
-  `Harness.Lint()`
+  classified by semantic type — inline command (`sh -c`), local file path,
+  fetched resource, or scalar value — published in the
+  [Harness Field Reference](contributing/harness-fields.md) and flagged by
+  `Harness.Lint()` (non-fatal today; fail-fast is a tracked follow-up)
   ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` with no working directory and is not resource-resolved;
-  `Harness.Lint()` rejects path-like values at load
+  `Harness.Lint()` flags path-like values (non-fatal)
   ([ADR 0116](ADRs/0116-preflight-check-literal-command.md)).
 - Preflight coverage for all scripts: a top-level `preflight_check` field is a
   single host-dependency gate for `pre_script`, `post_script`, and
-  `validation_loop`, running before `pre_script` and before sandbox creation
+  `validation_loop`, running before `pre_script` and before sandbox creation.
+  The field is planned but not yet implemented
   ([ADR 0117](ADRs/0117-extend-preflight-coverage-to-pre-and-post-scripts.md)).
 
 **Open questions:**

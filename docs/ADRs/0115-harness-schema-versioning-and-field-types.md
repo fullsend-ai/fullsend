@@ -45,9 +45,9 @@ Introduce a `schema_version` field to the harness YAML and classify each field's
 
 1. **Add `schema_version`.** Absent `schema_version` is interpreted as `1` (current behavior), so existing harnesses remain valid.
 
-2. **Classify every field by semantic type.** Each field is an inline command (`sh -c`), a local file path, or a fetched resource. The classification lives in the Harness Field Reference (`docs/contributing/harness-fields.md`).
+2. **Classify every field by semantic type.** Each field is an inline command (`sh -c`), a local file path, a fetched resource, or a scalar value (neither a command nor a path — e.g. `model`, `effort`, `timeout_minutes`). The classification lives in the Harness Field Reference (`docs/contributing/harness-fields.md`).
 
-3. **Enforce types at load time.** Extend `Harness.Lint()` (already run from `fullsend lock` and `run`) to reject values that violate their field's declared type, at SeverityError.
+3. **Flag type violations at load time.** Extend `Harness.Lint()` (already run from `fullsend lock` and `run`) to flag values that violate their field's declared type, at SeverityError.
 
 Versioning declares the field-type contract; it does not validate values. Lint and runtime checks still do the work.
 
@@ -57,4 +57,4 @@ Versioning declares the field-type contract; it does not validate values. Lint a
 - Backward compatible: harnesses without `schema_version` are treated as version 1.
 - A `schema_version` bump is the signal for a breaking field-type change and must update `harness-fields.md` in the same change.
 - fullsend stays the sole owner of harness interpretation; agents authors consume the published contract rather than reverse-engineering Go code.
-- Follow-ups out of scope here: per-version JSON Schema, and machine-checked schema validation in agents CI.
+- Follow-ups out of scope here: per-version JSON Schema, machine-checked schema validation in agents CI, and making `Harness.Lint()` SeverityError diagnostics fail-fast in `fullsend lock`/`run`.
