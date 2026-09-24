@@ -129,6 +129,12 @@ type RepoEntry struct {
 	// install time (claude, pi, codex); empty inherits defaults.runtime,
 	// and an empty resolved value keeps the code default (claude).
 	Runtime string `yaml:"runtime,omitempty"`
+	// InferenceProvider is written as the repo's `inference.provider`
+	// at install time (vertex, openai); empty inherits
+	// defaults.inference_provider, and an empty resolved value keeps
+	// the code default (vertex). openai makes the GCP inference flags
+	// optional for the repo (#7481).
+	InferenceProvider string `yaml:"inference_provider,omitempty"`
 	// Vendor overrides the default vendor setting for this repo.
 	// nil inherits defaults.vendor; non-nil overrides it.
 	Vendor *bool `yaml:"vendor,omitempty"`
@@ -145,6 +151,9 @@ type DefaultsConfig struct {
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
 	// Runtime is the default agent runtime for every repo (claude, pi, codex).
 	Runtime string `yaml:"runtime,omitempty"`
+	// InferenceProvider is the default inference provider for every
+	// repo (vertex, openai).
+	InferenceProvider string `yaml:"inference_provider,omitempty"`
 	// Vendor, when true, vendors the fullsend binary and content into
 	// each repo so CI does not need network access to fetch them.
 	Vendor *bool `yaml:"vendor,omitempty"`
@@ -183,6 +192,9 @@ type ResolvedConfig struct {
 	// Runtime is the resolved agent runtime (entry, then defaults); empty
 	// means the code default.
 	Runtime string
+	// InferenceProvider is the resolved inference provider (entry, then
+	// defaults); empty means the code default, vertex.
+	InferenceProvider string
 	// Vendor is true when the fullsend binary and content should be
 	// vendored into the repo for offline CI.
 	Vendor bool
@@ -425,6 +437,9 @@ func (m *Manifest) Validate() error {
 	if configHashSet(m.Defaults.ConfigBase.SHA256) && !configSourceSet(m.Defaults.ConfigBase.Source) {
 		return fmt.Errorf("defaults.config_base.sha256 is set without defaults.config_base.source")
 	}
+	if err := validateInferenceProviderValue("defaults.inference_provider", m.Defaults.InferenceProvider); err != nil {
+		return err
+	}
 	for _, p := range []struct {
 		name string
 		cfg  *PlatformConfig
@@ -435,6 +450,9 @@ func (m *Manifest) Validate() error {
 		for i := range p.cfg.Repos {
 			e := &p.cfg.Repos[i]
 			if err := validateRuntimeValue(fmt.Sprintf("%s.repos[%s].runtime", p.name, e.Name), e.Runtime); err != nil {
+				return err
+			}
+			if err := validateInferenceProviderValue(fmt.Sprintf("%s.repos[%s].inference_provider", p.name, e.Name), e.InferenceProvider); err != nil {
 				return err
 			}
 			if e.ConfigBase.resolvedSource, err = m.validateConfigSource(fmt.Sprintf("%s.repos[%d].config_base.source", p.name, i), e.ConfigBase.Source); err != nil {
@@ -864,6 +882,7 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	// Runtime: per-repo overrides the global default; "none" stops the
 	// chain like the other string fields.
 	cfg.Runtime = resolveField(entry.Runtime, m.Defaults.Runtime, "")
+	cfg.InferenceProvider = resolveField(entry.InferenceProvider, m.Defaults.InferenceProvider, "")
 	// Vendor: per-repo *bool overrides defaults *bool; default is false.
 	cfg.Vendor = resolveBoolField(entry.Vendor, m.Defaults.Vendor, false)
 	// ConfigBase: per-repo overrides defaults; source "none" disables
@@ -1134,4 +1153,18 @@ func validateRuntimeValue(key, value string) error {
 		}
 	}
 	return fmt.Errorf("%s %q is not a valid runtime; valid runtimes: %s", key, value, strings.Join(config.ValidRuntimes(), ", "))
+}
+
+// validateInferenceProviderValue mirrors validateRuntimeValue for
+// inference_provider: empty, "none", or a provider config.yaml accepts.
+func validateInferenceProviderValue(key, value string) error {
+	if value == "" || value == NoneSentinel {
+		return nil
+	}
+	for _, v := range config.ValidProviders() {
+		if value == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %q is not a valid inference provider; valid providers: %s", key, value, strings.Join(config.ValidProviders(), ", "))
 }

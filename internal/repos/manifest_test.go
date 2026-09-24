@@ -2197,3 +2197,35 @@ github:
 		assert.False(t, *roundTripped.GitHub.Repos[1].Vendor)
 	})
 }
+
+func TestManifest_InferenceProviderResolvesAndValidates(t *testing.T) {
+	t.Parallel()
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{InferenceProvider: "openai"},
+		GitHub: &PlatformConfig{Repos: []RepoEntry{
+			{Name: "acme/a"},
+			{Name: "acme/b", InferenceProvider: "vertex"},
+			{Name: "acme/c", InferenceProvider: NoneSentinel},
+		}},
+	}
+	require.NoError(t, m.Validate())
+
+	rc, ok := m.ResolveConfig("acme", "a")
+	require.True(t, ok)
+	assert.Equal(t, "openai", rc.InferenceProvider, "entry inherits defaults.inference_provider")
+	rc, _ = m.ResolveConfig("acme", "b")
+	assert.Equal(t, "vertex", rc.InferenceProvider, "entry overrides the default")
+	rc, _ = m.ResolveConfig("acme", "c")
+	assert.Equal(t, "", rc.InferenceProvider, "none stops the chain: code default")
+
+	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{InferenceProvider: "bedrock"}}
+	err := bad.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `defaults.inference_provider "bedrock" is not a valid inference provider`)
+
+	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", InferenceProvider: "nope"}}}}
+	err = bad.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `github.repos[acme/x].inference_provider "nope"`)
+}

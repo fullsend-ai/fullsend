@@ -476,9 +476,9 @@ the command.
 
 ### Partial secret state
 
-When only one of the two required inference secrets (`FULLSEND_GCP_PROJECT_ID`
-or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo but not both, `repos
-install` reports an error:
+When only one of the two inference secrets of the Vertex route
+(`FULLSEND_GCP_PROJECT_ID` or `FULLSEND_GCP_WIF_PROVIDER`) exists on a repo
+but not both, `repos install` reports an error:
 
 ```
 partial secret state: FULLSEND_GCP_PROJECT_ID exists but FULLSEND_GCP_WIF_PROVIDER is missing
@@ -490,6 +490,24 @@ secrets were manually modified. To resolve, either:
 - Delete the existing secret and re-run `repos install` to re-provision
   both secrets together.
 - Manually create the missing secret with the correct value.
+
+### Repositories that run inference on OpenAI
+
+A repository whose `inference_provider` is `openai` (in `repos.yaml`, or
+`repos install --inference-provider openai` for repositories the command
+adds) needs neither GCP secret and no `--inference-project`. Its install
+is complete when the `FULLSEND_OPENAI_API_KEY` secret exists (or the
+committed `inference.openai` block is complete on GitHub); `repos install`
+refuses the repository until then:
+
+```
+inference provider openai needs an OpenAI route for acme/api: set the FULLSEND_OPENAI_API_KEY secret (or inference.openai in the committed config) before installing
+```
+
+On GitLab, where OpenAI WIF is unavailable, the project's own masked
+`OPENAI_API_KEY` variable is the route; fullsend probes it but never
+creates or deletes it. Passing the GCP flags for the batch still applies
+them to such repositories, so a repository can hold both routes.
 
 ## Migrating from per-org mode to manifest management
 

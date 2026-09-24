@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -561,5 +562,171 @@ func TestDriftFieldName(t *testing.T) {
 		if got := DriftFieldName(tt.input); got != tt.want {
 			t.Errorf("DriftFieldName(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// --- inference.provider openai (#7481) ---
+
+func TestProbeComponents_OpenAIRoute_RequiresOpenAIKeyNotGCP(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
+	addThinCallerFiles(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	// No GCP secrets, no OpenAI key.
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	names := map[string]bool{}
+	for _, c := range components {
+		names[c.Name] = c.Present
+	}
+	if _, probed := names["secret:FULLSEND_GCP_PROJECT_ID"]; probed {
+		t.Error("GCP project secret must not be probed on the openai route")
+	}
+	if _, probed := names["secret:FULLSEND_GCP_WIF_PROVIDER"]; probed {
+		t.Error("GCP WIF secret must not be probed on the openai route")
+	}
+	present, probed := names["secret:FULLSEND_OPENAI_API_KEY"]
+	if !probed || present {
+		t.Errorf("expected secret:FULLSEND_OPENAI_API_KEY probed and missing, probed=%v present=%v", probed, present)
+	}
+	if AllMatch(components) {
+		t.Error("expected AllMatch=false while the OpenAI key is missing")
+	}
+
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+	components, err = ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	if !AllMatch(components) {
+		t.Errorf("expected AllMatch=true once the OpenAI key exists, got %+v", components)
+	}
+}
+
+func TestProbeComponents_OpenAIRoute_WIFTrioNeedsNoSecret(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
+		"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n    identity_provider_id: idp\n    service_account_id: sa\n")
+	addThinCallerFiles(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	for _, c := range components {
+		if strings.HasPrefix(c.Name, "secret:") {
+			t.Errorf("no secret component expected with the OpenAI WIF trio, got %s", c.Name)
+		}
+	}
+	if !AllMatch(components) {
+		t.Errorf("expected AllMatch=true, got %+v", components)
+	}
+}
+
+func TestProbeComponents_OpenAIRoute_GitLabProbesUserVariable(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte("include: fullsend")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
+	fc.Secrets["acme/api/FULLSEND_FORGE_TOKEN"] = true
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	names := map[string]bool{}
+	for _, c := range components {
+		names[c.Name] = c.Present
+	}
+	if present, probed := names["secret:OPENAI_API_KEY"]; !probed || present {
+		t.Errorf("expected secret:OPENAI_API_KEY probed and missing, probed=%v present=%v", probed, present)
+	}
+	if present, probed := names["secret:FULLSEND_FORGE_TOKEN"]; !probed || !present {
+		t.Errorf("forge token stays required on every route, probed=%v present=%v", probed, present)
+	}
+	if _, probed := names["secret:FULLSEND_GCP_PROJECT_ID"]; probed {
+		t.Error("GCP project secret must not be probed on the openai route")
+	}
+}
+
+func TestProbeComponents_WithDefaultProvider_FreshRepo(t *testing.T) {
+	// No config layer on the default branch (fresh install): the manifest
+	// provider passed by converge decides which secrets are required.
+	fc := forge.NewFakeClient()
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil,
+		WithDefaultProvider("openai"))
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	var secretNames []string
+	for _, c := range components {
+		if strings.HasPrefix(c.Name, "secret:") {
+			secretNames = append(secretNames, c.Name)
+		}
+	}
+	if len(secretNames) != 1 || secretNames[0] != "secret:FULLSEND_OPENAI_API_KEY" {
+		t.Errorf("expected only the OpenAI key to be required, got %v", secretNames)
+	}
+
+	// A committed config wins over the default provider.
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\n")
+	components, err = ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil,
+		WithDefaultProvider("openai"))
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	found := false
+	for _, c := range components {
+		if c.Name == "secret:FULLSEND_GCP_PROJECT_ID" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a committed config without a provider means vertex, so the GCP pair must be probed")
+	}
+}
+
+func TestProbeComponents_UnparsableConfigIsAnError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("inference: [\n")
+	addThinCallerFiles(fc, "acme", "api")
+
+	_, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err == nil {
+		t.Fatal("expected an error for an unparsable per-repo config")
+	}
+}
+
+func TestProbeComponents_WithInferenceRoute_SkipsConfigRead(t *testing.T) {
+	// A caller that already resolved the route (converge) hands it in;
+	// the config layers are not read again, so an unreadable layer
+	// cannot make the component probe disagree with the caller.
+	fc := forge.NewFakeClient()
+	fc.GetFileContentErrors = map[string]error{"acme/api/.fullsend/config.yaml": fmt.Errorf("HTTP 500")}
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil,
+		WithInferenceRoute(InferenceRoute{Provider: "openai", FromConfig: true}))
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	found := false
+	for _, c := range components {
+		if c.Name == "secret:FULLSEND_OPENAI_API_KEY" && c.Present {
+			found = true
+		}
+		if c.Name == "secret:FULLSEND_GCP_PROJECT_ID" {
+			t.Error("GCP secret must not be probed on the supplied openai route")
+		}
+	}
+	if !found {
+		t.Error("expected the OpenAI secret to be probed present")
 	}
 }

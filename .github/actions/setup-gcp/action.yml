@@ -3,8 +3,8 @@ description: Authenticate to Google Cloud via Workload Identity Federation, mask
 
 inputs:
   gcp_wif_provider:
-    description: 'Workload Identity Federation provider resource name'
-    required: true
+    description: 'Workload Identity Federation provider resource name. Empty skips every step: a repository whose inference runs on OpenAI (inference.provider openai, #7481) has no GCP secrets.'
+    required: false
   gcp_project_id:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
     required: false
@@ -16,17 +16,30 @@ inputs:
 runs:
   using: composite
   steps:
+    # Both inputs empty is the openai route (every step below is skipped).
+    # Exactly one populated is a misconfigured Vertex repository: fail here,
+    # where the message names the secret, instead of at the first model call.
+    - name: Check GCP inputs
+      if: (inputs.gcp_wif_provider == '' && inputs.gcp_project_id != '') || (inputs.gcp_wif_provider != '' && inputs.gcp_project_id == '')
+      shell: bash
+      run: |
+        echo "::error::FULLSEND_GCP_WIF_PROVIDER and FULLSEND_GCP_PROJECT_ID must be set together (both for Vertex AI inference, neither for a repository whose inference.provider is openai)"
+        exit 1
+
     - name: Pre-mask GCP credential file path
+      if: inputs.gcp_wif_provider != ''
       shell: bash
       run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
 
     - name: Authenticate to Google Cloud (WIF)
+      if: inputs.gcp_wif_provider != ''
       uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
       with:
         workload_identity_provider: ${{ inputs.gcp_wif_provider }}
         project_id: ${{ inputs.gcp_project_id }}
 
     - name: Mask GCP credential file paths
+      if: inputs.gcp_wif_provider != ''
       shell: bash
       run: |
         for var in GOOGLE_GHA_CREDS_PATH GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE; do
@@ -37,6 +50,7 @@ runs:
         done
 
     - name: Prepare sandbox credentials
+      if: inputs.gcp_wif_provider != ''
       shell: bash
       env:
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}

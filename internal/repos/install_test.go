@@ -1595,3 +1595,39 @@ func TestInstall_GitLab_RetireErrorFailsInstall(t *testing.T) {
 		t.Fatal("expected install to fail when retiring leftover legacy vars fails")
 	}
 }
+
+func TestBuildScaffoldFiles_InferenceProvider(t *testing.T) {
+	cfg := baseCfg()
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" && strings.Contains(string(f.Content), "provider:") {
+			t.Errorf("an unset InferenceProvider must not be written (vertex stays the code default):\n%s", f.Content)
+		}
+	}
+
+	cfg.InferenceProvider = "openai"
+	files, err = BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	var found bool
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			found = true
+			if !strings.Contains(string(f.Content), "provider: openai") {
+				t.Errorf("config.yaml missing provider: openai:\n%s", f.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected .fullsend/config.yaml in scaffold files")
+	}
+
+	cfg.InferenceProvider = "bogus"
+	if _, err := BuildScaffoldFiles(cfg); err == nil || !strings.Contains(err.Error(), "invalid inference provider") {
+		t.Fatalf("expected invalid inference provider error, got %v", err)
+	}
+}

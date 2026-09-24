@@ -242,7 +242,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars)
+	// The manifest provider decides the required secrets for a repo whose
+	// config has not reached the default branch yet, the same way
+	// converge judges it (#7481).
+	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars,
+		WithDefaultProvider(cfg.InferenceProvider))
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status

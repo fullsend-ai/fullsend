@@ -5277,3 +5277,247 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 		t.Error("disabled repo must preserve existing base without comparison")
 	}
 }
+
+// --- inference.provider openai: GCP flags optional (#7481) ---
+
+func TestConverge_OpenAIRoute_NoGCPFlags(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.InferenceProvider = "openai"
+	sc := &spyScaffoldCommit{}
+	cfg := ConvergeConfig{
+		Manifest:       m,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+		// No inference flags: an openai repo needs none.
+	}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, f := range result.Failed() {
+		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
+	}
+	if len(result.Installed()) != 1 {
+		t.Fatalf("expected 1 installed, got %d", len(result.Installed()))
+	}
+	for _, s := range fc.CreatedSecrets {
+		if s.Name == forge.SecretGCPProjectID || s.Name == forge.SecretGCPWIFProvider {
+			t.Errorf("GCP secret %s must not be written for an openai repo", s.Name)
+		}
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var cfgYAML string
+	for _, f := range sc.files {
+		if f.Path == ".fullsend/config.yaml" {
+			cfgYAML = string(f.Content)
+		}
+	}
+	if !strings.Contains(cfgYAML, "provider: openai") {
+		t.Errorf("expected the generated config.yaml to record inference.provider openai, got:\n%s", cfgYAML)
+	}
+}
+
+func TestConverge_OpenAIRoute_MissingRouteFails(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	// No FULLSEND_OPENAI_API_KEY and no trio: nothing could reach GPT.
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.Repos[0].InferenceProvider = "openai"
+	sc := &fakeScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	failed := result.Failed()
+	if len(failed) != 1 {
+		t.Fatalf("expected 1 failed, got %d", len(failed))
+	}
+	if !strings.Contains(failed[0].Error.Error(), "FULLSEND_OPENAI_API_KEY") {
+		t.Errorf("expected the error to name the missing OpenAI secret, got: %v", failed[0].Error)
+	}
+	if sc.called {
+		t.Error("nothing may be committed when the route is missing")
+	}
+}
+
+func TestConverge_OpenAIRoute_FromCommittedConfig(t *testing.T) {
+	// An existing repo whose committed config says openai (installed by
+	// github setup, say) needs no manifest field and no GCP flags when
+	// converged; the committed config is the source of truth.
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, f := range result.Failed() {
+		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
+	}
+	for _, s := range fc.CreatedSecrets {
+		if s.Name == forge.SecretGCPProjectID || s.Name == forge.SecretGCPWIFProvider {
+			t.Errorf("GCP secret %s must not be written for an openai repo", s.Name)
+		}
+	}
+}
+
+func TestConverge_OpenAIRoute_GCPFlagsStillApplyWhenGiven(t *testing.T) {
+	// Operators that pass the GCP flags for the whole batch keep both
+	// routes on an openai repo: the flags are honoured as before.
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.InferenceProvider = "openai"
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, f := range result.Failed() {
+		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
+	}
+	wrote := map[string]bool{}
+	for _, s := range fc.CreatedSecrets {
+		wrote[s.Name] = true
+	}
+	if !wrote[forge.SecretGCPProjectID] || !wrote[forge.SecretGCPWIFProvider] {
+		t.Errorf("expected the GCP pair to be written when the flags are given, wrote %v", wrote)
+	}
+}
+
+func TestConverge_VertexDefaultStillRequiresInferenceProject(t *testing.T) {
+	// Unchanged default: a repo with no provider anywhere is vertex and
+	// still needs --inference-project.
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true // irrelevant on vertex
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), "--inference-project is required") {
+		t.Fatalf("expected the vertex default to still require --inference-project, got %v", failed)
+	}
+}
+
+func TestConverge_OpenAIRoute_RepairPreservesCommittedProvider(t *testing.T) {
+	// The workflow file is missing, so the repair regenerates
+	// config.yaml. The manifest entry predates inference_provider; the
+	// committed openai route must survive the regeneration instead of
+	// silently reverting the repository to vertex.
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	addThinCallerFiles(fc, "acme", "api")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\ninference:\n  provider: openai\n")
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+	// No workflow file, no GCP secrets.
+
+	m := newConvergeManifest(repoNames...)
+	sc := &spyScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, f := range result.Failed() {
+		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var cfgYAML string
+	for _, f := range sc.files {
+		if f.Path == ".fullsend/config.yaml" {
+			cfgYAML = string(f.Content)
+		}
+	}
+	if cfgYAML == "" {
+		t.Fatal("expected config.yaml to be regenerated by the repair")
+	}
+	if !strings.Contains(cfgYAML, "provider: openai") {
+		t.Errorf("repair dropped the committed openai route:\n%s", cfgYAML)
+	}
+}
+
+func TestConverge_VertexRepair_WritesNoProvider(t *testing.T) {
+	// The vertex counterpart: a regenerated config.yaml for a vertex
+	// repository must not gain an explicit provider line.
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-central1"
+	addThinCallerFiles(fc, "acme", "api")
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte("version: \"1\"\n")
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	m := newConvergeManifest(repoNames...)
+	sc := &spyScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	for _, f := range result.Failed() {
+		t.Errorf("unexpected failure: %s/%s: %v", f.Owner, f.Repo, f.Error)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, f := range sc.files {
+		if f.Path == ".fullsend/config.yaml" && strings.Contains(string(f.Content), "provider:") {
+			t.Errorf("vertex repair must not write a provider line:\n%s", f.Content)
+		}
+	}
+}
+
+func TestConverge_OpenAIRoute_PartialTrioFails(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.FileContents["acme/api/.fullsend/config.yaml"] = []byte(
+		"version: \"1\"\ninference:\n  provider: openai\n  openai:\n    audience: aud\n")
+	fc.Secrets["acme/api/FULLSEND_OPENAI_API_KEY"] = true
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := ConvergeConfig{Manifest: m, MaxConcurrency: 4, Roles: []string{"triage"}, Direct: true}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), "partially configured") {
+		t.Fatalf("expected the partial trio to fail the repo, got %v", failed)
+	}
+	if sc.called {
+		t.Error("nothing may be committed for a partially configured repo")
+	}
+}
