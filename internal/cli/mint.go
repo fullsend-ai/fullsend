@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -160,6 +161,16 @@ func pemSecretRoles(roles []string) []string {
 var githubAPIBaseURL = "https://api.github.com"
 
 var githubHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+// statusCFAccessAudRe validates the --status-cfaccess-aud flag value.
+// AUD is a JWT audience claim — restrict to URL-safe characters
+// (alphanumeric, hyphens, underscores, dots) to prevent injection.
+var statusCFAccessAudRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// statusCFAccessTeamRe validates the --status-cfaccess-team flag value.
+// Team is a Cloudflare Zero Trust subdomain — validate subdomain pattern
+// to prevent URL redirection via control characters (/, #, @, ?).
+var statusCFAccessTeamRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
 
 // lookupTokenFn resolves a GitHub token for app-ID lookups using the
 // standard resolution chain (GH_TOKEN → GITHUB_TOKEN → gh auth token).
@@ -429,6 +440,8 @@ func newMintDeployCmd() *cobra.Command {
 	// Status auth flags (shared between platforms).
 	var statusAuth string
 	var statusGitHubGroup string
+	var statusCFAccessAud string
+	var statusCFAccessTeam string
 
 	// Cloudflare-specific flags.
 	var workerName string
@@ -564,6 +577,7 @@ Cloudflare mode (--platform=cloudflare):
 
 			// Parse --status-auth modes and validate co-requisite flags.
 			statusGitHubEnabled := false
+			statusCFAccessEnabled := false
 			for _, mode := range strings.Split(statusAuth, ",") {
 				mode = strings.TrimSpace(mode)
 				switch mode {
@@ -571,10 +585,12 @@ Cloudflare mode (--platform=cloudflare):
 					// Always on; no-op.
 				case "github":
 					statusGitHubEnabled = true
+				case "cfaccess":
+					statusCFAccessEnabled = true
 				case "":
 					// Trailing comma or whitespace; ignore.
 				default:
-					return fmt.Errorf("unknown --status-auth mode %q: valid modes are oidc, github", mode)
+					return fmt.Errorf("unknown --status-auth mode %q: valid modes are oidc, github, cfaccess", mode)
 				}
 			}
 			if statusGitHubEnabled {
@@ -592,14 +608,37 @@ Cloudflare mode (--platform=cloudflare):
 				// strings to decide whether to activate the build tag.
 				statusGitHubGroup = ""
 			}
+			if statusCFAccessEnabled {
+				if statusCFAccessAud == "" {
+					return fmt.Errorf("--status-cfaccess-aud is required when --status-auth includes cfaccess")
+				}
+				if !statusCFAccessAudRe.MatchString(statusCFAccessAud) {
+					return fmt.Errorf("--status-cfaccess-aud must contain only alphanumeric characters, hyphens, underscores, and dots")
+				}
+				if statusCFAccessTeam == "" {
+					return fmt.Errorf("--status-cfaccess-team is required when --status-auth includes cfaccess")
+				}
+				if !statusCFAccessTeamRe.MatchString(statusCFAccessTeam) {
+					return fmt.Errorf("--status-cfaccess-team must be a valid subdomain (alphanumeric and hyphens, must start and end with alphanumeric)")
+				}
+			} else {
+				// Clear Cloudflare Access values when cfaccess mode is
+				// not active so downstream functions can key off non-empty strings.
+				statusCFAccessAud = ""
+				statusCFAccessTeam = ""
+			}
 
 			statusGitHub := gcf.StatusGitHubAuth{
 				Group: statusGitHubGroup,
 			}
+			statusCFAccess := gcf.StatusCFAccessAuth{
+				Aud:  statusCFAccessAud,
+				Team: statusCFAccessTeam,
+			}
 
 			switch platform {
 			case "gcp":
-				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub)
+				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub, statusCFAccess)
 			case "cloudflare":
 				// Reject conflicting flags: --public widens auth to all repos,
 				// so combining it with an explicit --per-repo-wif-repos list
@@ -610,7 +649,11 @@ Cloudflare mode (--platform=cloudflare):
 				cfStatusGitHub := cf.StatusGitHubAuth{
 					Group: statusGitHubGroup,
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
+				cfStatusCFAccess := cf.StatusCFAccessAuth{
+					Aud:  statusCFAccessAud,
+					Team: statusCFAccessTeam,
+				}
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cfStatusCFAccess, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -631,10 +674,21 @@ Mutually exclusive with --per-repo-wif-repos on Cloudflare`)
 
 	// Status auth flags.
 	cmd.Flags().StringVar(&statusAuth, "status-auth", "oidc", `comma-separated status auth modes (default: oidc)
-Each non-oidc mode selects a Go build tag. Modes: oidc, github.
-oidc is always compiled in; github requires --status-github-group.`)
+Each non-oidc mode selects a Go build tag. Modes: oidc, github, cfaccess.
+oidc is always compiled in; github requires --status-github-group;
+cfaccess enables Cloudflare Access authentication and requires
+--status-cfaccess-aud and --status-cfaccess-team.`)
 	cmd.Flags().StringVar(&statusGitHubGroup, "status-github-group", "", `ORG/TEAM slug for GitHub status auth (required when github mode enabled)
 Example: --status-github-group=acme/platform-team`)
+	cmd.Flags().StringVar(&statusCFAccessAud, "status-cfaccess-aud", "", `Cloudflare Access application AUD (JWT audience).
+Required when cfaccess mode is enabled (--status-auth=cfaccess).
+Enables authentication via Cloudflare Access Managed OAuth.
+Example: --status-cfaccess-aud=<application-audience-tag>`)
+	cmd.Flags().StringVar(&statusCFAccessTeam, "status-cfaccess-team", "", `Cloudflare Zero Trust team subdomain.
+Required when cfaccess mode is enabled (--status-auth=cfaccess).
+Used to derive the Cloudflare Access issuer and JWKS endpoint
+(https://<team>.cloudflareaccess.com).
+Example: --status-cfaccess-team=acme`)
 
 	// GCP-specific flags.
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
@@ -696,7 +750,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
-func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth) error {
+func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth, statusCFAccess gcf.StatusCFAccessAuth) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -769,6 +823,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		Commit:            deployCommit,
 		PublicMint:        public,
 		StatusGitHub:      statusGitHub,
+		StatusCFAccess:    statusCFAccess,
 	}
 
 	if pemDir != "" {
@@ -823,7 +878,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, statusCFAccess cf.StatusCFAccessAuth, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -1037,18 +1092,19 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	}
 
 	cfg := cf.Config{
-		AccountID:    accountID,
-		WorkerName:   workerName,
-		DeployMode:   deployMode,
-		PreviewAlias: previewAlias,
-		SourceDir:    sourceDir,
-		EnvVars:      cfEnvVars,
-		Secrets:      cfSecrets,
-		Version:      version,
-		Commit:       deployCommit,
-		ZoneID:       resolvedZoneID,
-		CustomDomain: customDomain,
-		StatusGitHub: statusGitHub,
+		AccountID:      accountID,
+		WorkerName:     workerName,
+		DeployMode:     deployMode,
+		PreviewAlias:   previewAlias,
+		SourceDir:      sourceDir,
+		EnvVars:        cfEnvVars,
+		Secrets:        cfSecrets,
+		Version:        version,
+		Commit:         deployCommit,
+		ZoneID:         resolvedZoneID,
+		CustomDomain:   customDomain,
+		StatusGitHub:   statusGitHub,
+		StatusCFAccess: statusCFAccess,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
