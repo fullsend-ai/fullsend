@@ -49,7 +49,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Per-repo AgentEntry fields](docs/contributing/harness-composition.md) | Adding or modifying fields in `AgentEntry` — covers layered merge handling, tests, documentation, and override-only semantics |
 | [Normative Event Specification](docs/normative/normalized-event/v1/README.md) | Adding or modifying fields in `event_payload` (`buildEventPayload`), normalized-event structures under `internal/normevent/`, or adapters — covers the projection table, transition vocabulary, adapter contracts, and CEL trigger examples |
 | [CEL Triggers](docs/contributing/cel-triggers.md) | Writing or reviewing harness `trigger` CEL expressions or `.feature` CEL filters — covers normalized transition kinds |
-| [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability and status rules |
+| [ADRs](docs/contributing/adrs.md) | Touching `docs/ADRs/` or reviewing ADR changes — covers immutability, status rules, and where current-state operational details belong |
 | [Sandbox Topology](docs/contributing/sandbox-topology.md) | Modifying sandbox images, CI image pulling, or agent harness configs |
 | [Bot Identities](docs/contributing/bot-identities.md) | Referencing bot identities in code — covers GitHub App logins and shared identities |
 | [GitLab Role Credentials](docs/contributing/gitlab-role-credentials.md) | GitLab registered-role credential contract (built-in Poller/Analyst/Coder plus administrator custom roles), trusted registry, migration gate, selection rules, and credential-routing security checklist |
