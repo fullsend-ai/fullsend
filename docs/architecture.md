@@ -183,12 +183,12 @@ repo baseline and overrides)
   platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Harness schema versioning and field types: a `schema_version` field (absent
-  = version `1`) makes the harness a versioned contract, and every field is
-  classified by semantic type — inline command (`sh -c`), local file path,
-  fetched resource, or scalar value — published in the
-  [Harness Field Reference](contributing/harness-fields.md). Type-flagging in
-  `Harness.Lint()` is planned, not yet implemented (non-fatal, with fail-fast
-  as a tracked follow-up)
+  = version `1`) is planned to make the harness a versioned contract, and every
+  field is classified by semantic type — inline command (`sh -c`), local file
+  path, fetched resource, or scalar value — published in the
+  [Harness Field Reference](contributing/harness-fields.md). The field and its
+  type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
+  diagnostics non-fatal, with fail-fast as a tracked follow-up)
   ([ADR 0115](ADRs/0115-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` with no working directory and is not resource-resolved;
