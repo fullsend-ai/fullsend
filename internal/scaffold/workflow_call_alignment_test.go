@@ -1142,8 +1142,8 @@ func TestReviewDispatchDedupGate(t *testing.T) {
 		"review-dedup must run before review")
 
 	gate := s[gateStart:reviewStart]
-	assert.Contains(t, gate, "fullsend-review-gate-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}",
-		"the short gate must serialize decisions per PR")
+	assert.Contains(t, gate, "fullsend-review-gate-${{ fromJSON(needs.route.outputs.event_payload).pull_request.base.repo.full_name }}-${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}",
+		"the workflow_call-only gate must serialize decisions from its normalized event payload")
 	assert.Contains(t, gate, "cancel-in-progress: false",
 		"a same-SHA request must inspect the first gate instead of cancelling it")
 	assert.Contains(t, gate, "actions: read",
