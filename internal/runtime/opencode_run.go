@@ -22,7 +22,7 @@ import (
 // injected OPENCODE_CONFIG_CONTENT registers. Both the provider and the final
 // model string can be overridden from the runner environment.
 const (
-	openCodeDefaultProvider = "anthropic-vertex"
+	openCodeDefaultProvider = "google-vertex-anthropic"
 	openCodeDefaultModel    = "opus"
 	// openCodeProviderEnv overrides the provider prefix applied to bare model
 	// ids. The model itself is resolved once by the CLI (--model,
@@ -34,9 +34,9 @@ const (
 )
 
 var openCodeModelAliases = map[string]string{
-	"opus":   "claude-opus-4-6",
-	"sonnet": "claude-sonnet-4-6",
-	"haiku":  "claude-haiku-4-5",
+	"opus":   "claude-opus-4-6@default",
+	"sonnet": "claude-sonnet-4-6@default",
+	"haiku":  "claude-haiku-4-5@default",
 }
 
 // translateOpenCodeModel resolves the harness/agent model into OpenCode's

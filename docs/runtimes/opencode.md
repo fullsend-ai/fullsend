@@ -4,7 +4,7 @@
 `AGENTS.md` natively.
 
 ```bash
-fullsend run triage --runtime opencode --model anthropic-vertex/claude-opus-4-6
+fullsend run triage --runtime opencode --model google-vertex-anthropic/claude-opus-4-6@default
 ```
 
 Selecting it, and how it compares to Claude Code and pi, is in [Agent runtimes](../runtimes.md). This
@@ -22,11 +22,11 @@ page is what changes once you are on it.
 
 A model on OpenCode is `provider/model`. Aliases and bare ids also work — `opus`/`sonnet`/`haiku`
 resolve through fullsend's table, and a bare id gets the provider from `FULLSEND_OPENCODE_PROVIDER`
-(default `anthropic-vertex`). A `provider/model` spec passes through unchanged.
+(default `google-vertex-anthropic`). A `provider/model` spec passes through unchanged.
 
 | Model | Spec |
 |---|---|
-| Claude | `anthropic-vertex/claude-opus-4-6` |
+| Claude | `google-vertex-anthropic/claude-opus-4-6@default` |
 | Alias | `opus`, `sonnet`, `haiku` (resolve to the catalog ids) |
 
 Harness `model:` and `agents:` entry `model:` values accept the `provider/model` form directly. The
@@ -81,7 +81,7 @@ What a local OpenCode run needs, beyond the guide:
   fast if the pinned binary is missing or broken, rather than producing an empty transcript.
 - **Read-only agents** — pilot `triage`/`prioritize`; `code`/`fix` are gated on #515.
 - **Knobs** — `FULLSEND_OPENCODE_PROVIDER` sets the provider for bare model ids (default
-  `anthropic-vertex`).
+  `google-vertex-anthropic`).
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `opencode-debug.log` inside the run directory, next to the transcripts.
 

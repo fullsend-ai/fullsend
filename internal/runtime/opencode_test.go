@@ -54,18 +54,18 @@ func TestOpenCodeRuntimeResolvesFromRegistry(t *testing.T) {
 func TestTranslateOpenCodeModel(t *testing.T) {
 	t.Setenv(openCodeProviderEnv, "")
 
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("opus", nil))
-	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translateOpenCodeModel("sonnet", nil))
+	assert.Equal(t, "google-vertex-anthropic/claude-opus-4-6@default", translateOpenCodeModel("opus", nil))
+	assert.Equal(t, "google-vertex-anthropic/claude-sonnet-4-6@default", translateOpenCodeModel("sonnet", nil))
 	// Empty falls back to the default alias.
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("", nil))
+	assert.Equal(t, "google-vertex-anthropic/claude-opus-4-6@default", translateOpenCodeModel("", nil))
 	// A bare (non-alias) id gets the provider prefix.
-	assert.Equal(t, "anthropic-vertex/claude-3-5", translateOpenCodeModel("claude-3-5", nil))
+	assert.Equal(t, "google-vertex-anthropic/claude-3-5", translateOpenCodeModel("claude-3-5", nil))
 	// A provider/model spec passes through unchanged.
 	assert.Equal(t, "openai/gpt-5", translateOpenCodeModel("openai/gpt-5", nil))
 
 	// Provider override from the environment.
 	t.Setenv(openCodeProviderEnv, "myprov")
-	assert.Equal(t, "myprov/claude-opus-4-6", translateOpenCodeModel("opus", nil))
+	assert.Equal(t, "myprov/claude-opus-4-6@default", translateOpenCodeModel("opus", nil))
 }
 
 func TestTranslateOpenCodeModel_ConfigAliases(t *testing.T) {
@@ -73,9 +73,9 @@ func TestTranslateOpenCodeModel_ConfigAliases(t *testing.T) {
 
 	// Per-repo alias overrides the built-in alias.
 	overrides := map[string]string{"sonnet": "claude-sonnet-5"}
-	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", translateOpenCodeModel("sonnet", overrides))
+	assert.Equal(t, "google-vertex-anthropic/claude-sonnet-5", translateOpenCodeModel("sonnet", overrides))
 	// An alias not overridden still uses the built-in.
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translateOpenCodeModel("opus", overrides))
+	assert.Equal(t, "google-vertex-anthropic/claude-opus-4-6@default", translateOpenCodeModel("opus", overrides))
 	// A per-repo alias that maps to a provider/id spec passes through.
 	overrides = map[string]string{"sonnet": "xai/grok-4.6"}
 	assert.Equal(t, "xai/grok-4.6", translateOpenCodeModel("sonnet", overrides))
@@ -98,7 +98,7 @@ func TestMergedOpenCodeModelAliases(t *testing.T) {
 
 func TestOpenCodeBareModelID(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "claude-opus-4-6", openCodeBareModelID("anthropic-vertex/claude-opus-4-6"))
+	assert.Equal(t, "claude-opus-4-6@default", openCodeBareModelID("google-vertex-anthropic/claude-opus-4-6@default"))
 	assert.Equal(t, "gpt-5", openCodeBareModelID("openai/gpt-5"))
 	assert.Equal(t, "bare", openCodeBareModelID("bare"))
 }
@@ -165,7 +165,7 @@ func TestOpenCodeAgentMarkdown(t *testing.T) {
 func TestOpenCodeValidatedArg(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", openCodeValidatedArg("anthropic-vertex/claude-opus-4-6"))
+	assert.Equal(t, "google-vertex-anthropic/claude-opus-4-6@default", openCodeValidatedArg("google-vertex-anthropic/claude-opus-4-6@default"))
 	assert.Equal(t, "high", openCodeValidatedArg("high"))
 	// Control characters and shell metacharacters are stripped.
 	assert.Equal(t, "opusrm -rf", openCodeValidatedArg("opus;rm -rf"))
@@ -198,7 +198,7 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	// opencode runs inside the tee pipeline so its stream lands in a sandbox
 	// transcript file for ExtractTranscripts while still streaming to the host.
 	assert.Contains(t, cmd, "opencode run --format json --thinking")
-	assert.Contains(t, cmd, "--model "+shellQuote("anthropic-vertex/claude-opus-4-6"))
+	assert.Contains(t, cmd, "--model "+shellQuote("google-vertex-anthropic/claude-opus-4-6@default"))
 	assert.Contains(t, cmd, "--variant "+shellQuote("high"))
 	assert.Contains(t, cmd, "--agent "+shellQuote("triage"))
 	assert.Contains(t, cmd, shellQuote(DefaultAgentPrompt))
