@@ -747,12 +747,15 @@ func statusEmoji(status string) string {
 // empty means the job outcome is unknown (e.g., --job-status was omitted).
 // When a non-terminal start comment *is* found and jobStatus is "success",
 // the leftover comment is labelled ReasonStatusUpdateFailed rather than
-// Terminated: the agent finished, only the status update failed (#6667).
-// wasSkipped overrides the synthesis skip for "on_failure" mode only: it's
-// true when the pre-script itself decided to skip the run, which means
-// jobStatus can be "success" even though no completion comment ended up
-// recorded for it (its error is only logged, not propagated to the job's
-// exit code). See PR #5736.
+// Terminated: the agent finished, only the status update failed (#6667). If
+// wasSkipped is also true, that leftover comment is labelled
+// ReasonSkipCommentFailed instead — PostStart runs before the pre-script's
+// skip decision in "enabled" completion mode, so a skipped run can still
+// leave a start comment behind, and that isn't a completed review. wasSkipped
+// also overrides the synthesis skip for "on_failure" mode: it's true when the
+// pre-script itself decided to skip the run, which means jobStatus can be
+// "success" even though no completion comment ended up recorded for it (its
+// error is only logged, not propagated to the job's exit code). See PR #5736.
 //
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
@@ -810,6 +813,15 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// later reported success (defensive; action.yml passes both).
 		if jobStatus == "success" && reason != ReasonCancelled {
 			finalizeReason = ReasonStatusUpdateFailed
+			// wasSkipped means the pre-script decided to skip the run
+			// before PostStart's leftover comment could be cleaned up
+			// (PostStart runs before the skip decision in "enabled"
+			// completion mode). That's not a completed review, so it
+			// gets the existing skip label instead of implying the
+			// agent finished. See #6667.
+			if wasSkipped {
+				finalizeReason = ReasonSkipCommentFailed
+			}
 		}
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()

@@ -683,6 +683,36 @@ func TestReconcileOrphaned_SuccessfulJobRelabelsStartedComment(t *testing.T) {
 	assert.Contains(t, body, "<!-- fullsend:status:terminal -->")
 }
 
+func TestReconcileOrphaned_SkippedJobLeftoverCommentGetsSkipLabel(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Review · Started 6:43 AM UTC\nCommit: `abc1234` · [View workflow run →](https://ci/run/99)",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	tc := tracker.NewForgeClient(fc)
+	// PostStart runs before the pre-script's skip decision in "enabled"
+	// completion mode, so a skipped run can still leave a start comment
+	// behind. jobStatus is "success" and wasSkipped is true — this must
+	// not be mistaken for a completed review that only failed to report
+	// its status (#6667's ReasonStatusUpdateFailed is for a *finished*
+	// agent, which this is not).
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", true, "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "⏭️ Skipped (no completion comment)")
+	assert.NotContains(t, body, "Completed (status update failed)")
+	assert.NotContains(t, body, "❌ Terminated")
+}
+
 func TestReconcileOrphaned_SuccessfulJobDoesNotOverrideCancelled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
