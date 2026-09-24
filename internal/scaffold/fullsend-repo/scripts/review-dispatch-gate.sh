@@ -41,6 +41,7 @@ OTHER_RUN_IDS="$(printf '%s\n' "${RUN_IDS[@]}" | sort -u)"
 
 while IFS= read -r run_id; do
   [[ -z "${run_id}" ]] && continue
+  [[ "${run_id}" =~ ^[0-9]+$ ]] || continue
   JOBS="$(gh api --paginate "repos/${SOURCE_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
     --jq '.jobs[] | [.name, .status] | @tsv')" || {
     echo "::error::Could not inspect jobs for workflow run ${run_id}"

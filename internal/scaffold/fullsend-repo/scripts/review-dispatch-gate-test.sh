@@ -63,6 +63,10 @@ case "${endpoint}" in
   *'/actions/runs?status=pending&per_page=100') cat "${MOCK_ROOT}/pending-runs.json" ;;
   *'/actions/runs?status=queued&per_page=100') cat "${MOCK_ROOT}/queued-runs.json" ;;
   *'/actions/runs/'*'/jobs?per_page=100')
+    [[ "${endpoint}" =~ /actions/runs/[0-9]+/jobs\?per_page=100$ ]] || {
+      echo "non-numeric workflow run ID reached jobs API: ${endpoint}" >&2
+      exit 1
+    }
     jobs_exit_code="$(<"${MOCK_ROOT}/jobs-exit-code")"
     if [[ "${jobs_exit_code}" != "0" ]]; then
       echo "simulated jobs API failure" >&2
@@ -164,6 +168,11 @@ run_case "older-head-active-review-is-not-skipped" \
   "${EXPECTED_SHA}" \
   '{"workflow_runs":[{"id":111}]}' \
   "{\"jobs\":[{\"name\":\"Dispatch / Review dispatch gate #42 ${OLDER_SHA}\",\"status\":\"completed\"},{\"name\":\"Dispatch / Review\",\"status\":\"in_progress\"}]}" \
+  false
+run_case "non-numeric-run-id-is-ignored" \
+  "${EXPECTED_SHA}" \
+  '{"workflow_runs":[{"id":"not-a-run-id"}]}' \
+  '{"jobs":[]}' \
   false
 run_case "stale-request-is-skipped" \
   "${OLDER_SHA}" \

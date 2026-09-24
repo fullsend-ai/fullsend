@@ -1189,6 +1189,7 @@ func TestReviewDispatchGateScript(t *testing.T) {
 	assert.Contains(t, string(output), "PASS: same-head-queued-workflow-run-is-skipped")
 	assert.Contains(t, string(output), "PASS: completed-review-with-active-harness-job-is-not-skipped")
 	assert.Contains(t, string(output), "PASS: older-head-active-review-is-not-skipped")
+	assert.Contains(t, string(output), "PASS: non-numeric-run-id-is-ignored")
 	assert.Contains(t, string(output), "PASS: stale-request-is-skipped")
 	assert.Contains(t, string(output), "PASS: no-active-review-is-allowed")
 	assert.Contains(t, string(output), "PASS: jobs-api-failure-stops-gate")
