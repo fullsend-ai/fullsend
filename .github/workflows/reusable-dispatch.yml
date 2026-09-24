@@ -901,11 +901,11 @@ jobs:
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
-  # Serialize only the duplicate-dispatch decision. The review job below keeps
-  # its PR-wide cancellation group, so a new commit still promptly supersedes
-  # a review of an older commit. The gate name records the requested head SHA
-  # in Actions metadata, letting a later /fs-review detect the in-flight run
-  # without creating another durable coordination service (#7554).
+  # Serialize only the duplicate-dispatch decision. The review job below still
+  # cancels an older review when a newer commit arrives. #7007 intentionally
+  # changes that future policy, and will conflict with this concurrency block.
+  # The gate name records the requested head SHA in Actions metadata, letting a
+  # later /fs-review detect an active same-SHA review without new infrastructure.
   review-dedup:
     name: "Review dispatch gate #${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }} ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha }}"
     needs: route
@@ -920,6 +920,7 @@ jobs:
       pull-requests: read
     outputs:
       skip: ${{ steps.active-review.outputs.skip }}
+      duplicate_run_id: ${{ steps.active-review.outputs.duplicate_run_id }}
     steps:
       - name: Checkout review dispatch gate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -942,6 +943,29 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: bash .review-dispatch-gate/internal/scaffold/fullsend-repo/scripts/review-dispatch-gate.sh
+
+  review-dedup-comment:
+    name: Explain skipped duplicate review
+    needs: [route, review-dedup]
+    if: needs.route.outputs.stage == 'review' && needs.review-dedup.outputs.skip == 'true' && needs.review-dedup.outputs.duplicate_run_id != ''
+    runs-on: ${{ inputs.runner_image }}
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on skipped duplicate review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: >-
+            ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number
+             || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          HEAD_SHA: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha }}
+          DUPLICATE_RUN_ID: ${{ needs.review-dedup.outputs.duplicate_run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.review-dedup.outputs.duplicate_run_id }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="Skipping this review request: the same commit (${HEAD_SHA}) is already pending, queued or in progress in [workflow run ${DUPLICATE_RUN_ID}](${RUN_URL})."
 
   review:
     name: Review

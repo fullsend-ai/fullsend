@@ -1154,6 +1154,8 @@ func TestReviewDispatchDedupGate(t *testing.T) {
 		"active gates must expose their PR and reviewed SHA to later requests")
 	assert.Contains(t, gate, "review-dispatch-gate.sh",
 		"the gate must use the tested active-review arbitration script")
+	assert.Contains(t, gate, "duplicate_run_id",
+		"the gate must expose the active workflow run so the skipped request can be explained")
 	assert.NotContains(t, gate, "startswith(\".github/workflows/fullsend.yaml@\")",
 		"deduplication must support repositories with custom reusable-workflow callers")
 
@@ -1164,18 +1166,34 @@ func TestReviewDispatchDedupGate(t *testing.T) {
 		"a same-SHA in-flight review must prevent a second agent invocation")
 	assert.NotContains(t, review, "completed-review",
 		"an explicit /fs-review must remain able to re-run after a completed review")
+
+	commentStart := strings.Index(s, "  review-dedup-comment:\n")
+	require.NotEqual(t, -1, commentStart,
+		"a duplicate request must receive a visible explanation")
+	comment := s[commentStart:reviewStart]
+	assert.Contains(t, comment, "needs.review-dedup.outputs.skip == 'true' && needs.review-dedup.outputs.duplicate_run_id != ''",
+		"the explanation must be posted only for an actual duplicate, not a stale request")
+	assert.Contains(t, comment, "issues: write",
+		"the explanation job needs only permission to create the PR issue comment")
+	assert.Contains(t, comment, "duplicate_run_id",
+		"the explanation must link the review run that owns the duplicate work")
 }
 
 func TestReviewDispatchGateScript(t *testing.T) {
 	cmd := exec.Command("bash", filepath.Join("fullsend-repo", "scripts", "review-dispatch-gate-test.sh"))
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "review dispatch gate behavior tests failed:\n%s", output)
-	assert.Contains(t, string(output), "PASS: same-head-active-review-is-skipped")
-	assert.Contains(t, string(output), "PASS: same-head-review-is-found-among-unrelated-jobs")
+	assert.Contains(t, string(output), "PASS: same-head-running-review-is-skipped")
+	assert.Contains(t, string(output), "PASS: same-head-queued-review-is-skipped")
+	assert.Contains(t, string(output), "PASS: same-head-pending-review-is-skipped")
+	assert.Contains(t, string(output), "PASS: same-head-queued-workflow-run-is-skipped")
+	assert.Contains(t, string(output), "PASS: completed-review-is-not-skipped")
 	assert.Contains(t, string(output), "PASS: older-head-active-review-is-not-skipped")
 	assert.Contains(t, string(output), "PASS: stale-request-is-skipped")
 	assert.Contains(t, string(output), "PASS: no-active-review-is-allowed")
 	assert.Contains(t, string(output), "PASS: jobs-api-failure-stops-gate")
+	assert.Contains(t, string(output), "PASS: run-list-api-failure-stops-gate")
+	assert.Contains(t, string(output), "PASS: malformed-current-head-stops-gate")
 }
 
 // TestWorkItemKeyEnvCompatibility validates that legacy code dispatch and the
