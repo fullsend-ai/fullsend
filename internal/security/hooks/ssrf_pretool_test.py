@@ -1055,6 +1055,31 @@ class TestProcessToolCallMergeQueueScripts:
                 assert result is not None
                 assert "github.com" in result
 
+    def test_documented_url_extraction_recipe_not_blocked(self, hook):
+        """SKILL.md's URL-extraction recipe (for when an agent only has a PR
+        URL, not a number) must itself pass the hook. An earlier version of
+        this recipe wrapped every stage in `$()` command substitution to
+        assign the match to a shell variable; `_pipeline_is_inert` treats any
+        command substitution as automatically non-inert (see
+        `test_dollar_paren_not_inert` above), so that recipe fell through to
+        full URL validation and was blocked on the exact `github.com` literal
+        it was meant to extract — reproducing the #7640 false positive one
+        layer up. The documented recipe is now a single assignment-free
+        `echo <URL> | grep` pipeline with no `$()`/backticks anywhere in the
+        command text; the agent reads and splits the printed match itself
+        instead of capturing it into a shell variable.
+        """
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": (
+                    'echo "https://github.com/owner/repo/pull/652/files" '
+                    "| grep -oE '[^/]+/[^/]+/pull/[0-9]+'"
+                ),
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
 
 # ---------------------------------------------------------------------------
 # Egress allowlist tests

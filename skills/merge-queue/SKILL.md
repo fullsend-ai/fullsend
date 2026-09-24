@@ -35,23 +35,28 @@ list, so a `github.com` URL literal anywhere on that command line is
 DNS-resolved and fail-closed (`github.com` is not egress-allowlisted) —
 regardless of how the script itself later parses its arguments. Always use
 the PR number (+ `-R owner/repo` for a PR outside the current repo). If all
-you have is a URL, extract the number and `owner/repo` first with an
-inert-only Bash tool call (`echo`, `grep`, and `cut` only — no `bash` or
-`gh`):
+you have is a URL, extract the number and `owner/repo` first with a single
+inert Bash tool call: no `$()`/backtick command substitution anywhere in
+the command text, and no `bash` or `gh`. Command substitution alone makes
+the hook fall through to full URL validation regardless of which commands
+it wraps, so do not assign the URL or the match to a shell variable —
+substitute the literal URL directly into the command, and read the
+command's *output* yourself instead of capturing it:
 
 ```
-match="$(echo "$URL" | grep -oE '[^/]+/[^/]+/pull/[0-9]+')"
-nwo="$(echo "$match" | cut -d/ -f1-2)"
-num="$(echo "$match" | cut -d/ -f4)"
+echo "https://github.com/owner/repo/pull/652/files" | grep -oE '[^/]+/[^/]+/pull/[0-9]+'
 ```
 
 The pattern is intentionally unanchored so it still matches URLs with a
 trailing path segment (e.g. `.../pull/652/files`, `/commits`, `/checks`).
-Then, as a **separate** Bash tool call containing no URL literal, invoke
-the script with the extracted values:
+This prints `owner/repo/pull/652` as the tool output — split that yourself
+(everything before `/pull/` is `owner/repo`; the trailing digits are the PR
+number). Then, as a **separate** Bash tool call containing no URL literal
+and no command substitution, invoke the script with the values you
+extracted:
 
 ```
-bash skills/merge-queue/scripts/enqueue-pr.sh "$num" -R "$nwo"
+bash skills/merge-queue/scripts/enqueue-pr.sh "652" -R "owner/repo"
 ```
 
 ## Check queue status
