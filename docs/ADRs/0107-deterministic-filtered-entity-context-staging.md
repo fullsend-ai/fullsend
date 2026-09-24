@@ -78,8 +78,8 @@ Git checkout. It does not copy diffs, commit history, changed-file manifests,
 or repository revision metadata. Fullsend provisions sufficient Git objects and
 refs separately; controllers derive and filter diffs or commit projections for
 agents and sub-agents that need them. Git object IDs appear in the
-entity-context-snapshot only to relate reviews, threads, comments, and agent runs
-to repository state.
+entity-context-snapshot to relate reviews, threads, comments, and agent runs to
+repository state, and as the collected target revision in check metadata.
 
 Each comment and review is a self-contained attributed record whose filename
 sorts chronologically. The initial body uses the same record format and sorts

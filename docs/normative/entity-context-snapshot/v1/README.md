@@ -125,8 +125,9 @@ The tree contains forge entity state that is not reconstructible from the
 target Git checkout. Diffs, commits, changed-file lists, branches, and revision
 topology are repository context and are not staged here. Fullsend provides the
 required Git objects and refs separately, and controllers may derive filtered
-diff or history projections outside this tree. Git object IDs occur here only
-as relationship values in review, thread, and agent-run documents.
+diff or history projections outside this tree. Git object IDs occur here as
+relationship values in review, thread, and agent-run documents, and as the
+collected target revision in check metadata `head_sha`.
 
 Comment and review Markdown files are self-contained records with this exact
 UTF-8 layout; header values are canonical JSON strings (or `null`) on one line:
