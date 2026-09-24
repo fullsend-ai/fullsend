@@ -198,6 +198,10 @@ permission list, not by bypassing the check.
 > `pull_request_target.closed` → retro stays intentionally ungated so
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
+> (Clarification: retro's minted token actually carries `issues:write`
+> and `pull_requests:write`, with contents read-only — see the
+> [Authorization Contract v1](../normative/authorization/v1/) lifecycle-close
+> section and [security-threat-model.md](../problems/security-threat-model.md#threat-6-denial-of-service-dos--resource-exhaustion).)
 
 > **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
 > Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
