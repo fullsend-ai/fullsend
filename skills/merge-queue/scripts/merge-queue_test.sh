@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# merge-queue_test.sh — Tests for enqueue-pr.sh and await-and-enqueue.sh
+# merge-queue_test.sh — Tests for enqueue-pr.sh, await-and-enqueue.sh, and
+# dequeue-reason.sh
 #
 # Asserts that a PR URL argument is parsed locally and `gh pr view` is
 # invoked as `-R owner/repo <number>`, never with a raw github.com URL.
-# Also covers bare PR numbers and omitted arguments (current-branch PR).
+# Also covers bare PR numbers, omitted arguments (current-branch PR), and
+# that a malformed -R/--repo value (host-qualified or path-traversal) is
+# rejected before any gh call.
 #
 # Run from the repo root:
 #   bash skills/merge-queue/scripts/merge-queue_test.sh
@@ -327,6 +330,26 @@ echo "=== enqueue-pr.sh ==="
   fi
 }
 
+# A host-qualified -R value (gh's own [HOST/]OWNER/REPO form) must be
+# rejected before any gh call — otherwise gh would DNS-resolve and send
+# API requests to an attacker-supplied host, bypassing the SSRF hook this
+# URL-free interface exists to cooperate with.
+for malformed in "evil.example.com/owner/repo" "../repo" "owner/.." "owner/repo/extra" "owner"; do
+  name="enqueue-pr malformed -R value is rejected: ${malformed}"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${ENQUEUE}" "652" -R "${malformed}" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh should not be called"
+  elif [[ "${output}" != *"must be a plain owner/repo value"* ]]; then
+    fail "${name} — expected owner/repo validation error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+done
+
 echo ""
 echo "=== await-and-enqueue.sh ==="
 
@@ -448,6 +471,81 @@ echo "=== await-and-enqueue.sh ==="
   elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
     fail "${name} — gh should not be called"
   elif [[ "${output}" != *"Error: provide a PR number or URL"* ]]; then
+    fail "${name} — expected usage error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
+
+# A host-qualified -R value (gh's own [HOST/]OWNER/REPO form) must be
+# rejected before any gh call — same rationale as enqueue-pr.sh above.
+for malformed in "evil.example.com/owner/repo" "../repo" "owner/.." "owner/repo/extra" "owner"; do
+  name="await-and-enqueue malformed -R value is rejected: ${malformed}"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${AWAIT}" "652" -R "${malformed}" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh should not be called"
+  elif [[ "${output}" != *"must be a plain owner/repo value"* ]]; then
+    fail "${name} — expected owner/repo validation error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+done
+
+echo ""
+echo "=== dequeue-reason.sh ==="
+
+DEQUEUE="${SCRIPT_DIR}/dequeue-reason.sh"
+
+# A host-qualified -R value must be rejected before any gh call.
+for malformed in "evil.example.com/owner/repo" "../repo" "owner/.." "owner/repo/extra" "owner"; do
+  name="dequeue-reason malformed -R value is rejected: ${malformed}"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${DEQUEUE}" "652" -R "${malformed}" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh should not be called"
+  elif [[ "${output}" != *"must be a plain owner/repo value"* ]]; then
+    fail "${name} — expected owner/repo validation error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+done
+
+# -R without a PR number errors without calling gh.
+{
+  name="dequeue-reason -R without number is rejected"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${DEQUEUE}" -R "owner/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh should not be called"
+  elif [[ "${output}" != *"Error: -R/--repo requires a PR number"* ]]; then
+    fail "${name} — expected usage error, got: ${output}"
+  else
+    pass "${name}"
+  fi
+}
+
+# A URL together with -R is ambiguous and must be rejected.
+{
+  name="dequeue-reason URL with -R is rejected"
+  mock_bin="$(build_mock)"
+  actual_exit=0
+  output="$(run_script "${mock_bin}" bash "${DEQUEUE}" \
+    "https://github.com/owner/repo/pull/652" -R "other/repo" 2>&1)" || actual_exit=$?
+  if [[ "${actual_exit}" -ne 1 ]]; then
+    fail "${name} — expected exit 1, got ${actual_exit}: ${output}"
+  elif grep -E '^gh ' "${TMPDIR}/gh.log" >/dev/null; then
+    fail "${name} — gh should not be called"
+  elif [[ "${output}" != *"provide either a PR URL or -R/--repo"* ]]; then
     fail "${name} — expected usage error, got: ${output}"
   else
     pass "${name}"

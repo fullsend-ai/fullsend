@@ -50,7 +50,10 @@ Shows each entry's position, state, PR title/URL, author, enqueuer, and estimate
 
 ## Investigate dequeue reasons
 
-Run `bash skills/merge-queue/scripts/dequeue-reason.sh <PR_NUMBER_OR_URL>` to find out why a PR was removed from the merge queue.
+Run `bash skills/merge-queue/scripts/dequeue-reason.sh <PR_NUMBER> [-R owner/repo]`
+to find out why a PR was removed from the merge queue. Use `-R owner/repo`
+for a PR in a different repo — see the warning above (under "Enqueue a PR")
+about never passing a raw PR URL to the script's Bash tool invocation.
 
 Shows each removal event's timestamp, reason (e.g. `failed_checks`, `merge_conflict`), and the commit SHA at the time of removal.
 

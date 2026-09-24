@@ -1001,11 +1001,12 @@ class TestProcessToolCallMergeQueueScripts:
     skills/merge-queue/SKILL.md) documents a URL-free invocation — a PR
     number plus an optional ``-R owner/repo`` — so an agent following the
     skill never puts a raw github.com URL on the Bash tool command line
-    for these scripts.
+    for these scripts. ``dequeue-reason.sh`` was updated with the same
+    ``-R``/``--repo`` flag and documentation for the same reason.
     """
 
     def test_documented_number_and_repo_invocation_not_blocked(self, hook):
-        for script in ("enqueue-pr.sh", "await-and-enqueue.sh"):
+        for script in ("enqueue-pr.sh", "await-and-enqueue.sh", "dequeue-reason.sh"):
             tool_input = {
                 "tool_name": "Bash",
                 "tool_input": {
@@ -1022,24 +1023,37 @@ class TestProcessToolCallMergeQueueScripts:
             }
             assert hook.process_tool_call(tool_input) is None
 
+    def test_documented_dequeue_bare_number_invocation_not_blocked(self, hook):
+        """dequeue-reason.sh requires a PR number (no current-branch default),
+        so its primary documented form is the bare number, not an omitted
+        argument."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "bash skills/merge-queue/scripts/dequeue-reason.sh 652",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
     def test_raw_pr_url_argument_is_still_blocked(self, hook):
         """A PR URL pasted directly onto the Bash tool command line is the
         exact shape #7640 reported. It is still blocked — which is why
         SKILL.md must document the number/-R form instead, per the class
         docstring above."""
         with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
-            tool_input = {
-                "tool_name": "Bash",
-                "tool_input": {
-                    "command": (
-                        "bash skills/merge-queue/scripts/enqueue-pr.sh "
-                        "https://github.com/owner/repo/pull/652"
-                    ),
-                },
-            }
-            result = hook.process_tool_call(tool_input)
-        assert result is not None
-        assert "github.com" in result
+            for script in ("enqueue-pr.sh", "await-and-enqueue.sh", "dequeue-reason.sh"):
+                tool_input = {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            f"bash skills/merge-queue/scripts/{script} "
+                            "https://github.com/owner/repo/pull/652"
+                        ),
+                    },
+                }
+                result = hook.process_tool_call(tool_input)
+                assert result is not None
+                assert "github.com" in result
 
 
 # ---------------------------------------------------------------------------

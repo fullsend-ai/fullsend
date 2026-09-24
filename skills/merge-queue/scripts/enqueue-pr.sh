@@ -13,13 +13,37 @@
 
 set -euo pipefail
 
+# Reject anything but a plain two-segment owner/repo nwo: no host-qualified
+# ("host/owner/repo") or "."/".." path segments. `gh`'s own -R/--repo flag
+# accepts [HOST/]OWNER/REPO, so an unvalidated value here would let a
+# caller redirect gh's API requests to an attacker-controlled host —
+# defeating the SSRF PreToolUse hook this URL-free interface exists to
+# cooperate with.
+validate_repo_nwo() {
+  local value="$1"
+  if [[ ! "$value" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    echo "Error: -R/--repo must be a plain owner/repo value, not: $value" >&2
+    exit 1
+  fi
+  local owner_part="${value%%/*}" repo_part="${value#*/}"
+  if [[ "$owner_part" == "." || "$owner_part" == ".." || "$repo_part" == "." || "$repo_part" == ".." ]]; then
+    echo "Error: -R/--repo must be a plain owner/repo value, not: $value" >&2
+    exit 1
+  fi
+}
+
 pr=""
 repo=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -R|--repo)
-      repo="${2:?Usage: -R/--repo requires an owner/repo value}"
+      if [[ $# -lt 2 ]]; then
+        echo "Error: -R/--repo requires an owner/repo value" >&2
+        exit 1
+      fi
+      repo="$2"
+      validate_repo_nwo "$repo"
       shift 2
       ;;
     *)
@@ -49,7 +73,7 @@ if [[ -n "$repo" ]]; then
   elif [[ "$pr" =~ ^[0-9]+$ ]]; then
     pr_json="$(gh pr view "$pr" -R "$repo" --json url,id)"
   else
-    echo "Error: provide a PR number or URL" >&2
+    echo "Error: -R/--repo requires a PR number" >&2
     exit 1
   fi
 elif [[ -z "$pr" ]]; then
@@ -57,6 +81,7 @@ elif [[ -z "$pr" ]]; then
 elif [[ "$pr" =~ ^https://github.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
   repo="${BASH_REMATCH[1]}"
   number="${BASH_REMATCH[2]}"
+  validate_repo_nwo "$repo"
   pr_json="$(gh pr view "$number" -R "$repo" --json url,id)"
 elif [[ "$pr" =~ ^[0-9]+$ ]]; then
   pr_json="$(gh pr view "$pr" --json url,id)"
