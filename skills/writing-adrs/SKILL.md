@@ -212,7 +212,8 @@ If the ADR partially answers a question, add a parenthetical:
   `docs/architecture.md` for evolving design narrative
 - You're adding evolving operational details (field tables, struct definitions,
   merge rules) to an accepted ADR -- put them in living documentation
-  (`docs/architecture.md`, `docs/reference/`) instead
+  (`docs/architecture.md`, `docs/reference/`, or an existing contributing guide
+  the ADR already links to) instead
 
 ## Common Mistakes
 
@@ -228,6 +229,6 @@ If the ADR partially answers a question, add a parenthetical:
 | Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
 | Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
-| Adding evolving operational details to an accepted ADR | Put them in living documentation (`docs/architecture.md`, `docs/reference/`) |
+| Adding evolving operational details to an accepted ADR | Put them in living documentation (`docs/architecture.md`, `docs/reference/`, or an existing contributing guide the ADR already links to) |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
