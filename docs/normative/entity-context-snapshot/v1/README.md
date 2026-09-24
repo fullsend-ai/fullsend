@@ -176,10 +176,12 @@ provide its command inputs. The required entity body is always staged; this
 admission rule applies to conversation comments and reviews. Bot actors do not
 have a verified repository role in v1, so their comments remain outside this
 trust boundary until a future ADR defines bot-role resolution or an explicit
-allow-list. Every admitted comment still passes the complete filter pipeline
-below, including Unicode safety that removes invisible text and unnecessary
-control characters, secret redaction, prompt-injection scanning, and byte
-bounds.
+allow-list. An omitted formal review is counted in the `reviews` scope's
+`authorization_failed` gap by the same rule; it is not charged only to
+`comments`. Every admitted comment or review still passes the complete filter
+pipeline below, including Unicode safety that removes invisible text and
+unnecessary control characters, secret redaction, prompt-injection scanning,
+and byte bounds.
 
 The initial issue or change-proposal body uses the same layout with
 `Fullsend-Record: "entity"`, the entity's stable ID, immutable author ID, and
