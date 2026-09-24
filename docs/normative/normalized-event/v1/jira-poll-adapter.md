@@ -65,7 +65,7 @@ the first line after the command (same rules as
 | Field | Source |
 |-------|--------|
 | `actor.id` | Jira `accountId` (preferred) or `name` when accountId unavailable |
-| `actor.kind` | `bot` when Jira account type is `app` or display name matches automation pattern; else `human` |
+| `actor.kind` | `bot` when Jira account type is `app`, display name matches automation pattern, or the actor is the authenticated poller account (from `/myself`); else `human` |
 | `actor.role` | Derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
 
