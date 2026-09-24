@@ -11,6 +11,16 @@ are documented across CLI reference pages, user and operator guides, ADRs,
 and inline Go help text. Missing even one location causes documentation drift
 that surfaces as review findings on later PRs.
 
+Problem-document conventions (options with trade-offs, open questions,
+organization-agnostic core, bidirectional backlinks) live in
+[Problem Documents](problem-docs.md).
+
+**Per-org installation mode is deprecated**
+([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Do not add
+or extend org-mode-specific content. When reviewing a PR that touches it, flag
+it as deprecated rather than treating the org/repo-mode distinction as active
+architecture. Per-repo is the sole supported installation model.
+
 ## General discovery rule
 
 Before considering a CLI, configuration, or environment-variable change
@@ -27,15 +37,41 @@ settings with no literal match, also inspect tables and lists of comparable
 commands, flags, or variables. This catches files not listed in the
 cross-reference below.
 
+## Docs site (VitePress)
+
+When adding a new page under `docs/`, check `docs/.vitepress/config.ts`.
+Sections using `getMarkdownFiles()` are auto-discovered, including nested
+directories (which become nested sidebar groups). All other sections need a
+manual `{ text, link }` entry. Also add the new folder's prefix to
+`search.options.scopes` in the same file so the folder's pages are reachable
+when search scope pills are active.
+
+When adding a new skill under `skills/`, check the user-facing guides for
+cross-references: `docs/guides/user/customizing-with-skills.md`,
+`docs/guides/user/bring-your-own-agent.md`, and `docs/guides/README.md`.
+Add a brief pointer if the new skill fills a gap.
+
+When writing skills, documentation, or guides that list fullsend agents,
+skills, harness configs, or sub-agent rosters, discover them at runtime from
+`fullsend-ai/agents` rather than hardcoding tables. See the
+`author-fullsend-augmentations` skill.
+
 ## Configuration and environment variables
 
 For a `.fullsend/config.yaml` field, update
-`docs/reference/config-reference.md`, the canonical reference for every field.
-If its layered resolution or defaults change, also check
+`docs/reference/config-reference.md`, the canonical user-facing reference —
+every supported field must appear there with its purpose, valid values, and
+default. If its layered resolution or defaults change, also check
 `docs/guides/infrastructure/layered-config-reference.md`. For an environment
 variable or repository variable, check the repository-variable table in
 `docs/guides/getting-started/operations.md` and the documentation for the
 feature that consumes it.
+
+When adding, removing, or modifying fields in `event_payload`
+(`buildEventPayload` in `internal/harnessdispatch/project.go`) or
+normalized-event structures (`internal/normevent/`), update the projection
+table in `docs/normative/normalized-event/v1/README.md` and the resolution
+description in [Harness Field Reference](harness-fields.md).
 
 ## ADR annotations
 
