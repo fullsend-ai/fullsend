@@ -385,8 +385,8 @@ func TestOpenCodeRuntimeRun_HappyPath(t *testing.T) {
 	require.NotEmpty(t, events)
 	init, ok := events[0].(InitEvent)
 	require.True(t, ok, "first event should be InitEvent")
-	assert.Equal(t, "claude-opus-4-6", init.Model)
-	assert.Equal(t, "claude-opus-4-6", metrics.Model)
+	assert.Equal(t, "claude-opus-4-6@default", init.Model)
+	assert.Equal(t, "claude-opus-4-6@default", metrics.Model)
 
 	// Metrics captured from the stream.
 	assert.Equal(t, 1, metrics.NumTurns)
