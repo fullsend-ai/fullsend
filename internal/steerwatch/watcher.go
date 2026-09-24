@@ -417,6 +417,16 @@ func (w *Watcher) resolveItem(ctx context.Context) error {
 		if w.cfg.Item.HeadSHA == "" {
 			w.cfg.Item.HeadSHA = head
 		}
+		// The label baseline, from the issue record GitHub keeps for every
+		// pull request. Read now for the same reason as an issue's: left
+		// empty, every existing label would read as added on every poll.
+		issue, err := w.items.GetIssue(ctx, owner, repo, w.cfg.Item.Number)
+		if err != nil {
+			return fmt.Errorf("reading labels of %s#%d: %w", w.cfg.Repo, w.cfg.Item.Number, err)
+		}
+		if issue != nil {
+			w.cfg.Item.Labels = issue.Labels
+		}
 		w.mu.Lock()
 		w.lastHead = w.cfg.Item.HeadSHA
 		w.mu.Unlock()
@@ -827,8 +837,8 @@ func (w *Watcher) markSteered(messageID int64, runs []forge.WorkflowRun, d delta
 	w.baseline = snapshot
 
 	// Advance the content baseline to the state the agent was actually
-	// told about. Without this an issue's title, body and labels stay
-	// pinned to run start, so every later steer repeats changes the agent
+	// told about. Without this an issue's title, body and labels, and a
+	// pull request's labels, stay pinned to run start, so every later steer repeats changes the agent
 	// has already seen — and a field edited back to its original value
 	// reads as unchanged and is never reported at all.
 	if d.issue != nil {

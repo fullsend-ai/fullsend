@@ -41,16 +41,18 @@ type ItemReader interface {
 // when the run started. The snapshot fields are the baseline the delta is
 // computed against.
 type WorkItem struct {
-	// IsPullRequest selects the PR delta (head SHA, comments, reviews) over
-	// the issue delta (title, body, labels, comments).
+	// IsPullRequest selects the PR delta (head SHA, comments, reviews,
+	// labels) over the issue delta (title, body, labels, comments).
 	IsPullRequest bool
 	Number        int
 	// HeadSHA is the PR head at run start. Empty for issues.
 	HeadSHA string
-	// Title, Body and Labels are the issue snapshot at run start. Unused
-	// for pull requests, whose content delta is the head SHA.
-	Title  string
-	Body   string
+	// Title and Body are the issue snapshot at run start. Unused for pull
+	// requests, whose content delta is the head SHA.
+	Title string
+	Body  string
+	// Labels is the label set at run start, for both kinds: a label added
+	// to a pull request is an update as much as one added to an issue.
 	Labels []string
 }
 
@@ -611,6 +613,21 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 			}
 			d.context = append(d.context, deltaItem{Author: r.User, Kind: "review", State: r.State, Body: body, At: parseForgeTime(r.SubmittedAt)})
 		}
+
+		// Labels live on the issue record, which GitHub serves for a pull
+		// request too. Without this an accepted labeled follow-up on a PR
+		// builds an empty delta: it is judged, never delivered, and its
+		// update is dropped rather than left to the queued run.
+		issue, err := w.items.GetIssue(ctx, owner, repo, w.cfg.Item.Number)
+		if err != nil {
+			return d, fmt.Errorf("reading labels: %w", err)
+		}
+		if issue != nil {
+			d.issue = issue
+			if item, changed := labelChange(w.cfg.Item.Labels, issue.Labels); changed {
+				d.context = append(d.context, item)
+			}
+		}
 		return d, nil
 	}
 
@@ -631,17 +648,28 @@ func (w *Watcher) buildDelta(ctx context.Context, baseline time.Time, authorized
 	if issue.Body != w.cfg.Item.Body {
 		d.context = append(d.context, deltaItem{Kind: "state", Body: "Body was edited. It now reads:\n" + issue.Body})
 	}
-	if added, removed := diffLabels(w.cfg.Item.Labels, issue.Labels); len(added)+len(removed) > 0 {
-		var parts []string
-		if len(added) > 0 {
-			parts = append(parts, "added "+strings.Join(added, ", "))
-		}
-		if len(removed) > 0 {
-			parts = append(parts, "removed "+strings.Join(removed, ", "))
-		}
-		d.context = append(d.context, deltaItem{Kind: "state", Body: "Labels changed: " + strings.Join(parts, "; ")})
+	if item, changed := labelChange(w.cfg.Item.Labels, issue.Labels); changed {
+		d.context = append(d.context, item)
 	}
 	return d, nil
+}
+
+// labelChange is the state item reporting how the label set moved from
+// before to after, for issues and pull requests alike, or false when it did
+// not move.
+func labelChange(before, after []string) (deltaItem, bool) {
+	added, removed := diffLabels(before, after)
+	if len(added)+len(removed) == 0 {
+		return deltaItem{}, false
+	}
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "added "+strings.Join(added, ", "))
+	}
+	if len(removed) > 0 {
+		parts = append(parts, "removed "+strings.Join(removed, ", "))
+	}
+	return deltaItem{Kind: "state", Body: "Labels changed: " + strings.Join(parts, "; ")}, true
 }
 
 // maxHeadMoveBytes caps the change handed over on a head move. The context

@@ -303,6 +303,11 @@ edited and every label as added on every delta, so the run never settles. A head
 environment *does* supply still wins: it is the head at run start, which is what a head move is
 measured against.
 
+A pull request's baseline is its head SHA and its labels, read from the issue record GitHub keeps
+for every pull request. Labels count on both kinds of item: a label added to a pull request
+mid-run reaches the agent as `Labels changed: added …`, the same state context an issue's does,
+rather than leaving an accepted `labeled` follow-up with an empty delta.
+
 ## Settle
 
 On a turn end — `runtime.ResultEvent`, which Claude's `result`, pi's `agent_settled` (on a

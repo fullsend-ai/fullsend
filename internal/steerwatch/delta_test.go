@@ -275,6 +275,30 @@ func TestBuildDelta_PullRequestHeadUnchanged(t *testing.T) {
 	assert.True(t, d.empty())
 }
 
+// A pull request's labels are part of its delta too: Start snapshots them,
+// so the labels a PR already had are the baseline, and a later change is
+// reported the way an issue's is.
+func TestBuildDelta_PullRequestLabels(t *testing.T) {
+	items := &stubItems{headSHA: "aaa111", issue: &forge.Issue{Number: 7, Labels: []string{"bug", "p1"}}}
+	w := newWatcher(t, newFakeAPI(), items, &recorder{}, nil)
+	require.True(t, w.cfg.Item.IsPullRequest)
+	require.Equal(t, []string{"bug", "p1"}, w.cfg.Item.Labels, "Start must snapshot a pull request's labels")
+
+	d, err := w.buildDelta(context.Background(), mustTime(t, runStart), nil)
+	require.NoError(t, err)
+	assert.True(t, d.empty(), "labels present at start are the baseline, not a change")
+
+	items.issue = &forge.Issue{Number: 7, Labels: []string{"bug", "ready-for-review"}}
+	d, err = w.buildDelta(context.Background(), mustTime(t, runStart), nil)
+	require.NoError(t, err)
+	require.Len(t, d.context, 1)
+	assert.Equal(t, "state", d.context[0].Kind)
+	assert.Contains(t, d.context[0].Body, "Labels changed: added ready-for-review")
+	assert.Contains(t, d.context[0].Body, "removed p1")
+	assert.False(t, d.headMoved)
+	assert.Empty(t, d.amendments)
+}
+
 func TestBuildDelta_Issue(t *testing.T) {
 	// Start snapshots the issue as it was when the run began; the delta is
 	// computed against that snapshot, not against anything the caller

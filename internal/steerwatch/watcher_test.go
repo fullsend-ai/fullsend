@@ -73,6 +73,35 @@ func TestPollAndSteer_DeliversAndConsumes(t *testing.T) {
 	assert.Len(t, rec.delivered(), 1)
 }
 
+// An accepted follow-up whose only effect was a label on a pull request is
+// still an update. It is the shape of a PR the coder App opens and labels
+// ready-for-review a second later: the head has not moved and nobody has
+// commented, so without the PR label diff the delta is empty and the run is
+// judged but never delivered.
+func TestPollAndSteer_PullRequestLabelIsDelivered(t *testing.T) {
+	api := newFakeAPI()
+	// A second accepted follow-up arrives on the next poll with nothing
+	// further changed, so that poll builds a fresh delta against whatever
+	// label baseline the first steer left behind.
+	api.listed = [][]map[string]any{{acceptableRun(api, 101)}, {acceptableRun(api, 101), acceptableRun(api, 102)}}
+	rec := &recorder{}
+	items := &stubItems{headSHA: "aaa111", issue: &forge.Issue{Number: 7, Labels: []string{"bug"}}}
+	w := newWatcher(t, api, items, rec, nil)
+
+	items.issue = &forge.Issue{Number: 7, Labels: []string{"bug", "ready-for-review"}}
+	require.Equal(t, pollSteered, w.pollAndSteer(context.Background()))
+
+	msgs := rec.delivered()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Text, "Labels changed: added ready-for-review")
+	assert.Equal(t, []int64{101}, deliveredIDs(w))
+
+	// The label baseline advances with the steer, so the next follow-up does
+	// not hand the agent the same label again.
+	assert.NotEqual(t, pollSteered, w.pollAndSteer(context.Background()))
+	assert.Len(t, rec.delivered(), 1, "an already-delivered label must not be steered twice")
+}
+
 func TestPollAndSteer_FoldsSimultaneousFollowUpsIntoOneSteer(t *testing.T) {
 	api := newFakeAPI()
 	api.listed = [][]map[string]any{{acceptableRun(api, 101), acceptableRun(api, 102)}}
