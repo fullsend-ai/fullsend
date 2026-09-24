@@ -46,7 +46,7 @@ These labels track where an issue is in the pipeline:
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
 | `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
-| `ready-for-review` | PR ready for review | Per-repo: triggers review when applied to a PR; also runs automatically via PR events |
+| `ready-for-review` | PR ready for review | Per-repo: explicit application triggers review; the automatic code-agent application is a state marker and does not start a second review. Review also runs on PR opened/synchronize events |
 | `ready-for-merge` | All reviewers unanimously approved | PR can be merged per governance policy |
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
 
@@ -134,7 +134,7 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or explicitly applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two). The automatic `ready-for-review` label from the code agent is a workflow-state handoff and does not start a second review of the same revision; see [Review handoff dedup](../../contributing/review-handoff-dedup.md).
 
 The review swarm:
 
