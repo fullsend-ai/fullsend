@@ -117,6 +117,25 @@ var preflightCheckTimeout = 30 * time.Second
 // exact failure this remint exists to fix (#7231).
 var remintForPostScriptTimeout = mintclient.MaxMintDuration
 
+// postCompletionTimeout bounds the deferred completion-status comment
+// (and the mint that precedes it). It runs on a context derived from
+// context.WithoutCancel so a parent-ctx cancellation near the run's
+// own budget (e.g. a CI job-level timeout) cannot abort the comment
+// update before it gets a chance to complete.
+//
+// Set to mintclient.MaxMintDuration rather than an unrelated fixed
+// number: the notifier's client factory calls mintclient.MintToken,
+// whose retry schedule (fetchOIDCJWT up to 3 attempts, callMint up
+// to 5, both with exponential backoff — see that const's doc) can
+// already take longer than a shorter, arbitrarily-chosen bound. A
+// 15s bound routinely cut retries short mid-backoff, leaving the
+// start comment in "Started" state; reconcile-status then labelled
+// the run Terminated even though the agent had finished (#6667).
+//
+// A var (not const) so tests can shrink it to genuinely exercise
+// deadline expiry without waiting out the real duration.
+var postCompletionTimeout = mintclient.MaxMintDuration
+
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
 var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
@@ -1259,11 +1278,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-				defer dCancel()
-				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
-					printer.StepWarn("Failed to post completion status: " + err.Error())
-				}
+				postCompletionStatus(ctx, notifier, printer, description, status, detail)
 			}()
 		}
 	}
@@ -5476,6 +5491,21 @@ type tokenVar struct {
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
 	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// postCompletionStatus posts the run's terminal status comment. The
+// parent ctx is decoupled from cancellation and bounded by
+// postCompletionTimeout so a mint retry is not cut short by a leftover
+// 15s deadline or a cancelled parent, which previously left the start
+// comment stuck in "Started" and then labelled Terminated (#6667).
+// Failure is non-fatal: the out-of-process reconcile-status step is
+// the fallback.
+func postCompletionStatus(ctx context.Context, notifier *statuscomment.Notifier, printer *ui.Printer, description, status, detail string) {
+	dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), postCompletionTimeout)
+	defer dCancel()
+	if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
+		printer.StepWarn("Failed to post completion status: " + err.Error())
+	}
 }
 
 // remintAgentTokenForPostScript re-mints a GitHub App installation token

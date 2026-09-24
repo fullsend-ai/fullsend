@@ -653,6 +653,92 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 	assert.Contains(t, body, "[View workflow run →](https://ci/run/99)")
 }
 
+func TestReconcileOrphaned_SuccessfulJobRelabelsStartedComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Review · Started 6:43 AM UTC\nCommit: `abc1234` · [View workflow run →](https://ci/run/99)",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	tc := tracker.NewForgeClient(fc)
+	// The default CLI reason is terminated; jobStatus success means the
+	// agent finished and only PostCompletion failed (#6667).
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, body, "Review")
+	assert.Contains(t, body, "⚠️ Completed (status update failed)")
+	assert.NotContains(t, body, "❌ Terminated")
+	assert.Contains(t, body, "Started 6:43 AM UTC")
+	assert.Contains(t, body, "Ended 7:12 AM UTC")
+	assert.Contains(t, body, "<!-- fullsend:status:terminal -->")
+}
+
+func TestReconcileOrphaned_SuccessfulJobDoesNotOverrideCancelled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "success", false, "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "⚠️ Cancelled")
+	assert.NotContains(t, body, "status update failed")
+	assert.NotContains(t, body, "❌ Terminated")
+}
+
+func TestReconcileOrphaned_FailedJobKeepsTerminated(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
+
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "failure", false, "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Terminated")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "status update failed")
+}
+
+func TestReasonLabel_StatusUpdateFailed(t *testing.T) {
+	label, heading := reasonLabel(ReasonStatusUpdateFailed, "Review")
+	assert.Equal(t, "⚠️ Completed (status update failed)", label)
+	assert.Equal(t, "Review", heading)
+
+	label, heading = reasonLabel(ReasonStatusUpdateFailed, "")
+	assert.Equal(t, "⚠️ Completed (status update failed)", label)
+	assert.Equal(t, "Agent run completed", heading)
+}
+
 func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
