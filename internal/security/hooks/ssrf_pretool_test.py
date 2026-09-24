@@ -1069,16 +1069,17 @@ class TestProcessToolCallMergeQueueScripts:
         command text; the agent reads and splits the printed match itself
         instead of capturing it into a shell variable.
         """
+        command = (
+            'echo "https://github.com/owner/repo/pull/652/files" '
+            "| grep -oE '[^/]+/[^/]+/pull/[0-9]+'"
+        )
+        assert hook._pipeline_is_inert(command)
         tool_input = {
             "tool_name": "Bash",
-            "tool_input": {
-                "command": (
-                    'echo "https://github.com/owner/repo/pull/652/files" '
-                    "| grep -oE '[^/]+/[^/]+/pull/[0-9]+'"
-                ),
-            },
+            "tool_input": {"command": command},
         }
-        assert hook.process_tool_call(tool_input) is None
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
+            assert hook.process_tool_call(tool_input) is None
 
 
 # ---------------------------------------------------------------------------

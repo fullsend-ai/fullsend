@@ -5,7 +5,7 @@ description: >-
   queued, or find out why a PR was removed from the queue. The gh CLI has no
   built-in merge-queue commands, so this skill provides scripts that use the
   GraphQL API.
-allowed-tools: Bash(bash skills/merge-queue/scripts/*:*)
+allowed-tools: Bash(bash skills/merge-queue/scripts/*:*), Bash(echo "https://github.com/*" | grep -oE '[^/]+/[^/]+/pull/[0-9]+')
 ---
 
 # Merge Queue
