@@ -13,8 +13,9 @@ The mint service maps `role` to a GitHub App (its ID + private key) and to a
 permission ceiling, then issues a token scoped to your repo. `slug` only helps
 `fullsend github setup` find or name the App at install time — it is **not**
 what authenticates your agent, and changing it does not change identity or
-permissions. If you set a `role` the mint doesn't serve, you get a `403`, not a
-new identity.
+permissions. If you set a `role` the mint doesn't serve, you get a `403`
+that names the rejected role and how to register it (`fullsend mint
+add-role`), not a new identity.
 
 Within that ceiling, `privilege_levels` selects which named level (`read` or
 `write`, plus any extra levels on a custom role) each run-stage receives. Omit
@@ -37,7 +38,7 @@ So the real question is: **whose mint issues your token?**
 **The default mint cannot mint a new identity for you.** It serves a fixed set
 of Apps that fullsend operates (see [why](../infrastructure/standalone-mint.md)).
 Picking a `role:` it doesn't serve — or a custom `slug:` — will not create one;
-it produces the `403` above.
+it produces the `403` above, with the rejected role named in the workflow log.
 
 ## Most customization needs no custom identity
 

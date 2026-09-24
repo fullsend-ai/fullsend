@@ -73,8 +73,21 @@ runs:
           -H "Content-Type: application/json" \
           -d "$BODY" \
           "${MINT_URL}/v1/token") || {
-          if [[ "$HTTP_CODE" == "422" ]]; then
+          ERROR_MSG=""
+          HINT=""
+          if [[ -s "$BODY_FILE" ]]; then
+            ERROR_MSG=$(jq -r '.error // empty' "$BODY_FILE" 2>/dev/null || true)
+            HINT=$(jq -r '.hint // empty' "$BODY_FILE" 2>/dev/null || true)
+          fi
+          if [[ -n "$ERROR_MSG" ]]; then
+            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE}): ${ERROR_MSG}"
+            if [[ -n "$HINT" ]]; then
+              printf '%s\n' "::error::${HINT}"
+            fi
+          elif [[ "$HTTP_CODE" == "422" ]]; then
             printf '%s\n' "::error::A 422 error code usually means the GitHub App configured for role \"$ROLE\" is not installed for the repository. Check if it is installed in certain selected repositories."
+          else
+            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE:-unknown}) for role \"$ROLE\""
           fi
           exit 1
         }

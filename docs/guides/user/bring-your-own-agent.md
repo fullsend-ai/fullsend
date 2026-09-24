@@ -161,8 +161,8 @@ timeout_minutes: 15
 > `triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`. Pick the one
 > whose permissions fit what your agent does (a code-writing agent uses
 > `role: coder`). A made-up role like `role: my-agent` returns `403` from the
-> mint. To use a *new* role or your *own* identity, you need your own mint —
-> see [Custom Agent Identity](custom-agent-identity.md).
+> mint naming the rejected role and how to register it. To use a *new* role or
+> your *own* identity, you need your own mint — see [Custom Agent Identity](custom-agent-identity.md).
 
 **`providers/vertex-ai.yaml`** — provider definition (declares a provider by name and type):
 ```yaml
@@ -432,7 +432,7 @@ allowed_remote_resources:
 | `unknown role "..."` from `agent new` | The hosted mint serves five roles — see the table in [`agent new`](../../cli/agent.md#roles); for a custom role see [Custom Agent Identity](custom-agent-identity.md) |
 | Agent never fires, no error anywhere | The harness has no `trigger:`. A trigger-less agent registers and validates but is silently skipped by dispatch — `fullsend agent new` always writes one |
 | "role field is required" | Add `role:` to harness |
-| `403` / "role not allowed" from the mint | Your `role:` is not one the mint serves. On the hosted mint use a built-in role (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); for a custom role, point `FULLSEND_MINT_URL` at your own mint — see [Custom Agent Identity](custom-agent-identity.md) |
+| `403` / `role "..." is not registered with this mint` | Your `role:` is not one the mint serves. The workflow log names the rejected role and how to register it (`fullsend mint add-role <role>`). On the hosted mint use a built-in role (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); for a custom role, point `FULLSEND_MINT_URL` at your own mint — see [Custom Agent Identity](custom-agent-identity.md) |
 | Agent can't find input files | Pre-script output paths must match `host_files` entries |
 | Provider blocks requests | Check that the required provider profile is listed in `providers:` and exists in the `providers/` directory |
 | Schema validation fails | Compare the sandbox output (`$FULLSEND_OUTPUT_DIR/<result>.json`) against the schema referenced in `validation_loop` / `FULLSEND_OUTPUT_SCHEMA`; re-run with `--keep-sandbox` to inspect |
