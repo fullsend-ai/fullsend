@@ -1824,10 +1824,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// Pass REPO_DIR only when repoExtractedOK is true: the validated
 			// iteration's SafeDownload succeeded (or, with no validation
 			// loop, the last iteration's did). Each iteration extracts to
-			// its own hostRepoRoot/iteration-N, so a sweep-rescued earlier
-			// iteration still has a checkout to hand the post-script
-			// (#5553). Passing a stale or missing dir would expose the
-			// post-script to unsanitized or wrong-iteration content.
+			// its own hostRepoRoot/iteration-N (#5553) rather than one
+			// shared dir, so REPO_DIR always names the validated
+			// iteration's own checkout by construction, not a directory
+			// some later iteration has since overwritten — see
+			// postLoopValidationSweep's doc comment for which validated-
+			// non-final-iteration scenarios runAgent's control flow can
+			// and cannot actually produce today. Passing a stale or
+			// missing dir would expose the post-script to unsanitized or
+			// wrong-iteration content.
 			//
 			// post-fix.sh and post-code.sh both fail closed on an empty
 			// REPO_DIR in their own script logic (via ${REPO_DIR:-repo} +
@@ -2199,9 +2204,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// The sweep re-validates all completed iteration directories, latest
 	// first. TARGET_REPO_DIR is that iteration's checkout when its
 	// SafeDownload succeeded, and empty otherwise (output-only rescue
-	// when extraction failed). Per-iteration checkouts (#5553) also let
-	// the post-script receive the validated iteration's repo via REPO_DIR
-	// instead of failing closed.
+	// when extraction failed) — see postLoopValidationSweep's doc comment
+	// for why that extracted-but-failed-inline branch isn't itself a
+	// demonstrated #5553 rescue under a deterministic script today. What
+	// #5553 does fix on every reachable path is REPO_DIR correctness: each
+	// iteration now extracts to its own hostRepoRoot/iteration-N instead of
+	// one dir shared (and overwritten) across iterations, so REPO_DIR can
+	// never silently point at a different iteration's checkout than the
+	// one that was actually validated.
 	//
 	// Both phases are necessary: removing inline validation would force
 	// every run to exhaust all maxIterations even when iteration 1 passes,
@@ -2524,6 +2534,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				continue
 			}
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
+		}
+		// Per-iteration checkouts sit one level deeper than the old
+		// single hostRepositoryDownloadDir (hostRepoRoot/iteration-N vs.
+		// hostRepoRoot), so hostRepoRoot may not exist yet — unlike the
+		// old layout, where the destination was always a single new leaf
+		// directly under os.TempDir(), which always exists. SafeDownload
+		// (Download) execs "openshell sandbox download" and does not
+		// create the destination itself, so create it explicitly here
+		// rather than relying on unverified mkdir-parents behavior in
+		// that external binary.
+		if mkErr := os.MkdirAll(hostRepositoryDownloadDir, 0o755); mkErr != nil {
+			if h.ValidationLoop != nil {
+				printer.StepWarn(fmt.Sprintf("Failed to create local repo dir %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, mkErr))
+				repoExtractedOK = false
+				if lastIterTimedOut {
+					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
+					break
+				}
+				continue
+			}
+			return fmt.Errorf("creating local repo dir %s before extraction: %w", hostRepositoryDownloadDir, mkErr)
 		}
 
 		repoExtractStart := time.Now()
@@ -3528,9 +3559,12 @@ func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runner
 }
 
 // iterationHostRepoDir returns the host-side checkout path for one
-// iteration's extracted target repo. Per-iteration paths let a post-loop
-// sweep recover the validated iteration's repo for REPO_DIR instead of
-// failing closed (#5553).
+// iteration's extracted target repo. Per-iteration paths keep each
+// iteration's checkout from being overwritten by a later one, so REPO_DIR
+// can be resolved against the validated iteration specifically rather than
+// whichever iteration extracted last (#5553; see postLoopValidationSweep's
+// doc comment for which validated-non-final-iteration scenarios this
+// currently affects in practice).
 func iterationHostRepoDir(hostRepoRoot string, iteration int) string {
 	return filepath.Join(hostRepoRoot, fmt.Sprintf("iteration-%d", iteration))
 }
@@ -3579,6 +3613,23 @@ type sweepResult struct {
 // still works after a failed SafeDownload. repoExtractedOK is true only
 // when the passing iteration itself has a sanitized checkout — never a
 // different iteration's (#5553).
+//
+// This sweep only runs when no iteration passed inline validation (see the
+// call site in runAgent). For an iteration where extractedOK[i] is true,
+// inline validation already ran against that same iteration's checkout
+// (runAgent invokes the validation script immediately after a successful
+// SafeDownload) and did not pass — otherwise the loop would have broken out
+// before reaching the sweep. Under a deterministic validation script,
+// re-running it here against the identical TARGET_REPO_DIR reproduces the
+// same failure, so the extractedOK[i]==true success branch below is
+// defensive completeness (e.g. a non-deterministic script, or a future
+// caller), not a demonstrated #5553 rescue path. The rescue this sweep
+// actually delivers is the extractedOK[i]==false case: an iteration whose
+// inline validation never ran because SafeDownload failed on that same
+// iteration (see runAgent's 9d/9e comments). The #5553 fix that does ship
+// on the normal path is per-iteration REPO_DIR delivery for an iteration
+// that extracts and validates inline — validatedIterNum == iteration,
+// repoExtractedOK already true from that same iteration's extraction.
 func postLoopValidationSweep(h *harness.Harness, runDir, hostRepoRoot string, runCount int, extractedOK map[int]bool, printer *ui.Printer) sweepResult {
 	for i := runCount; i >= 1; i-- {
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
