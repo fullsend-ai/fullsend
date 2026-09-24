@@ -875,7 +875,7 @@ func (h *Handler) roleNotAllowedBody(role, repository string) mintErrorBody {
 	if repository != "" {
 		msg += fmt.Sprintf(" (requested by %s)", repository)
 	}
-	hint := fmt.Sprintf("If you operate this mint, register the role with `fullsend mint add-role %s`. If you use the hosted mint, use a built-in role or set FULLSEND_MINT_URL to a mint that serves this role. See https://fullsend.sh/guides/user/custom-agent-identity", role)
+	hint := fmt.Sprintf("If you operate this mint, register the role with `fullsend mint add-role %s`. If you use the hosted mint, use a built-in role or set FULLSEND_MINT_URL to a mint that serves this role. See https://fullsend.sh/docs/guides/user/custom-agent-identity", role)
 	if len(h.allowedRoles) > 0 {
 		hint = fmt.Sprintf("Registered roles: %s. %s", strings.Join(h.allowedRoles, ", "), hint)
 	}

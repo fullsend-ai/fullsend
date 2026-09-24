@@ -651,6 +651,9 @@ func TestRoleNotAllowedBody(t *testing.T) {
 	if !strings.Contains(got.Hint, "Registered roles: triage, coder") {
 		t.Fatalf("hint missing registered roles: %q", got.Hint)
 	}
+	if !strings.Contains(got.Hint, "https://fullsend.sh/docs/guides/user/custom-agent-identity") {
+		t.Fatalf("hint missing docs URL with /docs/ base path: %q", got.Hint)
+	}
 
 	emptyRepo := h.roleNotAllowedBody("haiku", "")
 	if strings.Contains(emptyRepo.Error, "requested by") {
