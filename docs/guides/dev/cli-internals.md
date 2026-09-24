@@ -534,29 +534,29 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ if no inline pass:                       │                   │
 │  │   for i := latest..1 {                   │                   │
 │  │     run validation on iteration-i dir    │                   │
-│  │     TARGET_REPO_DIR="" (repo dir is      │                   │
-│  │       unreliable across iterations)      │                   │
+│  │     TARGET_REPO_DIR = iteration-i        │                   │
+│  │       checkout if that iter extracted,   │                   │
+│  │       else "" (output-only rescue)       │                   │
 │  │     if pass → use this iteration; break  │                   │
 │  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
-│  │                   │ REPO_DIR set only when last SafeDownload │
-│  │                   │ succeeded and validated iteration is the │
-│  │                   │ latest; empty otherwise. post-fix.sh and │
-│  │                   │ post-code.sh both fail closed on empty   │
-│  │                   │ REPO_DIR in their own script logic; the  │
-│  │                   │ other validation_loop post-scripts don't │
+│  │                   │ Each iteration extracts to its own       │
+│  │                   │ hostRepoRoot/iteration-N (#5553).        │
+│  │                   │ REPO_DIR is the validated iteration's    │
+│  │                   │ checkout when that iteration's           │
+│  │                   │ SafeDownload succeeded; empty otherwise  │
+│  │                   │ (output-only rescue after a failed       │
+│  │                   │ extract). post-fix.sh and post-code.sh   │
+│  │                   │ both fail closed on empty REPO_DIR in    │
+│  │                   │ their own script logic; the other        │
+│  │                   │ validation_loop post-scripts don't       │
 │  │                   │ reference REPO_DIR at all. code.yaml has │
 │  │                   │ no validation_loop, so post-code.sh      │
 │  │                   │ can't currently hit this path, but the   │
-│  │                   │ check is real, not dead code. There is   │
-│  │                   │ no per-iteration repo checkout, so post- │
-│  │                   │ fix.sh cannot recover a sweep-validated  │
-│  │                   │ non-final iteration; it fails closed     │
-│  │                   │ instead of pushing (known limitation,    │
-│  │                   │ see #5393).                              │
+│  │                   │ check is real, not dead code.            │
 │  │                   │                                          │
 │  │                   │ FULLSEND_VALIDATED_ITERATION_DIR is an   │
 │  │                   │ absolute path to the validated           │

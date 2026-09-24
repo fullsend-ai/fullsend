@@ -1714,12 +1714,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
-	// and corresponds to the validated iteration. It is false when:
-	//   - the last SafeDownload call failed (dir may be missing/unsanitized), or
-	//   - the post-loop sweep validated an earlier iteration (dir holds a
-	//     different iteration's checkout than what was validated).
-	// Callers (validation, post-script) must not use the dir when false.
+	// repoExtractedOK tracks whether the validated iteration (or, with no
+	// validation loop, the last iteration) has a sanitized host checkout.
+	// It is false when that iteration's SafeDownload failed — the dir may
+	// be missing or unsanitized — including the output-only sweep rescue
+	// where extraction was skipped. Callers (validation, post-script) must
+	// not use a checkout when false.
 	var repoExtractedOK bool
 
 	// validatedIterNum records which iteration passed validation (1-based),
@@ -1737,15 +1737,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
-	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
+	// Per-iteration checkouts live at hostRepoRoot/iteration-N so a
+	// later iteration cannot overwrite an earlier one (#5553).
+	hostRepoRoot := filepath.Join(os.TempDir(), sandboxName)
+	// extractedOK records which iterations produced a sanitized host
+	// checkout. Keyed by 1-based iteration number.
+	extractedOK := make(map[int]bool)
 	defer func() {
 		if keepSandbox {
 			return
 		}
-		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
+		if err := forceRemoveAll(hostRepoRoot); err != nil {
 			printer.StepWarn("Failed to remove download dir: " + err.Error())
 		} else {
-			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
+			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepoRoot))
 		}
 	}()
 
@@ -1816,12 +1821,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
 			// remove REPO_DIR from RunnerEnv entirely once harnesses no longer set it.
 			//
-			// Pass REPO_DIR only when repoExtractedOK is true: the last
-			// SafeDownload succeeded AND corresponds to the validated
-			// iteration (repoExtractedOK is forced false by the sweep when
-			// it validates an earlier iteration — see its doc comment).
-			// Passing a stale or missing dir would expose the post-script
-			// to unsanitized or wrong-iteration content.
+			// Pass REPO_DIR only when repoExtractedOK is true: the validated
+			// iteration's SafeDownload succeeded (or, with no validation
+			// loop, the last iteration's did). Each iteration extracts to
+			// its own hostRepoRoot/iteration-N, so a sweep-rescued earlier
+			// iteration still has a checkout to hand the post-script
+			// (#5553). Passing a stale or missing dir would expose the
+			// post-script to unsanitized or wrong-iteration content.
 			//
 			// post-fix.sh and post-code.sh both fail closed on an empty
 			// REPO_DIR in their own script logic (via ${REPO_DIR:-repo} +
@@ -1833,11 +1839,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// practice — a SafeDownload failure is fatal for it and this
 			// defer never runs — but the check in its script is real, not a
 			// dead branch, and would activate the moment code.yaml gained a
-			// validation_loop. Because there is no per-iteration repo
-			// checkout, post-fix.sh (and post-code.sh, were it to gain a
-			// validation_loop) cannot recover a sweep-validated non-final
-			// iteration's repo state — it fails closed with "Extracted repo
-			// not found" instead of pushing. See #5393 follow-up.
+			// validation_loop.
 			//
 			// FULLSEND_VALIDATED_ITERATION_DIR (set below) is set for
 			// forward compatibility, but the scaffold-embedded post-scripts
@@ -1846,7 +1848,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// repo, not internal/scaffold/fullsend-repo/. Until that lands,
 			// post-review.sh/post-triage.sh/post-retro.sh/post-prioritize.sh
 			// still scan for the last iteration-*/output blindly.
-			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepositoryDownloadDir, repoExtractedOK, validatedIterNum)
+			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepoRoot, repoExtractedOK, validatedIterNum, runCount)
 			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
 			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which
 			// iteration's output was validated. The path is always absolute
@@ -2195,9 +2197,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// validation was skipped because SafeDownload failed on that same
 	// iteration (extraction failure triggers `continue`, bypassing 9e).
 	// The sweep re-validates all completed iteration directories, latest
-	// first, using only the output files (TARGET_REPO_DIR is empty because
-	// hostRepositoryDownloadDir may not correspond to the validated
-	// iteration).
+	// first. TARGET_REPO_DIR is that iteration's checkout when its
+	// SafeDownload succeeded, and empty otherwise (output-only rescue
+	// when extraction failed). Per-iteration checkouts (#5553) also let
+	// the post-script receive the validated iteration's repo via REPO_DIR
+	// instead of failing closed.
 	//
 	// Both phases are necessary: removing inline validation would force
 	// every run to exhaust all maxIterations even when iteration 1 passes,
@@ -2508,6 +2512,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// SafeDownload failure with a validation loop: skip this
 		// iteration's repo state instead of extracting into a directory of
 		// unknown provenance.
+		hostRepositoryDownloadDir := iterationHostRepoDir(hostRepoRoot, iteration)
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
 				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
@@ -2547,6 +2552,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
+		extractedOK[iteration] = true
 		repoExtractedOK = true
 		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
@@ -2605,7 +2611,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
 	if h.ValidationLoop != nil && !validationPassed {
-		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
+		sweep := postLoopValidationSweep(h, runDir, hostRepoRoot, runCount, extractedOK, printer)
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
@@ -2668,9 +2674,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Header("Results")
 	printer.KeyValue("Run directory", runDir)
 	if keepSandbox {
-		printer.KeyValue("Download directory", hostRepositoryDownloadDir)
+		printer.KeyValue("Download directory", hostRepoRoot)
 	} else {
-		printer.KeyValue("Download directory", hostRepositoryDownloadDir+" (removed after run; use --keep-sandbox to retain)")
+		printer.KeyValue("Download directory", hostRepoRoot+" (removed after run; use --keep-sandbox to retain)")
 	}
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
@@ -3521,11 +3527,20 @@ func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runner
 	return feedback
 }
 
+// iterationHostRepoDir returns the host-side checkout path for one
+// iteration's extracted target repo. Per-iteration paths let a post-loop
+// sweep recover the validated iteration's repo for REPO_DIR instead of
+// failing closed (#5553).
+func iterationHostRepoDir(hostRepoRoot string, iteration int) string {
+	return filepath.Join(hostRepoRoot, fmt.Sprintf("iteration-%d", iteration))
+}
+
 // postScriptRepoEnv computes the REPO_DIR and FULLSEND_VALIDATED_ITERATION_DIR
 // values for the post-script's environment. Extracted from the post-script
 // defer closure for testability.
 //
-// repoDir is hostRepositoryDownloadDir when repoExtractedOK is true, empty
+// repoDir is the validated iteration's per-iteration checkout (or, with no
+// validation loop, runCount's checkout) when repoExtractedOK is true, empty
 // otherwise — see the call site's doc comment for why repoExtractedOK can be
 // false. validatedIterDir is the absolute path of the validated iteration's
 // output directory when a validation loop is configured and an iteration
@@ -3533,9 +3548,15 @@ func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runner
 // when there's no validation loop (the post-script's own last-iteration
 // scan is used instead) or when no iteration passed (the post-script is
 // skipped entirely in that case, so this is defensive).
-func postScriptRepoEnv(h *harness.Harness, runDir, hostRepositoryDownloadDir string, repoExtractedOK bool, validatedIterNum int) (repoDir, validatedIterDir string) {
+func postScriptRepoEnv(h *harness.Harness, runDir, hostRepoRoot string, repoExtractedOK bool, validatedIterNum, runCount int) (repoDir, validatedIterDir string) {
 	if repoExtractedOK {
-		repoDir = hostRepositoryDownloadDir
+		n := runCount
+		if h.ValidationLoop != nil && validatedIterNum > 0 {
+			n = validatedIterNum
+		}
+		if n > 0 {
+			repoDir = iterationHostRepoDir(hostRepoRoot, n)
+		}
 	}
 	if h.ValidationLoop != nil && validatedIterNum > 0 {
 		validatedIterDir = filepath.Join(runDir, fmt.Sprintf("iteration-%d/output", validatedIterNum))
@@ -3547,38 +3568,40 @@ func postScriptRepoEnv(h *harness.Harness, runDir, hostRepositoryDownloadDir str
 type sweepResult struct {
 	passed          bool // true if any iteration's validation passed
 	validatedIter   int  // which iteration passed (0 if none)
-	repoExtractedOK bool // false when the validated iteration != runCount
+	repoExtractedOK bool // true when the validated iteration has a sanitized checkout
 }
 
 // postLoopValidationSweep runs the validation script against each completed
 // iteration directory, starting from the latest (runCount) and working
 // backwards. It returns the first iteration that passes, or signals that
-// none passed. When the passing iteration is not runCount, repoExtractedOK
-// is set to false because hostRepositoryDownloadDir holds a different
-// iteration's repo checkout — the post-script must not use it.
-func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, printer *ui.Printer) sweepResult {
+// none passed. TARGET_REPO_DIR is that iteration's checkout when
+// extractedOK[i] is true, and empty otherwise so an output-only rescue
+// still works after a failed SafeDownload. repoExtractedOK is true only
+// when the passing iteration itself has a sanitized checkout — never a
+// different iteration's (#5553).
+func postLoopValidationSweep(h *harness.Harness, runDir, hostRepoRoot string, runCount int, extractedOK map[int]bool, printer *ui.Printer) sweepResult {
 	for i := runCount; i >= 1; i-- {
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
 		valStart := time.Now()
 		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
+		hostRepoDir := ""
+		if extractedOK[i] {
+			hostRepoDir = iterationHostRepoDir(hostRepoRoot, i)
+		}
 		// Strip OIDC credential vars from the full composed env so keys
 		// injected via h.RunnerEnv are also removed (#5832).
-		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
+		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepoDir, runDir)...))
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
 			printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
-			repoOK := currentRepoExtractedOK
-			if i != runCount {
-				repoOK = false
-			}
-			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
+			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: extractedOK[i]}
 		}
 		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactFeedback(validationFailMessage(valOut, valErr), h.RunnerEnv)))
 	}
-	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+	return sweepResult{passed: false, repoExtractedOK: false}
 }
 
 // stripOIDCEnv returns a copy of env with OIDC credential entries and
