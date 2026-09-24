@@ -39,20 +39,31 @@ runs:
         LEVEL: ${{ inputs.level }}
       run: |
         set -euo pipefail
-        # Strips CR/LF, "::" and C0 control characters from mint-supplied
-        # text before it is interpolated into a `::error::` workflow
-        # command. The built-in mint can't emit those characters today
-        # (role text is validated by RolePattern/ALLOWED_ROLES), but a
-        # self-hosted or FALLBACK_MINT_URL-proxied mint's error/hint text
-        # isn't constrained, and an unstripped newline or "::" could split
-        # the annotation into extra workflow commands.
+        # Strips CR/LF, "::", percent-encoded line breaks, and C0 control
+        # characters from mint-supplied text before it is interpolated into
+        # a `::error::` workflow command. The built-in mint can't emit
+        # those characters today (role text is validated by
+        # RolePattern/ALLOWED_ROLES), but a self-hosted or
+        # FALLBACK_MINT_URL-proxied mint's error/hint text isn't
+        # constrained, and an unstripped newline (raw or percent-encoded,
+        # which the runner decodes in workflow-command text) or "::" could
+        # split the annotation into extra workflow commands. %25 is
+        # stripped too so a double-encoded payload can't smuggle one of
+        # these sequences past the runner's single decode pass. Mirrors
+        # _sanitize_for_annotation in .github/scripts/check-fix-eligibility.sh.
         sanitize_for_log() {
           local s="$1"
           s="${s//$'\r'/}"
           s="${s//$'\n'/ }"
           s="${s//::/: }"
+          s="${s//%25/}"
+          s="${s//%0A/}"
+          s="${s//%0a/}"
+          s="${s//%0D/}"
+          s="${s//%0d/}"
           printf '%s' "$s" | tr -d '\000-\037\177'
         }
+        ROLE_SAFE=$(sanitize_for_log "$ROLE")
         if [[ -z "$MINT_URL" ]]; then
           echo "::error::FULLSEND_MINT_URL is not set"
           exit 1
@@ -95,15 +106,16 @@ runs:
           fi
           ERROR_MSG=$(sanitize_for_log "$ERROR_MSG")
           HINT=$(sanitize_for_log "$HINT")
+          HTTP_CODE_SAFE=$(sanitize_for_log "$HTTP_CODE")
           if [[ -n "$ERROR_MSG" ]]; then
-            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE}): ${ERROR_MSG}"
+            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE_SAFE}): ${ERROR_MSG}"
             if [[ -n "$HINT" ]]; then
               printf '%s\n' "::error::${HINT}"
             fi
           elif [[ "$HTTP_CODE" == "422" ]]; then
-            printf '%s\n' "::error::A 422 error code usually means the GitHub App configured for role \"$ROLE\" is not installed for the repository. Check if it is installed in certain selected repositories."
+            printf '%s\n' "::error::A 422 error code usually means the GitHub App configured for role \"$ROLE_SAFE\" is not installed for the repository. Check if it is installed in certain selected repositories."
           else
-            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE:-unknown}) for role \"$ROLE\""
+            printf '%s\n' "::error::Mint token request failed (HTTP ${HTTP_CODE_SAFE:-unknown}) for role \"$ROLE_SAFE\""
           fi
           exit 1
         }
@@ -111,7 +123,7 @@ runs:
         echo "::add-mask::$MINT_RESPONSE"
         TOKEN=$(echo "$MINT_RESPONSE" | jq -r '.token')
         if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
-          echo "::error::Token mint returned no token for role=$ROLE"
+          echo "::error::Token mint returned no token for role=$ROLE_SAFE"
           exit 1
         fi
         echo "::add-mask::$TOKEN"
