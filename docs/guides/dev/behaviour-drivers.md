@@ -80,9 +80,9 @@ This is the primary method with platform-divergent behavior. Both drivers implem
 
 **GitLab** (`pkg/behaviourtest/drivers/scm/gitlab/`):
 
-- Always `CreateChangeProposal` against the **fork** project (`forkOwner`/`forkRepo`) with a **plain branch name** as `head` — not `owner:branch`.
-- GitLab uses the fork relationship to target the upstream project, so `baseOwner`/`baseRepo` are unused.
-- Do not call `CreateCrossRepoChangeProposal`; GitLab does not support it.
+- Always `CreateChangeProposal` against the **fork** project (`forkOwner`/`forkRepo`) with a **plain branch name** as `head` — not `owner:branch`. `LiveClient.CreateChangeProposal` (`internal/forge/gitlab/mr.go`) sends only `source_branch`, `target_branch`, `title`, and `description` — no `target_project_id` — so `baseOwner`/`baseRepo` go unused by the driver.
+- The driver's design assumes GitLab resolves the fork's upstream project on its own when the source project is a fork. That assumption is documented in the driver's own comments and covered by a unit test, but it has not been independently verified against the GitLab API — treat it as the current driver's design rationale, not a confirmed platform guarantee, when reasoning about this code.
+- `CreateCrossRepoChangeProposal` is stubbed on GitLab to return `forge.ErrNotSupported`; do not call it. This reflects the current implementation, not a confirmed absence of the capability in the GitLab API.
 
 > **Do not copy head-ref formatting or cross-repo API calls from the GitHub driver into other drivers without verifying they match the target platform's API conventions.**
 
