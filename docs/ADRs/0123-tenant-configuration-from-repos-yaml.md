@@ -1,5 +1,5 @@
 ---
-title: "123. Tenant configuration from repos.yaml"
+title: "123. GitOps-managed tenant configuration for Fullsend"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - deployment
 ---
 
-# 123. Tenant configuration from repos.yaml
+# 123. GitOps-managed tenant configuration for Fullsend
 
 Date: 2026-09-24
 
@@ -20,43 +20,57 @@ Accepted
 
 ## Context
 
-Self-managed per-repository Fullsend installations require each repository
-owner to operate event delivery, scheduling, execution, credentials, and
-supporting infrastructure. At enterprise or foundation scale, an organization
-may need to operate those capabilities across many repositories, forge
-organizations, and work trackers, with site-wide controls.
+Self-managed per-repository Fullsend installations are useful, but they
+require each repository owner to operate event delivery, scheduling,
+execution, credentials, and supporting infrastructure. This fits small,
+medium, and large open source projects, as well as proprietary environments
+of a similar scale.
 
-Defining a centrally manageable Fullsend system is out of scope. This ADR
-decides its tenant configuration shape: the existing `repos.yaml` manifest
-already describes how Fullsend should be installed across multiple GitHub
-and/or GitLab repositories. See also the [agent infrastructure problem
+At enterprise or foundation scale, an organization may instead need to
+operate those capabilities across many repositories, forge organizations, and
+work trackers. When the organization also needs site-wide controls, the
+distributed operational responsibility of self-managed per-repository
+installations becomes an anti-feature.
+
+Defining the components of a centrally manageable fullsend system to address
+those needs is out of scope for this document.
+
+What is in scope is the data model. An enterprise operator could require a new
+level of abstraction on top of the existing fullsend model - a "tenant" of the
+platform that is larger than a single repo and may be larger than an org.
+
+The `repos.yaml` manifest already describes a spec for how fullsend should be
+installed and operating across multiple repos.
+
+See also the [agent infrastructure problem
 document](../problems/agent-infrastructure.md).
 
 ## Decision
 
-If a centrally manageable Fullsend system is built, end users will define each
-tenant with the existing `repos.yaml` v1 manifest. This reuses the public
-manifest format; it does not introduce a separate tenant configuration
-schema. The source of truth and delivery mechanism are intentionally
-unspecified. Git is a possible source; service components could, for example,
-consume manifests from HTTPS sources or mounted Kubernetes ConfigMaps.
+Future components that make up a centrally manageable Fullsend system will
+re-use the repos manifest as the method for end users to define their tenant.
 
-Central service components will wrap the validated `repos.Manifest` in an
-internal `TenantConfig`, providing a place for platform metadata such as
-tenant identity without duplicating the manifest's fields:
+We anticipate that enterprise administrators manage those files in git,
+although this is not strictly required.
 
-```go
+Future central service components may load and validate them from configured HTTPS
+sources, or alternatively from a mounted kubernetes ConfigMap.
+
+The human-managed format remains `repos.yaml`
+
+Central service components should use a new internal `TenantConfig` model built
+from the validated manifest, rather than rely directly on `repos.Manifest`,
+where we can store extra metadata as needed.
+
+```
 type TenantConfig struct {
-    TenantID string
-    Manifest *repos.Manifest
+    TenantID      string
+    Manifest      *repos.Manifest
 }
 ```
 
 Self-managed per-repository installations remain first-class and keep their
-existing manifest and CLI behavior. This ADR does not decide whether the
-centralized service will be offered, its management API or Kubernetes
-resources, its dispatcher or launcher, its infrastructure, or a repo-less
-execution context; those can be addressed in follow-up decisions.
+existing manifest and CLI behavior.
 
 ### Note about the mint tenant
 
@@ -73,11 +87,7 @@ them.
 
 ## Consequences
 
-- This is the smallest, simplest incremental decision for exploring an
-  enterprise-managed Fullsend installation: it reuses the existing tenant
-  manifest format.
-- An internal wrapper can add platform metadata while reusing the validated `repos.Manifest` rather than duplicating its fields.
-- If Git is chosen as a source, its history and review can provide an auditable change and rollback path for tenant configuration.
-- A custom REST API or Kubernetes-native tenant resource can be explored later
-  if new requirements show this simpler approach is unsuitable; follow-up
-  decisions will define the rest of the service.
+- This is the smallest, simplest incremental decision for exploring what an enterprise-managed Fullsend installation could look like: it reuses the existing manifest and Git review workflow.
+- A custom REST API or Kubernetes-native tenant resource can be explored later if GitOps manifests prove unsuitable as requirements evolve.
+- For enterprise administrators, git history and review can provide an auditable change and rollback path for each tenant's repository configuration.
+- Follow-up decisions will define other components of a centrally manageable fullsend system.
