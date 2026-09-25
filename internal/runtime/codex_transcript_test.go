@@ -400,15 +400,18 @@ func TestCodexIsRolloutFile(t *testing.T) {
 	// A leading blank line is tolerated.
 	require.NoError(t, codexIsRolloutFile(write("blank.jsonl",
 		"\n"+`{"type":"response_item","payload":{}}`+"\n")))
-	// codex-cli 0.152.1 (the pinned sandbox version) writes a world_state
-	// envelope just before turn_context. Rejecting it used to discard the
-	// whole transcript for every run.
-	require.NoError(t, codexIsRolloutFile(write("world-state.jsonl",
+	// The line order of a real codex-cli 0.157.0 rollout: world_state (from
+	// 0.152.1) and token_usage_record (0.157.0) appear in every run, and
+	// rejecting either used to discard the whole transcript.
+	require.NoError(t, codexIsRolloutFile(write("real-order.jsonl",
 		`{"type":"session_meta","payload":{}}`+"\n"+
 			`{"type":"event_msg","payload":{}}`+"\n"+
 			`{"type":"response_item","payload":{}}`+"\n"+
 			`{"type":"world_state","payload":{}}`+"\n"+
-			`{"type":"turn_context","payload":{}}`+"\n")))
+			`{"type":"turn_context","payload":{}}`+"\n"+
+			`{"type":"response_item","payload":{}}`+"\n"+
+			`{"type":"token_usage_record","payload":{}}`+"\n"+
+			`{"type":"event_msg","payload":{}}`+"\n")))
 
 	for name, body := range map[string]string{
 		// The tee'd stream uses dotted names and is a different artifact.

@@ -1321,7 +1321,8 @@ Two artefacts of the run are worth knowing about:
   rather than a fact. `ExtractTranscripts` collects regular `.jsonl` files only — never
   `.jsonl.zst`, since codex writes the running session uncompressed and a plaintext file merely
   *named* that shipped as an artifact the redactor then declined to rewrite — and **every line** of
-  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`, `world_state`, …),
+  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`,
+  `world_state`, `token_usage_record`, ...; the full list is `codexRolloutEnvelopes`),
   since checking only the first would let a file open with one genuine envelope and carry anything
   after it. Each is downloaded to a staging name, validated, redacted and only then renamed into
   place, so a crash cannot leave raw tool output at the path the artifact collector reads; reads are
