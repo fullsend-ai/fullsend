@@ -130,9 +130,13 @@ What a local codex run needs, beyond the guide:
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
-  `policy: policies/base.yaml`. The fleet's agents already carry both; a custom harness needs the
-  policy because the sandbox image's default policy leaves an uninspected route to `api.openai.com`,
-  which the gateway refuses to carry the credential over.
+  `policy: policies/base.yaml`. The fleet's agents already carry the policy; they do not declare
+  the OpenAI provider. `fullsend run` materializes that credential only when the harness lists it,
+  so switching a fleet agent to `runtime: codex` needs a
+  [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition)
+  (or an agents-repo change) that adds `providers: [openai]`. A custom harness also needs the
+  policy, because the sandbox image's default policy leaves an uninspected route to
+  `api.openai.com`, which the gateway refuses to carry the credential over.
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `codex-debug.log` inside the run directory, next to the transcripts, not in the runner's output.
 
@@ -221,8 +225,9 @@ profile or the policy is wrong.
 **``provider auth command `...` ...``** — codex's own wording, one of `exited with status N`,
 `failed to start`, `timed out after N ms`, `produced an empty token`, or `wrote non-UTF-8 data to
 stdout`. Codex could not read the credential: the runner-owned token file is missing, or it does not
-hold a gateway placeholder. Check that the harness declares `providers: [openai]` and that
-`OPENAI_API_KEY` reached the **runner**, not the sandbox.
+hold a gateway placeholder. Check that the harness declares `providers: [openai]` (the fleet
+agents do not; add it on a child harness) and that `OPENAI_API_KEY` reached the **runner**, not
+the sandbox.
 
 **The run stops before the agent starts, naming `api.openai.com`.** The effective sandbox policy
 admits `api.openai.com:443` without protocol inspection, so the gateway refuses to carry the
