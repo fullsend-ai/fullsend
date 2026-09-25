@@ -158,4 +158,7 @@ jobs:
             [ "$LAST" = "/sandbox/go/bin" ] || { echo "FAIL: /sandbox/go/bin not last (got $LAST)"; exit 1; }
             [ "$(command -v git)" = "/usr/bin/git" ] || { echo "FAIL: git shadowed ($(command -v git))"; exit 1; }
             [ "$(command -v scan-secrets)" = "/usr/local/bin/scan-secrets" ] || { echo "FAIL: scan-secrets shadowed ($(command -v scan-secrets))"; exit 1; }
+            [ "$(command -v golangci-lint)" = "/sandbox/go/bin/golangci-lint" ] || { echo "FAIL: golangci-lint not at expected path ($(command -v golangci-lint))"; exit 1; }
+            [ -d "$PRE_COMMIT_HOME" ] || { echo "FAIL: PRE_COMMIT_HOME ($PRE_COMMIT_HOME) not a directory"; exit 1; }
+            [ -n "$(ls -A "$PRE_COMMIT_HOME" 2>/dev/null)" ] || { echo "FAIL: PRE_COMMIT_HOME ($PRE_COMMIT_HOME) is empty — hook pre-population failed"; exit 1; }
           '

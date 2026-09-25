@@ -13,7 +13,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base   (upstream)
 | Image | Agents | Run frequency | Key additions over parent |
 |-------|--------|---------------|--------------------------|
 | `fullsend-sandbox` | triage, prioritize, retro | High (most agent runs) | Claude Code, pi (pinned; opt-in runtime, #6464), Codex (pinned; opt-in runtime, #6920), ripgrep + fd (pi grep/find backends), jq, gitleaks, acli, pre-commit, gitlint, tirith |
-| `fullsend-code` | code, fix, review | Lower (code/fix are the least-run agents; review runs per-PR) | Go toolchain, scan-secrets, gopls, lychee |
+| `fullsend-code` | code, fix, review | Lower (code/fix are the least-run agents; review runs per-PR) | Go toolchain, scan-secrets, gopls, lychee, golangci-lint, pre-commit hook cache (`PRE_COMMIT_HOME`) |
 
 Harness definitions that map agents to images live in
 the [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repo (the `image:` field in each harness YAML).
