@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -544,4 +545,65 @@ func TestRunGitHubSetupPerRepo_InvalidCLIProviderFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --inference-provider")
 	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_PinWarningWhenCLIEqualsBase(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetContent := "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: " + validWIFProvider + "\n"
+	presetPath := writeSetupPreset(t, presetContent)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		runtime:         "claude",
+		inferenceRegion: "global",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"runtime":          true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "runtime is being pinned")
+	assert.Contains(t, out, "inference.region is being pinned")
+	assert.Contains(t, out, "currently inherited value")
+
+	files := committedSetupFiles(client)
+	assert.Equal(t, presetContent, string(files[".fullsend/config.base.yaml"]), "preset must stay unchanged")
+	// Assert on the raw overlay bytes rather than a parsed reader:
+	// ParsePerRepoConfig always falls through to compiled defaults
+	// ("claude" / "global"), so asserting on the parsed reader would
+	// pass even if the overlay never recorded these keys at all.
+	overlayYAML := string(files[".fullsend/config.yaml"])
+	assert.Contains(t, overlayYAML, "runtime: claude", "overlay must record the pinned runtime")
+	assert.Regexp(t, `region:\s*global`, overlayYAML, "overlay must record the pinned inference region")
+}
+
+func TestRunGitHubSetupPerRepo_NoPinWarningWhenCLIDiffers(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		runtime:         "pi",
+		inferenceRegion: "us-west2",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"runtime":          true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	out := buf.String()
+	assert.NotContains(t, out, "is being pinned")
 }

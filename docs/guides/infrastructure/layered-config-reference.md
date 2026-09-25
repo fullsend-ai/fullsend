@@ -39,7 +39,11 @@ overlay falls through directly to code defaults.
 and writes only explicitly passed persistent setup flags into
 `config.yaml`. Required values such as `inference.project` may come from
 the preset alone; CLI flags override the same keys without rewriting the
-preset file.
+preset file. Passing a persistent flag whose normalized value already
+matches the inherited base or compiled default still writes the overlay
+key and warns that the value is now pinned locally — it will not pick up
+later changes from that lower layer. Delete the key from `config.yaml`
+to inherit again. Omitted flags and per-run flags do not pin.
 
 `fullsend repos install` uses the same preset implementation. Declare a
 default source in `defaults.config_base.source` (optional

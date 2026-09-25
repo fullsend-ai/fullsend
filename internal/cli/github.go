@@ -250,7 +250,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// existing .fullsend/config.yaml is kept verbatim unless a flag that
 	// targets a config key was passed, in which case only that key is
 	// changed on the loaded config. Managed workflow files still refresh.
-	existingCfg, err := loadExistingPerRepoConfig(ctx, client, owner, repo)
+	existingCfg, existingBase, err := loadExistingPerRepoConfig(ctx, client, owner, repo)
 	if err != nil {
 		if !cfg.dryRun {
 			return err
@@ -259,6 +259,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		// a first install rather than failing before printing the plan.
 		printer.StepWarn("Could not read existing .fullsend/config.yaml (planning as a first install): " + err.Error())
 		existingCfg = nil
+		existingBase = nil
 	}
 	configFlagsChanged := setupConfigFlagsChanged(cfg)
 	keepExistingConfig := existingCfg != nil && !configFlagsChanged
@@ -280,6 +281,19 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 	if cfg.runtime == "codex" {
 		printer.StepWarn("runtime codex needs a sandbox image that carries codex (fullsend-sandbox/fullsend-code built with CODEX_VERSION, #6920); harnesses pinning an older image will fail at preflight")
+	}
+
+	// Compare explicit persistent flags against the value they would
+	// inherit without this write: the --config preset if present,
+	// otherwise the repo's existing base layer, otherwise compiled
+	// defaults. Do this before applySetupFlagsToConfig so overlay
+	// values already on disk cannot mask a pin against the parent.
+	if configFlagsChanged {
+		inheritedBase := presetData
+		if len(inheritedBase) == 0 {
+			inheritedBase = existingBase
+		}
+		warnPinnedSetupFlags(printer, cfg, inheritedSetupReader(inheritedBase), roles)
 	}
 
 	// --- Build config files ---
@@ -539,37 +553,133 @@ func setupConfigFlagsChanged(cfg githubSetupConfig) bool {
 // ValidateAgentEntries sees the merged agent set — an overlay entry that
 // tunes a custom agent registered only in config.base.yaml would
 // otherwise fail with "is not a built-in agent".
-// Returns (nil, nil) when config.yaml does not exist (first install)
-// and an error when it exists but cannot be parsed — a re-run must not
-// silently regenerate over a file the repo edited.
-func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, error) {
+// Returns a nil config.yaml writer when config.yaml does not exist (first
+// install, or an overlay that was removed while config.base.yaml remains)
+// and an error when config.yaml exists but cannot be parsed — a re-run
+// must not silently regenerate over a file the repo edited. baseData is
+// the raw config.base.yaml bytes when that file exists, returned even
+// when there is no overlay, so callers can compare explicit CLI flags
+// against the inherited lower layer.
+func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, []byte, error) {
 	data, err := client.GetFileContent(ctx, owner, repo, ".fullsend/config.yaml")
 	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil, nil
+		if !forge.IsNotFound(err) {
+			return nil, nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
 		}
-		return nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
+		// No overlay yet, but a base layer may still exist (overlay
+		// removed while base remains) — callers compare CLI flags
+		// against that base, so it must be returned even though there
+		// is no overlay to parse.
+		baseData, baseErr := readExistingPerRepoBase(ctx, client, owner, repo)
+		if baseErr != nil {
+			return nil, nil, baseErr
+		}
+		return nil, baseData, nil
 	}
 	if !config.IsPerRepoYAML(data) {
-		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
+		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
 	}
 
 	// Fetch the base layer when present so validation sees the merged
 	// agent set (an overlay entry tuning a base-registered custom agent
 	// needs the base's source to pass ValidateAgentEntries).
-	var baseData []byte
-	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
-	if baseErr == nil {
-		baseData = baseContent
-	} else if !forge.IsNotFound(baseErr) {
-		return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+	baseData, err := readExistingPerRepoBase(ctx, client, owner, repo)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	parsed, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
 	if err != nil {
-		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
+		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
 	}
-	return parsed, nil
+	return parsed, baseData, nil
+}
+
+// readExistingPerRepoBase fetches the repo's config.base.yaml, returning
+// nil data (and no error) when the file does not exist.
+func readExistingPerRepoBase(ctx context.Context, client forge.Client, owner, repo string) ([]byte, error) {
+	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
+	if baseErr == nil {
+		return baseContent, nil
+	}
+	if forge.IsNotFound(baseErr) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+}
+
+// inheritedSetupReader is the lower layer an overlay write would inherit
+// from: empty overlay on the given base (and compiled defaults), or
+// compiled defaults alone when baseData is empty. Callers use this to
+// compare CLI values against the parent, not against overlay keys that
+// may already be set.
+func inheritedSetupReader(baseData []byte) config.PerRepoConfigReader {
+	if len(baseData) == 0 {
+		return config.NewEmptyPerRepoOverlay()
+	}
+	inherited, err := config.ParsePerRepoConfigWriterLayered([]byte("{}"), baseData)
+	if err != nil {
+		return config.NewEmptyPerRepoOverlay()
+	}
+	return inherited
+}
+
+// warnPinnedSetupFlags emits a warning for each explicitly passed
+// persistent setup flag whose normalized value equals the value the
+// overlay would otherwise inherit from a base layer or compiled
+// default. The write still happens; the warning exists so users know
+// the overlay will not pick up later changes to that lower layer.
+// Omitted flags and per-run flags are ignored.
+func warnPinnedSetupFlags(printer *ui.Printer, cfg githubSetupConfig, inherited config.PerRepoConfigReader, roles []string) {
+	for _, w := range pinnedSetupFlags(cfg, inherited, roles) {
+		printer.StepWarn(w)
+	}
+}
+
+// pinnedSetupFlags returns one warning per explicitly supplied
+// persistent setup value that matches the currently inherited value.
+func pinnedSetupFlags(cfg githubSetupConfig, inherited config.PerRepoConfigReader, roles []string) []string {
+	if inherited == nil || !setupConfigFlagsChanged(cfg) {
+		return nil
+	}
+	var warnings []string
+	if cfg.changedFlags["runtime"] && setupScalarEqual(cfg.runtime, inherited.ConfigRuntime()) {
+		warnings = append(warnings, setupPinWarning("runtime"))
+	}
+	if cfg.changedFlags["agents"] && slices.Equal(roles, inherited.ConfigRoles()) {
+		warnings = append(warnings, setupPinWarning("roles"))
+	}
+	if cfg.changedFlags["mint-url"] && setupScalarEqual(cfg.mintURL, inherited.ConfigMintURL()) {
+		warnings = append(warnings, setupPinWarning("mint_url"))
+	}
+	if cfg.changedFlags["inference-provider"] && setupScalarEqual(cfg.inferenceProvider, inherited.ConfigInferenceProvider()) {
+		warnings = append(warnings, setupPinWarning("inference.provider"))
+	}
+	if cfg.changedFlags["inference-project"] && setupScalarEqual(cfg.inferenceProject, inherited.ConfigInferenceProject()) {
+		warnings = append(warnings, setupPinWarning("inference.project"))
+	}
+	if cfg.changedFlags["inference-region"] && setupScalarEqual(cfg.inferenceRegion, inherited.ConfigInferenceRegion()) {
+		warnings = append(warnings, setupPinWarning("inference.region"))
+	}
+	if cfg.changedFlags["inference-wif-provider"] && setupScalarEqual(cfg.inferenceWIFProvider, inherited.ConfigInferenceWIFProvider()) {
+		warnings = append(warnings, setupPinWarning("inference.wif_provider"))
+	}
+	if openaiFlagsChanged(cfg) {
+		ids := cfg.openaiIDs()
+		if !ids.IsZero() && ids == inherited.ConfigInferenceOpenAI().Trimmed() {
+			warnings = append(warnings, setupPinWarning("inference.openai"))
+		}
+	}
+	return warnings
+}
+
+func setupScalarEqual(cli, inherited string) bool {
+	cli = strings.TrimSpace(cli)
+	return cli != "" && cli == inherited
+}
+
+func setupPinWarning(field string) string {
+	return field + " is being pinned in .fullsend/config.yaml to the currently inherited value; later changes from config.base.yaml or compiled defaults will not apply. Remove the key from the overlay to inherit again"
 }
 
 // applySetupFlagsToConfig sets the keys targeted by explicitly passed

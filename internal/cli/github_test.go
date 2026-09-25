@@ -1851,21 +1851,181 @@ func TestApplySetupFlagsToConfig_EveryFlag(t *testing.T) {
 	assert.True(t, setupConfigFlagsChanged(githubSetupConfig{changedFlags: map[string]bool{"inference-region": true}}))
 }
 
+func TestPinnedSetupFlags_NilInheritedOrEmptyCLI(t *testing.T) {
+	t.Parallel()
+	assert.Empty(t, pinnedSetupFlags(githubSetupConfig{
+		runtime:      "claude",
+		changedFlags: map[string]bool{"runtime": true},
+	}, nil, nil))
+	assert.Empty(t, pinnedSetupFlags(githubSetupConfig{
+		runtime:      "",
+		mintURL:      "",
+		changedFlags: map[string]bool{"runtime": true, "mint-url": true},
+	}, inheritedSetupReader(nil), nil))
+}
+
+func TestInheritedSetupReader_InvalidBaseFallsBackToDefaults(t *testing.T) {
+	t.Parallel()
+	inherited := inheritedSetupReader([]byte(":::not-yaml"))
+	require.NotNil(t, inherited)
+	assert.Equal(t, "claude", inherited.ConfigRuntime())
+}
+
+func TestPinnedSetupFlags_RemainingScalars(t *testing.T) {
+	t.Parallel()
+	base := []byte("version: \"1\"\ninference:\n  provider: vertex\n  project: preset-project\n  wif_provider: projects/1/locations/global/workloadIdentityPools/p/providers/x\n")
+	inherited := inheritedSetupReader(base)
+	warnings := pinnedSetupFlags(githubSetupConfig{
+		inferenceProvider:    "vertex",
+		inferenceProject:     "preset-project",
+		inferenceWIFProvider: "projects/1/locations/global/workloadIdentityPools/p/providers/x",
+		changedFlags: map[string]bool{
+			"inference-provider":     true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+		},
+	}, inherited, nil)
+	require.Len(t, warnings, 3)
+	assert.Contains(t, warnings[0], "inference.provider")
+	assert.Contains(t, warnings[1], "inference.project")
+	assert.Contains(t, warnings[2], "inference.wif_provider")
+}
+
+func TestPinnedSetupFlags_EqualToCompiledDefault(t *testing.T) {
+	t.Parallel()
+	inherited := inheritedSetupReader(nil)
+	warnings := pinnedSetupFlags(githubSetupConfig{
+		runtime:      "claude",
+		changedFlags: map[string]bool{"runtime": true},
+	}, inherited, nil)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "runtime")
+	assert.Contains(t, warnings[0], ".fullsend/config.yaml")
+	assert.Contains(t, warnings[0], "compiled defaults")
+}
+
+func TestPinnedSetupFlags_EqualToBaseLayer(t *testing.T) {
+	t.Parallel()
+	base := []byte("version: \"1\"\nruntime: claude\ninference:\n  region: europe-west1\n")
+	inherited := inheritedSetupReader(base)
+
+	warnings := pinnedSetupFlags(githubSetupConfig{
+		runtime:         "claude",
+		inferenceRegion: "europe-west1",
+		changedFlags:    map[string]bool{"runtime": true, "inference-region": true},
+	}, inherited, nil)
+	require.Len(t, warnings, 2)
+	assert.Contains(t, warnings[0], "runtime")
+	assert.Contains(t, warnings[1], "inference.region")
+}
+
+func TestPinnedSetupFlags_ExistingOverlayDoesNotHideParentPin(t *testing.T) {
+	t.Parallel()
+	base := []byte("version: \"1\"\nruntime: claude\n")
+	// An overlay that already pins runtime: claude must still warn when
+	// --runtime claude is passed: comparison is against the parent, not
+	// the overlay that setup is about to rewrite.
+	warnings := pinnedSetupFlags(githubSetupConfig{
+		runtime:      "claude",
+		changedFlags: map[string]bool{"runtime": true},
+	}, inheritedSetupReader(base), nil)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "runtime")
+}
+
+func TestPinnedSetupFlags_DifferingValueDoesNotWarn(t *testing.T) {
+	t.Parallel()
+	base := []byte("version: \"1\"\nruntime: claude\n")
+	assert.Empty(t, pinnedSetupFlags(githubSetupConfig{
+		runtime:      "pi",
+		changedFlags: map[string]bool{"runtime": true},
+	}, inheritedSetupReader(base), nil))
+}
+
+func TestPinnedSetupFlags_OmittedFlagDoesNotWarn(t *testing.T) {
+	t.Parallel()
+	inherited := inheritedSetupReader(nil)
+	assert.Empty(t, pinnedSetupFlags(githubSetupConfig{
+		runtime:      "claude",
+		changedFlags: map[string]bool{},
+	}, inherited, nil))
+	assert.Empty(t, pinnedSetupFlags(githubSetupConfig{
+		changedFlags: map[string]bool{"dry-run": true, "direct": true},
+	}, inherited, nil))
+}
+
+func TestPinnedSetupFlags_NormalizedScalarAndRoles(t *testing.T) {
+	t.Parallel()
+	inherited := inheritedSetupReader(nil)
+	// Whitespace around the CLI value is trimmed before comparison so a
+	// user who restates the compiled mint URL with padding still pins.
+	warnings := pinnedSetupFlags(githubSetupConfig{
+		mintURL:      " https://mint.fullsend.sh ",
+		changedFlags: map[string]bool{"mint-url": true},
+	}, inherited, nil)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "mint_url")
+
+	defaultRoles := config.PerRepoDefaultRoles()
+	warnings = pinnedSetupFlags(githubSetupConfig{
+		agents:       strings.Join(defaultRoles, ","),
+		changedFlags: map[string]bool{"agents": true},
+	}, inherited, defaultRoles)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "roles")
+
+	warnings = pinnedSetupFlags(githubSetupConfig{
+		agents:       "triage,coder",
+		changedFlags: map[string]bool{"agents": true},
+	}, inherited, []string{"triage", "coder"})
+	assert.Empty(t, warnings, "a roles list that differs from the inherited default is a real override")
+}
+
+func TestPinnedSetupFlags_StructuredOpenAI(t *testing.T) {
+	t.Parallel()
+	ids := config.OpenAIWIFConfig{
+		Audience:           "fullsend://acme",
+		IdentityProviderID: "idp_1",
+		ServiceAccountID:   "sa_1",
+	}
+	base := []byte("version: \"1\"\ninference:\n  openai:\n    audience: fullsend://acme\n    identity_provider_id: idp_1\n    service_account_id: sa_1\n")
+	inherited := inheritedSetupReader(base)
+
+	cfg := githubSetupConfig{
+		openaiAudience:           " fullsend://acme ",
+		openaiIdentityProviderID: "idp_1",
+		openaiServiceAccountID:   "sa_1",
+		changedFlags: map[string]bool{
+			"openai-audience":             true,
+			"openai-identity-provider-id": true,
+			"openai-service-account-id":   true,
+		},
+	}
+	warnings := pinnedSetupFlags(cfg, inherited, nil)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "inference.openai")
+
+	cfg.openaiAudience = "fullsend://other"
+	assert.Empty(t, pinnedSetupFlags(cfg, inherited, nil))
+	assert.Equal(t, ids, inherited.ConfigInferenceOpenAI())
+}
+
 func TestLoadExistingPerRepoConfig(t *testing.T) {
 	t.Parallel()
 	// Missing file: first install.
 	client := forge.NewFakeClient()
-	cfg, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	cfg, base, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.NoError(t, err)
 	assert.Nil(t, cfg)
+	assert.Nil(t, base)
 
 	// Org-style content in the per-repo path is refused, as is a read error.
 	client.FileContents = map[string][]byte{"acme/widget/.fullsend/config.yaml": []byte("version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\n")}
-	_, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	_, _, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a per-repo config")
 	client.GetFileContentErrors = map[string]error{"acme/widget/.fullsend/config.yaml": fmt.Errorf("github api: 500")}
-	_, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	_, _, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading existing .fullsend/config.yaml")
 }
@@ -1892,9 +2052,10 @@ agents:
 		"acme/widget/.fullsend/config.yaml":      []byte(overlayYAML),
 		"acme/widget/.fullsend/config.base.yaml": []byte(baseYAML),
 	}
-	cfg, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	cfg, base, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
+	assert.Equal(t, baseYAML, string(base))
 	// The merged agent list should carry the base's source on the lint entry.
 	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
@@ -1906,6 +2067,34 @@ agents:
 	require.NoError(t, cfg.Validate())
 }
 
+func TestLoadExistingPerRepoConfig_OverlayMissingBasePresent(t *testing.T) {
+	t.Parallel()
+	// The overlay was removed while config.base.yaml remains. The base
+	// must still be returned so a pin-warning comparison against the
+	// on-disk base layer (rather than compiled defaults) is possible,
+	// even though there is no overlay to parse.
+	baseYAML := "version: \"1\"\nruntime: claude\n"
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": []byte(baseYAML),
+	}
+	cfg, base, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.NoError(t, err)
+	assert.Nil(t, cfg)
+	assert.Equal(t, baseYAML, string(base))
+}
+
+func TestLoadExistingPerRepoConfig_OverlayMissingBaseReadError(t *testing.T) {
+	t.Parallel()
+	client := forge.NewFakeClient()
+	client.GetFileContentErrors = map[string]error{
+		"acme/widget/.fullsend/config.base.yaml": fmt.Errorf("github api: 500"),
+	}
+	_, _, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing .fullsend/config.base.yaml")
+}
+
 func TestLoadExistingPerRepoConfig_BaseReadError(t *testing.T) {
 	t.Parallel()
 	client := forge.NewFakeClient()
@@ -1915,7 +2104,7 @@ func TestLoadExistingPerRepoConfig_BaseReadError(t *testing.T) {
 	client.GetFileContentErrors = map[string]error{
 		"acme/widget/.fullsend/config.base.yaml": fmt.Errorf("github api: 500"),
 	}
-	_, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	_, _, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading existing .fullsend/config.base.yaml")
 }
