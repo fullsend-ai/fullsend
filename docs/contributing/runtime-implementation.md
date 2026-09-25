@@ -1147,7 +1147,9 @@ Three codex behaviours are load-bearing, and the adapter exists because of the f
    block.** The shared scripts block with `exit 1` plus `{"decision":"block","reason"}`, so
    forwarding them verbatim would make every PreToolUse hook advisory. The adapter translates a
    block to **exit 2 with the reason on stderr**. An exit 2 whose stderr is empty is *also* `Failed`,
-   so the reason is never allowed to be empty.
+   so the reason is never allowed to be empty. The process must still exit 2 when stderr is
+   unwritable: CPython 3.6+ overrides the status with 120 if a shutdown flush of stderr fails, and
+   120 is `Failed` (fail open).
 2. **Only a synchronous handler can apply control effects.** A handler with `"async": true` still
    runs and still reports, but its block decision is discarded — so the rendered `hooks.json` never
    carries an `async` key at all, and `TestCodexHooksJSON_NeverAsync` asserts its absence.

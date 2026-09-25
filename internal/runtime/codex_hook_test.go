@@ -708,6 +708,11 @@ sys.exit(0)`)
 // write would take the interpreter down with exit 1 — which codex records as
 // Failed, and a failed hook does not block. A block without its reason still
 // beats a block that never happens.
+//
+// Closing fd 2 *before* the interpreter starts is the real-world shape (a
+// parent that discarded stderr). Some CPython builds then set sys.stderr =
+// None; pyenv-built ones leave a live TextIOWrapper, whose shutdown flush
+// would override exit 2 with 120. block() must survive both.
 func TestCodexAdapter_BlocksWithUnwritableStderr(t *testing.T) {
 	h := newCodexAdapterHarness(t)
 	h.script("blocker.py", `print(json.dumps({"decision": "block", "reason": "nope"}))
@@ -726,6 +731,58 @@ sys.exit(1)`)
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, runErr, &exitErr)
 	assert.Equal(t, 2, exitErr.ExitCode(), "the block must still be an exit 2, reason or no reason")
+}
+
+// TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild pins the fail-closed
+// contract across CPython builds that disagree on a closed fd 2. Closing fd 2
+// after the interpreter has started forces a live TextIOWrapper around a
+// closed fd — the pyenv case that turns an unguarded block() into exit 120 —
+// so CI does not depend on how python3 was provisioned. The None and writable
+// cases are the already-passing paths that must not regress.
+func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup string
+		want  string
+	}{
+		{
+			name: "writable stderr",
+			want: "forced-stderr",
+		},
+		{
+			name:  "homebrew-style sys.stderr is None",
+			setup: "sys.stderr = None",
+		},
+		{
+			name:  "fd 2 closed after interpreter start",
+			setup: "os.close(2)",
+		},
+		{
+			name: "live TextIOWrapper around a closed fd",
+			setup: "import io\n" +
+				"fd = os.open(os.devnull, os.O_WRONLY)\n" +
+				"sys.stderr = io.TextIOWrapper(io.FileIO(fd, \"w\"), " +
+				"line_buffering=False, write_through=False)\n" +
+				"os.close(fd)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			src := "import importlib.util, os, sys\n" +
+				"spec = importlib.util.spec_from_file_location('adapter', " + pyStr(h.adapter) + ")\n" +
+				"m = importlib.util.module_from_spec(spec)\n" +
+				"spec.loader.exec_module(m)\n" +
+				tc.setup + "\n" +
+				"m.block('forced-stderr')\n"
+			out, err := exec.Command(h.python, "-c", src).CombinedOutput()
+			require.Error(t, err, "output: %s", out)
+			assert.Equal(t, 2, exitCodeOf(t, err), "output: %s", out)
+			if tc.want != "" {
+				assert.Contains(t, string(out), tc.want)
+			}
+		})
+	}
 }
 
 // TestCodexAdapter_LeavesTheHooksDirUntouched is the regression test for a

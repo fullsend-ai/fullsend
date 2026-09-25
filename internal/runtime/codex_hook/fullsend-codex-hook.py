@@ -352,11 +352,22 @@ def block(reason: str) -> None:
     The write is suppressed rather than allowed to raise: a stderr that is
     already a broken pipe would otherwise take the interpreter down with exit
     1, which codex records as `Failed` — and a failed hook does not block. A
-    block without its reason still beats a block that never happens."""
+    block without its reason still beats a block that never happens.
+
+    After writing, the stream is closed and detached. On interpreters that
+    leave a live TextIOWrapper around a closed fd 2 (pyenv-built CPython),
+    write() buffers, flush() raises EBADF, and CPython then re-flushes at
+    shutdown — that flush fails and overrides this exit 2 with 120, which
+    is also `Failed`. Closing and dropping the wrapper is what keeps the
+    block fail-closed on every CPython build.
+    """
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
     with contextlib.suppress(BaseException):
         sys.stderr.write(text[:MAX_TEXT])
         sys.stderr.flush()
+    with contextlib.suppress(BaseException):
+        sys.stderr.close()
+    sys.stderr = None
     sys.exit(2)
 
 
