@@ -193,9 +193,10 @@ func codexReadBounded(path string) ([]byte, error) {
 // codexRolloutEnvelopes are the top-level `type` values a codex rollout line
 // carries (codex-rs/thread-store). They are underscored, where the tee'd
 // `exec --json` stream uses dotted names, so the two never collide.
+// world_state is written by the pinned sandbox version (codex-cli 0.152.1).
 var codexRolloutEnvelopes = map[string]bool{
 	"session_meta": true, "response_item": true, "event_msg": true,
-	"turn_context": true, "compacted": true,
+	"turn_context": true, "compacted": true, "world_state": true,
 }
 
 // codexMaxArtifactBytes bounds what the artifact filters will read. A codex
