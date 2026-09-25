@@ -17,6 +17,7 @@ package statuscomment
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -338,6 +339,18 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 //     output), a new completion comment is posted so the user sees the
 //     result while reading forward.
 func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
+	return n.postCompletionWithDetail(ctx, description, status, detail, nil)
+}
+
+// PostCompletionWithChecks posts a completion comment and, for a pre-script
+// skip, renders the optional structured check output as one Markdown bullet
+// per check. The output is treated as untrusted script data and validated and
+// sanitized before it reaches the forge.
+func (n *Notifier) PostCompletionWithChecks(ctx context.Context, description, status, detail string, outputs map[string]string) error {
+	return n.postCompletionWithDetail(ctx, description, status, detail, outputs)
+}
+
+func (n *Notifier) postCompletionWithDetail(ctx context.Context, description, status, detail string, outputs map[string]string) error {
 	completionTime := n.now().UTC()
 
 	postComment := shouldPostCompletion(n.cfg.Comment.Completion, status)
@@ -369,7 +382,7 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 		return nil
 	}
 
-	body := n.buildCompletionBody(description, status, detail, completionTime)
+	body := n.buildCompletionBody(description, status, detail, completionTime, outputs)
 
 	if n.startCommentID != "" {
 		agentPosted, startIsLast, err := n.analyzeTimeline(ctx)
@@ -506,9 +519,14 @@ func (n *Notifier) buildStartBody(description string) string {
 	return b.String()
 }
 
-func (n *Notifier) buildCompletionBody(description, status, detail string, completionTime time.Time) string {
+func (n *Notifier) buildCompletionBody(description, status, detail string, completionTime time.Time, outputs map[string]string) string {
 	statusLabel := statusEmoji(status) + " " + capitalize(status)
-	if d := sanitizeDetail(detail); d != "" {
+	rawChecks := ""
+	if outputs != nil {
+		rawChecks = outputs["auto_merge_checks"]
+	}
+	structuredChecks := status == "skipped" && rawChecks != ""
+	if d := sanitizeDetail(detail); d != "" && !structuredChecks {
 		statusLabel += " (" + d + ")"
 	}
 
@@ -529,6 +547,11 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	if footer := BuildRunInfoFooter(n.runInfo); footer != "" {
 		b.WriteString("\n\n")
 		b.WriteString(footer)
+	}
+
+	if structured := renderPreScriptChecks(rawChecks); structured != "" {
+		b.WriteString("\n\n")
+		b.WriteString(structured)
 	}
 	return b.String()
 }
@@ -625,6 +648,57 @@ func capitalize(s string) string {
 // maxDetailLen caps the rendered status detail so a verbose script cannot
 // turn the one-line status comment into a wall of text.
 const maxDetailLen = 200
+
+const (
+	maxPreScriptChecks = 32
+	maxCheckFieldLen   = 240
+)
+
+type preScriptCheck struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+}
+
+// renderPreScriptChecks renders the structured check array emitted by an
+// agent pre-script. Invalid or oversized data is omitted rather than allowed
+// to change the lifecycle status comment. Each field is sanitized separately
+// so untrusted forge-derived text cannot inject Markdown, HTML, or markers.
+func renderPreScriptChecks(raw string) string {
+	if raw == "" || len(raw) > 100_000 {
+		return ""
+	}
+	var checks []preScriptCheck
+	if err := json.Unmarshal([]byte(raw), &checks); err != nil || len(checks) == 0 || len(checks) > maxPreScriptChecks {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Pre-script checks**")
+	for _, check := range checks {
+		if check.ID == "" || check.Label == "" || check.Detail == "" || len(check.ID) > maxCheckFieldLen || len(check.Label) > maxCheckFieldLen || len(check.Detail) > maxCheckFieldLen {
+			return ""
+		}
+		var icon string
+		switch check.Status {
+		case "pass":
+			icon = "✅"
+		case "not_applicable":
+			icon = "ℹ️"
+		case "fail":
+			icon = "❌"
+		default:
+			return ""
+		}
+		b.WriteString("\n- ")
+		b.WriteString(icon)
+		b.WriteByte(' ')
+		b.WriteString(sanitizeDetail(check.Label))
+		b.WriteString(" — ")
+		b.WriteString(sanitizeDetail(check.Detail))
+	}
+	return b.String()
+}
 
 // sanitizeDetail makes a status detail safe to embed in the completion
 // comment. The detail can originate in script output (the pre-script skip

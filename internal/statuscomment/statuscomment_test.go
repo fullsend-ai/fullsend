@@ -1498,6 +1498,36 @@ func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
 	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped (PR #123 already addresses this issue)")
 }
 
+func TestPostCompletionWithChecks_SkippedRendersOneBulletPerCheck(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	require.NoError(t, n.PostStart(context.Background(), "Auto Merge"))
+
+	checks := `[{"id":"head_sha","label":"Pull-request head SHA is valid","status":"pass","detail":"passed"},{"id":"review_summary","label":"Exact-head review summary is current","status":"fail","detail":"missing or stale"},{"id":"risk_ceiling","label":"Risk is within policy","status":"not_applicable","detail":"waiting for risk evidence"}]`
+	err := n.PostCompletionWithChecks(context.Background(), "Auto Merge", "skipped", "compact fallback", map[string]string{
+		"auto_merge_checks": checks,
+	})
+	require.NoError(t, err)
+
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "⏭️ Skipped")
+	assert.Contains(t, body, "**Pre-script checks**")
+	assert.Contains(t, body, "\n- ✅ Pull-request head SHA is valid — passed")
+	assert.Contains(t, body, "\n- ❌ Exact-head review summary is current — missing or stale")
+	assert.Contains(t, body, "\n- ℹ️ Risk is within policy — waiting for risk evidence")
+	assert.NotContains(t, body, "compact fallback")
+}
+
+func TestRenderPreScriptChecksRejectsUnsafeOrInvalidInput(t *testing.T) {
+	assert.Empty(t, renderPreScriptChecks(`[{"id":"x","label":"<b>bad</b>","status":"unknown","detail":"detail"}]`))
+	rendered := renderPreScriptChecks(`[{"id":"x","label":"label","status":"fail","detail":"<!-- marker -->"}]`)
+	assert.Contains(t, rendered, "&lt;!-- marker -->")
+	assert.NotContains(t, rendered, "<!-- marker -->")
+}
+
 func TestSanitizeDetail(t *testing.T) {
 	t.Parallel()
 

@@ -1222,6 +1222,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// than "success", with runSkipReason as the visible explanation.
 	var runSkipped bool
 	var runSkipReason string
+	var runSkipOutputs map[string]string
 
 	// aggMetrics accumulates behavioral metrics across retry iterations.
 	// Declared here so the status-notification defer (below) can read the
@@ -1261,8 +1262,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
-				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
-					printer.StepWarn("Failed to post completion status: " + err.Error())
+				var notifyErr error
+				if runSkipped {
+					notifyErr = notifier.PostCompletionWithChecks(dCtx, description, status, detail, runSkipOutputs)
+				} else {
+					notifyErr = notifier.PostCompletionWithDetail(dCtx, description, status, detail)
+				}
+				if notifyErr != nil {
+					printer.StepWarn("Failed to post completion status: " + notifyErr.Error())
 				}
 			}()
 		}
@@ -1676,6 +1683,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if preResult.Skipped {
 		runSkipped = true
 		runSkipReason = preResult.Reason
+		runSkipOutputs = preResult.Outputs
 		reason := preResult.Reason
 		if reason == "" {
 			reason = "no reason given"
