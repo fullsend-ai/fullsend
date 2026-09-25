@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getLatestPatchMatching } from "./mvb-satisfies";
+import { copyMarkdownSources } from "./markdown-sources";
 import {
   DOCS_URL_BASE,
   globalSeoHead,
@@ -171,8 +172,25 @@ export default defineConfig({
     if (!isIndexablePage(page)) return robotsHead;
     return [
       ...robotsHead,
-      ...pageSeoHead({ page, title, description, cleanUrls: siteConfig.cleanUrls }),
+      ...pageSeoHead({
+        page,
+        title,
+        description,
+        base: siteConfig.site.base,
+        cleanUrls: siteConfig.cleanUrls,
+      }),
     ];
+  },
+
+  // Emit the markdown source next to each HTML page so /docs/foo.md is a
+  // static file alongside /docs/foo.html (and /docs/foo with cleanUrls).
+  buildEnd(siteConfig) {
+    copyMarkdownSources({
+      pages: siteConfig.pages,
+      srcDir: siteConfig.srcDir,
+      outDir: siteConfig.outDir,
+      rewrites: siteConfig.rewrites.map,
+    });
   },
 
   srcExclude: ["**/agents/icons/**", "**/testing/**"],
@@ -275,6 +293,10 @@ export default defineConfig({
                 {
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
+                },
+                {
+                  text: "Chaining Follow-up Workflows",
+                  link: "/guides/user/chaining-follow-up-workflows",
                 },
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },

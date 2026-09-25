@@ -1681,14 +1681,14 @@ func TestStatus_GitLab_MissingSchedules_ReportsDrift(t *testing.T) {
 		switch d.Field {
 		case "slash-poll":
 			slashDrift = true
-			if d.Expected != "present" || d.Actual != "missing" {
-				t.Errorf("slash-poll drift: Expected=%q Actual=%q, want present/missing",
+			if d.Expected != "active" || d.Actual != "missing" {
+				t.Errorf("slash-poll drift: Expected=%q Actual=%q, want active/missing",
 					d.Expected, d.Actual)
 			}
 		case "event-poll":
 			eventDrift = true
-			if d.Expected != "present" || d.Actual != "missing" {
-				t.Errorf("event-poll drift: Expected=%q Actual=%q, want present/missing",
+			if d.Expected != "active" || d.Actual != "missing" {
+				t.Errorf("event-poll drift: Expected=%q Actual=%q, want active/missing",
 					d.Expected, d.Actual)
 			}
 		}

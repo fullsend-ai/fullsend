@@ -85,6 +85,7 @@ type Drift struct {
 type RepoStatus struct {
 	Owner           string  `json:"owner"`
 	Repo            string  `json:"repo"`
+	Forge           string  `json:"forge,omitempty"`
 	Installed       bool    `json:"installed"`
 	CurrentRef      string  `json:"current_ref,omitempty"`
 	ExpectedRef     string  `json:"expected_ref,omitempty"`
@@ -187,6 +188,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 				results[idx] = RepoStatus{
 					Owner: rr.Owner,
 					Repo:  rr.Repo,
+					Forge: cfg.Forge,
 					Error: fcErr.Error(),
 				}
 				return
@@ -225,6 +227,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	status := RepoStatus{
 		Owner:           owner,
 		Repo:            repo,
+		Forge:           cfg.Forge,
 		ExpectedRef:     cfg.FullsendRef,
 		ExpectedMintURL: cfg.MintURL,
 	}

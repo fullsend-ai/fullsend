@@ -387,3 +387,44 @@ func TestTriggerReachesTheHarness(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedPromptFetchesByNumberAndRepo pins #7563: a github.com URL in
+// a `gh` command is blocked by the SSRF PreToolUse hook (github.com does not
+// resolve in the sandbox and github-ro allowlists api.github.com only), so
+// the generated prompt must fetch by number and -R owner/repo instead.
+func TestGeneratedPromptFetchesByNumberAndRepo(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	md := string(fileByPath(t, files, "agents/lint-docs.md").Data)
+	wantCmd := `gh issue view "$ISSUE_NUMBER" -R "$REPO_FULL_NAME" --json title,body,labels`
+	if !strings.Contains(md, wantCmd) {
+		t.Errorf("generated prompt must fetch by number and repo; missing %q\n%s", wantCmd, md)
+	}
+	for _, banned := range []string{
+		`gh issue view "$ISSUE_URL"`,
+		`gh issue view "$GITHUB_ISSUE_URL"`,
+	} {
+		if strings.Contains(md, banned) {
+			t.Errorf("generated prompt still fetches by URL (%q), which the SSRF hook blocks", banned)
+		}
+	}
+
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if h.Env == nil || h.Env.Sandbox == nil {
+		t.Fatal("generated harness has no env.sandbox")
+	}
+	if got := h.Env.Sandbox["ISSUE_NUMBER"]; got != "${ISSUE_NUMBER}" {
+		t.Errorf("env.sandbox ISSUE_NUMBER = %q, want ${ISSUE_NUMBER}", got)
+	}
+	if got := h.Env.Sandbox["REPO_FULL_NAME"]; got != "${REPO_FULL_NAME}" {
+		t.Errorf("env.sandbox REPO_FULL_NAME = %q, want ${REPO_FULL_NAME}", got)
+	}
+}

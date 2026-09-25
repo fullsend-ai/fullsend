@@ -104,11 +104,19 @@ then converges the project:
   `FULLSEND_FORGE_TOKEN`, then provisions the built-in role credentials.
   When those roles are ready, the same unflagged install enables `enforced`
   mode and deletes `FULLSEND_FORGE_TOKEN`; see the [CLI reference](../../cli/repos.md#gitlab-bot-token)
-  for the role-credential options, emergency rollback, and protected-branch
-  caveat. Missing role credentials are drift while the migration gate is
-  `enforced`.
+  for the role-credential options, emergency rollback, and how install
+  grants the poller merge access on a protected default branch when
+  Developer-class merge/push is not already allowed. Missing role
+  credentials are drift while the migration gate is `enforced`.
+  `repos status` reports `protected-ref-pipeline` drift if that pipeline
+  permission is later removed.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
-  and `fullsend event poll` (at minutes 2, 17, 32, 47).
+  and `fullsend event poll` (at minutes 2, 17, 32, 47). Re-running install
+  reports either schedule as drift if it exists but has been disabled,
+  without changing it; pass `--reactivate-schedules` to have install
+  re-enable it. Leave that flag unset on repos using [Off-system
+  polling](#off-system-polling), where the schedules are disabled on
+  purpose.
 * Writes inference CI/CD variables when `--inference-project` is set.
 
 By default the scaffold lands as a merge request. Pass `--direct` to push
@@ -221,7 +229,15 @@ when the instance's schedule cadence is too slow, from cron on a VM, a
 Kubernetes CronJob, or any scheduler with network access to your GitLab
 instance. Off-system polling replaces the in-CI schedules: disable or delete
 both `fullsend slash poll` and `fullsend event poll` before enabling the
-external jobs, or slash commands can be dispatched twice.
+external jobs, or slash commands can be dispatched twice. Prefer disabling
+over deleting: a later `repos install` reports a disabled required
+schedule as drift but leaves it disabled unless you pass
+`--reactivate-schedules`, while a deleted required schedule is always
+recreated (active) on the next install, since a missing schedule is
+treated as repairable drift regardless of that flag. Do not pass
+`--reactivate-schedules` on repos using off-system polling — it opts back
+into re-enabling a disabled schedule, restoring in-CI dispatch and the
+double-dispatch risk this section describes.
 
 ```bash
 export FULLSEND_FORGE_TOKEN="<bot-pat>"   # not GITLAB_TOKEN
@@ -508,7 +524,11 @@ Confirm:
   show `slash-poll differs, event-poll differs` instead (JSON: `field`
   values `slash-poll`/`event-poll` with `actual` `missing`) — that is
   expected; verify off-system `fullsend poll` instead, per
-  [Off-system polling](#off-system-polling) above.
+  [Off-system polling](#off-system-polling) above. A schedule that exists
+  but has been intentionally disabled for off-system polling reports the
+  same way (JSON: `expected` `active`, `actual` `inactive`) and is
+  likewise expected — `repos install` does not clear this drift unless
+  `--reactivate-schedules` is passed.
 * **Pipeline schedules** — Settings → CI/CD → Pipeline schedules shows
   `fullsend slash poll` and `fullsend event poll`, both active. On
   GitLab.com Free, the schedules may run at most 24 times per day; verify
@@ -520,9 +540,12 @@ Confirm:
   `fullsend-coder` (plus any `fullsend-role-*` tokens). On GitLab.com Free
   with `--gitlab-bot-token`, expect the dedicated PAT owner's username
   instead; no project access token is created.
-* **CI/CD variables** — `FULLSEND_FORGE_TOKEN`, `FULLSEND_DISPATCH_SECRET`,
-  `FULLSEND_GCP_PROJECT_ID`, and `FULLSEND_GCP_WIF_PROVIDER` exist and are
-  protected. Role-aware installs also provision
+* **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
+  and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
+  `FULLSEND_FORGE_TOKEN` is expected too in `disabled`, `rollback`, or a
+  `migrating` install still waiting on role credentials — but not once the
+  repo cuts over to `enforced` mode, where the unflagged install deletes it
+  (see above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
   `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked, but GitLab

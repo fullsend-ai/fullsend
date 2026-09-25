@@ -413,8 +413,12 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	router := &stubRouter{stages: []string{"triage"}}
 	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error when pipeline creation fails")
+	}
+	if !strings.Contains(err.Error(), "dispatch") {
+		t.Errorf("error = %q, want dispatch failure", err)
 	}
 
 	if mc.pipelineCounter != 0 {
@@ -424,6 +428,9 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	got, ok := mc.getPollState()
 	if ok && got.LastPollAtFull != "" && got.LastPollAtFull != since.Format(time.RFC3339) {
 		t.Error("watermark should not be advanced when pipeline creation fails")
+	}
+	if !ok || got.FailedKeysFull["note-10"] != 1 {
+		t.Errorf("failed keys = %v, want note-10:1", got.FailedKeysFull)
 	}
 }
 
@@ -452,8 +459,9 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	router := &stubRouter{stages: []string{"triage"}}
 	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error when one dispatch fails")
 	}
 
 	// First event should have succeeded, second should have failed.
@@ -463,6 +471,13 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	// Dispatch record only for the successful event.
 	if len(p.dispatches) != 1 {
 		t.Errorf("expected 1 dispatch record, got %d", len(p.dispatches))
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be persisted after partial failure")
+	}
+	if got.FailedKeysFull["note-20"] != 1 {
+		t.Errorf("failed keys = %v, want note-20:1", got.FailedKeysFull)
 	}
 }
 

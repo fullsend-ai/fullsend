@@ -271,8 +271,62 @@ unlisted), exports `GITLAB_TOKEN` from that secret, and sets
 `approve_merge_request`. Role-aware modes also publish non-secret
 diagnostic env vars `FULLSEND_GITLAB_ROLE`,
 `FULLSEND_GITLAB_ROLE_SECRET`, and `FULLSEND_GITLAB_ROLE_SOURCE`.
-GitLab CI templates still read `FULLSEND_FORGE_TOKEN` for bootstrap API
-calls; the Go CLI overrides the token used for forge operations.
+GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) resolve
+credentials via `select-gitlab-role-token.sh`. In `fullsend-agent.yml`,
+the STAGE pipeline variable that would otherwise select the role is not
+yet authenticated when the job starts, so the *pre-verification*
+bootstrap calls (resource-group PUT, pipeline-metadata GET, bot-identity
+`/user` call) always resolve the Poller credential
+(`FULLSEND_GITLAB_POLLER_TOKEN`), regardless of stage — this avoids
+handing a forged dispatch a higher-privilege token before the
+pipeline-source/bot-identity check and HMAC verification pass. The
+template only re-resolves the credential for the job's actual stage —
+analyst stages use `FULLSEND_GITLAB_ANALYST_TOKEN`, coder stages use
+`FULLSEND_GITLAB_CODER_TOKEN` — once `DISPATCH_VERIFIED` is true: the
+`api`-sourced dispatch passed HMAC verification, or the gate mode is
+`disabled`/`rollback` (every role already shares one token, so an
+unverified STAGE grants no extra privilege there). In `migrating` or
+`enforced` mode, a missing `FULLSEND_DISPATCH_SECRET` now fails the job
+closed instead of silently skipping HMAC verification, and a
+`parent_pipeline`-sourced dispatch (legacy child-pipeline installs;
+current installs only ever dispatch via `api`) has no HMAC to check, so
+`DISPATCH_VERIFIED` stays false. In `migrating`/`enforced` mode the job
+now fails closed at that point (`exit 1`) rather than continuing on the
+lower-privileged Poller credential. An earlier revision of this template
+continued the job on the Poller credential instead, but that was not
+sufficient: `fullsend run` resolves its own GitLab credential internally
+via `gitlabroles.SelectAgent(agentName, harnessRole, os.Getenv)`
+(`internal/cli/gitlab_role.go`), using the same unverified `STAGE` value
+and reading role secrets directly from the process environment — a
+shell-local `DISPATCH_VERIFIED` flag has no effect on that Go-side
+selection, so continuing on the Poller credential in the shell did not
+stop the CLI from promoting the STAGE-derived role token anyway. Failing
+the whole job closed, before `fullsend run` or the `STAGE=fix`
+review-body pre-fetch below ever execute, is the only way to keep an
+unverified STAGE from reaching a role-specific credential. This closes a
+gap where a forged dispatch that spoofed the pipeline source (via an
+overridden `CI_API_V4_URL`, the documented residual risk in ADR 0067 and
+`fullsend-agent.yml`) could otherwise obtain a higher-privilege role
+token before any credential separation existed to matter. Poll jobs have
+no such pre-verification window and resolve `FULLSEND_GITLAB_POLLER_TOKEN`
+once. Disabled and rollback still read `FULLSEND_FORGE_TOKEN` throughout.
+The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` for forge
+operations.
+
+The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
+the prior review note, which is always authored by the Analyst identity
+(`STAGE=review` maps to the analyst role) regardless of which role is
+running the fix stage. It cannot reuse the fix stage's own
+`FULLSEND_JOB_TOKEN` (Coder) or the discarded Poller `BOT_USER_ID` for
+that author match — neither identity is the note's author once
+analyst/coder resolve to distinct tokens. This lookup only runs once
+STAGE has already been authenticated (or the gate mode makes the
+distinction moot), since the job would otherwise already have exited
+above, so `fullsend-agent.yml` temporarily re-sources
+`select-gitlab-role-token.sh` with `FULLSEND_JOB_AGENT=review` to resolve
+the Analyst identity for that one lookup, then restores
+`FULLSEND_JOB_TOKEN` to the Coder credential before `GITLAB_TOKEN`,
+`PUSH_TOKEN`, and the rest of the fix stage run.
 
 ## Unconfigured vs unregistered vs failed
 

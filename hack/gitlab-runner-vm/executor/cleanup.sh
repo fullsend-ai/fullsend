@@ -41,3 +41,7 @@ fi
 # even when the job id is missing. A leftover is also reaped by the next
 # job's prepare.sh.
 teardown_openshell_gateway || true
+
+# Reclaim unused images now that this job's container is gone. Bounded and
+# best-effort so cleanup still succeeds if prune is slow (#7663).
+prune_unused_podman_storage

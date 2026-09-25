@@ -101,6 +101,18 @@ env:
     JIRA_PROJECT: "MYPROJ"
 ```
 
+### Example: swap the validation schema
+
+Setting a single `validation_loop` field inherits the rest from the base
+(`script`, `max_iterations`, `feedback_mode`, `preflight_check`):
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
+
+validation_loop:
+  schema: schemas/my-custom-schema.json
+```
+
 ### What you can override
 
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
@@ -108,7 +120,7 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
-- **Replace validation or security config** — child replaces the entire block.
+- **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
 Base chains support up to 5 levels. Circular references are detected and rejected. Resolution order: base chain, child overrides, overlay resolution.
 

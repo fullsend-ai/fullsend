@@ -294,6 +294,30 @@ delete_branch() {
   echo "  Deleted branch $branch for $repo"
 }
 
+# fetch_contents_field prints one field of a contents API entry. gh api
+# prints the JSON error body on stdout when a call fails, so the output is
+# used only on success. A 404 means the file is absent: prints nothing and
+# returns 0. Any other failure warns and returns 1, so the caller counts the
+# repo as failed rather than guessing. Uses the same numeric-status idiom as
+# delete_branch.
+# Args: $1 = repo, $2 = path (may carry ?ref=), $3 = jq filter (e.g. .sha)
+fetch_contents_field() {
+  local repo="$1"
+  local path="$2"
+  local filter="$3"
+  local resp
+
+  if resp=$(gh api "repos/$ORG/$repo/contents/$path" --jq "$filter" 2>/dev/null); then
+    printf '%s' "$resp"
+    return 0
+  fi
+  if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "::warning::Failed to read $path for $repo" >&2
+  return 1
+}
+
 # close_pr_on_branch closes an open PR on the given branch and deletes the branch.
 close_pr_on_branch() {
   local repo="$1"
@@ -505,7 +529,10 @@ if [ -n "$ENABLED_REPOS" ]; then
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
-    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
+    if ! REMOTE_CONTENT=$(fetch_contents_field "$REPO" "$SHIM_PATH" .content); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -n "$REMOTE_CONTENT" ]; then
       # File exists — compare only the managed portion (from sentinel onward)
       # so user-added headers (e.g. license) do not trigger false drift.
@@ -645,7 +672,11 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Check if shim exists on default branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
+    if ! DEFAULT_FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
+    if [ -z "$DEFAULT_FILE_SHA" ]; then
       echo "✓ $REPO already unenrolled (no shim on default branch)"
       SKIPPED=$((SKIPPED + 1))
       continue
@@ -659,7 +690,10 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Fetch file SHA on the removal branch (required for DELETE).
-    FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if ! FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH?ref=$UNENROLL_BRANCH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -z "$FILE_SHA" ]; then
       echo "✓ $REPO shim already removed from branch"
       SKIPPED=$((SKIPPED + 1))

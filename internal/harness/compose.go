@@ -649,7 +649,8 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 //     child (concatenated; plugins must still have distinct basenames,
 //     which Validate enforces after the merge)
 //   - Maps (runner_env, privilege_levels): base merged with child; child keys win
-//   - Pointer structs (validation_loop, security): child replaces if non-nil
+//   - Pointer struct (validation_loop): field-level merge; child non-zero wins
+//   - Pointer struct (security): child replaces if non-nil
 //   - host_files: concatenated with last-writer-wins dedup by Dest
 //   - allowed_remote_resources: NOT merged (security; child must declare its own)
 //
@@ -788,15 +789,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// Pointer structs: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (avoids silently dropping inherited
-	// preflight checks — see #5074).
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
-	}
+	// ValidationLoop: field-level merge (child non-zero wins, base fills
+	// gaps). A child that sets only schema still inherits script,
+	// max_iterations, feedback_mode, and preflight_check from the base.
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 	// Security: child inherits base's config if nil. Note that a base harness
 	// (even integrity-pinned) could set fail_mode: open. Child authors must
 	// explicitly set their own security block to prevent inheriting a weaker posture.
@@ -2436,14 +2432,8 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// ValidationLoop: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (see #5074).
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
-	}
+	// ValidationLoop: field-level merge (child non-zero wins, base fills gaps).
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 }
 
 // FetchAgentHarness fetches a URL-sourced agent harness using the same

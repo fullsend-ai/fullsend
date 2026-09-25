@@ -48,8 +48,13 @@ Next:
   2. Test locally:
        fullsend run lint-docs --fullsend-dir .fullsend \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION
-     and GH_TOKEN. See docs/guides/user/running-agents-locally.md.
+     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
+     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP
+     credentials file — the harness copies that file into the sandbox, so the
+     run stops before it starts without it. GH_TOKEN must be a real token: a
+     connectivity check runs before the agent does. See
+     docs/guides/user/running-agents-locally.md.
   3. Commit .fullsend, then comment `/fs-lint-docs` on an issue or pull request to run it in CI.
 ```
 
@@ -295,6 +300,8 @@ post-script prints its comment instead of posting it:
 export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json
 POST_LINT_DOCS_DRY_RUN=1 \
   GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
+  ISSUE_NUMBER=99 \
+  REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
   ANTHROPIC_VERTEX_PROJECT_ID=... CLOUD_ML_REGION=us-east5 \
   fullsend run lint-docs --fullsend-dir .fullsend \

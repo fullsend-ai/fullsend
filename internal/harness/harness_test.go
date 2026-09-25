@@ -1790,6 +1790,96 @@ forge:
 	assert.Equal(t, "scripts/validate-gh.sh", h.ValidationLoop.Script)
 }
 
+func TestLoadWithOpts_ForgePartialValidationLoopInheritsScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: schemas/base.json
+forge:
+  github:
+    validation_loop:
+      schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/gh.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+}
+
+func TestLoadWithOpts_ForgePartialValidationLoopRejectsWithoutTopScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    validation_loop:
+      schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
+func TestLoadWithOpts_OverlayPartialValidationLoopRejectsWithoutTopScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  validation_loop:
+    schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
+func TestLoadWithOpts_OverlayPartialValidationLoopInheritsScript(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: schemas/base.json
+overlays:
+- when: 'runtime.forge == "github"'
+  validation_loop:
+    schema: schemas/gh.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/gh.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+}
+
 func TestLoadWithOpts_PlatformNotConfigured(t *testing.T) {
 	content := `
 agent: agents/test.md

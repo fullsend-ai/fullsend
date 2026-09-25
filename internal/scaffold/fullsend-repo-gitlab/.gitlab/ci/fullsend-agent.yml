@@ -132,7 +132,9 @@ stages:
         exit 1
       fi
 
-      # Bot token from FULLSEND_FORGE_TOKEN CI/CD variable (per ADR-0067).
+      # Bot token from the registered role credential when the
+      # migration gate is migrating/enforced; otherwise the shared
+      # FULLSEND_FORGE_TOKEN (ADR-0067 / gitlab-role-credentials.md).
 
       # Inference credential setup — write a file-based credential config
       # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
@@ -158,13 +160,25 @@ stages:
       INFERENCECRED
         export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"
         export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"
+        export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"
         export GCP_OIDC_TOKEN_FILE="${OIDC_TOKEN_FILE}"
       fi
 
-      if [ -z "${FULLSEND_FORGE_TOKEN:-}" ]; then
-        echo "ERROR: FULLSEND_FORGE_TOKEN is not set — ensure the protected CI/CD variable is configured"
-        exit 1
-      fi
+      # Bootstrap identity for the pre-verification calls below (resource
+      # group PUT, pipeline-metadata GET, bot-identity /user call): select
+      # the poller credential, not the STAGE-derived role. STAGE is an
+      # attacker-influenced pipeline variable at this point — the
+      # pipeline-source/bot-identity check and HMAC verification haven't
+      # run yet — so resolving a role token from it here would let a
+      # forged dispatch obtain the higher-privilege coder/analyst
+      # credential before it's authenticated. Poller's own responsibility
+      # already covers pipeline dispatch/resource-group management, and
+      # the script's existing gate-mode fallback (shared token in
+      # disabled/rollback, poller secret or shared in migrating, poller
+      # secret only in enforced) applies unchanged. The real per-STAGE
+      # role token is re-selected further down, once verification passes.
+      FULLSEND_JOB_KIND=poller
+      . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
       # Inference region — set when configured at install time
       if [ -n "${FULLSEND_GCP_REGION:-}" ]; then
@@ -176,7 +190,7 @@ stages:
       # Best-effort: failures don't block the job.
       curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
         -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-${STAGE}-${RESOURCE_KEY}" \
-        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "process_mode=newest_first" > /dev/null 2>&1 || true
 
@@ -196,7 +210,7 @@ stages:
       PIPELINE_RESPONSE=""
       if ! PIPELINE_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
         "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}" \
-        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+        -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
         echo "ERROR: Cannot fetch pipeline metadata — aborting (fail-closed)"
         exit 1
       fi
@@ -206,7 +220,7 @@ stages:
           BOT_USER_ID=""
           if BOT_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
             "${CI_API_V4_URL}/user" \
-            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
             BOT_USER_ID=$(printf '%s' "${BOT_RESPONSE}" | jq -r '.id // empty')
           fi
           if [ -z "${BOT_USER_ID}" ]; then
@@ -232,6 +246,20 @@ stages:
           ;;
       esac
 
+      # Gate mode — determines whether the STAGE-derived re-select below
+      # would actually hand out a more-privileged credential than the
+      # poller bootstrap token used above. In disabled/rollback every
+      # role resolves to the same shared FULLSEND_FORGE_TOKEN
+      # (select-gitlab-role-token.sh), so re-selecting by an unverified
+      # STAGE grants no extra privilege there. In migrating/enforced,
+      # analyst/coder tokens are meaningfully more privileged, so STAGE
+      # must be verified before the re-select is allowed to use it.
+      GITLAB_ROLE_MODE=$(printf '%s' "${FULLSEND_GITLAB_ROLE_MIGRATION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+      case "${GITLAB_ROLE_MODE}" in
+        migrating|enforced) ROLE_AWARE=true ;;
+        *) ROLE_AWARE=false ;;
+      esac
+
       # HMAC dispatch signature verification (#5572 mitigation #2) —
       # verifies the dispatch variables were signed by the poller using
       # a shared secret (FULLSEND_DISPATCH_SECRET). Reduces the residual
@@ -240,25 +268,91 @@ stages:
       # but the gating condition depends on PIPELINE_SOURCE (derived
       # from CI_API_V4_URL).
       # Only applies to API-triggered pipelines; parent_pipeline (MR
-      # dispatch) variables are set by the trusted parent job.
-      # If FULLSEND_DISPATCH_SECRET is not configured, verification is
-      # skipped (backward compat during migration).
+      # dispatch) variables are set by the trusted parent job and have no
+      # HMAC to check — DISPATCH_VERIFIED stays false for that path, so
+      # the job fails closed below in migrating/enforced mode (see that
+      # gate further down) instead of continuing.
       #
       # IMPORTANT: FULLSEND_DISPATCH_SECRET MUST be configured as a
       # protected, masked CI/CD variable. Pipeline variables can be
       # overridden by API-triggered pipelines — a protected variable
       # prevents override by non-Maintainer callers, and masking
-      # prevents exposure in job logs.
-      if [ "${PIPELINE_SOURCE}" = "api" ] && [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
-        if [ -z "${FULLSEND_DISPATCH_HMAC:-}" ]; then
-          echo "ERROR: FULLSEND_DISPATCH_HMAC missing — dispatch variables not signed (fail-closed)"
+      # prevents exposure in job logs. `repos install` auto-provisions
+      # this secret, so in migrating/enforced mode its absence now fails
+      # closed instead of silently skipping verification — an unsigned
+      # dispatch must never be trusted with a role-specific credential.
+      DISPATCH_VERIFIED=false
+      if [ "${PIPELINE_SOURCE}" = "api" ]; then
+        if [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
+          if [ -z "${FULLSEND_DISPATCH_HMAC:-}" ]; then
+            echo "ERROR: FULLSEND_DISPATCH_HMAC missing — dispatch variables not signed (fail-closed)"
+            exit 1
+          fi
+          HMAC_MESSAGE=$(printf 'ACTOR_ID=%s\nEVENT_PAYLOAD_B64=%s\nEVENT_TYPE=%s\nFULLSEND_POLL_JOB_URL=%s\nIS_FORK=%s\nMR_AUTHOR_ID=%s\nORIGINATING_URL=%s\nREPO_FULL_NAME=%s\nRESOURCE_KEY=%s\nSTAGE=%s\nSTATUS_IID=%s' "${ACTOR_ID:-}" "${EVENT_PAYLOAD_B64:-}" "${EVENT_TYPE:-}" "${FULLSEND_POLL_JOB_URL:-}" "${IS_FORK:-}" "${MR_AUTHOR_ID:-}" "${ORIGINATING_URL:-}" "${REPO_FULL_NAME:-}" "${RESOURCE_KEY:-}" "${STAGE:-}" "${STATUS_IID:-}")
+          if printf '%s' "${HMAC_MESSAGE}" | HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}" python3 -c 'import hmac,hashlib,os,sys; expected=hmac.new(os.environ["HMAC_SECRET"].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest(); sys.exit(0 if hmac.compare_digest(sys.argv[1],expected) else 1)' "${FULLSEND_DISPATCH_HMAC}"; then
+            DISPATCH_VERIFIED=true
+          else
+            echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)"
+            exit 1
+          fi
+        elif [ "${ROLE_AWARE}" = "true" ]; then
+          echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in migrating/enforced mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)"
           exit 1
+        else
+          echo "WARNING: FULLSEND_DISPATCH_SECRET not configured — dispatch variables unsigned (tolerated in disabled/rollback mode, where every role shares one token so an unverified STAGE grants no extra privilege)"
         fi
-        HMAC_MESSAGE=$(printf 'ACTOR_ID=%s\nEVENT_PAYLOAD_B64=%s\nEVENT_TYPE=%s\nFULLSEND_POLL_JOB_URL=%s\nIS_FORK=%s\nMR_AUTHOR_ID=%s\nORIGINATING_URL=%s\nREPO_FULL_NAME=%s\nRESOURCE_KEY=%s\nSTAGE=%s\nSTATUS_IID=%s' "${ACTOR_ID:-}" "${EVENT_PAYLOAD_B64:-}" "${EVENT_TYPE:-}" "${FULLSEND_POLL_JOB_URL:-}" "${IS_FORK:-}" "${MR_AUTHOR_ID:-}" "${ORIGINATING_URL:-}" "${REPO_FULL_NAME:-}" "${RESOURCE_KEY:-}" "${STAGE:-}" "${STATUS_IID:-}")
-        if ! printf '%s' "${HMAC_MESSAGE}" | HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}" python3 -c 'import hmac,hashlib,os,sys; expected=hmac.new(os.environ["HMAC_SECRET"].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest(); sys.exit(0 if hmac.compare_digest(sys.argv[1],expected) else 1)' "${FULLSEND_DISPATCH_HMAC}"; then
-          echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)"
-          exit 1
-        fi
+      fi
+
+      # Fail closed for the rest of the job when STAGE has not actually
+      # been authenticated and the gate mode makes the distinction matter
+      # (migrating/enforced). Do not treat a skipped or impossible check
+      # as a pass: a parent_pipeline dispatch (not HMAC-signed) or a
+      # missing dispatch secret (already fail-closed above) both leave
+      # DISPATCH_VERIFIED false.
+      #
+      # An earlier revision of this template continued the job on the
+      # poller bootstrap credential in this situation instead of exiting.
+      # That is not sufficient: the CLI invocation further down this
+      # script (and the STAGE=fix review-body pre-fetch's Analyst
+      # identity lookup below) still resolve a STAGE-derived role
+      # credential internally — the `fullsend` binary's run command calls
+      # gitlabroles.SelectAgent(agentName, harnessRole, os.Getenv)
+      # (internal/cli/gitlab_role.go) using the same unverified STAGE
+      # value and reading role secrets straight from the process
+      # environment. DISPATCH_VERIFIED is a shell-local variable the Go
+      # binary never consults, so continuing on the poller credential at
+      # the shell level did not stop those later calls from promoting the
+      # STAGE-derived analyst/coder token anyway. Exiting here, before any
+      # of that later code runs, is the only way to keep an unverified
+      # STAGE from ever reaching a role-specific credential.
+      if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]; then
+        echo "ERROR: STAGE could not be cryptographically verified — refusing to continue in role-aware mode rather than risk a role-specific credential being used downstream"
+        exit 1
+      fi
+
+      # Re-select FULLSEND_JOB_TOKEN for this stage's actual role —
+      # replacing the poller bootstrap identity used for the
+      # pre-verification calls above. Reachable only when STAGE has
+      # actually been authenticated (DISPATCH_VERIFIED, set only by a
+      # successful HMAC check above) or when the gate mode makes the
+      # distinction moot (disabled/rollback) — the fail-closed exit above
+      # already handles every other case.
+      if [ "${DISPATCH_VERIFIED}" = "true" ] || [ "${ROLE_AWARE}" = "false" ]; then
+        FULLSEND_JOB_KIND=agent
+        FULLSEND_JOB_AGENT="${STAGE:-}"
+        . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
+
+        # BOT_USER_ID/BOT_RESPONSE above were populated by the /user call
+        # made with the poller bootstrap token (line ~220), so they describe
+        # the poller's bot identity — GitLab assigns a distinct bot user per
+        # project access token (gitlab-role-credentials.md's "Identity
+        # continuity" section). Downstream blocks (review's prior-review
+        # lookup, the shared code|fix|review block's GIT_BOT_EMAIL, and
+        # fix's prior-review-body lookup) must reflect the just-reselected
+        # stage-role identity instead, so discard the poller-derived values
+        # here and let those blocks re-fetch /user with the new
+        # FULLSEND_JOB_TOKEN.
+        unset BOT_USER_ID BOT_RESPONSE
       fi
 
       # Read config from default branch (trusted), not MR source branch.
@@ -316,7 +410,7 @@ stages:
       # Read-only stages (retro, prioritize) are exempt to match GitHub
       # behavior where any closer may trigger retro.
       # Runs here (not in dispatch) because the Members API requires the
-      # bot PAT (from the FULLSEND_FORGE_TOKEN CI/CD variable).
+      # bot PAT (from FULLSEND_JOB_TOKEN, selected by role).
       # Fail-closed: API failure → access_level 0 → reject.
       # ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
       # for MR events or NoteAuthorID for issue/note events. Falls back to
@@ -330,7 +424,7 @@ stages:
         AUTHOR_ACCESS=0
         if MEMBER_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
           "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID:-${CI_PROJECT_ID}}/members/all/${AUTH_ACTOR_ID}" \
-          -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+          -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
           AUTHOR_ACCESS=$(echo "${MEMBER_RESPONSE}" | jq -r '.access_level // 0')
         else
           echo "WARNING: Members API call failed for user ${AUTH_ACTOR_ID} — defaulting to access_level=0 (fail-closed)"
@@ -354,7 +448,7 @@ stages:
 
       # Harness environment variables — export the forge token, runner
       # temp directory, and entity URL in the format that harnesses expect.
-      export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"
+      export GITLAB_TOKEN="${FULLSEND_JOB_TOKEN}"
 
       # RUNNER_TEMP — GitHub Actions sets this automatically; GitLab CI
       # does not. Harnesses that use ${RUNNER_TEMP} in host_files paths
@@ -416,7 +510,7 @@ stages:
         if [ -z "${BOT_ID}" ]; then
           if BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
             "${CI_API_V4_URL}/user" \
-            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
             BOT_ID=$(printf '%s' "${BOT_RESP}" | jq -r '.id // empty')
           fi
         fi
@@ -428,7 +522,7 @@ stages:
           while [ "${PAGE}" -le 20 ] && [ -z "${REVIEW_NOTE}" ]; do
             NOTES_PAGE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
               "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/notes?sort=desc&per_page=100&page=${PAGE}" \
-              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+              -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
               2>/dev/null || echo "[]")
 
             REVIEW_NOTE=$(printf '%s' "${NOTES_PAGE}" \
@@ -499,15 +593,17 @@ stages:
         if [ -z "${_BOT_USERNAME}" ]; then
           if _BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
             "${CI_API_V4_URL}/user" \
-            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
             _BOT_USERNAME=$(printf '%s' "${_BOT_RESP}" | jq -r '.username // empty')
           fi
         fi
 
-        # Push token — on GitLab the bot PAT (FULLSEND_FORGE_TOKEN)
-        # serves as both the API token and the push token. The
-        # post-script uses PUSH_TOKEN to push commits.
-        export PUSH_TOKEN="${FULLSEND_FORGE_TOKEN}"
+        # Push token — on GitLab the selected role PAT
+        # (FULLSEND_JOB_TOKEN) serves as both the API token and the
+        # push token. The post-script uses PUSH_TOKEN to push commits.
+        # fullsend run may later blank PUSH_TOKEN for roles without
+        # write_repository.
+        export PUSH_TOKEN="${FULLSEND_JOB_TOKEN}"
         export PUSH_TOKEN_SOURCE="pat"
 
         # Bot git identity — construct a noreply-style email from the
@@ -538,22 +634,47 @@ stages:
         # MR_IID is already set by the shared code|fix|review block above.
         REVIEW_BODY_FILE=$(mktemp)
 
-        # Reuse BOT_USER_ID from bot identity verification if available
-        # (api-triggered pipelines); otherwise resolve from the forge token.
-        # Bot username for TRIGGER_SOURCE uses _BOT_USERNAME from the
-        # shared code|fix|review block above.
-        BOT_ID="${BOT_USER_ID:-}"
-        if [ -z "${BOT_ID}" ]; then
+        # Review notes are authored by the analyst identity (STAGE=review
+        # maps to the analyst role in select-gitlab-role-token.sh) — never
+        # by the poller (BOT_USER_ID, populated from bot-identity
+        # verification) and never by this fix stage's own coder identity
+        # (FULLSEND_JOB_TOKEN). Reusing either would never match a real
+        # review note once analyst/coder resolve to distinct tokens
+        # (migrating with both secrets present, or enforced), silently
+        # breaking the bot-triggered review->fix loop. Resolve BOT_ID by
+        # temporarily re-selecting the analyst credential for this one
+        # lookup; FULLSEND_JOB_TOKEN is restored immediately after so
+        # GITLAB_TOKEN, PUSH_TOKEN, the TARGET_BRANCH lookup below, and
+        # the eventual git push still use this stage's own coder token.
+        BOT_ID=""
+        _FIX_STAGE_JOB_TOKEN="${FULLSEND_JOB_TOKEN}"
+        _FIX_STAGE_JOB_TOKEN_NAME="${FULLSEND_JOB_TOKEN_NAME:-}"
+        FULLSEND_JOB_KIND=agent
+        FULLSEND_JOB_AGENT=review
+        if . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"; then
           if BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
             "${CI_API_V4_URL}/user" \
-            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
             BOT_ID=$(printf '%s' "${BOT_RESP}" | jq -r '.id // empty')
-            # If the shared block's /user curl failed transiently,
-            # _BOT_USERNAME may still be empty — populate it now so
-            # TRIGGER_SOURCE resolves correctly.
-            if [ -z "${_BOT_USERNAME}" ]; then
-              _BOT_USERNAME=$(printf '%s' "${BOT_RESP}" | jq -r '.username // empty')
-            fi
+          fi
+        else
+          echo "WARNING: could not resolve the analyst identity for the review-note author lookup"
+        fi
+        FULLSEND_JOB_AGENT="${STAGE:-}"
+        export FULLSEND_JOB_TOKEN="${_FIX_STAGE_JOB_TOKEN}"
+        export FULLSEND_JOB_TOKEN_NAME="${_FIX_STAGE_JOB_TOKEN_NAME}"
+        unset _FIX_STAGE_JOB_TOKEN _FIX_STAGE_JOB_TOKEN_NAME
+
+        # Bot username for TRIGGER_SOURCE/GIT_BOT_EMAIL is this fix
+        # stage's own (coder) identity, normally set by the shared
+        # code|fix|review block above. If that block's /user call failed
+        # transiently, retry here with this stage's own (now-restored)
+        # token — not the analyst token used for BOT_ID above.
+        if [ -z "${_BOT_USERNAME}" ]; then
+          if _BOT_RESP=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "${CI_API_V4_URL}/user" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
+            _BOT_USERNAME=$(printf '%s' "${_BOT_RESP}" | jq -r '.username // empty')
           fi
         fi
 
@@ -564,7 +685,7 @@ stages:
           while [ "${PAGE}" -le 20 ] && [ -z "${REVIEW_NOTE}" ]; do
             NOTES_PAGE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
               "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/notes?sort=desc&per_page=100&page=${PAGE}" \
-              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+              -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
               2>/dev/null || echo "[]")
 
             REVIEW_NOTE=$(printf '%s' "${NOTES_PAGE}" \
@@ -639,7 +760,7 @@ stages:
         elif [ "${MR_IID}" != "0" ]; then
           TARGET_BRANCH=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
             "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" \
-            -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+            -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
             | jq -r '.target_branch // empty' 2>/dev/null || echo "")
           if [ -z "${TARGET_BRANCH}" ]; then
             TARGET_BRANCH="${CI_DEFAULT_BRANCH:-main}"
@@ -670,7 +791,7 @@ stages:
             if [ -n "${_NOTE_AUTHOR_ID}" ]; then
               TRIGGER_SOURCE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
                 "${CI_API_V4_URL}/users/${_NOTE_AUTHOR_ID}" \
-                -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+                -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
                 | jq -r '.username // empty' 2>/dev/null || echo "")
             fi
           fi
@@ -710,7 +831,7 @@ stages:
           while [ "${_COMMIT_PAGE}" -le 5 ]; do
             _COMMITS_BATCH=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
               "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}/commits?per_page=100&page=${_COMMIT_PAGE}" \
-              -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" 2>/dev/null || echo "[]")
+              -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" 2>/dev/null || echo "[]")
             _BATCH_FIX=$(printf '%s' "${_COMMITS_BATCH}" \
               | jq '[.[] | select(.author_name == "fullsend-fix")] | length' 2>/dev/null || echo "0")
             FIX_COMMITS=$((FIX_COMMITS + _BATCH_FIX))

@@ -51,6 +51,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [Configuring agent behavior](user/customizing-agents.md) — Harness composition, status notifications, disabling agents, and [GitHub Packages](user/customizing-agents.md#private-registries-and-github-packages)
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Build and register a custom agent from scratch
 - [Custom Agent Identity](user/custom-agent-identity.md) — Using a standalone mint for custom GitHub App identity
+- [Chaining Follow-up Workflows](user/chaining-follow-up-workflows.md) — Act on an agent's result from your own workflow with the job token
 - [Harness Field Reference](../reference/harness-reference.md) — Complete harness YAML field reference, merge rules, and resource referencing
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Custom Poller Example](user/custom-poller-example.md) — Create a custom poller workflow that invokes fullsend harness agents with a pre-computed matrix

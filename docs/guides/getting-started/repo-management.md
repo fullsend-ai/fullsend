@@ -228,7 +228,8 @@ Install runs in two phases:
    still updates the same initialization PR/MR rather than opening a
    separate upgrade PR. Repos whose workflow is already on the default
    branch are checked for component drift (workflow, thin callers,
-   variables, secrets, pipeline schedules), scaffold content drift,
+   variables, secrets, pipeline schedules, GitLab poller protected-ref
+   pipeline access), scaffold content drift,
    scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. Missing or drifted components are
    repaired automatically; ref updates are committed as PRs (or direct
@@ -256,6 +257,12 @@ Glob patterns are supported:
 ```bash
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
+
+A filtered install requires credentials only for the selected
+repositories' forges. With both GitHub and GitLab entries in the
+manifest, `fullsend repos install gallen/integration-service` needs
+`GITLAB_TOKEN` but not `GH_TOKEN`. Installing the whole manifest still
+requires credentials for every forge that has repos.
 
 Install a subset of agent roles (defaults to
 `triage,coder,review,fix,retro,prioritize`):
@@ -293,7 +300,8 @@ fullsend repos status -f repos.yaml --json
 ### Detecting and reconciling configuration drift
 
 Run `repos install` to detect and fix component drift (workflow, thin
-callers, variables, secrets, pipeline schedules), scaffold ref drift,
+callers, variables, secrets, pipeline schedules, GitLab poller
+protected-ref pipeline access), scaffold ref drift,
 scaffold content drift, and declared configuration-preset drift across
 all manifest repos:
 
@@ -308,14 +316,22 @@ fullsend repos install -f repos.yaml --dry-run
 ```
 
 The convergence phase checks all components (workflow, thin callers,
-variables, secrets, pipeline schedules), scaffold content drift, declared
-configuration-preset drift, and scaffold workflow refs against the
-manifest. Missing or drifted components are repaired automatically; a
-changed preset replaces only `.fullsend/config.base.yaml` and leaves the
-overlay intact. Ref updates are committed as PRs (or direct pushes with
+variables, secrets, pipeline schedules, GitLab poller protected-ref
+pipeline access — a disabled GitLab schedule is
+reported as drift and reactivated only when `--reactivate-schedules` is
+passed), scaffold content drift (including structural rewrites of
+`.gitlab/ci/fullsend-dispatch.yml` at an unchanged template ref),
+declared configuration-preset drift, and scaffold workflow refs against
+the manifest. Missing or drifted components are repaired automatically
+(disabled pipeline schedules are the exception — see above); a changed
+preset replaces only `.fullsend/config.base.yaml` and leaves the overlay
+intact. Ref updates are committed as PRs (or direct pushes with
 `--direct`).
 
-Use `repos status` for a read-only drift report (no changes applied):
+Use `repos status` for a read-only drift report (no changes applied). For
+GitLab repos, status also reports `protected-ref-pipeline` drift when the
+poller loses merge access to create pipelines on the protected default
+branch:
 
 ```bash
 fullsend repos status -f repos.yaml --json

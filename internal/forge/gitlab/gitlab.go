@@ -382,6 +382,17 @@ func (c *LiveClient) put(ctx context.Context, path string, body any) (*http.Resp
 	return resp, nil
 }
 
+func (c *LiveClient) patch(ctx context.Context, path string, body any) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodPatch, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated, http.StatusNoContent); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 func (c *LiveClient) delete_(ctx context.Context, path string) error {
 	resp, err := c.do(ctx, http.MethodDelete, path, nil)
 	if err != nil {

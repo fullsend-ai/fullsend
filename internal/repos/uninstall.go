@@ -67,10 +67,13 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/fullsend-dispatch.yml",
 	".gitlab/ci/fullsend-poll.yml",
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
+	".gitlab/ci/scripts/select-gitlab-role-token.sh",
 	".fullsend/config.yaml",
 }
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
+
+const gitlabRoleTokenScriptPath = ".gitlab/ci/scripts/select-gitlab-role-token.sh"
 
 // UninstallVarsForForge returns the CI/CD variable names to delete for
 // the given forge during uninstall.

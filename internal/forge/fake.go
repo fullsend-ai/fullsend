@@ -26,6 +26,7 @@ func NewFakeClient() *FakeClient {
 		ExistingBranches:      make(map[string]bool),
 		Refs:                  make(map[string]string),
 		ProtectedBranches:     make(map[string]bool),
+		ProtectedBranchRules:  make(map[string]*ProtectedBranchRule),
 		PipelineSchedules:     make(map[string][]PipelineSchedule),
 		ForceReachableCommits: make(map[string]int),
 	}
@@ -64,6 +65,12 @@ type VariableRecord struct {
 type PipelineCallRecord struct {
 	Owner, Repo, Ref string
 	Variables        map[string]string
+}
+
+// ProtectedBranchMergeGrantRecord records a GrantProtectedBranchMergeUser call.
+type ProtectedBranchMergeGrantRecord struct {
+	Owner, Repo, Branch string
+	UserID              int
 }
 
 // UpdatedCommentRecord records an issue comment update call.
@@ -212,7 +219,15 @@ type FakeClient struct {
 	// Protected branches for IsProtectedBranch.
 	ProtectedBranches map[string]bool // key: "owner/repo/branch"
 
-	// Pipeline schedules for List/Create/DeletePipelineSchedule.
+	// ProtectedBranchRules stores push/merge access for GetProtectedBranch.
+	// Key: "owner/repo/branch". When a key is present, the branch is
+	// protected even if ProtectedBranches is false.
+	ProtectedBranchRules map[string]*ProtectedBranchRule
+
+	// GrantedProtectedBranchMergeUsers records GrantProtectedBranchMergeUser calls.
+	GrantedProtectedBranchMergeUsers []ProtectedBranchMergeGrantRecord
+
+	// Pipeline schedules for List/Create/Delete/UpdatePipelineSchedule.
 	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
 
 	// Directory listings for ListDirectoryContents.
@@ -336,6 +351,7 @@ type FakeClient struct {
 	PipelineCalls           []PipelineCallRecord
 	CreatedSchedules        []PipelineSchedule
 	DeletedScheduleIDs      []int64
+	UpdatedScheduleIDs      []int64
 	UpdatedVariables        []VariableRecord
 	CreatedProtectedVars    []VariableRecord
 
@@ -2187,7 +2203,90 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 	}
 
 	key := owner + "/" + repo + "/" + branch
+	if _, ok := f.ProtectedBranchRules[key]; ok {
+		return true, nil
+	}
 	return f.ProtectedBranches[key], nil
+}
+
+func cloneProtectedBranchRule(rule *ProtectedBranchRule) *ProtectedBranchRule {
+	if rule == nil {
+		return nil
+	}
+	out := *rule
+	if rule.PushAccessLevels != nil {
+		out.PushAccessLevels = append([]ProtectedBranchAccess(nil), rule.PushAccessLevels...)
+	}
+	if rule.MergeAccessLevels != nil {
+		out.MergeAccessLevels = append([]ProtectedBranchAccess(nil), rule.MergeAccessLevels...)
+	}
+	return &out
+}
+
+func (f *FakeClient) GetProtectedBranch(_ context.Context, owner, repo, branch string) (*ProtectedBranchRule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetProtectedBranch"); e != nil {
+		return nil, e
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	if rule, ok := f.ProtectedBranchRules[key]; ok {
+		return cloneProtectedBranchRule(rule), nil
+	}
+	if f.ProtectedBranches[key] {
+		// Bool-only protection matches GitLab's default Protected preset:
+		// Developers can merge, so a Developer-level poller can create pipelines.
+		return &ProtectedBranchRule{
+			Name:              branch,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+		}, nil
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, repo, branch string, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.GrantedProtectedBranchMergeUsers = append(f.GrantedProtectedBranchMergeUsers, ProtectedBranchMergeGrantRecord{
+		Owner: owner, Repo: repo, Branch: branch, UserID: userID,
+	})
+
+	if e := f.err("GrantProtectedBranchMergeUser"); e != nil {
+		return e
+	}
+	if userID <= 0 {
+		return fmt.Errorf("grant protected branch merge: invalid user ID %d", userID)
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	rule := f.ProtectedBranchRules[key]
+	if rule == nil && f.ProtectedBranches[key] {
+		rule = &ProtectedBranchRule{
+			Name:              branch,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+		}
+	}
+	if rule == nil {
+		return fmt.Errorf("grant protected branch merge: %s is not protected", branch)
+	}
+	for _, l := range rule.MergeAccessLevels {
+		if l.UserID == userID {
+			f.ProtectedBranchRules[key] = rule
+			return nil
+		}
+	}
+	for _, l := range rule.PushAccessLevels {
+		if l.UserID == userID {
+			f.ProtectedBranchRules[key] = rule
+			return nil
+		}
+	}
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, ProtectedBranchAccess{UserID: userID})
+	f.ProtectedBranchRules[key] = rule
+	return nil
 }
 
 func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
@@ -2269,6 +2368,27 @@ func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 		f.PipelineSchedules[key] = filtered
 	}
 	return nil
+}
+
+func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdatePipelineSchedule"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo
+	schedules := f.PipelineSchedules[key]
+	for i := range schedules {
+		if schedules[i].ID == scheduleID {
+			schedules[i].Active = active
+			f.PipelineSchedules[key] = schedules
+			f.UpdatedScheduleIDs = append(f.UpdatedScheduleIDs, scheduleID)
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: pipeline schedule %d", ErrNotFound, scheduleID)
 }
 
 func (f *FakeClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]PipelineSchedule, error) {

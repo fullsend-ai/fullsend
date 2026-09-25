@@ -786,6 +786,11 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 		t.Fatalf("GitLabPerRepoFile() error = %v", err)
 	}
 	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
+	roleScript, err := scaffold.GitLabPerRepoFile(gitlabRoleTokenScriptPath)
+	if err != nil {
+		t.Fatalf("GitLabPerRepoFile() error = %v", err)
+	}
+	fc.FileContents["acme/api/"+gitlabRoleTokenScriptPath] = roleScript
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -1317,6 +1322,7 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".fullsend/config.yaml",
 	} {
 		if !paths[expected] {

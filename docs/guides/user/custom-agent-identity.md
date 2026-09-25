@@ -52,6 +52,9 @@ identity. You usually don't:
   what it does. A code-writing agent uses `role: coder`; a triage-like agent
   uses `role: triage`. The agent's own name lives in `name:` in its `.md`, not
   in `role:`.
+- **Acting on the result after the run** — to re-run CI jobs, dispatch a
+  workflow, deploy, and so on, chain your own workflow on the run's artifact;
+  see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).
 
 > **Rule of thumb.** Pick the built-in role whose permission ceiling is the
 > closest fit for what your agent needs to do. You only need your own mint when

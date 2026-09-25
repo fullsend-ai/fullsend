@@ -469,8 +469,9 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── sources .env.d/*.env files          │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
-│  │       FULLSEND_ITERATION_DEADLINE,       │                   │
-│  │       rewritten before every iteration)  │                   │
+│  │       FULLSEND_ITERATION_DEADLINE +      │                   │
+│  │       TRACEPARENT, rewritten before      │                   │
+│  │       every iteration)                   │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
@@ -518,7 +519,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ for i := 1; i <= max_iterations; i++ {   │                   │
 │  │   if i > 1: ClearIterationArtifacts      │                   │
 │  │     (sweep stray processes, clear output)│                   │
-│  │   write .fullsend/iteration.env deadline │                   │
+│  │   write iteration.env incl. TRACEPARENT  │                   │
 │  │   run agent                              │                   │
 │  │   if killed at timeout: sweep stray      │                   │
 │  │     processes (agent still runs, #7042)  │                   │

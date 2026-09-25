@@ -96,21 +96,23 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		Match:   workflowPresent,
 	})
 
-	// The trust script is sourced by the GitLab poll and agent templates,
-	// but is not itself the workflow component. Probe it separately so
-	// status and converge can detect and repair installs missing only this
-	// auxiliary scaffold file.
+	// Auxiliary GitLab scripts are sourced by the poll and agent templates
+	// but are not themselves the workflow component. Probe them separately
+	// so status and converge can detect and repair installs missing only
+	// these files.
 	if forgeName == ForgeGitLab {
-		_, err := client.GetFileContent(ctx, owner, repo, gitlabTrustScriptPath)
-		if err != nil && !forge.IsNotFound(err) {
-			return nil, fmt.Errorf("checking GitLab trust script: %w", err)
+		for _, path := range []string{gitlabTrustScriptPath, gitlabRoleTokenScriptPath} {
+			_, err := client.GetFileContent(ctx, owner, repo, path)
+			if err != nil && !forge.IsNotFound(err) {
+				return nil, fmt.Errorf("checking GitLab scaffold file %s: %w", path, err)
+			}
+			present := err == nil
+			results = append(results, ComponentStatus{
+				Name:    "scaffold:" + path,
+				Present: present,
+				Match:   present,
+			})
 		}
-		present := err == nil
-		results = append(results, ComponentStatus{
-			Name:    "scaffold:" + gitlabTrustScriptPath,
-			Present: present,
-			Match:   present,
-		})
 	}
 
 	// Per-repo thin callers (GitHub only).
@@ -199,16 +201,30 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 		for _, spec := range pipelineScheduleSpecs {
 			found := false
+			active := false
 			for _, s := range schedules {
 				if s.Description == spec.Description {
 					found = true
-					break
+					if s.Active {
+						active = true
+						break
+					}
+				}
+			}
+			actual := ""
+			if found {
+				if active {
+					actual = "active"
+				} else {
+					actual = "inactive"
 				}
 			}
 			results = append(results, ComponentStatus{
-				Name:    spec.ComponentName,
-				Present: found,
-				Match:   found,
+				Name:     spec.ComponentName,
+				Present:  found,
+				Expected: "active",
+				Actual:   actual,
+				Match:    found && active,
 			})
 		}
 	}

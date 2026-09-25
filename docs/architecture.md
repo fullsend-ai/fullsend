@@ -121,7 +121,9 @@ repo baseline and overrides)
   for the current field classifications and merge rules). Forge blocks
   inherit from top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md), superseded by
-  [ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
+  [ADR 0088](ADRs/0088-cel-guarded-overlays.md)). `validation_loop` fields
+  merge independently during `base:` composition and forge/overlay
+  resolution: child/forge non-zero values win, omitted fields inherit.
 - Unified env var delivery: a single `env:` key with `runner` and `sandbox`
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
@@ -265,6 +267,15 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `HasRole`, `RolePermissionsForLevel`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. Both the standalone and GCF mints call `ParseCustomRolePermissions` + `RegisterCustomRoleLevels` when `CUSTOM_ROLE_PERMISSIONS` is set. See the [standalone mint guide](guides/infrastructure/standalone-mint.md). For mintcore internals (platform accessors, load-site construction, WASM constraints), see the [mintcore contributor guide](contributing/mintcore.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
 - Named privilege levels: each role defines named levels as keys — `read` and `write` are mandatory, extra named levels are allowed on custom roles. The mint looks up the requested level on the role and returns the stored permission map, or fails if the level is missing. Built-in roles statically define both `read` (all values `"read"`) and `write` (the canonical ceiling) in the permission table. The mint API accepts an optional `level` field (default `write` — temporary compatibility default; a future release will change to `read`). Flat-format `CUSTOM_ROLE_PERMISSIONS` entries are stored as both `read` and `write` (same permissions for either level). Multi-level format uses a `levels` key for distinct per-level maps; extra named levels beyond read/write are permitted. The harness `privilege_levels` flag maps run-stages to levels; omitting it defaults to `write`, preserving backward compatibility for existing harness configurations ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
+- Adding a built-in agent role: a request must pass six tests — no path
+  without a role (the user's own workflow with the job token, or an existing
+  role), the agent's output needs the scope (no write access on control-plane
+  scopes such as `actions` or `workflows`), the App's name shows on the issue
+  or pull request where it acts, one purpose with named endpoints, every write
+  group justified in combination with the others, and a need beyond one
+  agent. Roles with two or more write groups get the closest review. A need
+  specific to one agent goes to a custom role on its author's standalone mint
+  ([ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -297,6 +308,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
   over other comments and content discovered during reconciliation remains a
   separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+- Dispatch runs no follow-up stage after an agent. Every run publishes the
+  `fullsend-<agent>` artifact, and users who want to act on a result chain
+  their own workflow on the shim's `workflow_run` event
+  ([guide](guides/user/chaining-follow-up-workflows.md),
+  [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
@@ -457,7 +473,7 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 
 **Open questions:**
 
-- How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests provide a framework for testing agent roles against controlled fixtures — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Promotion workflow remains open.)
+- How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests provide a framework for testing agent roles against controlled fixtures — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Admission criteria for a new built-in role are in [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md). Promotion workflow remains open.)
 - Does the registry include version information, so we can roll back to a previous agent configuration?
 - How does the registry relate to the policy store — does policy reference registry entries, or are they independent?
 

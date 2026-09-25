@@ -49,6 +49,15 @@ type ConvergeConfig struct {
 	// Force allows downgrades when upgrading refs.
 	Force bool
 
+	// ReactivateSchedules opts in to reactivating a required GitLab
+	// pipeline schedule (fullsend slash poll / fullsend event poll) that
+	// exists but is disabled. Defaults to false: operators running
+	// off-system polling (see "Off-system polling" in
+	// configuring-gitlab.md) intentionally disable these schedules, so a
+	// disabled-but-present schedule is reported as drift but left alone
+	// unless this is set.
+	ReactivateSchedules bool
+
 	// InferenceProject is the GCP project ID for inference.
 	InferenceProject string
 	// InferenceProjectNumber is the numeric GCP project number,
@@ -338,7 +347,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
 
-	repos, err := manifest.ExpandGlobs(ctx, clients)
+	repos, err := manifest.ExpandGlobsFor(ctx, clients, cfg.RepoFilter)
 	if err != nil {
 		return nil, fmt.Errorf("expanding globs: %w", err)
 	}
@@ -814,7 +823,7 @@ func convergeRepo(ctx context.Context,
 
 	// 2c: Converge pipeline schedules (GitLab only).
 	if resolved.Forge == ForgeGitLab {
-		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, progress)
+		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, cfg.ReactivateSchedules, progress)
 		cr.Actions = append(cr.Actions, schedActions...)
 	}
 
@@ -872,8 +881,9 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
 
-	// Track paths already covered by ref upgrade and root CI migration
-	// to avoid duplicates.
+	// Track paths already queued so missing-component repair and
+	// content-drift detection skip duplicates. GitLab rejects two
+	// create actions for the same path in one commit (#7645).
 	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
 	for _, f := range refFiles {
 		refFileSet[f.Path] = true
@@ -903,8 +913,11 @@ func convergeRepo(ctx context.Context,
 			cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(repairErrors, "; "))
 			return cr
 		}
-		allScaffoldFiles = append(allScaffoldFiles, repairFiles...)
 		for _, f := range repairFiles {
+			if refFileSet[f.Path] {
+				continue
+			}
+			allScaffoldFiles = append(allScaffoldFiles, f)
 			refFileSet[f.Path] = true
 		}
 	}
@@ -958,7 +971,12 @@ func convergeRepo(ctx context.Context,
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
 	// the next Converge run self-heals (writes become no-ops, commit retries).
+	// Collapse duplicate paths here so a future phase cannot re-queue a
+	// path already produced by ref-upgrade, root-CI migration, repair,
+	// content drift, or preset application. GitLab rejects two create
+	// actions for the same path in one commit (#7645, #7651).
 	if len(allScaffoldFiles) > 0 && !cfg.DryRun {
+		allScaffoldFiles = uniqueScaffoldFiles(allScaffoldFiles)
 		if err := commitScaffold(ctx, rr.Owner, rr.Repo, allScaffoldFiles, cfg.Direct, true); err != nil {
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "scaffold",
@@ -987,6 +1005,27 @@ func convergeRepo(ctx context.Context,
 	}
 
 	return cr
+}
+
+// uniqueScaffoldFiles collapses files so each path appears at most once.
+// The first entry wins, matching GitLab's commit builder (first actionable
+// entry) and protecting both forges from a duplicate-path commit batch.
+// Later converge phases that re-queue a path already produced by an
+// earlier phase are dropped rather than submitted as a second action.
+func uniqueScaffoldFiles(files []forge.TreeFile) []forge.TreeFile {
+	if len(files) < 2 {
+		return files
+	}
+	seen := make(map[string]struct{}, len(files))
+	out := make([]forge.TreeFile, 0, len(files))
+	for _, f := range files {
+		if _, dup := seen[f.Path]; dup {
+			continue
+		}
+		seen[f.Path] = struct{}{}
+		out = append(out, f)
+	}
+	return out
 }
 
 func gitlabRoleCredentialPresent(components []ComponentStatus) bool {
@@ -1158,18 +1197,29 @@ func convergeSecrets(ctx context.Context,
 	return actions
 }
 
-// convergeSchedules checks for missing pipeline schedules on GitLab
-// repos and creates them. This repairs the gap where a partial install
-// committed scaffold and variables but failed before schedule creation.
+// convergeSchedules checks for missing or inactive pipeline schedules on
+// GitLab repos and creates or reactivates them. This repairs the gap
+// where a partial install committed scaffold and variables but failed
+// before schedule creation, and the gap where a required schedule exists
+// but was disabled. Reactivating a disabled-but-present schedule is
+// opt-in via reactivate (see ConvergeConfig.ReactivateSchedules):
+// operators running off-system polling intentionally disable these
+// schedules, so by default a disabled schedule is only reported as
+// drift, not silently re-enabled.
 func convergeSchedules(ctx context.Context,
 	resolved ResolvedConfig,
 	components []ComponentStatus,
 	dryRun bool,
+	reactivate bool,
 	progress ProgressFunc) []ComponentAction {
 
 	var actions []ComponentAction
 
+	owner, repo := resolved.Owner, resolved.Repo
+	repoFullName := owner + "/" + repo
+
 	var missingSchedules []string
+	var inactiveSchedules []string
 	for _, c := range components {
 		if !strings.HasPrefix(c.Name, "schedule:") {
 			continue
@@ -1182,18 +1232,40 @@ func convergeSchedules(ctx context.Context,
 			})
 			continue
 		}
+		if c.Present {
+			inactiveSchedules = append(inactiveSchedules, c.Name)
+			continue
+		}
 		missingSchedules = append(missingSchedules, c.Name)
 	}
 
-	if len(missingSchedules) == 0 {
+	if !reactivate {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "none",
+				Detail:    fmt.Sprintf("%s is disabled; not reactivating (pass --reactivate-schedules to repair)", DriftFieldName(name)),
+			})
+			progress(repoFullName, "warning",
+				fmt.Sprintf("Schedule %s is disabled (not reactivating; pass --reactivate-schedules to repair)", DriftFieldName(name)))
+		}
+		inactiveSchedules = nil
+	}
+
+	if len(missingSchedules) == 0 && len(inactiveSchedules) == 0 {
 		return actions
 	}
 
-	owner, repo := resolved.Owner, resolved.Repo
 	client := resolved.ForgeConfig.Client
-	repoFullName := owner + "/" + repo
 
 	if dryRun {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "update",
+				Detail:    fmt.Sprintf("would activate %s", DriftFieldName(name)),
+			})
+		}
 		for _, name := range missingSchedules {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -1202,7 +1274,16 @@ func convergeSchedules(ctx context.Context,
 			})
 		}
 		progress(repoFullName, "dry-run",
-			fmt.Sprintf("Would create %d pipeline schedule(s)", len(missingSchedules)))
+			fmt.Sprintf("Would repair %d pipeline schedule(s)", len(missingSchedules)+len(inactiveSchedules)))
+		return actions
+	}
+
+	if len(inactiveSchedules) > 0 {
+		actions = append(actions, activatePipelineSchedules(
+			ctx, client, owner, repo, repoFullName, inactiveSchedules, progress)...)
+	}
+
+	if len(missingSchedules) == 0 {
 		return actions
 	}
 
@@ -1253,6 +1334,75 @@ func convergeSchedules(ctx context.Context,
 			fmt.Sprintf("Created pipeline schedule %s", DriftFieldName(name)))
 	}
 
+	return actions
+}
+
+// activatePipelineSchedules reactivates existing GitLab pipeline schedules
+// that match the given component names but are currently disabled.
+func activatePipelineSchedules(ctx context.Context, client forge.Client,
+	owner, repo, repoFullName string, inactiveSchedules []string,
+	progress ProgressFunc) []ComponentAction {
+
+	var actions []ComponentAction
+	schedules, listErr := client.ListPipelineSchedules(ctx, owner, repo)
+	if listErr != nil {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to list schedules for activation: %v", listErr),
+			})
+		}
+		return actions
+	}
+
+	for _, name := range inactiveSchedules {
+		spec := scheduleSpecByComponent(name)
+		if spec == nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("unrecognized schedule component %s", DriftFieldName(name)),
+			})
+			continue
+		}
+
+		foundInactive := false
+		var activateErr error
+		for _, s := range schedules {
+			if s.Description != spec.Description || s.Active {
+				continue
+			}
+			foundInactive = true
+			if err := client.UpdatePipelineSchedule(ctx, owner, repo, s.ID, true); err != nil {
+				activateErr = err
+				break
+			}
+		}
+		if !foundInactive {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("inactive %s not found on re-list", DriftFieldName(name)),
+			})
+			continue
+		}
+		if activateErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to activate %s: %v", DriftFieldName(name), activateErr),
+			})
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "update",
+			Detail:    fmt.Sprintf("activated %s", DriftFieldName(name)),
+		})
+		progress(repoFullName, "sync",
+			fmt.Sprintf("Activated pipeline schedule %s", DriftFieldName(name)))
+	}
 	return actions
 }
 
@@ -1585,7 +1735,12 @@ func convergeRefFiles(ctx context.Context,
 	newContent, changed = replaceShimRef(content, newRef, newTag, fc, resolved.Forge)
 
 	var files []forge.TreeFile
-	if changed {
+	// GitLab's dispatch file is the version-marker carrier, but
+	// replaceShimRef only rewrites the marker line and would leave a
+	// stale pre-#7322 body in place. The upgrade template collector
+	// writes the current dispatch file (and the other CI templates)
+	// wholesale, so skip the marker-only rewrite here.
+	if changed && resolved.Forge != ForgeGitLab {
 		files = append(files, forge.TreeFile{
 			Path:    workflowPath,
 			Content: newContent,
@@ -1594,9 +1749,10 @@ func convergeRefFiles(ctx context.Context,
 	}
 
 	// GitLab CI templates — include only when the ref changed.
+	// Unchanged-ref structural drift is repaired by convergeContentDriftFiles.
 	if changed && resolved.Forge == ForgeGitLab {
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), targetRef,
+			gitlabRunnerTags(cfg.Manifest), newRef, newTag,
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -1773,7 +1929,7 @@ func convergeScaffoldFiles(ctx context.Context,
 			templateRef = rref.ref
 		}
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), templateRef,
+			gitlabRunnerTags(cfg.Manifest), templateRef, "",
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{

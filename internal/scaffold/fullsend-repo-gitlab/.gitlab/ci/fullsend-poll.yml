@@ -117,12 +117,36 @@ spec:
         exit 1
       fi
 
-      # Bot token from FULLSEND_FORGE_TOKEN CI/CD variable (per ADR-0067).
+      # Bot token from the registered Poller credential when the
+      # migration gate is migrating/enforced; otherwise the shared
+      # FULLSEND_FORGE_TOKEN (ADR-0067 / gitlab-role-credentials.md).
+      FULLSEND_JOB_KIND=poller
+      . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
-      if [ -z "${FULLSEND_FORGE_TOKEN:-}" ]; then
-        echo "ERROR: FULLSEND_FORGE_TOKEN is not set — ensure the protected CI/CD variable is configured"
-        exit 1
-      fi
+      # Blank sibling role secrets for the rest of the poller job's
+      # lifetime. GitLab injects every registered role secret
+      # (FULLSEND_GITLAB_ANALYST_TOKEN, FULLSEND_GITLAB_CODER_TOKEN, any
+      # custom FULLSEND_GITLAB_ROLE_*_TOKEN) plus FULLSEND_FORGE_TOKEN
+      # into every protected-branch job regardless of which one this job
+      # selected above. Leaving them present would let anything later in
+      # this job (or a host-side pre/post-script that inherits the
+      # process environment) read a higher-privileged analyst/coder PAT
+      # directly, weakening the blast-radius goal of role separation —
+      # mirrors clearSiblingGitLabRoleSecrets in internal/cli/gitlab_role.go.
+      # select-gitlab-role-token.sh itself is left unchanged: the agent
+      # template still needs these siblings present until its own HMAC
+      # reselect and the STAGE=fix analyst-identity lookup.
+      _fs_poll_mode=$(printf '%s' "${FULLSEND_GITLAB_ROLE_MIGRATION:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+      case "${_fs_poll_mode}" in
+        migrating|enforced)
+          for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)$' || true); do
+            if [ "${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}" ]; then
+              unset "${_fs_sibling}"
+            fi
+          done
+          ;;
+      esac
+      unset _fs_poll_mode _fs_sibling
 
       # Validate FULLSEND_POLL_MODE before use in URLs and commands.
       case "${FULLSEND_POLL_MODE:-events}" in
@@ -144,7 +168,7 @@ spec:
       fi
       curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
         -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-poll-${FULLSEND_POLL_MODE:-events}" \
-        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "process_mode=${PROCESS_MODE}" > /dev/null 2>&1 || true
 

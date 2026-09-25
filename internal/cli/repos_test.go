@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -2158,6 +2160,7 @@ func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".fullsend/config.yaml",
 		".gitlab-ci.yml",
 	} {
@@ -2581,4 +2584,291 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantError)
 		})
 	}
+}
+
+const mixedForgeManifestYAML = `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+// filterForgeFactory returns a distinct client or error per forge name so
+// tests can prove unselected forges are never requested.
+type filterForgeFactory struct {
+	mu      sync.Mutex
+	clients map[string]forge.Client
+	errs    map[string]error
+	seen    []string
+}
+
+func (f *filterForgeFactory) ConfigFor(forgeName string) (repos.ForgeConfig, error) {
+	if forgeName == "" {
+		forgeName = repos.ForgeGitHub
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, forgeName)
+	if err := f.errs[forgeName]; err != nil {
+		return repos.ForgeConfig{}, err
+	}
+	client := f.clients[forgeName]
+	if client == nil {
+		return repos.ForgeConfig{}, fmt.Errorf("no test client for forge %q", forgeName)
+	}
+	cfg := repos.ForgeConfigFor(forgeName)
+	cfg.Client = client
+	return cfg, nil
+}
+
+func (f *filterForgeFactory) requested(forgeName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, name := range f.seen {
+		if name == forgeName {
+			return true
+		}
+	}
+	return false
+}
+
+func TestForgeListIncludesGitHub(t *testing.T) {
+	assert.False(t, forgeListIncludesGitHub(nil))
+	assert.False(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitHub}))
+	assert.True(t, forgeListIncludesGitHub([]string{""}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab, repos.ForgeGitHub}))
+}
+
+func TestCheckAllForgeScopes_SkipsUnselectedGitHub(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitLab})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_RequestsGitHubWhenSelected(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub, repos.ForgeGitLab})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestCheckAllForgeScopes_EmptyForges(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, nil)
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_GitHubClientSucceeds(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{InstallationToken: true},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.NoError(t, err)
+}
+
+func TestCheckAllForgeScopes_MissingScopes(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{TokenScopes: []string{"repo"}},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow")
+}
+
+func TestRunReposInstall_GitLabFilterSucceedsWithoutGitHubCreds(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"group/project"},
+		roles:                  []string{"triage"},
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	require.NoError(t, err, "GitLab-only filter must not fail when GitHub credentials are missing")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+// globForgeManifestYAML pairs a GitHub glob entry with a concrete GitLab
+// entry. A GitLab-only filtered install must not expand the GitHub glob
+// (which lists org repos via the GitHub API), since that would require
+// GH_TOKEN even though no GitHub repo is targeted.
+const globForgeManifestYAML = `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/*
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
+	manifestPath := writeTestManifest(t, globForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"group/project"},
+		roles:                  []string{"triage"},
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	// Without threading the repo filter into glob expansion, Converge
+	// would call ExpandGlobs unconditionally, which resolves the GitHub
+	// "acme/*" entry via clients.ConfigFor(ForgeGitHub) — hard-failing the
+	// whole install on the injected error even though no GitHub repo is
+	// targeted. (A separate, best-effort GitHub lookup for ref resolution
+	// also calls ConfigFor(GitHub) and tolerates its own error, so this
+	// test does not assert that GitHub is never requested at all — only
+	// that a GitHub credential failure must not block a GitLab-only
+	// install.)
+	require.NoError(t, err, "GitLab-only filter must not fail when the manifest's GitHub entry is a glob and GH_TOKEN is unavailable")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+func TestRunReposInstall_GitHubFilterDoesNotRequestGitLab(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: newInstalledFakeClientCLI("acme/api"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitLab: errors.New("gitlab client should not be requested"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"acme/api"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitLab))
+	assert.True(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestRunReposInstall_UnfilteredMixedManifestRequestsGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 1,
+		dryRun:      true,
+		testFactory: factory,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestRunReposUninstall_GitLabFilterDoesNotRequestGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	gl := forge.NewFakeClient()
+	gl.InstallationToken = true
+	gl.AuthenticatedUser = "fullsend-app[bot]"
+	gl.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	gl.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		gl.FileContents["group/project/"+p] = []byte("content")
+	}
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: gl,
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		dryRun:      true,
+		concurrency: 1,
+		testFactory: factory,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
 }

@@ -1561,6 +1561,7 @@ func TestFakeClient_CreateForkInOrg(t *testing.T) {
 func TestNewFakeClient_MapsInitialized(t *testing.T) {
 	fc := NewFakeClient()
 	assert.NotNil(t, fc.ProtectedBranches)
+	assert.NotNil(t, fc.ProtectedBranchRules)
 	assert.NotNil(t, fc.PipelineSchedules)
 }
 
@@ -1579,6 +1580,23 @@ func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
 	assert.Equal(t, "main", schedules[0].Ref)
 	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
 	assert.True(t, schedules[0].Active)
+
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", id, false)
+	require.NoError(t, err)
+	schedules, err = fc.ListPipelineSchedules(ctx, "org", "repo")
+	require.NoError(t, err)
+	require.Len(t, schedules, 1)
+	assert.False(t, schedules[0].Active)
+	assert.Equal(t, []int64{id}, fc.UpdatedScheduleIDs)
+
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", 999, true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	fc.Errors["UpdatePipelineSchedule"] = errors.New("api error")
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", id, true)
+	require.Error(t, err)
+	delete(fc.Errors, "UpdatePipelineSchedule")
 
 	err = fc.DeletePipelineSchedule(ctx, "org", "repo", id)
 	require.NoError(t, err)
@@ -1645,6 +1663,103 @@ func TestFakeClient_IsProtectedBranch(t *testing.T) {
 	protected, err = fc.IsProtectedBranch(ctx, "org", "repo", "dev")
 	require.NoError(t, err)
 	assert.False(t, protected)
+}
+
+func TestCloneProtectedBranchRule_Nil(t *testing.T) {
+	assert.Nil(t, cloneProtectedBranchRule(nil))
+}
+
+func TestFakeClient_GetProtectedBranch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	rule, err := fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.Nil(t, rule)
+
+	fc.ProtectedBranches["org/repo/main"] = true
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, 30, rule.MergeAccessLevels[0].AccessLevel)
+
+	fc.ProtectedBranchRules["org/repo/release"] = &ProtectedBranchRule{
+		Name:              "release",
+		MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "release")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	rule.MergeAccessLevels[0].AccessLevel = 0
+	rule2, err := fc.GetProtectedBranch(ctx, "org", "repo", "release")
+	require.NoError(t, err)
+	assert.Equal(t, 40, rule2.MergeAccessLevels[0].AccessLevel, "returned rule must be a copy")
+}
+
+func TestFakeClient_GrantProtectedBranchMergeUser(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not protected")
+
+	fc.ProtectedBranchRules["org/repo/main"] = &ProtectedBranchRule{
+		Name:              "main",
+		MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.NoError(t, err)
+	require.Len(t, fc.GrantedProtectedBranchMergeUsers, 2)
+	assert.Equal(t, 99, fc.GrantedProtectedBranchMergeUsers[1].UserID)
+
+	rule, err := fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	require.Len(t, rule.MergeAccessLevels, 2)
+	assert.Equal(t, 99, rule.MergeAccessLevels[1].UserID)
+
+	protected, err := fc.IsProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.True(t, protected)
+
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.NoError(t, err)
+
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 0)
+	require.Error(t, err)
+
+	fc.Errors["GrantProtectedBranchMergeUser"] = fmt.Errorf("denied")
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 7)
+	require.Error(t, err)
+	delete(fc.Errors, "GrantProtectedBranchMergeUser")
+
+	fc.Errors["GetProtectedBranch"] = fmt.Errorf("lookup failed")
+	_, err = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.Error(t, err)
+	delete(fc.Errors, "GetProtectedBranch")
+
+	fc.ProtectedBranches["org/repo/dev"] = true
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "dev", 8)
+	require.NoError(t, err)
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "dev")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	found := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.UserID == 8 {
+			found = true
+		}
+	}
+	assert.True(t, found)
+
+	fc.ProtectedBranchRules["org/repo/push"] = &ProtectedBranchRule{
+		Name:             "push",
+		PushAccessLevels: []ProtectedBranchAccess{{UserID: 9}},
+	}
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "push", 9)
+	require.NoError(t, err)
 }
 
 func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {

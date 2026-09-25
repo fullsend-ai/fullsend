@@ -18,6 +18,7 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 	}
 
 	for _, path := range expected {
@@ -192,8 +193,11 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "--event-type")
 	assert.NotContains(t, s, "--source-project")
 	assert.NotContains(t, s, "fullsend workspace prepare")
-	// Credential validation
-	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
+	// Credential selection uses the shared role-token helper.
+	assert.Contains(t, s, "select-gitlab-role-token.sh")
+	assert.Contains(t, s, "FULLSEND_JOB_KIND=agent")
+	assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`)
+	assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`)
 	// Bot identity verification uses server-side .source from Pipelines API
 	// (deny-by-default case statement, not forgeable CI_PIPELINE_SOURCE env var)
 	assert.Contains(t, s, `jq -r '.source // empty'`)
@@ -250,6 +254,109 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// tar extraction uses --no-same-owner for non-root containers (#6720)
 	assert.Contains(t, s, "tar --no-same-owner")
 	assert.NotContains(t, s, "tar xzf /tmp/fullsend.tar.gz")
+}
+
+// TestGitLabAgentTemplateBotIdentityNotLeakedPastRoleReselection guards
+// against the poller's bot identity (BOT_USER_ID/BOT_RESPONSE, populated
+// by the /user call made with the FULLSEND_JOB_KIND=poller bootstrap
+// token) leaking into downstream blocks after FULLSEND_JOB_KIND=agent
+// re-selects FULLSEND_JOB_TOKEN for the stage's actual role. GitLab
+// assigns a distinct bot user per project access token, so the poller's
+// identity differs from the analyst/coder identity used for the rest of
+// the job — reusing it would misattribute prior-review lookups and
+// GIT_BOT_EMAIL to the wrong bot user.
+func TestGitLabAgentTemplateBotIdentityNotLeakedPastRoleReselection(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	reselectIdx := strings.Index(s, "FULLSEND_JOB_KIND=agent")
+	require.NotEqual(t, -1, reselectIdx, "agent role re-selection marker not found")
+
+	unsetIdx := strings.Index(s, "unset BOT_USER_ID BOT_RESPONSE")
+	require.NotEqual(t, -1, unsetIdx,
+		"expected BOT_USER_ID/BOT_RESPONSE to be discarded after the stage-role re-selection")
+	assert.Greater(t, unsetIdx, reselectIdx,
+		"BOT_USER_ID/BOT_RESPONSE must be discarded after (not before) the agent role re-selection")
+
+	// Downstream reuse points must come after the discard, so they always
+	// re-fetch /user with the re-selected FULLSEND_JOB_TOKEN instead of
+	// silently reusing the poller's stale identity.
+	reviewReuseIdx := strings.Index(s, `BOT_ID="${BOT_USER_ID:-}"`)
+	require.NotEqual(t, -1, reviewReuseIdx, "review/fix-stage BOT_ID reuse not found")
+	assert.Greater(t, reviewReuseIdx, unsetIdx,
+		"prior-review lookups must run after the poller identity is discarded")
+
+	sharedBlockReuseIdx := strings.Index(s, `if [ -n "${BOT_RESPONSE:-}" ]; then`)
+	require.NotEqual(t, -1, sharedBlockReuseIdx, "shared-block BOT_RESPONSE reuse not found")
+	assert.Greater(t, sharedBlockReuseIdx, unsetIdx,
+		"shared code|fix|review block must run after the poller identity is discarded")
+}
+
+// TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch guards
+// against re-selecting the STAGE-derived role token (analyst/coder)
+// before the dispatch has actually been authenticated. A forged
+// dispatch that spoofs the pipeline source (via an overridden
+// CI_API_V4_URL) must not walk away with a higher-privilege credential
+// than the poller bootstrap token just because the HMAC check was
+// skipped rather than passed.
+func TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	// An explicit flag, set only on a successful HMAC check, gates the
+	// re-select — not merely "the HMAC block didn't error".
+	assert.Contains(t, s, "DISPATCH_VERIFIED=false")
+	assert.Contains(t, s, "DISPATCH_VERIFIED=true")
+
+	verifiedIdx := strings.Index(s, "DISPATCH_VERIFIED=true")
+	require.NotEqual(t, -1, verifiedIdx)
+	reselectGateIdx := strings.Index(s, `if [ "${DISPATCH_VERIFIED}" = "true" ]`)
+	require.NotEqual(t, -1, reselectGateIdx, "role reselect must be gated on DISPATCH_VERIFIED")
+	assert.Greater(t, reselectGateIdx, verifiedIdx,
+		"DISPATCH_VERIFIED must be computed before the reselect gate reads it")
+
+	// The reselect (FULLSEND_JOB_KIND=agent / FULLSEND_JOB_AGENT=STAGE)
+	// must be inside the DISPATCH_VERIFIED-gated branch, not unconditional.
+	stageReselectIdx := strings.Index(s, `FULLSEND_JOB_AGENT="${STAGE:-}"`)
+	require.NotEqual(t, -1, stageReselectIdx)
+	assert.Greater(t, stageReselectIdx, reselectGateIdx,
+		"STAGE-derived reselect must come after the DISPATCH_VERIFIED gate")
+
+	// A missing FULLSEND_DISPATCH_SECRET in migrating/enforced mode must
+	// fail closed, not silently skip verification (the pre-fix behavior).
+	assert.Contains(t, s, "ROLE_AWARE")
+	assert.Contains(t, s, "FULLSEND_GITLAB_ROLE_MIGRATION")
+	assert.Contains(t, s, "FULLSEND_DISPATCH_SECRET is not configured")
+	assert.NotContains(t, s, "verification is skipped (backward compat during migration)")
+
+	// An unverified STAGE in role-aware mode must abort the job outright
+	// (fail closed) rather than merely continuing on the poller bootstrap
+	// token — the CLI's own role selection (gitlabroles.SelectAgent) reads
+	// STAGE straight from the process environment and does not consult the
+	// shell-local DISPATCH_VERIFIED flag, so continuing on the poller
+	// credential at the shell level does not stop a later STAGE-derived
+	// re-select from happening anyway.
+	abortConditionIdx := strings.Index(s, `if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]`)
+	require.NotEqual(t, -1, abortConditionIdx, "fail-closed abort must check both ROLE_AWARE and DISPATCH_VERIFIED")
+	assert.Greater(t, abortConditionIdx, verifiedIdx,
+		"fail-closed abort must be checked after DISPATCH_VERIFIED has been computed")
+
+	assert.Contains(t, s, "STAGE could not be cryptographically verified")
+	abortErrIdx := strings.Index(s, "STAGE could not be cryptographically verified")
+	assert.Greater(t, abortErrIdx, abortConditionIdx,
+		"fail-closed error message must follow the fail-closed condition")
+
+	// The abort must actually exit the job, and must do so before either
+	// the STAGE-derived reselect gate or the reselect itself runs.
+	require.Less(t, abortConditionIdx, reselectGateIdx,
+		"fail-closed abort must precede the STAGE reselect gate")
+	require.Less(t, abortConditionIdx, stageReselectIdx,
+		"fail-closed abort must precede the STAGE-derived reselect")
+	abortBlock := s[abortConditionIdx:reselectGateIdx]
+	assert.Contains(t, abortBlock, "exit 1",
+		"fail-closed condition must actually abort the job, not just log")
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
@@ -312,6 +419,50 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	assert.NotContains(t, fixBlock, "export GITLAB_MR_URL")
 }
 
+// TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity guards
+// against the fix-stage review-note lookup resolving BOT_ID from this
+// stage's own (coder) identity or from the discarded poller identity.
+// Review notes are always authored by the analyst identity (STAGE=review
+// maps to analyst), so the fix stage must temporarily re-select the
+// analyst credential for this one lookup and restore its own
+// FULLSEND_JOB_TOKEN before GITLAB_TOKEN/PUSH_TOKEN and the rest of the
+// job run.
+func TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	fixOnlyMarker := `if [ "${STAGE}" = "fix" ]; then`
+	fixOnlyIdx := strings.Index(s, fixOnlyMarker)
+	require.NotEqual(t, -1, fixOnlyIdx, "fix-only block marker not found")
+	fixBlock := s[fixOnlyIdx:]
+	runIdx := strings.Index(fixBlock, "fullsend run")
+	require.NotEqual(t, -1, runIdx, "fullsend run not found after fix block")
+	fixBlock = fixBlock[:runIdx]
+
+	// The fix stage resolves the analyst identity (FULLSEND_JOB_AGENT=review)
+	// specifically for the review-note author lookup, not its own STAGE.
+	saveIdx := strings.Index(fixBlock, `_FIX_STAGE_JOB_TOKEN="${FULLSEND_JOB_TOKEN}"`)
+	require.NotEqual(t, -1, saveIdx, "fix stage must save its own token before switching identity")
+	agentReviewIdx := strings.Index(fixBlock, "FULLSEND_JOB_AGENT=review")
+	require.NotEqual(t, -1, agentReviewIdx, "fix stage must select the analyst (review) identity for BOT_ID")
+	assert.Greater(t, agentReviewIdx, saveIdx,
+		"own token must be saved before switching to the analyst identity")
+
+	restoreIdx := strings.Index(fixBlock, `export FULLSEND_JOB_TOKEN="${_FIX_STAGE_JOB_TOKEN}"`)
+	require.NotEqual(t, -1, restoreIdx, "fix stage must restore its own token after the analyst lookup")
+	assert.Greater(t, restoreIdx, agentReviewIdx,
+		"own token must be restored after the analyst identity is used")
+
+	// The restore must happen before the TARGET_BRANCH lookup (later in
+	// the same fix-only block), which authenticates with FULLSEND_JOB_TOKEN
+	// and must use the restored coder token, not the analyst token.
+	targetBranchIdx := strings.Index(fixBlock, "TARGET_BRANCH=$(curl")
+	require.NotEqual(t, -1, targetBranchIdx, "TARGET_BRANCH lookup not found in fix block")
+	assert.Greater(t, targetBranchIdx, restoreIdx,
+		"TARGET_BRANCH lookup must run after the coder token is restored")
+}
+
 // TestGitLabAgentTemplateSharedCodeFixEnvVars verifies that PUSH_TOKEN,
 // PUSH_TOKEN_SOURCE, GIT_BOT_EMAIL, MR_NUMBER, and GITLAB_MR_URL are
 // exported in the shared code|fix|review block so all three stages
@@ -327,9 +478,10 @@ func TestGitLabAgentTemplateSharedCodeFixEnvVars(t *testing.T) {
 	assert.Contains(t, s, `"${STAGE}" = "review"`)
 
 	// PUSH_TOKEN, PUSH_TOKEN_SOURCE, GIT_BOT_EMAIL are in the shared block
-	assert.Contains(t, s, "export PUSH_TOKEN")
+	assert.Contains(t, s, `export PUSH_TOKEN="${FULLSEND_JOB_TOKEN}"`)
 	assert.Contains(t, s, "export PUSH_TOKEN_SOURCE")
 	assert.Contains(t, s, "export GIT_BOT_EMAIL")
+	assert.Contains(t, s, `export GITLAB_TOKEN="${FULLSEND_JOB_TOKEN}"`)
 
 	// MR_NUMBER and GITLAB_MR_URL are in the shared block
 	assert.Contains(t, s, "export MR_NUMBER")
@@ -428,7 +580,8 @@ func TestGitLabAgentTemplateCredentialValidation(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "CI_DEBUG_TRACE")
-	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
+	assert.Contains(t, s, "select-gitlab-role-token.sh")
+	assert.Contains(t, s, "FULLSEND_JOB_KIND=agent")
 	// Inference WIF setup is unconditional when FULLSEND_GCP_WIF_PROVIDER is set
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER")
 }
@@ -441,8 +594,11 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, "fullsend poll")
 	assert.Contains(t, s, "schedule")
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
-	// Credential validation
-	assert.Contains(t, s, "FULLSEND_FORGE_TOKEN is not set")
+	// Credential selection uses the shared role-token helper.
+	assert.Contains(t, s, "select-gitlab-role-token.sh")
+	assert.Contains(t, s, "FULLSEND_JOB_KIND=poller")
+	assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`)
+	assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`)
 	// Defaults to CI_SERVER_URL, not hardcoded gitlab.com
 	assert.Contains(t, s, "CI_SERVER_URL")
 	assert.NotContains(t, s, "https://gitlab.com")
@@ -474,6 +630,39 @@ func TestGitLabPollContent(t *testing.T) {
 	// tar extraction uses --no-same-owner for non-root containers (#6720)
 	assert.Contains(t, s, "tar --no-same-owner")
 	assert.NotContains(t, s, "tar xzf /tmp/fullsend.tar.gz")
+}
+
+// TestGitLabPollBlanksSiblingRoleSecrets guards against the poller job
+// leaving higher-privileged analyst/coder PATs (or a custom
+// FULLSEND_GITLAB_ROLE_*_TOKEN, or FULLSEND_FORGE_TOKEN once unused) sitting
+// in the process environment for its full lifetime after
+// select-gitlab-role-token.sh selects the poller credential. Mirrors
+// clearSiblingGitLabRoleSecrets in internal/cli/gitlab_role.go, applied
+// directly in the template rather than in the shared helper script (the
+// agent template still needs those siblings present until its own HMAC
+// reselect and the STAGE=fix analyst-identity lookup).
+func TestGitLabPollBlanksSiblingRoleSecrets(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-poll.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	selectIdx := strings.Index(s, "select-gitlab-role-token.sh")
+	require.NotEqual(t, -1, selectIdx, "expected select-gitlab-role-token.sh to be sourced")
+	unsetIdx := strings.Index(s, "unset \"${_fs_sibling}\"")
+	require.NotEqual(t, -1, unsetIdx, "expected sibling-secret unset loop")
+	pollIdx := strings.Index(s, "fullsend poll \\")
+	require.NotEqual(t, -1, pollIdx, "expected fullsend poll invocation")
+
+	assert.Less(t, selectIdx, unsetIdx, "sibling secrets must be blanked after role selection")
+	assert.Less(t, unsetIdx, pollIdx, "sibling secrets must be blanked before running fullsend poll")
+
+	// Only unset for migrating/enforced; disabled/rollback share one token
+	// across every role so there is nothing to blank.
+	assert.Contains(t, s, "migrating|enforced")
+	// Covers the builtin roles, any custom registered role, and the
+	// shared fallback token — but never the credential this job selected.
+	assert.Contains(t, s, "FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)")
+	assert.Contains(t, s, `"${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}"`)
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {
@@ -762,6 +951,38 @@ func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
 	}
 }
 
+func TestGitLabTemplatesSourceRoleTokenHelper(t *testing.T) {
+	for _, path := range []string{
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/fullsend-agent.yml",
+	} {
+		content, err := GitLabPerRepoFile(path)
+		require.NoError(t, err, path)
+		s := string(content)
+		assert.Contains(t, s, "select-gitlab-role-token.sh", path)
+		assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`, path)
+		assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`, path)
+		assert.NotContains(t, s, `export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"`, path)
+		assert.NotContains(t, s, `export PUSH_TOKEN="${FULLSEND_FORGE_TOKEN}"`, path)
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_IncludesRoleTokenScript(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+	var found bool
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/scripts/select-gitlab-role-token.sh" {
+			found = true
+			assert.Contains(t, string(f.Content), "FULLSEND_GITLAB_POLLER_TOKEN")
+			assert.Contains(t, string(f.Content), "FULLSEND_GITLAB_ANALYST_TOKEN")
+			assert.Contains(t, string(f.Content), "FULLSEND_GITLAB_CODER_TOKEN")
+			break
+		}
+	}
+	assert.True(t, found, "install files must include select-gitlab-role-token.sh")
+}
+
 func TestGitLabNoPerStageTemplates(t *testing.T) {
 	perStageFiles := []string{
 		".gitlab/ci/fullsend-review.yml",
@@ -775,4 +996,28 @@ func TestGitLabNoPerStageTemplates(t *testing.T) {
 		_, err := GitLabPerRepoFile(path)
 		assert.Error(t, err, "per-stage template %s should not exist — use fullsend-agent.yml", path)
 	}
+}
+
+// TestGitLabAgentTemplateExportsGoogleCloudProject guards the Vertex ADC
+// contract for Pi's google-vertex (Gemini) provider. GitHub Actions gets
+// GOOGLE_CLOUD_PROJECT from google-github-actions/auth; the GitLab scaffold
+// does a manual WIF exchange and must export it itself. Claude-on-Vertex
+// still uses ANTHROPIC_VERTEX_PROJECT_ID; Pi only maps that onto
+// GOOGLE_CLOUD_PROJECT on the anthropic-vertex path (#7577).
+func TestGitLabAgentTemplateExportsGoogleCloudProject(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.Contains(t, s, `export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"`)
+	assert.Contains(t, s, `export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"`)
+	assert.Contains(t, s, `export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"`)
+	assert.Contains(t, s, `export CLOUD_ML_REGION="${FULLSEND_GCP_REGION}"`)
+
+	projectIdx := strings.Index(s, `export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"`)
+	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
+	require.Greater(t, projectIdx, 0, "GOOGLE_CLOUD_PROJECT export must exist")
+	require.Greater(t, runIdx, 0, "fullsend run must exist")
+	assert.Less(t, projectIdx, runIdx,
+		"GOOGLE_CLOUD_PROJECT must be exported before fullsend run is invoked")
 }

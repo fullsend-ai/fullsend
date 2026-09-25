@@ -440,16 +440,17 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 // reposInstallConfig holds flags and test overrides for repos install.
 type reposInstallConfig struct {
 	// Core flags
-	manifest     string
-	dryRun       bool
-	repoFilter   []string
-	concurrency  int
-	roles        []string
-	rolesChanged bool
-	direct       bool
-	force        bool
-	gitlabToken  string
-	forge        string
+	manifest            string
+	dryRun              bool
+	repoFilter          []string
+	concurrency         int
+	roles               []string
+	rolesChanged        bool
+	direct              bool
+	force               bool
+	reactivateSchedules bool
+	gitlabToken         string
+	forge               string
 
 	// GCP credentials (install-time only)
 	inferenceProject       string
@@ -488,6 +489,7 @@ type reposInstallConfig struct {
 
 	// Test overrides
 	testClient               forge.Client
+	testFactory              repos.ForgeClientFactory
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
 }
@@ -504,13 +506,16 @@ For repos not yet in the manifest, adds them (requires --forge). For repos
 whose shim workflow is not yet on the default branch, scaffolds workflow
 files and writes variables/secrets onto the initialization branch, including
 re-runs while an initialization PR/MR is still open. For repos whose workflow
-is already on the default branch, reconciles variable drift, declared
-configuration-preset drift against .fullsend/config.base.yaml, and upgrades
-scaffold refs to match the manifest.
+is already on the default branch, reconciles variable drift, disabled GitLab
+pipeline schedules (reported as drift; reactivated only when
+--reactivate-schedules is passed), declared configuration-preset drift
+against .fullsend/config.base.yaml, and upgrades scaffold refs to match
+the manifest.
 
 When repos are specified as positional arguments, only those repos are
 processed. Glob patterns (e.g. "acme/*") are matched against manifest
 entries. When no repos are specified, all manifest repos are converged.
+Credentials are required only for the forges of the selected repos.
 
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
@@ -536,6 +541,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
+	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
@@ -661,9 +667,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
+	switch {
+	case opts.testFactory != nil:
+		clients = opts.testFactory
+	case opts.testClient != nil:
 		clients = newSingleClientFactory(opts.testClient)
-	} else {
+	default:
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
@@ -816,7 +825,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
-	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
+	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("determining targeted forges: %w", err)
+	}
+	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
 		return err
 	}
 
@@ -873,9 +886,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	// Resolve the review app client ID for provenance validation.
 	// Best-effort: a missing client ID does not block installation.
+	// Skip the GitHub lookup when this run does not target any GitHub repo.
 	var reviewAppClientID string
-	if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
-		reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+	if forgeListIncludesGitHub(targetedForges) {
+		if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
+			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+		}
 	}
 
 	convergeCfg := repos.ConvergeConfig{
@@ -889,6 +905,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		UpstreamTag:            upstreamTag,
 		Direct:                 opts.direct,
 		Force:                  opts.force,
+		ReactivateSchedules:    opts.reactivateSchedules,
 		InferenceProject:       opts.inferenceProject,
 		InferenceProjectNumber: opts.inferenceProjectNumber,
 		InferenceRegion:        opts.inferenceRegion,
@@ -1219,6 +1236,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				roleFailedRepos = append(roleFailedRepos, item.r)
 			}
+			if item.r.Error != nil {
+				continue
+			}
+			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+			}
 		}
 	}
 
@@ -1259,6 +1288,7 @@ type reposUninstallConfig struct {
 	gitlabToken   string
 
 	testClient       forge.Client
+	testFactory      repos.ForgeClientFactory
 	testGitLabTokens repos.ProjectAccessTokenClient
 }
 
@@ -1359,9 +1389,12 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	}
 
 	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
+	switch {
+	case opts.testFactory != nil:
+		clients = opts.testFactory
+	case opts.testClient != nil:
 		clients = newSingleClientFactory(opts.testClient)
-	} else {
+	default:
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
@@ -1403,7 +1436,11 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	var succeededRepos []string
 	var teardownFailed int
 	if !opts.manifestOnly {
-		if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
+		targetedForges, err := manifest.DistinctForgesFor(concreteRepos)
+		if err != nil {
+			return fmt.Errorf("determining targeted forges: %w", err)
+		}
+		if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
 			return err
 		}
 
@@ -1527,11 +1564,21 @@ func confirmBulkAction(printer *ui.Printer, action string, patterns []string, ma
 	return nil
 }
 
-// checkAllForgeScopes validates GitHub token permissions for forges used
-// in the manifest. Only GitHub forges are checked because scope
-// introspection is not supported by other forge providers.
-func checkAllForgeScopes(ctx context.Context, m *repos.Manifest, clients repos.ForgeClientFactory, printer *ui.Printer) error {
-	for _, forgeName := range m.DistinctForges() {
+func forgeListIncludesGitHub(forges []string) bool {
+	for _, forgeName := range forges {
+		if forgeName == "" || forgeName == repos.ForgeGitHub {
+			return true
+		}
+	}
+	return false
+}
+
+// checkAllForgeScopes validates GitHub token permissions for the given
+// forges. Only GitHub forges are checked because scope introspection is
+// not supported by other forge providers. Callers must pass the forges
+// actually targeted by the operation, not every forge in the manifest.
+func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer, forges []string) error {
+	for _, forgeName := range forges {
 		if forgeName != "" && forgeName != repos.ForgeGitHub {
 			continue
 		}

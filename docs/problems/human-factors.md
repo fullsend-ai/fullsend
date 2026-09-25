@@ -140,7 +140,7 @@ The practical response is to use agents to help with triage and disposition — 
 
 This evaluator role maps directly to the concept of "taste" in software: the judgment that can't be codified as rules. Architectural invariants capture the hard constraints, intent verification captures authorized work, and review sub-agents catch correctness and security issues. What remains is a residual judgment about whether something *fits* — whether it belongs in this project, at this time, in this form. This judgment is currently exclusively human, and it's unclear whether it can be effectively approximated by agents or whether it's a fundamental limit on autonomy.
 
-For a deeper treatment of the contribution volume problem, including PR categorization, the salvage question, and fork dynamics, see [contribution-volume.md](contribution-volume.md).
+For a deeper treatment of the contribution volume problem, including PR categorization, the salvage question, and fork dynamics, see [contribution-volume.md](contribution-volume.md). When that volume is manufactured by coordinated inauthentic actors rather than good-faith contributors, the pressure is a security problem as well as a capacity problem — see [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 
 ## What might help
 

@@ -859,6 +859,19 @@ type Client interface {
 	// expose branch-protection queries.
 	IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error)
 
+	// GetProtectedBranch returns who may push or merge the given branch.
+	// A nil rule with a nil error means the branch is not protected.
+	// GitLab uses these access levels to decide who may create pipelines
+	// for the ref. GitHub returns ErrNotSupported.
+	GetProtectedBranch(ctx context.Context, owner, repo, branch string) (*ProtectedBranchRule, error)
+
+	// GrantProtectedBranchMergeUser grants userID merge access on a
+	// protected branch. Idempotent if the user already has merge or push
+	// access. Used on GitLab so a Developer-level poller can create
+	// pipelines without widening Developer-class merge policy. GitHub
+	// returns ErrNotSupported.
+	GrantProtectedBranchMergeUser(ctx context.Context, owner, repo, branch string, userID int) error
+
 	// Pipeline schedules and branch-restricted CI variables live on
 	// the base Client because both GitHub Actions and GitLab CI support
 	// timed triggers. However, the branch-restricted/protected variable
@@ -879,6 +892,10 @@ type Client interface {
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
+	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
+	// active. Used to reactivate required GitLab schedules that exist but
+	// were disabled. GitHub returns ErrNotSupported.
+	UpdatePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64, active bool) error
 
 	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
 	// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
@@ -899,6 +916,25 @@ type Client interface {
 type Pipeline struct {
 	ID     int64
 	WebURL string
+}
+
+// ProtectedBranchAccess is one grant on a protected branch.
+// A role-based grant has AccessLevel set and UserID/GroupID zero.
+// A user or group grant has the corresponding ID set.
+// GitLab access levels: 0 (No one), 30 (Developer), 40 (Maintainer),
+// 60 (Admin). A role-based grant of N allows identities at N or above.
+type ProtectedBranchAccess struct {
+	AccessLevel int
+	UserID      int
+	GroupID     int
+}
+
+// ProtectedBranchRule is the protection configuration for a branch.
+// A nil value from GetProtectedBranch means the branch is not protected.
+type ProtectedBranchRule struct {
+	Name              string
+	PushAccessLevels  []ProtectedBranchAccess
+	MergeAccessLevels []ProtectedBranchAccess
 }
 
 // PipelineSchedule represents a scheduled pipeline trigger.

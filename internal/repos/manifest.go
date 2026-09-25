@@ -665,6 +665,16 @@ func RejectExtraneousURLParts(u *url.URL, field string) error {
 // The clients factory provides per-forge API clients so glob entries
 // targeting different forges resolve against the correct API.
 func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) ([]ResolvedRepo, error) {
+	return m.ExpandGlobsFor(ctx, clients, nil)
+}
+
+// ExpandGlobsFor is like ExpandGlobs, but skips expanding a platform's
+// glob entries when filter is non-empty and does not select any repo on
+// that platform. This keeps a filtered operation (e.g. "repos install
+// gitlab-group/project") from requiring credentials for a forge that
+// only appears via an unrelated glob entry (e.g. a GitHub "acme/*"
+// entry) elsewhere in the manifest.
+func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactory, filter []string) ([]ResolvedRepo, error) {
 	resolved := make(map[string]ResolvedRepo)
 
 	platforms := []struct {
@@ -678,6 +688,16 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) 
 	for _, p := range platforms {
 		if p.cfg == nil {
 			continue
+		}
+
+		if len(filter) > 0 {
+			matched, err := platformEntriesMatchFilter(p.cfg, filter)
+			if err != nil {
+				return nil, fmt.Errorf("matching repo filter against forge %q: %w", p.name, err)
+			}
+			if !matched {
+				continue
+			}
 		}
 
 		// First pass: separate explicit entries from glob patterns.
@@ -937,14 +957,88 @@ func resolveField(perRepo, platformDefault, builtinDefault string) string {
 // section containing repos are included. The order is deterministic
 // (github before gitlab).
 func (m *Manifest) DistinctForges() []string {
+	// A nil filter short-circuits platformEntriesMatchFilter before any
+	// pattern matching happens, so this can never return an error.
+	forges, _ := m.DistinctForgesFor(nil)
+	return forges
+}
+
+// DistinctForgesFor returns the deduplicated set of forge names used by
+// repos matching filter. An empty filter returns DistinctForges(). The
+// order is deterministic (github before gitlab). A glob manifest entry
+// counts as selected when a concrete filter would be produced by
+// expanding it (for example entry "acme/*" and filter "acme/api"). An
+// error is returned if a filter or manifest entry is an invalid glob
+// pattern.
+func (m *Manifest) DistinctForgesFor(filter []string) ([]string, error) {
 	var forges []string
-	if m.GitHub != nil && len(m.GitHub.Repos) > 0 {
+	ghMatch, err := platformEntriesMatchFilter(m.GitHub, filter)
+	if err != nil {
+		return nil, err
+	}
+	if ghMatch {
 		forges = append(forges, ForgeGitHub)
 	}
-	if m.GitLab != nil && len(m.GitLab.Repos) > 0 {
+	glMatch, err := platformEntriesMatchFilter(m.GitLab, filter)
+	if err != nil {
+		return nil, err
+	}
+	if glMatch {
 		forges = append(forges, ForgeGitLab)
 	}
-	return forges
+	return forges, nil
+}
+
+// platformEntriesMatchFilter reports whether cfg has at least one repo
+// entry selected by filter. Matching errors (an invalid glob pattern) are
+// surfaced to the caller rather than swallowed, since silently treating
+// an invalid pattern as "no match" could wrongly skip a targeted forge's
+// credential check or glob expansion.
+//
+// Two glob patterns (a glob manifest entry compared against a glob filter
+// pattern) are treated as always matching. Determining whether two globs
+// can ever overlap requires expanding both against the real repo list;
+// comparing the literal pattern strings against each other proves
+// nothing (e.g. entry "acme/*" and filter "*/api" don't match as literal
+// strings in either direction, but both can resolve to "acme/api"). Since
+// wrongly excluding a targeted forge is worse than wrongly including an
+// unselected one, this case is conservative and matches.
+func platformEntriesMatchFilter(cfg *PlatformConfig, filter []string) (bool, error) {
+	if cfg == nil || len(cfg.Repos) == 0 {
+		return false, nil
+	}
+	if len(filter) == 0 {
+		return true, nil
+	}
+	for _, e := range cfg.Repos {
+		entryIsGlob := isGlob(e.Name)
+		for _, pattern := range filter {
+			ok, err := matchesPattern(pattern, e.Name)
+			if err != nil {
+				return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
+			}
+			if ok {
+				return true, nil
+			}
+			if !entryIsGlob {
+				continue
+			}
+			if isGlob(pattern) {
+				// Both sides are globs: conservative match (see doc comment).
+				return true, nil
+			}
+			// A glob manifest entry ("acme/*") counts as selected when the
+			// filter names a concrete repo that would expand from it.
+			ok, err = matchesPattern(e.Name, pattern)
+			if err != nil {
+				return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
+			}
+			if ok {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // HasForge reports whether any repo in the manifest resolves to the
