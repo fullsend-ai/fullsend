@@ -237,7 +237,8 @@ implementation
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
 - A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
-  for a dedicated service account with the
+  for a **dedicated non-human account** (a bot account), not a teammate's
+  personal login — see [Credential setup](#credential-setup). The account needs the
   [minimum Jira permissions](#minimum-jira-permissions). That is usually the
   **Developers** project role. The **Administrators** role is needed only
   when project roles are used: with no `jira` entry, for slash commands when
@@ -250,9 +251,11 @@ implementation
 
 | Secret / variable | Value |
 |---|---|
-| `JIRA_TOKEN` | Your Jira API token |
-| `JIRA_USER_EMAIL` | Email associated with the token |
+| `JIRA_TOKEN` | API token for a dedicated non-human (bot) account |
+| `JIRA_USER_EMAIL` | Email of that dedicated bot account |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
+
+> **Warning:** `JIRA_USER_EMAIL` and `JIRA_TOKEN` must belong to a dedicated non-human account (a bot account), not a real person's login. The poller classifies comments and changelog entries from its own authenticated account (`/myself`) as `actor.kind: bot` so that mutations it performs — labels, triage comments, run-status updates — cannot re-trigger dispatch. If those credentials are a teammate's personal account, that person's genuine comments (including `/fs-triage`) and label changes are silently filtered out and never dispatch. There is no error.
 
 `fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls
 but does not pass them on to host-side pre/post/validation scripts by default. A
@@ -863,6 +866,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
+| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to a real person's Jira account | The poller classifies its own `/myself` account as `actor.kind: bot` to prevent self-triggered dispatch loops, so that person's genuine comments (including `/fs-triage`) and label changes are silently filtered. Use a dedicated non-human (bot) account — see [Credential setup](#credential-setup) |
 | `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the service account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
 | `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the service account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
