@@ -125,15 +125,19 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 Claude on Vertex gets cache reads. **Grok 4.6 on Vertex does not.** It is a preview offering there;
 Google Cloud support confirmed caching is unsupported (2026-09-14), and the vendored
 [`pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) provider documents the same
-limitation. Occasional non-zero `cached_tokens` on a response are incidental — they cannot be
-requested or relied on. Affinity keys that steer cache hits on xAI's own API (`x-grok-conv-id`,
-`prompt_cache_key`) have no effect on Vertex.
+limitation. There is no cache-write API, so `cache_creation_input_tokens` stays 0. A response may
+still report non-zero `cached_tokens` — pi surfaces those as `cache_read_input_tokens` and prices
+them at the cached rate — but they are incidental: they cannot be requested or relied on. Affinity
+keys that steer cache hits on xAI's own API (`x-grok-conv-id`, `prompt_cache_key`) have no effect
+on Vertex.
 
 Budget every turn at full input price. Grok can still look cost-effective on short, low-turn
 tasks; on long, iterative, multi-file coding it is typically much more expensive than a
 cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
-([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M tokens with
-`cache_creation_input_tokens: 0` throughout.
+([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M input tokens with
+`cache_read_input_tokens: 2664832` (~32% of input) and `cache_creation_input_tokens: 0`. That 32%
+is the incidental `cached_tokens` above, not explicit cache-key reuse — still far less benefit than
+a cache-eligible Claude coder, and not something to budget for.
 
 ## At a glance
 
