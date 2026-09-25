@@ -5640,8 +5640,8 @@ func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 
 	// Swap the production default so a nil TreeFetcher still exercises
 	// the default-assignment path without a live git fetch (#7723).
-	orig := defaultTreeFetcher
-	t.Cleanup(func() { defaultTreeFetcher = orig })
+	orig := defaultTreeFetchFn
+	t.Cleanup(func() { defaultTreeFetchFn = orig })
 
 	var (
 		called   bool
@@ -5650,7 +5650,7 @@ func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 		ref      string
 		token    string
 	)
-	defaultTreeFetcher = func(_ context.Context, c, p, r, tok string) (map[string][]byte, error) {
+	defaultTreeFetchFn = func(_ context.Context, c, p, r, tok string) (map[string][]byte, error) {
 		called = true
 		cloneURL, subpath, ref, token = c, p, r, tok
 		return nil, fmt.Errorf("injected default fetcher")

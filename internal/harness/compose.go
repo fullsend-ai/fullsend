@@ -93,15 +93,15 @@ type ComposeOpts struct {
 	allowSelfAllowlist bool
 }
 
-// defaultTreeFetcher is used when ComposeOpts.TreeFetcher is nil.
-// Tests replace it so the nil-TreeFetcher path stays hermetic (see #7723).
-var defaultTreeFetcher gitfetch.TreeFetchFunc = gitfetch.FetchTree
+// defaultTreeFetchFn is used when ComposeOpts.TreeFetcher is nil.
+// Override in tests to keep the nil-TreeFetcher path hermetic (see #7723).
+var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
 
 func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
 	if opts.TreeFetcher != nil {
 		return opts.TreeFetcher
 	}
-	return defaultTreeFetcher
+	return defaultTreeFetchFn
 }
 
 // LoadWithBase loads a harness with base composition and conditional
