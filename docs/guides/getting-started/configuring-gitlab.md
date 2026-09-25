@@ -329,10 +329,39 @@ gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
 ```
 
 If `gitlab-oidc` already exists with `google.subject=assertion.sub`,
-run `providers update-oidc` with the `--attribute-mapping` and
-`--attribute-condition` values above. Changing only the condition
-leaves the oversize `sub` mapping in place, and STS will still reject
-the exchange.
+update just the mapping. This applies no matter which recipe set the
+provider's `--attribute-condition` — this page's default single-project
+condition, [multiple specific projects](#authorizing-multiple-specific-projects-alternative),
+or [a group or group tree](#authorizing-a-group-or-group-tree-alternative):
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --project="$GCP_PROJECT"
+```
+
+Omitting `--attribute-condition` leaves your existing condition — set
+by whichever recipe you used — untouched. Changing only the condition
+instead of the mapping leaves the oversize `sub` mapping in place, and
+STS will still reject the exchange.
+
+If you're on the default single-project recipe and want the added
+project-ID protection against a deleted path being reused (see above),
+also update the condition to bind both claims:
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-condition="assertion.project_id == '$GITLAB_PROJECT_ID' && assertion.project_path == '$PROJECT_PATH'" \
+  --project="$GCP_PROJECT"
+```
+
+The multiple-projects and namespace-wide conditions don't reference
+`project_id`, so no condition change is required there after migrating
+the mapping.
 
 The provider's `--issuer-uri` is a trust-boundary setting: it must exactly
 match the GitLab instance that signs the `id_tokens` used by this repository.
@@ -381,10 +410,12 @@ The `gitlab-oidc` provider is shared across every GitLab repo on the same
 GCP project, but its default `--attribute-condition` above pins trust to a
 single project. Installing a second repo against the same GCP
 project does not require widening trust to an entire namespace — keep
-exact `project_path` matches for just the repos you're installing by
-OR-ing their paths in the condition and binding one principalSet per
-project. Leave the `google.subject=assertion.project_id` mapping from
-the create recipe; this update only widens authorization:
+the same dual `project_id`-and-`project_path` bind from the create
+recipe for each project you're installing, OR-ing the per-project pairs
+in the condition and binding one principalSet per project. Leave the
+`google.subject=assertion.project_id` mapping from the create recipe
+unchanged; look up each project's numeric ID (Settings → General →
+Project ID) before running the update below:
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
@@ -393,7 +424,7 @@ export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
 gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
   --location=global \
   --workload-identity-pool=fullsend-inference \
-  --attribute-condition="assertion.project_path == 'group/project-a' || assertion.project_path == 'group/project-b'" \
+  --attribute-condition="(assertion.project_id == '<id-a>' && assertion.project_path == 'group/project-a') || (assertion.project_id == '<id-b>' && assertion.project_path == 'group/project-b')" \
   --project="$GCP_PROJECT"
 
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -406,11 +437,15 @@ for PROJECT_PATH in "group/project-a" "group/project-b"; do
 done
 ```
 
-Repeat the `--attribute-condition` update (adding another `||` clause) and
-the IAM binding loop each time you install another repo. This keeps trust
-scoped to exactly the repos you've installed, unlike the namespace-wide
-option below. Prefer the namespace-wide alternative only when the repo set
-isn't enumerable in advance.
+Repeat the `--attribute-condition` update (adding another
+`project_id`-and-`project_path` clause) and the IAM binding loop each
+time you install another repo. Keeping the `project_id` conjunct for
+each project preserves the same protection against a deleted path
+being reused that the default recipe adds; dropping to path-only ORs
+would silently undo it for every project added this way. This keeps
+trust scoped to exactly the repos you've installed, unlike the
+namespace-wide option below. Prefer the namespace-wide alternative only
+when the repo set isn't enumerable in advance.
 
 ### Authorizing a group or group tree (alternative)
 
