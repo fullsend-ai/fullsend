@@ -761,7 +761,7 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 			name: "live TextIOWrapper around a closed fd",
 			setup: "import io\n" +
 				"fd = os.open(os.devnull, os.O_WRONLY)\n" +
-				"sys.stderr = io.TextIOWrapper(io.FileIO(fd, \"w\"), " +
+				"sys.stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(fd, \"w\")), " +
 				"line_buffering=False, write_through=False)\n" +
 				"os.close(fd)",
 		},
