@@ -192,7 +192,7 @@ config.
 ### Configuration overlays
 
 `repos.yaml` can also declare a sparse `.fullsend/config.yaml` overlay
-([ADR 0122](../../ADRs/0122-declarative-repos-config-overlays.md)). The
+([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)). The
 block uses the same schema as per-repo `config.yaml` except `runtime`
 and `allowed_remote_resources`, which stay on their existing manifest
 shorthands.
@@ -226,7 +226,7 @@ Unknown fields and the forbidden shorthand keys fail manifest validation
 with field-specific errors.
 
 Install, convergence, and overlay drift for these blocks land with the
-rest of [ADR 0122](../../ADRs/0122-declarative-repos-config-overlays.md);
+rest of [ADR 0122](../../ADRs/0122-declarative-repo-configuration.md);
 this release parses, validates, and resolves them.
 
 ### Manifest paths and URLs

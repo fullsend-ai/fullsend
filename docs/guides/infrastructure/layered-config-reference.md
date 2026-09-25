@@ -50,7 +50,7 @@ base-file drift only when a preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
 Fleet manifests may also declare a managed overlay via `defaults.config`
-and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repos-config-overlays.md)).
+and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
 Those blocks use this same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
 shorthands and are rejected inside `config`. Overlay management is
