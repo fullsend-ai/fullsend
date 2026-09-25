@@ -1870,17 +1870,24 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		if revInfo.TemplateMatchesTraffic {
 			printer.KeyValue("Template", fmt.Sprintf("%s (matches traffic)", revInfo.TrafficRevisionShort))
 		} else {
-			// Show a divergence warning.
+			// Show a divergence warning. A source deploy can create a newer
+			// revision while traffic remains pinned to an older one.
 			printer.Blank()
-			printer.StepWarn("Service template diverges from traffic-serving revision")
-			printer.StepInfo("Template env vars may not match what the mint is actually serving.")
+			printer.StepWarn("Newer revision exists but is not serving")
+			printer.StepInfo("Service template diverges from the traffic-serving revision.")
 			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", revInfo.TrafficRevisionShort))
-			latestShort := revInfo.TemplateRevision
-			if latestShort != "" {
-				parts := strings.Split(latestShort, "/")
-				latestShort = parts[len(parts)-1]
+			latestShort := revInfo.LatestReadyRevisionShort
+			if latestShort == "" {
+				latestShort = revInfo.TemplateRevision
+				if latestShort != "" {
+					parts := strings.Split(latestShort, "/")
+					latestShort = parts[len(parts)-1]
+				}
 			}
-			printer.StepInfo(fmt.Sprintf("Template latest:  %s", latestShort))
+			if latestShort == "" {
+				latestShort = "unknown"
+			}
+			printer.StepInfo(fmt.Sprintf("Latest ready:     %s", latestShort))
 		}
 
 		if len(revInfo.RecentRevisions) > 0 {

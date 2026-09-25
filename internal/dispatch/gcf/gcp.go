@@ -69,6 +69,9 @@ type ServiceRevisionInfo struct {
 	TrafficPercent int
 	// TemplateRevision is the revision name from the service template (latest created).
 	TemplateRevision string
+	// LatestReadyRevisionShort is the short name of latestReadyRevision
+	// (e.g., "fullsend-mint-00115-qp5").
+	LatestReadyRevisionShort string
 	// TemplateMatchesTraffic is true when the template's latest revision matches
 	// the traffic-serving revision.
 	TemplateMatchesTraffic bool
@@ -151,10 +154,17 @@ type GCFClient interface {
 	// reusing the existing container image. Uses a multi-step approach:
 	// GETs the current service, PATCHes the template to create a new
 	// revision, GETs the service again to discover the revision name,
-	// then PATCHes traffic to pin 100% to that revision (REVISION-pinned,
-	// matching Cloud Functions deploy behavior). Returns the new revision
-	// name.
+	// then PATCHes traffic to pin 100% to that revision (REVISION-pinned).
+	// Returns the new revision name.
 	UpdateServiceEnvVars(ctx context.Context, projectID, region, serviceName string, envVars map[string]string) (string, error)
+
+	// PinServiceTraffic pins 100% of Cloud Run traffic to revisionShort using
+	// TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION. revisionShort is the short
+	// revision name (e.g. "fullsend-mint-00115-qp5"), not the fully-qualified
+	// resource name. A Cloud Functions source deploy does not move traffic
+	// when it is already pinned to a named revision, so callers must pin
+	// after creating a new revision.
+	PinServiceTraffic(ctx context.Context, projectID, region, serviceName, revisionShort string) error
 
 	// GetServiceRevisionInfo returns Cloud Run service details including the
 	// traffic-serving revision, template revision, allocation type, and recent
@@ -172,6 +182,9 @@ type GCFClient interface {
 	// Project number lookup
 	GetProjectNumber(ctx context.Context, projectID string) (string, error)
 }
+
+// Compile-time check that LiveGCFClient implements GCFClient.
+var _ GCFClient = (*LiveGCFClient)(nil)
 
 // LiveGCFClient implements GCFClient using GCP REST APIs.
 // It embeds *gcp.Client for shared ADC auth.
@@ -1528,17 +1541,30 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 
 	// The Cloud Run v2 API returns fully qualified revision names from GET
 	// (projects/P/locations/L/services/S/revisions/R) but the traffic PATCH
-	// expects short names (e.g., "fullsend-mint-00115-qp5"). Extract the
-	// short name for the traffic payload.
-	revisionShort := newRevision
-	if parts := strings.Split(newRevision, "/"); len(parts) > 1 {
-		revisionShort = parts[len(parts)-1]
-	}
+	// expects short names (e.g., "fullsend-mint-00115-qp5").
+	revisionShort := shortRevisionName(newRevision)
 	if !revisionShortNamePattern.MatchString(revisionShort) {
 		return "", fmt.Errorf("unexpected revision name format in latestCreatedRevision: %q", newRevision)
 	}
 
 	// Step 4: PATCH traffic to pin 100% to the new revision.
+	if err := c.PinServiceTraffic(ctx, projectID, region, serviceName, revisionShort); err != nil {
+		return newRevision, err
+	}
+
+	return newRevision, nil
+}
+
+// PinServiceTraffic pins 100% of Cloud Run traffic to revisionShort using
+// TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION. revisionShort must be a short
+// revision name (e.g. "fullsend-mint-00115-qp5").
+func (c *LiveGCFClient) PinServiceTraffic(ctx context.Context, projectID, region, serviceName, revisionShort string) error {
+	if !revisionShortNamePattern.MatchString(revisionShort) {
+		return fmt.Errorf("unexpected revision name format: %q", revisionShort)
+	}
+	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
+
 	trafficPayload, err := json.Marshal(map[string]interface{}{
 		"traffic": []map[string]interface{}{
 			{
@@ -1549,25 +1575,24 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshaling traffic update: %w", err)
+		return fmt.Errorf("marshaling traffic update: %w", err)
 	}
 
 	trafficResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=traffic", string(trafficPayload))
 	if err != nil {
-		return newRevision, fmt.Errorf("patching Cloud Run traffic: %w", err)
+		return fmt.Errorf("patching Cloud Run traffic: %w", err)
 	}
 	defer trafficResp.Body.Close()
 
 	if trafficResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(trafficResp.Body, 1<<20))
-		return newRevision, fmt.Errorf("unexpected status %d patching Cloud Run traffic: %s", trafficResp.StatusCode, gcp.ExtractErrorMessage(body))
+		return fmt.Errorf("unexpected status %d patching Cloud Run traffic: %s", trafficResp.StatusCode, gcp.ExtractErrorMessage(body))
 	}
 
 	if err := c.handleCloudRunLRO(ctx, trafficResp); err != nil {
-		return newRevision, fmt.Errorf("waiting for traffic update: %w", err)
+		return fmt.Errorf("waiting for traffic update: %w", err)
 	}
-
-	return newRevision, nil
+	return nil
 }
 
 // handleCloudRunLRO reads the LRO response from a Cloud Run PATCH and
@@ -1606,6 +1631,15 @@ var revisionNamePattern = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/se
 // (e.g., "fullsend-mint-00114-fm9"). Used to sanitize revision names
 // from list responses before displaying in terminal output.
 var revisionShortNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// shortRevisionName returns the last path element of a Cloud Run revision
+// resource name, or the input unchanged if it is already a short name.
+func shortRevisionName(name string) string {
+	if parts := strings.Split(name, "/"); len(parts) > 1 {
+		return parts[len(parts)-1]
+	}
+	return name
+}
 
 // GetServiceTrafficEnvVars reads environment variables from the Cloud Run
 // revision that is currently serving traffic, rather than from the service
@@ -1842,22 +1876,15 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 	info.TrafficPercent = maxPercent
 
 	// Extract short revision name from the full resource name.
-	if info.TrafficRevision != "" {
-		parts := strings.Split(info.TrafficRevision, "/")
-		info.TrafficRevisionShort = parts[len(parts)-1]
-	}
+	info.TrafficRevisionShort = shortRevisionName(info.TrafficRevision)
 
 	// Determine if template matches traffic.
-	latestReadyShort := ""
-	if service.LatestReadyRevision != "" {
-		lParts := strings.Split(service.LatestReadyRevision, "/")
-		latestReadyShort = lParts[len(lParts)-1]
-	}
+	info.LatestReadyRevisionShort = shortRevisionName(service.LatestReadyRevision)
 	if info.TrafficRevisionShort == "" {
 		// Cannot determine traffic state — treat as not matching to avoid false confidence.
 		info.TemplateMatchesTraffic = false
 	} else {
-		info.TemplateMatchesTraffic = info.TrafficRevisionShort == latestReadyShort
+		info.TemplateMatchesTraffic = info.TrafficRevisionShort == info.LatestReadyRevisionShort
 	}
 
 	// 2. List recent revisions.

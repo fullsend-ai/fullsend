@@ -109,7 +109,7 @@ fullsend mint deploy --project="$GCP_PROJECT"
 
 The binary includes an embedded copy of the mint Cloud Function source, so it works standalone without needing the repository checked out. If you are developing or testing changes to the mint source, run the CLI from a local clone — the `--source-dir` flag (default `internal/mint/`) uses your local copy when the path exists, falling back to the embedded source when it does not. The mint consists of two modules: `internal/mint/` (the entry point) and `internal/mintcore/` (shared verification and token exchange logic). The provisioner bundles `mintcore` automatically from the sibling directory.
 
-The deploy command automatically detects when the deployed function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and configuration.
+The deploy command automatically detects when the deployed function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and configuration. After a source deploy — and on a hash-skip when traffic is still pinned to an older revision — it pins Cloud Run traffic to the latest ready revision so a previous `gcloud run services update-traffic --to-revisions` rollback cannot leave the new revision at 0%. If the pin fails, deploy fails with the exact `gcloud run services update-traffic` command to recover.
 
 ### Public mint deployment
 
@@ -397,7 +397,7 @@ fullsend mint status acme-corp --project="$GCP_PROJECT"
 
 - **Traffic revision** — which Cloud Run revision is currently serving requests (e.g., `fullsend-mint-00114-fm9`)
 - **Allocation type** — `TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION` (pinned to a specific revision) or `TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST` (auto-routes to newest)
-- **Template divergence** — a warning when the service template's latest revision does not match the traffic-serving revision, meaning the mint may be serving stale configuration
+- **Template divergence** — a warning (`Newer revision exists but is not serving`) when the service template's latest revision does not match the traffic-serving revision, meaning the mint may be serving stale configuration or a previous rollback is still pinned
 - **Recent revisions** — the last 5 revisions with their create time and active/inactive status
 
 **Enrollment section:**
@@ -525,9 +525,9 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 ### Template/traffic revision divergence
 
-**Symptom:** `mint status` reports health as "degraded" with the message "template diverges from traffic-serving revision".
+**Symptom:** `mint status` reports health as "degraded" with the message "Newer revision exists but is not serving" (and "template diverges from traffic-serving revision" in the health summary).
 
-**What it means:** The Cloud Run service template was updated (e.g., env vars changed) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled orgs may not be recognized.
+**What it means:** The Cloud Run service template was updated (e.g., env vars changed or a source deploy created a new revision) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled orgs may not be recognized, and a code deploy may have reported success while the previous rollback still serves.
 
 **Common causes:**
 
@@ -538,8 +538,9 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 **Resolution:**
 
 1. Run `fullsend mint status --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
-2. Re-run `fullsend mint enroll` for any org — this triggers a new revision and routes traffic to it
-3. If no enrollment is needed, manually route traffic with:
+2. Re-run `fullsend mint deploy --project="$GCP_PROJECT"` — a source deploy or a hash-skip now pins traffic to the latest ready revision
+3. Re-run `fullsend mint enroll` for any org — this also triggers a new revision and routes traffic to it
+4. If neither command can run, manually route traffic with:
 
    ```bash
    gcloud run services update-traffic fullsend-mint \

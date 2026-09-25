@@ -2425,8 +2425,57 @@ func TestLiveGCFClient_GetServiceRevisionInfo_ShortRevisionName(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
+		assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
 		assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"])
 		assert.Equal(t, 3, callCount)
+	})
+}
+
+func TestLiveGCFClient_PinServiceTraffic(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Contains(t, r.URL.RawQuery, "updateMask=traffic")
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			traffic := body["traffic"].([]interface{})
+			require.Len(t, traffic, 1)
+			entry := traffic[0].(map[string]interface{})
+			assert.Equal(t, "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", entry["type"])
+			assert.Equal(t, "fullsend-mint-00115-qp5", entry["revision"])
+			assert.Equal(t, float64(100), entry["percent"])
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects_invalid_revision", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("should not call API for invalid revision")
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected revision name format")
+	})
+
+	t.Run("http_error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
 	})
 }
 

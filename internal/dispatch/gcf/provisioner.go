@@ -862,6 +862,11 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 				if err := p.gcpAPI.SetCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName); err != nil {
 					return nil, fmt.Errorf("setting function invoker policy: %w", err)
 				}
+				// A matching source hash can still leave traffic pinned to an
+				// older revision from a previous deploy. Re-pin before reuse.
+				if err := p.ensureTrafficOnLatestRevision(ctx); err != nil {
+					return nil, err
+				}
 				p.cfg.MintURL = existing.URI
 				return p.provisionWithExistingMint(ctx)
 			}
@@ -1054,6 +1059,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	if err := p.gcpAPI.SetCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName); err != nil {
 		return nil, fmt.Errorf("setting function invoker policy: %w", err)
+	}
+
+	// Cloud Functions source deploys create a new revision but leave traffic
+	// on a previously pinned revision. Pin before the health check so /health
+	// observes the revision that will actually serve public traffic.
+	if err := p.ensureTrafficOnLatestRevision(ctx); err != nil {
+		return nil, err
 	}
 
 	if err := p.waitForReady(ctx, mintURL); err != nil {
@@ -1875,6 +1887,58 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 	return p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 }
 
+// ensureTrafficOnLatestRevision pins Cloud Run traffic to the latest ready
+// revision when the serving revision has diverged from it. After a Cloud
+// Functions source deploy, traffic stays on a previously pinned revision
+// unless it is explicitly re-pinned. If the pin fails, the error includes
+// the gcloud command to recover manually.
+func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
+	info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("checking Cloud Run traffic after deploy: %w; recover with: %s",
+			err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+	}
+	if info == nil || info.TemplateMatchesTraffic {
+		return nil
+	}
+	// Observed traffic not reported yet (initial create still reconciling).
+	// waitForReady remains the safety net for the function URL.
+	if info.TrafficRevisionShort == "" {
+		log.Printf("Cloud Run traffic revision not yet reported; skipping pin")
+		return nil
+	}
+	target := info.LatestReadyRevisionShort
+	if target == "" {
+		target = shortRevisionName(info.TemplateRevision)
+	}
+	if target == "" {
+		return fmt.Errorf("traffic is pinned to %s but the latest revision is unknown; recover with: %s",
+			info.TrafficRevisionShort, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+	}
+	if target == info.TrafficRevisionShort {
+		return nil
+	}
+	log.Printf("Cloud Run traffic is on %s, not latest ready %s; pinning 100%% to %s",
+		info.TrafficRevisionShort, target, target)
+	if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
+		return fmt.Errorf("pinning Cloud Run traffic to %s (currently serving %s): %w; recover with: %s",
+			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+	}
+	return nil
+}
+
+// trafficShiftCommand returns the gcloud invocation that moves 100% of
+// Cloud Run traffic onto the given revision, or --to-latest when the
+// revision name is unknown.
+func trafficShiftCommand(projectID, region, revision string) string {
+	if revision == "" {
+		return fmt.Sprintf("gcloud run services update-traffic %s --project=%s --region=%s --to-latest",
+			functionName, projectID, region)
+	}
+	return fmt.Sprintf("gcloud run services update-traffic %s --project=%s --region=%s --to-revisions %s=100",
+		functionName, projectID, region, revision)
+}
+
 // GetServiceTrafficEnvVars reads env vars from the traffic-serving Cloud Run
 // revision. This is a convenience wrapper around the GCFClient method.
 func (p *Provisioner) GetServiceTrafficEnvVars(ctx context.Context) (map[string]string, error) {
@@ -2211,10 +2275,13 @@ func sha256Hex(data []byte) string {
 }
 
 // needsCodeDeploy determines whether the Cloud Function code needs (re)deployment.
-// Only checks the source hash — org-level env vars (ALLOWED_ORGS, ROLE_APP_IDS)
-// are handled separately by EnsureOrgInMint. Infrastructure env vars set during
-// initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are NOT reconciled on
-// subsequent runs; a code redeploy is required to update them.
+// Only checks the source hash against the Cloud Functions template env vars —
+// org-level env vars (ALLOWED_ORGS, ROLE_APP_IDS) are handled separately by
+// EnsureOrgInMint. A matching hash does not mean the new revision is serving:
+// Cloud Run traffic can remain pinned to an older revision after a source
+// deploy. ensureTrafficOnLatestRevision handles that separately. Infrastructure
+// env vars set during initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are
+// NOT reconciled on subsequent runs; a code redeploy is required to update them.
 func (p *Provisioner) needsCodeDeploy(existing *FunctionInfo, sourceHash string) bool {
 	if p.cfg.DeployMode == DeploySkip {
 		return false
