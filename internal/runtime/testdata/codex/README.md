@@ -6,7 +6,7 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 
 | Fixture | Origin |
 |---|---|
-| `basic_run.ndjson` | **Live capture**, 2026-09-02, `@openai/codex@0.152.1` (`npx`), model `gpt-5.6-luna`, host login (`~/.codex/auth.json`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. |
+| `basic_run.ndjson` | **Live capture**, 2026-09-25, `@openai/codex@0.157.0` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. |
 | everything else | Hand-authored to the structs below. |
 
 `regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
@@ -29,7 +29,7 @@ ARG exists run `CODEX_VERSION=0.152.1 ./regen.sh`.
 
 ## Event structs
 
-Copied from `openai/codex` tag `rust-v0.152.1`, `codex-rs/exec/src/exec_events.rs`
+Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`, `codex-rs/exec/src/exec_events.rs`
 (shapes) and `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each
 event is emitted). Re-check both when `CODEX_VERSION` moves.
 
