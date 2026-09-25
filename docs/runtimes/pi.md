@@ -134,10 +134,10 @@ on Vertex.
 Budget every turn at full input price. Grok can still look cost-effective on short, low-turn
 tasks; on long, iterative, multi-file coding it is typically much more expensive than a
 cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
-([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M input tokens with
-`cache_read_input_tokens: 2664832` (~32% of input) and `cache_creation_input_tokens: 0`. That 32%
-is the incidental `cached_tokens` above, not explicit cache-key reuse — still far less benefit than
-a cache-eligible Claude coder, and not something to budget for.
+([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M input tokens
+alongside `cache_read_input_tokens: 2664832` and `cache_creation_input_tokens: 0`. Those 2.66M
+cache-read tokens are the incidental `cached_tokens` above, not explicit cache-key reuse — still
+far less benefit than a cache-eligible Claude coder, and not something to budget for.
 
 ## At a glance
 
