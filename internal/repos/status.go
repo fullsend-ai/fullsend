@@ -43,6 +43,14 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 	hasRequiredComponent := false
 	state := RepoState{}
 	for _, c := range components {
+		// Capture the version marker even when the current carrier is
+		// missing: GitLab repos enrolled before #7707 still host it in
+		// the leftover dispatch stub. Presence of that stub is not
+		// install evidence; the ref is still useful once another
+		// required component proves the repo is installed.
+		if c.Name == "workflow" {
+			state.FullsendRef = c.Actual
+		}
 		if !c.Present {
 			continue
 		}
@@ -54,8 +62,6 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 			hasRequiredComponent = true
 		case strings.HasPrefix(c.Name, "schedule:"):
 			hasRequiredComponent = true
-		case c.Name == "workflow":
-			state.FullsendRef = c.Actual
 		}
 	}
 
@@ -384,17 +390,14 @@ func gitLabRoleReadinessRequired(mode gitlabroles.Mode) bool {
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
-	for _, path := range fc.WorkflowPaths {
-		content, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				continue
-			}
-			return "", err
-		}
-		return extractWorkflowRef(content, fc), nil
+	content, _, err := readWorkflowContent(ctx, client, owner, repo, fc)
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	if content == nil {
+		return "", nil
+	}
+	return extractWorkflowRef(content, fc), nil
 }
 
 // extractWorkflowRef extracts the @ref from a fullsend workflow file

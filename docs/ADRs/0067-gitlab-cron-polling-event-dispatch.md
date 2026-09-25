@@ -146,7 +146,14 @@ Accepted
 > cron-polling), originally rejected for sub-second MR review latency
 > that #7293 already gave up. `fullsend-dispatch.yml` is retained as a
 > version-marker carrier and is no longer included by the pipeline
-> wrapper. Superseded sections: the two-path Decision, the native-CI
+> wrapper.
+>
+> **Update (2026-09, #7707):** The leftover `fullsend-dispatch.yml` stub
+> is no longer scaffolded. The `# fullsend-ref:` version marker now lives
+> in `fullsend-pipeline.yml`. Status, probe, and upgrade still read a
+> leftover dispatch stub so already-enrolled repos keep reporting a ref;
+> converge deletes the stub and writes the marker onto the pipeline
+> wrapper. Uninstall still removes the file when it is present. Superseded sections: the two-path Decision, the native-CI
 > architecture-diagram line, and the #5556 auto_cancel note's "MR
 > pipelines / MR dispatch jobs are fast (<30s)" claim above — no MR
 > pipelines or dispatch jobs exist anymore. ("MR review latency is

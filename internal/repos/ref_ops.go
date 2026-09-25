@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -68,20 +69,21 @@ func formatRefAnnotation(ref, tag, forgeName string) string {
 }
 
 // collectGitLabUpgradeTemplates collects the GitLab CI template files
-// (pipeline wrapper, dispatch version-marker, agent, poll) for inclusion
-// in an upgrade commit. The dispatch file is included wholesale because
-// replaceShimRef only rewrites the version-marker line and would leave a
-// stale pre-#7322 body in place when the ref changes. Unchanged-ref
-// structural drift of that file is repaired by convergeContentDriftFiles.
-// targetRef is used as the fullsend version embedded in the before_script
-// install block and as the dispatch file's version marker; targetTag is
-// the human-readable tag annotation to pair with a SHA-pinned targetRef
-// (empty when there is no separate tag to preserve, e.g. targetRef is
-// already a plain tag or branch). The root .gitlab-ci.yml is user-owned
-// and is not synced here; structural changes to it (like #7322's rule
-// removal or #7337's stage removal) need an explicit converge-time
-// migration — see convergeGitLabRootCIFiles /
-// StripObsoleteGitLabWorkflowRules / StripObsoleteGitLabStages.
+// (pipeline wrapper with version marker, agent, poll, helper scripts)
+// for inclusion in an upgrade commit. Templates are rewritten wholesale
+// on ref change because replaceShimRef only rewrites the version-marker
+// line. Unchanged-ref structural drift is repaired by
+// convergeContentDriftFiles. targetRef is used as the fullsend version
+// embedded in the before_script install block and as the pipeline
+// wrapper's version marker; targetTag is the human-readable tag
+// annotation to pair with a SHA-pinned targetRef (empty when there is
+// no separate tag to preserve, e.g. targetRef is already a plain tag or
+// branch). The root .gitlab-ci.yml is user-owned and is not synced here;
+// structural changes to it (like #7322's rule removal or #7337's stage
+// removal) need an explicit converge-time migration — see
+// convergeGitLabRootCIFiles / StripObsoleteGitLabWorkflowRules /
+// StripObsoleteGitLabStages. Leftover fullsend-dispatch.yml from
+// installs predating #7707 is deleted by convergeContentDriftFiles.
 func collectGitLabUpgradeTemplates(runnerTags []string, targetRef, targetTag string) ([]forge.TreeFile, error) {
 	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(runnerTags, targetRef, targetTag)
 	if err != nil {
@@ -99,19 +101,63 @@ func collectGitLabUpgradeTemplates(runnerTags []string, targetRef, targetTag str
 }
 
 // readWorkflowContent tries each known shim workflow path and returns
-// the content and path of the first one found, or (nil, "", nil) if none.
+// the content and path of the first file that contains an extractable
+// ref. If none contain a ref, it returns the first existing file so
+// callers can still treat the workflow as present. Returns (nil, "", nil)
+// if none of the paths exist.
+//
+// Preferring a file that actually carries a ref lets GitLab status and
+// upgrade keep working on repos enrolled before #7707, where the marker
+// still lives in fullsend-dispatch.yml while fullsend-pipeline.yml (the
+// current carrier, listed first) has no marker yet.
 func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) ([]byte, string, error) {
-	for _, path := range fc.WorkflowPaths {
+	content, path, _, err := readWorkflowMarker(ctx, client, owner, repo, fc)
+	return content, path, err
+}
+
+// readWorkflowMarker returns the best version-marker file and whether a
+// current WorkflowPaths carrier exists. Marker content prefers a file
+// that actually contains a ref so GitLab repos enrolled before #7707
+// still report the leftover dispatch stub's version until converge
+// migrates it. carrierPresent is true only when one of WorkflowPaths
+// exists, so a dispatch-only leftover is treated as a missing wrapper.
+func readWorkflowMarker(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) ([]byte, string, bool, error) {
+	paths := fc.WorkflowPaths
+	if len(paths) > 0 && paths[0] == fullsendPipelineInclude {
+		withLegacy := make([]string, len(paths)+1)
+		copy(withLegacy, paths)
+		withLegacy[len(paths)] = fullsendDispatchInclude
+		paths = withLegacy
+	}
+	var first []byte
+	var firstPath string
+	var marker []byte
+	var markerPath string
+	carrierPresent := false
+	for _, path := range paths {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {
 				continue
 			}
-			return nil, "", err
+			return nil, "", false, err
 		}
-		return content, path, nil
+		if slices.Contains(fc.WorkflowPaths, path) {
+			carrierPresent = true
+		}
+		if first == nil {
+			first = content
+			firstPath = path
+		}
+		if marker == nil && extractWorkflowRef(content, fc) != "" {
+			marker = content
+			markerPath = path
+		}
 	}
-	return nil, "", nil
+	if marker != nil {
+		return marker, markerPath, carrierPresent, nil
+	}
+	return first, firstPath, carrierPresent, nil
 }
 
 func skipReasonForNoChange(currentRef, targetRef string) string {

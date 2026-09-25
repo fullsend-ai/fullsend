@@ -60,7 +60,6 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab-ci.yml",
 		".fullsend/config.yaml",
 		".gitlab/ci/fullsend-pipeline.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
@@ -157,21 +156,9 @@ func TestAllGitLabYAMLDocumentStartMarker(t *testing.T) {
 	assert.True(t, checked >= 4, "expected at least 4 YAML files, got %d", checked)
 }
 
-func TestGitLabDispatchContent(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-dispatch.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Native MR dispatch jobs were removed in #7322. The file is kept
-	// as the version-marker carrier and must not define CI jobs.
-	assert.Contains(t, s, "# fullsend-stage: dispatch")
-	assert.Contains(t, s, "#7322")
-	assert.Contains(t, s, "cron poller")
-	assert.NotContains(t, s, "dispatch-mr-agents:")
-	assert.NotContains(t, s, "mr-dispatch-pipeline.yml")
-	assert.NotContains(t, s, "__RUNNER_TAGS__")
-	assert.NotRegexp(t, `(?m)^dispatch:`, s, "must not define a dispatch job")
-	assert.True(t, strings.HasPrefix(s, "---\n"),
-		"must start with YAML document start marker (---)")
+func TestGitLabDispatchFileRemoved(t *testing.T) {
+	_, err := GitLabPerRepoFile(".gitlab/ci/fullsend-dispatch.yml")
+	assert.Error(t, err, "fullsend-dispatch.yml must not be in the GitLab scaffold after #7707")
 }
 
 func TestGitLabAgentTemplateContent(t *testing.T) {
@@ -727,9 +714,11 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	// Pipeline wrapper contains includes and stages moved from root.
-	// Native MR dispatch was removed in #7322; the dispatch file is
-	// retained on disk as a version-marker carrier but is not included.
+	// Native MR dispatch was removed in #7322; the leftover dispatch
+	// stub was dropped in #7707. The version marker is injected here
+	// at collect time, not baked into the raw template.
 	assert.NotContains(t, s, "local: '.gitlab/ci/fullsend-dispatch.yml'")
+	assert.NotContains(t, s, "fullsend-ref:")
 	assert.Contains(t, s, "fullsend-poll.yml")
 	assert.Contains(t, s, "fullsend-agent.yml")
 	assert.Contains(t, s, "stages:")
@@ -790,25 +779,28 @@ func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
 	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "v0.34.0")
 	require.NoError(t, err)
 
-	var dispatchContent string
+	var pipelineContent string
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
-			dispatchContent = string(f.Content)
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
+			pipelineContent = string(f.Content)
 			break
 		}
 	}
-	require.NotEmpty(t, dispatchContent, "dispatch file should exist")
-	assert.Contains(t, dispatchContent, "# fullsend-ref: v0.34.0",
-		"dispatch file should contain version marker")
+	require.NotEmpty(t, pipelineContent, "pipeline wrapper should exist")
+	assert.Contains(t, pipelineContent, "# fullsend-ref: v0.34.0",
+		"pipeline wrapper should contain version marker")
 	// Marker must appear after YAML document start marker
-	assert.True(t, strings.HasPrefix(dispatchContent, "---\n"),
-		"dispatch file must start with YAML document start marker")
-	idx := strings.Index(dispatchContent, "# fullsend-ref: v0.34.0")
+	assert.True(t, strings.HasPrefix(pipelineContent, "---\n"),
+		"pipeline wrapper must start with YAML document start marker")
+	idx := strings.Index(pipelineContent, "# fullsend-ref: v0.34.0")
 	assert.Greater(t, idx, 0, "version marker should appear after ---")
 
-	// Other files should NOT contain the version marker
+	// Other files should NOT contain the version marker, and the
+	// obsolete dispatch stub must not be installed at all.
 	for _, f := range files {
-		if f.Path != ".gitlab/ci/fullsend-dispatch.yml" {
+		assert.NotEqual(t, ".gitlab/ci/fullsend-dispatch.yml", f.Path,
+			"fresh install must not include obsolete fullsend-dispatch.yml")
+		if f.Path != ".gitlab/ci/fullsend-pipeline.yml" {
 			assert.NotContains(t, string(f.Content), "fullsend-ref:",
 				"%s should not contain version marker", f.Path)
 		}
@@ -831,14 +823,14 @@ func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
 			s := string(f.Content)
 			assert.Contains(t, s, "# fullsend-ref: abc123def (v0.35.0)",
 				"version marker should include SHA with tag annotation")
 			return
 		}
 	}
-	t.Fatal("dispatch file not found in collected files")
+	t.Fatal("pipeline wrapper not found in collected files")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
@@ -846,13 +838,13 @@ func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
 			assert.Contains(t, string(f.Content), "# fullsend-ref: v0.34.0",
 				"version marker should use ref when tag is empty")
 			return
 		}
 	}
-	t.Fatal("dispatch file not found in collected files")
+	t.Fatal("pipeline wrapper not found in collected files")
 }
 
 func TestFormatRunnerTags(t *testing.T) {

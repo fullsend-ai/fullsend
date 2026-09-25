@@ -17,7 +17,6 @@ var scaffoldGitLabPaths = []struct {
 	outPath  string
 }{
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-pipeline.yml", ".gitlab/ci/fullsend-pipeline.yml"},
-	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatch.yml", ".gitlab/ci/fullsend-dispatch.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-agent.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/trust-ci-server-ca.sh", ".gitlab/ci/scripts/trust-ci-server-ca.sh"},
@@ -115,7 +114,7 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
-		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" && versionMarker != "" {
+		if sp.outPath == fullsendPipelineInclude && versionMarker != "" {
 			rendered = scaffold.InsertAfterDocStart(rendered, versionMarker)
 		}
 		files = append(files, scaffold.InstallFile{

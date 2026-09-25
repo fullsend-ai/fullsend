@@ -399,7 +399,7 @@ func TestAddToManifest_DiscoverProbeError(t *testing.T) {
 func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(
 		"# fullsend-ref: v3.2.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.2.0\n    file: .gitlab/ci/dispatch.yml\n")
 
 	manifest := &Manifest{
@@ -426,7 +426,7 @@ func TestAddToManifest_DiscoverGitLabFullsendRef(t *testing.T) {
 func TestAddToManifest_DiscoverGitLabFullsendRefMatchesDefault(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(
 		"# fullsend-ref: v3.0.0\ninclude:\n  - project: fullsend-ai/fullsend\n    ref: v3.0.0\n    file: .gitlab/ci/dispatch.yml\n")
 
 	manifest := &Manifest{

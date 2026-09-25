@@ -320,7 +320,9 @@ variables, secrets, pipeline schedules, GitLab poller protected-ref
 pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
 passed), scaffold content drift (including structural rewrites of
-`.gitlab/ci/fullsend-dispatch.yml` at an unchanged template ref),
+`.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
+removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
+predating #7707),
 declared configuration-preset drift, and scaffold workflow refs against
 the manifest. Missing or drifted components are repaired automatically
 (disabled pipeline schedules are the exception — see above); a changed
