@@ -150,6 +150,35 @@ roles: []
 	assert.Contains(t, text, "roles: []")
 }
 
+func TestMergeOverlays_ExplicitEmptyAuthorizationSurvivesRoundTrip(t *testing.T) {
+	var parent OverlayConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+authorization:
+  - provider: owners_file
+`), &parent))
+	var child OverlayConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+authorization: []
+`), &child))
+
+	merged := MergeOverlays(parent.Writer(), child.Writer())
+	require.NotNil(t, merged)
+	assert.False(t, merged.IsOwnersFileAuthEnabled(), "explicit empty authorization overrides parent's owners_file")
+
+	body, err := merged.Marshal()
+	require.NoError(t, err)
+	text := string(body)
+	assert.Contains(t, text, "authorization: []", "explicit empty authorization must round-trip as an empty list, not be omitted")
+
+	// Re-decoding the marshaled overlay must still carry an explicit
+	// empty (non-nil) authorization rather than an omitted/nil one, so a
+	// second merge against a fresh owners_file parent still loses.
+	var reloaded OverlayConfig
+	require.NoError(t, yaml.Unmarshal(body, &reloaded))
+	remerged := MergeOverlays(parent.Writer(), reloaded.Writer())
+	assert.False(t, remerged.IsOwnersFileAuthEnabled(), "re-decoded empty authorization must still win over parent owners_file")
+}
+
 func TestMergeOverlays_ChildWinsAndParentFillsGaps(t *testing.T) {
 	var parent OverlayConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`

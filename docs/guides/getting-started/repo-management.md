@@ -506,11 +506,15 @@ Common causes:
   manifest schema (such as the legacy `mint:` key) are rejected.
 - **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
   instead of under `github` or `gitlab`.
-- **Renamed fields** — the old flat `config` / `config_hash` preset keys
-  were replaced by a nested `config_base` object. Rewrite `config:` as
+- **Renamed fields** — the old flat `config` / `config_hash` *preset*
+  keys (a scalar URL or path) were replaced by a nested `config_base`
+  object; a scalar `config:` value now fails with "must be a YAML
+  mapping" rather than an unknown-field error. Rewrite `config:` as
   `config_base: {source: <value>}` and `config_hash:` as
   `config_base: {sha256: <value>}`, for both `defaults` and per-repo
-  entries:
+  entries. A mapping-shaped `config:` block is separate and still
+  valid — that is the [configuration overlay](#configuration-overlays)
+  syntax (ADR 0122), not the old preset key:
 
   ```yaml
   # Before

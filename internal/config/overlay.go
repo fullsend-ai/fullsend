@@ -308,7 +308,7 @@ func cloneOverlay(src *perRepoConfig) *perRepoConfig {
 		out.CreateIssues = &cp
 	}
 	if src.Authorization != nil {
-		out.Authorization = append([]AuthorizationProvider(nil), src.Authorization...)
+		out.Authorization = cloneAuthorizationSlice(src.Authorization)
 	}
 	if src.Notifications != nil {
 		cp := *src.Notifications
@@ -380,7 +380,7 @@ func applyOverlayLayer(out, child *perRepoConfig) {
 		out.CreateIssues = &cp
 	}
 	if child.Authorization != nil {
-		out.Authorization = append([]AuthorizationProvider(nil), child.Authorization...)
+		out.Authorization = cloneAuthorizationSlice(child.Authorization)
 	}
 	if child.Notifications != nil {
 		cp := *child.Notifications
@@ -437,6 +437,20 @@ func cloneStringSlice(in []string) []string {
 		return nil
 	}
 	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+// cloneAuthorizationSlice copies in, preserving the nil-vs-empty
+// distinction: a nil slice stays nil, and a non-nil empty slice stays
+// non-nil (unlike append([]AuthorizationProvider(nil), in...), which
+// collapses a non-nil empty slice back to nil since there is nothing to
+// append).
+func cloneAuthorizationSlice(in []AuthorizationProvider) []AuthorizationProvider {
+	if in == nil {
+		return nil
+	}
+	out := make([]AuthorizationProvider, len(in))
 	copy(out, in)
 	return out
 }

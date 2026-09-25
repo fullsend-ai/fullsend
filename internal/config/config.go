@@ -1082,7 +1082,7 @@ type perRepoConfigMarshal struct {
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
-	Authorization          []AuthorizationProvider   `yaml:"authorization,omitempty"`
+	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
@@ -1090,10 +1090,11 @@ type perRepoConfigMarshal struct {
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
-// distinction for Roles and AllowedRemoteResources through YAML
-// roundtrips. nil (unset) is omitted so the field inherits from
-// parent; an explicit empty slice is marshaled as an empty YAML
-// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
+// distinction for Roles, AllowedRemoteResources, and Authorization
+// through YAML roundtrips. nil (unset) is omitted so the field
+// inherits from parent; an explicit empty slice is marshaled as an
+// empty YAML sequence (e.g. `roles: []`, `allowed_remote_resources: []`,
+// `authorization: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:             c.Version,
@@ -1104,7 +1105,6 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
-		Authorization:       c.Authorization,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
@@ -1120,6 +1120,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if c.AllowedRemoteResources != nil {
 		h.AllowedRemoteResources = &c.AllowedRemoteResources
+	}
+	if c.Authorization != nil {
+		h.Authorization = &c.Authorization
 	}
 	return &h, nil
 }
