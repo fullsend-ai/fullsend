@@ -164,9 +164,11 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
-**Note**: local runs must pass `--forge github` (or `--forge gitlab`). Auto-detection
-only reads CI environment variables — see [`--forge`](#remote-resource-flags) in the
-option table below.
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`)
+because that checkout's `.fullsend/config.yaml` has no `forge:` set. Auto-detection
+checks `--forge`, then `config.forge` in `.fullsend/config.yaml`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`) — see [`--forge`](#remote-resource-flags) in
+the option table below.
 
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
