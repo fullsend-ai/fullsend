@@ -1321,7 +1321,8 @@ Two artefacts of the run are worth knowing about:
   rather than a fact. `ExtractTranscripts` collects regular `.jsonl` files only — never
   `.jsonl.zst`, since codex writes the running session uncompressed and a plaintext file merely
   *named* that shipped as an artifact the redactor then declined to rewrite — and **every line** of
-  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`, …),
+  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`,
+  `world_state`, `token_usage_record`, ...; the full list is `codexRolloutEnvelopes`),
   since checking only the first would let a file open with one genuine envelope and carry anything
   after it. Each is downloaded to a staging name, validated, redacted and only then renamed into
   place, so a crash cannot leave raw tool output at the path the artifact collector reads; reads are
@@ -1359,4 +1360,4 @@ Two artefacts of the run are worth knowing about:
 | The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.152.1) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
-| JSONL event structs and rollout file naming | the stream parser and transcript extraction | `codex-rs/exec/src/exec_events.rs`, `codex-rs/thread-store/src/local/helpers.rs` |
+| JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |
