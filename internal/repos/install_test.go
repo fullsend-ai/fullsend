@@ -781,16 +781,7 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
-	roleScript, err := scaffold.GitLabPerRepoFile(gitlabRoleTokenScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabRoleTokenScriptPath] = roleScript
+	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -1323,6 +1314,9 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/install-fullsend-cli.sh",
+		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-agent-job.sh",
 		".fullsend/config.yaml",
 	} {
 		if !paths[expected] {

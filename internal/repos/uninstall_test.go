@@ -630,6 +630,34 @@ func TestUninstall_GitLabRoleTokenScript_Deleted(t *testing.T) {
 	}
 }
 
+func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error: %v", err)
+	}
+	deleted := make(map[string]bool)
+	for _, p := range collectDeletedPaths(client) {
+		deleted[p] = true
+	}
+	for _, path := range []string{
+		gitlabInstallCLIScriptPath,
+		gitlabPollJobScriptPath,
+		gitlabAgentJobScriptPath,
+	} {
+		if !deleted[path] {
+			t.Errorf("%s was not deleted on GitLab uninstall", path)
+		}
+	}
+}
+
 func TestUninstall_GitLabRootCI_DeletedWhenEmpty(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
 	// Override the shared fixture: omit merge_request_event. It's no

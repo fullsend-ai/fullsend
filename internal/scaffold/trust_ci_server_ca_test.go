@@ -194,9 +194,13 @@ func TestGitLabTemplatesSourceTrustCIServerCABeforeNetwork(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
-			content, err := GitLabPerRepoFile(path)
-			require.NoError(t, err)
-			s := string(content)
+			var s string
+			switch path {
+			case ".gitlab/ci/fullsend-poll.yml":
+				s = gitlabPollScaffold(t)
+			case ".gitlab/ci/fullsend-agent.yml":
+				s = gitlabAgentScaffold(t)
+			}
 			idxSource := strings.Index(s, scriptMarker)
 			require.Greater(t, idxSource, 0, "%s must source %s", path, scriptMarker)
 

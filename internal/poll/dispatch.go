@@ -112,7 +112,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 
 // signedDispatchKeys lists the pipeline variables included in the
 // HMAC signature, in sorted order. Both the Go poller and the shell
-// verifier in fullsend-agent.yml must use the same key list and order.
+// verifier in run-agent-job.sh must use the same key list and order.
 var signedDispatchKeys = []string{
 	"ACTOR_ID",
 	"EVENT_PAYLOAD_B64",

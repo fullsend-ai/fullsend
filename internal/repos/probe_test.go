@@ -9,6 +9,17 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
+func putGitLabAuxiliaryScripts(t testing.TB, fc *forge.FakeClient, owner, repo string) {
+	t.Helper()
+	for _, path := range gitlabAuxiliaryScriptPaths() {
+		content, err := scaffold.GitLabPerRepoFile(path)
+		if err != nil {
+			t.Fatalf("GitLabPerRepoFile(%s): %v", path, err)
+		}
+		fc.FileContents[owner+"/"+repo+"/"+path] = content
+	}
+}
+
 func TestProbeComponents_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
@@ -193,16 +204,7 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "enforced"
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
-	roleScript, err := scaffold.GitLabPerRepoFile(gitlabRoleTokenScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabRoleTokenScriptPath] = roleScript
+	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -277,6 +279,35 @@ func TestProbeComponents_GitLab_MissingRoleTokenScript(t *testing.T) {
 		}
 	}
 	t.Fatalf("missing role-token script component not found: %+v", components)
+}
+
+func TestProbeComponents_GitLab_MissingExtractedJobScripts(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	wanted := map[string]bool{
+		"scaffold:" + gitlabInstallCLIScriptPath: false,
+		"scaffold:" + gitlabPollJobScriptPath:    false,
+		"scaffold:" + gitlabAgentJobScriptPath:   false,
+	}
+	for _, c := range components {
+		if _, ok := wanted[c.Name]; !ok {
+			continue
+		}
+		if c.Present || c.Match {
+			t.Errorf("missing extracted script component = %+v", c)
+		}
+		wanted[c.Name] = true
+	}
+	for name, found := range wanted {
+		if !found {
+			t.Errorf("missing extracted script component %s not found: %+v", name, components)
+		}
+	}
 }
 
 func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {

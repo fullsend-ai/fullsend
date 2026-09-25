@@ -101,7 +101,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	// so status and converge can detect and repair installs missing only
 	// these files.
 	if forgeName == ForgeGitLab {
-		for _, path := range []string{gitlabTrustScriptPath, gitlabRoleTokenScriptPath} {
+		for _, path := range gitlabAuxiliaryScriptPaths() {
 			_, err := client.GetFileContent(ctx, owner, repo, path)
 			if err != nil && !forge.IsNotFound(err) {
 				return nil, fmt.Errorf("checking GitLab scaffold file %s: %w", path, err)

@@ -44,7 +44,7 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 				t.Errorf("dispatch file should contain version marker with SHA")
 			}
 		}
-		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+		if f.Path == gitlabInstallCLIScriptPath {
 			if !strings.Contains(s, `VERSION="`+ref+`"`) {
 				t.Errorf("%s: should contain rendered version %q", f.Path, ref)
 			}
