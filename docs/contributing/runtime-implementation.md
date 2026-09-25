@@ -316,6 +316,7 @@ exit=0
 | `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
 | `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
 | `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
+| `git commit -m "$(cat <<EOF …)"`, `gh pr create --body "$(cat <<'EOF' … EOF)"`, or nested `cmd1 && cmd2` | write the text to `/tmp/commit-msg-<id>.txt`, then `git commit -F <file>` / `gh pr create --body-file <file>`; split nested `&&`/`;` chains into separate tool calls | a heredoc body, or a nested multi-command substitution |
 | `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
 
 The last row is **deliberately missing from the block message**, which carries only the syntax rewrites. That text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
@@ -340,6 +341,7 @@ Two traps when reproducing by hand:
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `analysis_incomplete: Nested executable body could not be resolved` | a bracket test, a late glob `case` arm, or `$( )` inside `$(( ))` | rewrite per the table above |
+| `analysis_incomplete: Nested executable body could not be resolved`, from a heredoc or nested chain | multi-line text in `$(cat <<'EOF' …)` (commit messages, PR bodies) or several commands nested in one substitution | write `/tmp/commit-msg-<id>.txt`, then `git commit -F <file>` / `gh pr create --body-file <file>`; split nested chains into separate tool calls |
 | `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis`, from a `-H` header | a variable expanded inside a header argument | move the header into a `curl -K` config file, so no `-H` remains |
 | the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
 | `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
