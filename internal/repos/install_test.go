@@ -760,7 +760,7 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -780,7 +780,7 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
@@ -1311,7 +1311,6 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	for _, expected := range []string{
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-agent.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
@@ -1326,6 +1325,9 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	if paths[".gitlab-ci.yml"] {
 		t.Error(".gitlab-ci.yml should not be in static scaffold — " +
 			"root file is merged dynamically by Install")
+	}
+	if paths[fullsendDispatchInclude] {
+		t.Error("fresh GitLab install must not include obsolete fullsend-dispatch.yml")
 	}
 }
 

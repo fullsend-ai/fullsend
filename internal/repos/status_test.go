@@ -117,7 +117,7 @@ func TestProbeRepoState_ProbeError(t *testing.T) {
 
 func TestProbeRepoState_GitLab_InstalledViaForgeToken(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 
 	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
@@ -134,7 +134,7 @@ func TestProbeRepoState_GitLab_InstalledViaForgeToken(t *testing.T) {
 
 func TestProbeRepoState_GitLab_InstalledViaSchedule(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 		{ID: 1, Description: "fullsend slash poll", Active: true},
 	}
@@ -153,7 +153,7 @@ func TestProbeRepoState_GitLab_PollStateBranchAlone_NotInstalled(t *testing.T) {
 	// evidence: uninstall does not yet delete these branches (#7381), so
 	// branch-only evidence would misclassify an uninstalled repo.
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", poll.PollStateBranchSlash, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
 		t.Fatalf("seed slash: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestProbeRepoState_GitLab_PostUninstall_NotInstalled(t *testing.T) {
 	// poll-state branches remain (branch deletion deferred to #7381).
 	// This must not be classified as installed.
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	for _, branch := range gitlabPollStateBranches {
 		if err := fc.ForceCommitFileToBranch(context.Background(), "acme", "api", branch, poll.PollStateFileName, "seed", []byte(`{"hmac":"x"}`)); err != nil {
 			t.Fatalf("seed %s: %v", branch, err)
@@ -189,9 +189,27 @@ func TestProbeRepoState_GitLab_PostUninstall_NotInstalled(t *testing.T) {
 	}
 }
 
+func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("  ref: v2.4.0\n")
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true")
+	}
+	if state.FullsendRef != "v2.4.0" {
+		t.Errorf("FullsendRef = %q, want v2.4.0 from leftover dispatch stub", state.FullsendRef)
+	}
+}
+
 func TestProbeRepoState_GitLab_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 
 	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
 	if err != nil {
@@ -1651,7 +1669,7 @@ func TestStatus_GitLab_MissingSchedules_ReportsDrift(t *testing.T) {
 
 	// Fully installed GitLab repo (workflow, variables, secrets) but
 	// no pipeline schedules — simulates a partial install failure.
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"

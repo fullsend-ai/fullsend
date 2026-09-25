@@ -128,7 +128,8 @@ A committed `inference.openai` block in the repository's `config.yaml` is ignore
 works in CI and on your machine.
 
 The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
-`fullsend-openai` profile are built into fullsend, nothing needs to be on disk) and a sandbox policy
+`fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
+declare it) and a sandbox policy
 (`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
 the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
 refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding

@@ -17,9 +17,6 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 
 	for _, sp := range scaffoldGitLabPaths {
 		content := "---\n__RUNNER_TAGS__\nVERSION=\"__FULLSEND_VERSION__\"\n"
-		if sp.outPath == ".gitlab/ci/fullsend-dispatch.yml" {
-			content = "---\n# fullsend-stage: dispatch\ntags: __RUNNER_TAGS__\n"
-		}
 		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+ref] = []byte(content)
 	}
 
@@ -39,10 +36,13 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 		if strings.Contains(s, "__FULLSEND_VERSION__") {
 			t.Errorf("%s: __FULLSEND_VERSION__ was not substituted", f.Path)
 		}
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+		if f.Path == fullsendPipelineInclude {
 			if !strings.Contains(s, "# fullsend-ref: "+sha) {
-				t.Errorf("dispatch file should contain version marker with SHA")
+				t.Errorf("pipeline wrapper should contain version marker with SHA")
 			}
+		}
+		if f.Path == fullsendDispatchInclude {
+			t.Errorf("remote GitLab scaffold must not include obsolete %s", f.Path)
 		}
 		if f.Path == gitlabInstallCLIScriptPath {
 			if !strings.Contains(s, `VERSION="`+ref+`"`) {
@@ -99,6 +99,19 @@ func TestGitLabScaffoldListsIncludeTrustScript(t *testing.T) {
 		if !slices.Contains(gitlabScaffoldPaths, path) {
 			t.Errorf("gitlabScaffoldPaths missing embedded install file %s", path)
 		}
+	}
+
+	if installPaths[fullsendDispatchInclude] {
+		t.Error("embedded GitLab install files must not include obsolete fullsend-dispatch.yml")
+	}
+	if remoteOut[fullsendDispatchInclude] {
+		t.Error("remote GitLab scaffold paths must not fetch obsolete fullsend-dispatch.yml")
+	}
+	if !slices.Contains(gitlabScaffoldPaths, fullsendDispatchInclude) {
+		t.Error("gitlabScaffoldPaths must still list fullsend-dispatch.yml so uninstall/converge can remove it from legacy repos")
+	}
+	if !slices.Contains(gitlabRetiredScaffoldPaths, fullsendDispatchInclude) {
+		t.Error("gitlabRetiredScaffoldPaths must list fullsend-dispatch.yml so converge deletes it")
 	}
 }
 

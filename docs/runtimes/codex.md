@@ -130,9 +130,13 @@ What a local codex run needs, beyond the guide:
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
-  `policy: policies/base.yaml`. The fleet's agents already carry both; a custom harness needs the
-  policy because the sandbox image's default policy leaves an uninspected route to `api.openai.com`,
-  which the gateway refuses to carry the credential over.
+  `policy: policies/base.yaml`. The fleet's agents carry both from the first fullsend release after
+  v0.43.0; up to v0.43.0 they carry only the policy. `fullsend run` materializes the credential only
+  when the harness lists the provider, so on those releases add it on a
+  [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) (a
+  child's providers are appended to its base's). Runs that do not call OpenAI skip the provider. A
+  custom harness also needs the policy, because the sandbox image's default policy leaves an
+  uninspected route to `api.openai.com`, which the gateway refuses to carry the credential over.
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `codex-debug.log` inside the run directory, next to the transcripts, not in the runner's output.
 
@@ -217,6 +221,20 @@ probes on the way up and the policy refuses what the run does not need:
 
 None of these stop the run. What *would* is a denial on `POST /v1/responses`, which means the
 profile or the policy is wrong.
+
+**`OPENAI_API_KEY in the sandbox is not a gateway placeholder`.** The harness does not declare the
+OpenAI provider, so no credential was attached to the sandbox. Each iteration stops before codex
+starts, and the run ends with `validation failed after 2 iteration(s)`:
+
+```
+fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex
+→ Result: ERROR (incomplete)
+```
+
+Add `- openai` under `providers:` in the harness you run. The fleet harnesses declare it from the
+first fullsend release after v0.43.0; on an earlier release, or on a custom harness, add it yourself
+(on a [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) in
+a `.fullsend` repo).
 
 **``provider auth command `...` ...``** — codex's own wording, one of `exited with status N`,
 `failed to start`, `timed out after N ms`, `produced an empty token`, or `wrote non-UTF-8 data to

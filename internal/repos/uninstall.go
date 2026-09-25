@@ -61,10 +61,14 @@ var gitlabUninstallSecrets = []string{
 	forge.SecretGCPWIFProvider,
 }
 
+// gitlabScaffoldPaths is the full set of files uninstall removes. It is
+// a superset of the current install set: fullsend-dispatch.yml is no
+// longer installed (#7707) but must still be deleted from repos enrolled
+// before the version marker moved to fullsend-pipeline.yml.
 var gitlabScaffoldPaths = []string{
-	".gitlab/ci/fullsend-pipeline.yml",
+	fullsendPipelineInclude,
 	".gitlab/ci/fullsend-agent.yml",
-	".gitlab/ci/fullsend-dispatch.yml",
+	fullsendDispatchInclude,
 	".gitlab/ci/fullsend-poll.yml",
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
 	".gitlab/ci/scripts/select-gitlab-role-token.sh",
@@ -72,6 +76,13 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/scripts/run-poll-job.sh",
 	".gitlab/ci/scripts/run-agent-job.sh",
 	".fullsend/config.yaml",
+}
+
+// gitlabRetiredScaffoldPaths are files previous GitLab installs wrote
+// that the current template no longer produces. Converge deletes them
+// (unlike generic orphans, which are reported but left in place).
+var gitlabRetiredScaffoldPaths = []string{
+	fullsendDispatchInclude,
 }
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
