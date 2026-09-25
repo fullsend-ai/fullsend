@@ -1894,12 +1894,18 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 // the gcloud command to recover manually.
 //
 // Before moving traffic, it reconciles registration data (ALLOWED_ORGS,
-// ROLE_APP_IDS, PER_REPO_WIF_REPOS) that may exist only on the currently
-// serving revision: those env vars can be updated by direct Cloud Run
-// patches (EnsureOrgInMint, AddRoleToMint, RegisterPerRepoWIF) that never
+// ROLE_APP_IDS, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) against the
+// currently serving revision, which is treated as the source of truth: those
+// env vars can be updated by direct Cloud Run patches (EnsureOrgInMint,
+// AddRoleToMint, RegisterPerRepoWIF, RemoveOrgFromMint, RemoveRoleFromMint,
+// RemoveRepoFromMint, AddWorkflowHostRepo, RemoveWorkflowHostRepo) that never
 // write back to the Cloud Functions template used to build the latest-ready
-// revision. Pinning to that revision without reconciling first would
-// silently drop the registration data from what's actually serving traffic.
+// revision. Pinning to that revision without reconciling first could either
+// drop registration data the traffic-serving revision has and the template
+// doesn't, or silently restore an org/role/repo that was revoked from
+// traffic but still lingers in a stale template. If the traffic-serving
+// env can't be read reliably, the pin is refused rather than proceeding on
+// unverified data.
 func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
@@ -1943,7 +1949,7 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 		return nil
 	}
 
-	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars)
+	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars, info.TrafficEnvVarsUnreliable)
 	if err != nil {
 		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; recover with: %s",
 			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
@@ -1967,63 +1973,83 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	return nil
 }
 
-// accumulativeEnvKeys lists env vars that grow over the lifetime of a mint
-// via direct Cloud Run patches (EnsureOrgInMint, AddRoleToMint,
-// RemoveRoleFromMint, RegisterPerRepoWIF). Those patches update the Cloud
-// Run service directly and never write back to the Cloud Functions template
-// that produces the "latest ready" revision after a code deploy, so the
-// template can be missing data the traffic-serving revision already has.
-var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "ROLE_APP_IDS", "PER_REPO_WIF_REPOS"}
+// accumulativeEnvKeys lists CSV-formatted allow-list env vars that are
+// updated in place on the Cloud Run traffic-serving revision via direct
+// patches (EnsureOrgInMint, RemoveOrgFromMint, RegisterPerRepoWIF,
+// RemoveRepoFromMint, AddWorkflowHostRepo, RemoveWorkflowHostRepo). Those
+// patches update the Cloud Run service directly and never write back to the
+// Cloud Functions template that produces the "latest ready" revision after a
+// code deploy, so the template can be missing data the traffic-serving
+// revision already has — or can still carry entries the traffic-serving
+// revision no longer has, after a removal.
+//
+// The traffic-serving revision is the source of truth for these keys:
+// reconcileTargetEnvVars copies them onto the target env verbatim (including
+// removals), rather than only unioning the template's value forward. Unioning
+// can silently restore a revoked org, role, or per-repo WIF entry that a
+// Remove* call cleared from traffic but that survives in a stale template.
+var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "PER_REPO_WIF_REPOS", "WORKFLOW_HOST_REPOS"}
 
 // reconcileTargetEnvVars compares the accumulative registration keys between
-// the currently traffic-serving env vars and the target (template) env vars
-// that a traffic pin would move to. It returns a full env var map with any
-// missing registration data merged back in, or nil if the target already has
-// everything the traffic-serving revision has for those keys.
+// the currently traffic-serving env vars (the source of truth) and the
+// target (template) env vars that a traffic pin would move to. It returns a
+// full env var map with those keys copied from traffic, or nil if the target
+// already matches traffic for all of them.
+//
+// trafficEnvUnreliable must be true when trafficEnv was not read directly
+// from the traffic-serving revision (see ServiceRevisionInfo.
+// TrafficEnvVarsUnreliable) — in that case trafficEnv is a copy of the
+// target's own template data, so comparing it against the target always
+// looks reconciled even though nothing was actually verified. Reconciling
+// blind on that data would pin the unreconciled revision and reintroduce the
+// exact registration drop this function exists to prevent, so it errors
+// instead.
 //
 // Comparisons are set-based (not string-equality) so that formatting or
-// ordering differences in the target's existing value — which carries no
-// data-loss risk — never trigger an unnecessary reconciliation revision.
-func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string) (map[string]string, error) {
+// ordering differences that carry no data-loss risk never trigger an
+// unnecessary reconciliation revision.
+func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvUnreliable bool) (map[string]string, error) {
+	if trafficEnvUnreliable {
+		return nil, fmt.Errorf("traffic-serving revision's env vars could not be read reliably; refusing to reconcile registration data without a verified read")
+	}
 	if len(trafficEnv) == 0 {
 		return nil, nil
 	}
 
 	changed := false
-	merged := make(map[string]string, len(targetEnv)+len(accumulativeEnvKeys))
+	merged := make(map[string]string, len(targetEnv)+len(accumulativeEnvKeys)+1)
 	for k, v := range targetEnv {
 		merged[k] = v
 	}
 
-	if prevOrgs := trafficEnv["ALLOWED_ORGS"]; prevOrgs != "" && !csvContainsAll(merged["ALLOWED_ORGS"], prevOrgs) {
-		merged["ALLOWED_ORGS"] = unionCSV(merged["ALLOWED_ORGS"], prevOrgs)
-		changed = true
-	}
-
-	if prevRoleIDsJSON := trafficEnv["ROLE_APP_IDS"]; prevRoleIDsJSON != "" {
-		var prevRoleIDs map[string]string
-		if err := json.Unmarshal([]byte(prevRoleIDsJSON), &prevRoleIDs); err != nil {
-			return nil, fmt.Errorf("parsing traffic-serving ROLE_APP_IDS: %w", err)
-		}
-		var currentRoleIDs map[string]string
-		if cur := merged["ROLE_APP_IDS"]; cur != "" {
-			if err := json.Unmarshal([]byte(cur), &currentRoleIDs); err != nil {
-				return nil, fmt.Errorf("parsing target ROLE_APP_IDS: %w", err)
-			}
-		}
-		if !mapHasAllKeys(currentRoleIDs, prevRoleIDs) {
-			mergedRoleIDsJSON, err := mergeRoleAppIDsJSON(merged["ROLE_APP_IDS"], prevRoleIDs)
-			if err != nil {
-				return nil, fmt.Errorf("merging ROLE_APP_IDS: %w", err)
-			}
-			merged["ROLE_APP_IDS"] = mergedRoleIDsJSON
-			merged["ALLOWED_ROLES"] = deriveAllowedRoles(mergedRoleIDsJSON)
+	for _, key := range accumulativeEnvKeys {
+		trafficVal := trafficEnv[key]
+		if !csvSetEqual(merged[key], trafficVal) {
+			merged[key] = unionCSV(trafficVal, "")
 			changed = true
 		}
 	}
 
-	if prevRepos := trafficEnv["PER_REPO_WIF_REPOS"]; prevRepos != "" && !csvContainsAll(merged["PER_REPO_WIF_REPOS"], prevRepos) {
-		merged["PER_REPO_WIF_REPOS"] = unionCSV(merged["PER_REPO_WIF_REPOS"], prevRepos)
+	trafficRoleIDsJSON := trafficEnv["ROLE_APP_IDS"]
+	var trafficRoleIDs map[string]string
+	if trafficRoleIDsJSON != "" {
+		if err := json.Unmarshal([]byte(trafficRoleIDsJSON), &trafficRoleIDs); err != nil {
+			return nil, fmt.Errorf("parsing traffic-serving ROLE_APP_IDS: %w", err)
+		}
+	}
+	var currentRoleIDs map[string]string
+	if cur := merged["ROLE_APP_IDS"]; cur != "" {
+		if err := json.Unmarshal([]byte(cur), &currentRoleIDs); err != nil {
+			return nil, fmt.Errorf("parsing target ROLE_APP_IDS: %w", err)
+		}
+	}
+	if !stringMapEqual(currentRoleIDs, trafficRoleIDs) {
+		mergedRoleIDsJSON, err := marshalRoleAppIDs(trafficRoleIDs)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling ROLE_APP_IDS: %w", err)
+		}
+		merged["ROLE_APP_IDS"] = mergedRoleIDsJSON
+		merged["ALLOWED_ROLES"] = deriveAllowedRoles(mergedRoleIDsJSON)
 		changed = true
 	}
 
@@ -2031,6 +2057,12 @@ func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string) (map[string
 		return nil, nil
 	}
 	return merged, nil
+}
+
+// csvSetEqual reports whether two comma-separated lists contain the same set
+// of entries, ignoring formatting, ordering, and duplicates.
+func csvSetEqual(a, b string) bool {
+	return csvContainsAll(a, b) && csvContainsAll(b, a)
 }
 
 // csvContainsAll reports whether every entry in needle (a comma-separated
@@ -2050,11 +2082,14 @@ func csvContainsAll(haystack, needle string) bool {
 	return true
 }
 
-// mapHasAllKeys reports whether every key in subset is present in m
-// (regardless of value).
-func mapHasAllKeys(m, subset map[string]string) bool {
-	for k := range subset {
-		if _, ok := m[k]; !ok {
+// stringMapEqual reports whether two string maps have identical key/value
+// pairs. A nil map and an empty map compare equal.
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
 			return false
 		}
 	}

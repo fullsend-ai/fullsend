@@ -87,6 +87,17 @@ type ServiceRevisionInfo struct {
 	// (org/role/per-repo-WIF registration) advanced the traffic-serving
 	// revision's env independently.
 	TemplateEnvVars map[string]string
+	// TrafficEnvVarsUnreliable is true when TrafficEnvVars was not read
+	// directly from the traffic-serving revision (transport error, non-200,
+	// unmarshal failure, or an unresolvable revision name) and was instead
+	// filled in from the service template as a display-only fallback.
+	// Callers that use TrafficEnvVars as the source of truth for
+	// reconciling accumulative registration data (ALLOWED_ORGS,
+	// ROLE_APP_IDS, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) must treat this
+	// as "traffic env unknown", not "traffic env matches template" — the
+	// fallback value is the template's own data, so comparing it against
+	// the template always looks reconciled even when it is not.
+	TrafficEnvVarsUnreliable bool
 }
 
 // RevisionSummary is a brief snapshot of a Cloud Run revision.
@@ -1972,6 +1983,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 		// GetServiceRevisionInfo returns partial data on non-fatal errors,
 		// matching the pattern at the revision list step above.
 	}
+	trafficEnvVarsRead := false
 	if revResourceName != "" {
 		revisionURL := fmt.Sprintf("https://run.googleapis.com/v2/%s", revResourceName)
 		revResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionURL, "")
@@ -1995,18 +2007,26 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 						}
 					}
 					info.TrafficEnvVars = envVars
+					trafficEnvVarsRead = true
 				}
 			}
 		}
 	}
 
 	// Fall back to template env vars if we couldn't read traffic revision.
-	if info.TrafficEnvVars == nil && len(service.Template.Containers) > 0 {
-		envVars := make(map[string]string)
-		for _, e := range service.Template.Containers[0].Env {
-			envVars[e.Name] = e.Value
+	// This is a display-only fallback: mark it unreliable so callers that
+	// need to know the traffic-serving revision's actual env (rather than
+	// an approximation) don't mistake "couldn't read it" for "it matches
+	// the template".
+	if !trafficEnvVarsRead {
+		info.TrafficEnvVarsUnreliable = true
+		if len(service.Template.Containers) > 0 {
+			envVars := make(map[string]string)
+			for _, e := range service.Template.Containers[0].Env {
+				envVars[e.Name] = e.Value
+			}
+			info.TrafficEnvVars = envVars
 		}
-		info.TrafficEnvVars = envVars
 	}
 
 	return info, nil
