@@ -782,6 +782,602 @@ func TestDispatchPunctuationStrip(t *testing.T) {
 	}
 }
 
+// TestReviewRoutingSkips validates the review-routing hygiene skips (ADR
+// 0096): drafts don't trigger an automatic review on open/sync, and the
+// fullsend-no-review label blocks automatic (but not explicit /fs-review)
+// dispatch. Both dispatch workflows must stay in sync per
+// docs/contributing/workflow-contracts.md.
+func TestReviewRoutingSkips(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+
+	cases := []workflowCase{
+		{
+			"reusable-dispatch.yml",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+		},
+		{
+			"scaffold/dispatch.yml",
+			loadScaffoldFile(".github/workflows/dispatch.yml"),
+		},
+	}
+
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+
+			assert.Contains(t, s, `PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}`,
+				"must expose draft status to the routing step")
+
+			// Draft skip: opened/synchronize require non-draft OR ready_for_review;
+			// ready_for_review itself is never gated on draft status.
+			assert.Regexp(t, `(?s)if \[\[ "\$\{EVENT_ACTION\}" == "ready_for_review" \|\| "\$\{PR_IS_DRAFT\}" != "true" \]\] && ! has_label "fullsend-no-review" "\$\{PR_LABELS\}"; then\s*\n\s+if \[\[ "\$\{PR_USER_LOGIN\}"`, s,
+				"opened/synchronize/ready_for_review must skip drafts (except ready_for_review) and fullsend-no-review before routing to review")
+
+			// fullsend-no-review must also gate the labeled (ready-for-review) path...
+			assert.Regexp(t, `(?s)labeled\)\s*\n\s+if \[\[ "\$\{TRIGGERING_LABEL\}" == "ready-for-review" \]\] && ! has_label "fullsend-no-review" "\$\{PR_LABELS\}"; then\s*\n\s+STAGE="review"`, s,
+				"pull_request_target labeled ready-for-review must check fullsend-no-review")
+
+			// ...and the issues-event ready-for-review path (bot handoff via label).
+			assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_(IS_PR|HAS_PR)\}" == "true" \]\] && ! has_label "fullsend-no-review"; then\s*\n\s+STAGE="review"`, s,
+				"issues labeled ready-for-review must check fullsend-no-review")
+
+			// The /fs-review comment escape hatch must remain ungated by the label
+			// (mirrors /fs-fix's fullsend-no-fix bypass) — only automatic triggers skip.
+			assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_(IS_PR|HAS_PR)\}" == "true" \]\]; then\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage; then`, s,
+				"/fs-review must remain unaffected by fullsend-no-review")
+		})
+	}
+}
+
+// docsSkipStepRun returns the `run:` body of the docs-lockfile-check step in
+// the per-repo reusable-dispatch.yml, parsed out of the YAML rather than
+// grepped, so the runtime test below executes exactly what ships.
+func docsSkipStepRun(t *testing.T) string {
+	t.Helper()
+	var doc struct {
+		Jobs struct {
+			Route struct {
+				Steps []struct {
+					ID  string `yaml:"id"`
+					If  string `yaml:"if"`
+					Run string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"route"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &doc))
+	for _, step := range doc.Jobs.Route.Steps {
+		if step.ID == "docs-lockfile-check" {
+			require.NotEmpty(t, step.Run, "docs-lockfile-check must have a run script")
+			return step.Run
+		}
+	}
+	t.Fatal("route job has no docs-lockfile-check step")
+	return ""
+}
+
+// TestReviewRoutingDocsSkip is the wiring half of the documentation-prose
+// skip (ADR 0096) in the per-repo reusable-dispatch.yml: that the step
+// exists, that its output gates the job's stage, and that it never runs for
+// an explicit /fs-review. What the step *decides* is not observable from the
+// YAML text — TestReviewRoutingDocsSkipRuntime executes it instead.
+//
+// Deliberately not mirrored into the deprecated per-org scaffold/dispatch.yml:
+// the scaffold mirrors routing and gets no new steps —
+// docs/contributing/workflow-contracts.md and ADR 0096.
+func TestReviewRoutingDocsSkip(t *testing.T) {
+	s := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+
+	assert.Contains(t, s, "id: docs-lockfile-check")
+	assert.Contains(t, s, "steps.docs-lockfile-check.outputs.skipped != 'true'",
+		"job-level stage output must account for the docs skip")
+
+	// The issue_comment guard is what makes /fs-review a complete escape
+	// hatch: without it the docs skip would swallow an explicitly requested
+	// review, contradicting ADR 0096.
+	assert.Contains(t, s, `if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name != 'issue_comment'`,
+		"docs-lockfile-check must run only for automatic review dispatch — never for /fs-review (issue_comment)")
+}
+
+// TestReviewRoutingDocsSkipRuntime executes the docs-lockfile-check step's
+// embedded bash against a stubbed `gh` binary, so the skip decision is
+// verified by behaviour rather than by matching substrings (see #6587
+// review). The stub rejects a POST, which is how the endpoint responded to
+// the `-F per_page=100` form of the call.
+//
+// Only the file-list classification is observable here. The draft and label
+// skips live in the "Determine stage" step and are pinned by
+// TestReviewRoutingSkips; the /fs-review bypass is a step-level `if:` that
+// GitHub evaluates, asserted in TestReviewRoutingDocsSkip above.
+func TestReviewRoutingDocsSkipRuntime(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	script := docsSkipStepRun(t)
+
+	// run executes the step with a stub gh that serves filesJSON for the
+	// listing call (or fails when it is empty) and, for the per-page content
+	// call, the page body from contents (a missing entry is inert prose; a
+	// value of "FAIL" is an unreadable page). Returns the step output plus
+	// whether the step set skipped=true. A non-empty yqStub shadows the real
+	// yq on PATH for that run.
+	yqStub := ""
+	run := func(t *testing.T, filesJSON string, contents map[string]string) (string, bool) {
+		t.Helper()
+		dir := t.TempDir()
+		if yqStub != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "yq"), []byte(yqStub), 0o755))
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "files.json"), []byte(filesJSON), 0o600))
+		pages := filepath.Join(dir, "pages")
+		for path, body := range contents {
+			require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(pages, path)), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(pages, path), []byte(body), 0o600))
+		}
+		stub := "#!/usr/bin/env bash\n" +
+			"if [[ \"$1\" != api ]]; then echo \"unexpected gh call: $*\" >&2; exit 1; fi\n" +
+			"for arg in \"$@\"; do\n" +
+			"  case \"$arg\" in\n" +
+			"    -F|--field|-X|--method) echo 'gh stub: request would not be a GET (404)' >&2; exit 1 ;;\n" +
+			"    https://api.github.com/repos/*/contents/*)\n" +
+			"      page=\"${arg#*/contents/}\"; page=\"${page%%\\?*}\"\n" +
+			"      if [[ -f \"$GH_STUB_PAGES/$page\" ]]; then\n" +
+			"        [[ \"$(cat \"$GH_STUB_PAGES/$page\")\" == FAIL ]] && { echo 'simulated content failure' >&2; exit 1; }\n" +
+			"        cat \"$GH_STUB_PAGES/$page\"\n" +
+			"      else\n" +
+			"        printf '# %s\\n\\nPlain prose.\\n' \"$page\"\n" +
+			"      fi\n" +
+			"      exit 0 ;;\n" +
+			"  esac\n" +
+			"done\n" +
+			"[[ -s \"$GH_STUB_FILES\" ]] || { echo 'simulated api failure' >&2; exit 1; }\n" +
+			"jq -r \"${!#}\" < \"$GH_STUB_FILES\"\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+		scriptPath := filepath.Join(dir, "docs-check.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+		outputFile := filepath.Join(dir, "github_output")
+		require.NoError(t, os.WriteFile(outputFile, nil, 0o600))
+
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_STUB_FILES="+filepath.Join(dir, "files.json"),
+			"GH_STUB_PAGES="+pages,
+			"GH_TOKEN=stub",
+			"SOURCE_REPO=octo/repo",
+			"PR_NUMBER=1",
+			"GITHUB_OUTPUT="+outputFile,
+			"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "step_summary"),
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "step must exit 0 whatever it decides: %s", out)
+		got, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		return string(out), strings.Contains(string(got), "skipped=true")
+	}
+
+	// entry builds one /pulls/{n}/files element the way GitHub shapes it:
+	// contents_url points at the page on the PR head.
+	entry := func(status, filename, previous string) string {
+		prev := ""
+		if previous != "" {
+			prev = fmt.Sprintf(`,"previous_filename":%q`, previous)
+		}
+		return fmt.Sprintf(`{"status":%q,"filename":%q%s,"contents_url":"https://api.github.com/repos/octo/repo/contents/%s?ref=abc123"}`,
+			status, filename, prev, filename)
+	}
+	// files builds a listing from filename/previous_filename pairs (an empty
+	// second element means the file was not renamed).
+	files := func(pairs ...[2]string) string {
+		entries := make([]string, 0, len(pairs))
+		for _, p := range pairs {
+			entries = append(entries, entry("modified", p[0], p[1]))
+		}
+		return "[" + strings.Join(entries, ",") + "]"
+	}
+	const prose = "docs/guides/user/bugfix-workflow.md"
+
+	t.Run("prose only skips", func(t *testing.T) {
+		_, skipped := run(t, files(
+			[2]string{prose, ""},
+			[2]string{"docs/agents/review.md", ""},
+			[2]string{"docs/problems/governance.md", ""},
+			[2]string{"docs/glossary.md", ""},
+		), nil)
+		assert.True(t, skipped, "markdown prose under the allowlisted directories is what the skip exists for")
+	})
+
+	// Prose is an allowlist: anything under docs/ that is not listed stays
+	// reviewed — the contracts other repos build against, the pages
+	// contributors are told to keep current, and the VitePress page that
+	// already ships a <script setup>. `case` globs match `/`, so a bare
+	// docs/*.md arm would reach all of these.
+	for _, notListed := range []string{
+		"docs/ADRs/0096-skip-provably-unnecessary-review-dispatch.md",
+		"docs/normative/normalized-event/v1/README.md",
+		"docs/contributing/workflow-contracts.md",
+		"docs/reference/harness-reference.md",
+		"docs/.vitepress/theme/README.md",
+		"docs/architecture.md",
+		"docs/cli/agent.md",
+		"docs/v/index.md",
+		"docs/index.md",
+	} {
+		t.Run("not allowlisted: "+notListed, func(t *testing.T) {
+			_, skipped := run(t, files(
+				[2]string{prose, ""},
+				[2]string{notListed, ""},
+			), nil)
+			assert.False(t, skipped, "%s is not on the prose allowlist — it must still be reviewed", notListed)
+		})
+	}
+
+	// Markdown outside docs/ is executable agent instruction, and a
+	// lockfile-only diff can repoint a transitive dependency.
+	for _, notProse := range []string{"AGENTS.md", "CLAUDE.md", "skills/pr-review/SKILL.md", "package-lock.json", "internal/cli/run.go"} {
+		t.Run("not prose: "+notProse, func(t *testing.T) {
+			_, skipped := run(t, files([2]string{notProse, ""}), nil)
+			assert.False(t, skipped, "%s must not be treated as skippable prose", notProse)
+		})
+	}
+
+	t.Run("rename into docs is classified on its old path", func(t *testing.T) {
+		_, skipped := run(t, files([2]string{"docs/guides/notes.md", "internal/cli/run.go"}), nil)
+		assert.False(t, skipped, "moving code under docs/ must not suppress review")
+	})
+
+	// VitePress compiles every page under docs/ into a Vue component, so a
+	// prose path can still carry code that runs at build time (see #6587
+	// review). The page is read at the PR head and scanned raw — code
+	// examples included, see the fence cases below.
+	for name, body := range map[string]string{
+		"script setup":     "# Page\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"style block":      "# Page\n\n<style>\nbody { display: none }\n</style>\n",
+		"head frontmatter": "---\nhead:\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"interpolation":    "# Page\n\nTotal: {{ (() => globalThis.process.exit())() }}\n",
+		"bound attribute":  "# Page\n\n<VPLVersionLink :version=\"aliases.dev\" />\n",
+		"event handler":    "# Page\n\n<img src=x onerror=\"alert(1)\">\n",
+		// #6587 review: uppercase tags render (config.ts KNOWN_TAGS is /i),
+		// a binding wrapped onto its own line is still a live binding,
+		// VitePress evaluates a -vue fence, `head :` with a space is valid
+		// YAML, and <!-- @include --> splices a file at build time.
+		"uppercase script":  "# Page\n\n<SCRIPT setup>\nimport { evil } from 'evil'\n</SCRIPT>\n",
+		"multiline v-html":  "# Page\n\n<span\n  v-html=\"payload\"\n/>\n",
+		"js-vue fence":      "# Page\n\n```js-vue\n{{ 40 + 2 }}\n```\n",
+		"spaced head key":   "---\nhead :\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"include directive": "# Page\n\n<!-- @include: ../../secrets.md -->\n",
+		// #6587 review: frontmatter is YAML, so every spelling below is the
+		// `head` key VitePress reads (gray-matter + js-yaml) and none of them
+		// is the text `head:` at the start of a line. js-yaml stringifies a
+		// sequence key, so `[head]:` is the same key too.
+		"double-quoted head key": "---\n\"head\":\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"single-quoted head key": "---\n'head':\n  - - script\n    - src: https://evil.example/x.js\n---\n# Page\n",
+		"flow mapping head key":  "---\n{head: [[script, {src: \"https://evil.example/x.js\"}]]}\n---\n# Page\n",
+		"escaped head key":       "---\n\"\\x68ead\": [[script, {src: x}]]\n---\n# Page\n",
+		"explicit head key":      "---\n? head\n: - - script\n    - src: x\n---\n# Page\n",
+		"merged head key":        "---\nx: &x\n  head: [[script, {src: x}]]\n<<: *x\n---\n# Page\n",
+		"aliased head key":       "---\nname: &k head\n*k : [[script, {src: x}]]\n---\n# Page\n",
+		"sequence head key":      "---\n[head]: [[script, {src: x}]]\n---\n# Page\n",
+		"mixed-case head key":    "---\nHead: [[script, {src: x}]]\n---\n# Page\n",
+		"head key after a BOM":   "\ufeff---\n\"head\": [[script, {src: x}]]\n---\n# Page\n",
+		"head key with CRLF":     "---\r\n\"head\": [[script, {src: x}]]\r\n---\r\n# Page\r\n",
+		"unclosed frontmatter":   "---\n\"head\": [[script, {src: x}]]\n",
+		// gray-matter picks the engine from the text after the opening ---,
+		// and its js engine evals the block: only a bare --- is parsed here.
+		"json frontmatter": "---json\n{\"head\": [[\"script\", {\"src\": \"x\"}]]}\n---\n# Page\n",
+		"toml frontmatter": "---toml\nhead = [[\"script\", {src = \"x\"}]]\n---\n# Page\n",
+		"js frontmatter":   "---js\n{ head: [[\"script\", { src: \"x\" }]] }\n---\n# Page\n",
+		// Anything the parser cannot vouch for keeps the review.
+		"unparseable frontmatter": "---\ndescription: [never closed\n---\n# Page\n",
+		"non-mapping frontmatter": "---\n- head\n---\n# Page\n",
+		// Frontmatter keys are an allowlist, so the keys VitePress and the
+		// theme act on keep the review without being named anywhere.
+		"layout key":  "---\nlayout: home\n---\n# Page\n",
+		"hero key":    "---\ndescription: fine\nhero:\n  tagline: <b>raw</b>\n---\n# Page\n",
+		"outline key": "---\noutline: deep\n---\n# Page\n",
+		// #6587 review: the scan used to strip fenced code first, tracking
+		// fences line by line, and each page below hid live markup from it —
+		// markdown-it (14.1.0, html: true) renders every payload here as a
+		// live html_block, not as code. The raw page is scanned instead.
+		"backtick in a fence info string":  "# Page\n\n```js `a backtick fence info string cannot contain a backtick`\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"tilde fence holding backticks":    "# Page\n\n~~~\n```\n~~~\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"longer fence holding a shorter":   "# Page\n\n````md\n```\n````\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"indented closing fence":           "# Page\n\n```js\nconst x = 1\n   ```\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"indented opening fence":           "# Page\n\n ```js\nconst x = 1\n```\n\n<script setup>\nimport { evil } from 'evil'\n</script>\n",
+		"fence inside a raw HTML block":    "# Page\n\n<div>\n```\n{{ 40 + 2 }}\n```\n</div>\n",
+		"markup in a genuine code example": "# Page\n\nUse `{{ github.event }}` or `<script>` in prose.\n\n```html\n<script setup>\nimport x from 'y'\n</script>\n{{ expr }}\n```\n",
+	} {
+		t.Run("executable markup: "+name, func(t *testing.T) {
+			out, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
+			assert.False(t, skipped, "a page that may carry executable markup is not inert prose")
+			assert.Contains(t, out, "may carry executable markup")
+		})
+	}
+
+	// The common case must survive the raw scan: ordinary fenced and inline
+	// code holds none of the scanned tokens.
+	t.Run("ordinary code examples still skip", func(t *testing.T) {
+		body := "# Page\n\nRun `fullsend admin install` first.\n\n```bash\nexport GH_TOKEN=\"$(gh auth token)\"\nfullsend run --agent review | tee out.log\n```\n\n```yaml\nroles:\n  review: { enabled: true }\n```\n\n~~~\nplain <b>html</b> in a tilde fence\n~~~\n"
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: body})
+		assert.True(t, skipped, "a page whose code examples hold no scanned token is what the skip exists for")
+	})
+
+	// Nor may the frontmatter gate end the skip for the pages it exists for:
+	// every docs/agents/ page carries a description. Only the leading block
+	// is frontmatter — a thematic break further down does not open one.
+	const inertFrontmatter = "---\ntitle: Review\ndescription: How the review agent works.\nsidebar_position: 2\nsidebar_label: Review\n---\n# Page\n\n---\n\nhead: of the queue\n\n---\n"
+	t.Run("allowlisted frontmatter still skips", func(t *testing.T) {
+		if _, err := exec.LookPath("yq"); err != nil {
+			t.Skip("yq not available")
+		}
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: inertFrontmatter})
+		assert.True(t, skipped, "the four keys the site's prose pages use are inert")
+		for _, key := range []string{"title", "description", "sidebar_position", "sidebar_label"} {
+			_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: "---\n" + key + ": 2\n---\n# Page\n"})
+			assert.True(t, skipped, "%s alone must not cost a page its skip", key)
+		}
+	})
+
+	t.Run("yq failure does not skip", func(t *testing.T) {
+		yqStub = "#!/usr/bin/env bash\nexit 1\n"
+		defer func() { yqStub = "" }()
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: inertFrontmatter})
+		assert.False(t, skipped, "frontmatter nobody could parse must fail open into a review")
+	})
+
+	t.Run("unreadable page does not skip", func(t *testing.T) {
+		_, skipped := run(t, files([2]string{prose, ""}), map[string]string{prose: "FAIL"})
+		assert.False(t, skipped, "a page that cannot be read at the PR head must fail open into a review")
+	})
+
+	t.Run("removed page is not read", func(t *testing.T) {
+		listing := "[" + entry("removed", prose, "") + "," + entry("modified", "docs/agents/review.md", "") + "]"
+		// A removed file has no content at the head: reading it would fail
+		// and wrongly keep the review.
+		_, skipped := run(t, listing, map[string]string{prose: "FAIL"})
+		assert.True(t, skipped, "a deleted prose page has nothing to execute")
+	})
+
+	t.Run("truncated listing never skips", func(t *testing.T) {
+		pairs := make([][2]string, 3000)
+		for i := range pairs {
+			pairs[i] = [2]string{fmt.Sprintf("docs/guides/page-%d.md", i), ""}
+		}
+		out, skipped := run(t, files(pairs...), nil)
+		assert.False(t, skipped, "the files endpoint caps at 3000 entries and stops paginating silently")
+		assert.Contains(t, out, "may be truncated")
+	})
+
+	t.Run("api failure does not skip", func(t *testing.T) {
+		out, skipped := run(t, "", nil)
+		assert.False(t, skipped, "an unreadable file list must fail open into a review")
+		assert.Contains(t, out, "Failed to fetch changed files")
+	})
+}
+
+// staleLabelStep is the YAML shape of the steps the stale-merge-label backstop
+// is made of: the step that clears the labels and, in the route job, the
+// checkout and kill-switch steps that decide whether it may.
+type staleLabelStep struct {
+	Name string            `yaml:"name"`
+	ID   string            `yaml:"id"`
+	If   string            `yaml:"if"`
+	Env  map[string]string `yaml:"env"`
+	Run  string            `yaml:"run"`
+}
+
+// TestReviewSkipClearsStaleMergeLabels pins the backstop for the skips (ADR
+// 0096, #6587 review): a synchronize that dispatches no review round must
+// still clear ready-for-merge and ready-for-review, which the round would
+// have cleared at start (docs/architecture.md, coordinator merge algorithm).
+// The per-repo workflow does it in a job of its own so the route job stays
+// read-only, and the script is executed against a stub gh below.
+//
+// Per-repo only. The deprecated per-org scaffold (ADR 0044) has no such
+// step: its single job checks the org config repo out only once a stage has
+// routed, so on the skip paths the kill switch always read false there, and
+// the write scopes the step needs would have failed validation in every
+// enrolled repo whose shim had not been re-reconciled yet.
+func TestReviewSkipClearsStaleMergeLabels(t *testing.T) {
+	var repo struct {
+		Jobs map[string]struct {
+			Needs       interface{}       `yaml:"needs"`
+			If          string            `yaml:"if"`
+			Permissions map[string]string `yaml:"permissions"`
+			Steps       []staleLabelStep  `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &repo))
+	job, ok := repo.Jobs["clear-stale-merge-labels"]
+	require.True(t, ok, "reusable-dispatch.yml must have a clear-stale-merge-labels job")
+	assert.Equal(t, "route", job.Needs)
+	assert.Contains(t, job.If, "github.event.action == 'synchronize'")
+	assert.Contains(t, job.If, "needs.route.outputs.stage != 'review'",
+		"the job must key off the composite stage output, which is empty for every skip")
+	// #6587 review: the label mutation must obey the kill switch, including on
+	// the skip paths where no stage routes and the route job's kill-switch
+	// step never fails. The switch travels kill-switch step -> route output ->
+	// the job `if:` and the script's KILL_SWITCH; what the script does with it
+	// is run below rather than read off the YAML.
+	assert.Contains(t, job.If, "needs.route.outputs.kill_switch != 'true'",
+		"a halted repo should not even start the job")
+	assert.Contains(t, string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)),
+		"kill_switch: ${{ steps.kill-switch.outputs.kill_switch }}",
+		"the route job must expose the kill switch it evaluated")
+	assert.Equal(t, map[string]string{"issues": "write", "pull-requests": "write"}, job.Permissions)
+	assert.Equal(t, map[string]string{"contents": "read", "issues": "read", "pull-requests": "read"}, repo.Jobs["route"].Permissions,
+		"the route job must stay read-only")
+	require.Len(t, job.Steps, 1)
+	script := job.Steps[0].Run
+	assert.Equal(t, "${{ needs.route.outputs.kill_switch }}", job.Steps[0].Env["KILL_SWITCH"],
+		"the script must receive the switch the route job evaluated")
+
+	// The switch is only as good as the config the step can see. Both steps
+	// must run on every path — a checkout gated on a routed stage is what
+	// made the same gate inert in the scaffold.
+	checkoutAt, killSwitchAt, killSwitchScript := -1, -1, ""
+	for i, step := range repo.Jobs["route"].Steps {
+		switch {
+		case step.Name == "Checkout caller repository":
+			checkoutAt = i
+			assert.Empty(t, step.If, "the config checkout must not be conditional")
+		case step.ID == "kill-switch":
+			killSwitchAt, killSwitchScript = i, step.Run
+			assert.Empty(t, step.If, "the kill-switch step must run even when no stage routed")
+		}
+	}
+	require.NotEqual(t, -1, checkoutAt, "route job must check out the caller's config")
+	require.Greater(t, killSwitchAt, checkoutAt, "the kill switch must be read after the config is checked out")
+
+	var scaffold struct {
+		Jobs struct {
+			Dispatch struct {
+				Permissions map[string]string `yaml:"permissions"`
+			} `yaml:"dispatch"`
+		} `yaml:"jobs"`
+	}
+	scaffoldYAML := loadScaffoldFile(".github/workflows/dispatch.yml")(t)
+	require.NoError(t, yaml.Unmarshal(scaffoldYAML, &scaffold))
+	assert.NotContains(t, string(scaffoldYAML), "ready-for-merge",
+		"the deprecated per-org scaffold must not gain the label-clearing step (AGENTS.md, ADR 0044)")
+	assert.NotContains(t, scaffold.Jobs.Dispatch.Permissions, "issues",
+		"the scaffold dispatch job must not request a scope its enrolled shims do not grant")
+	assert.Equal(t, "read", scaffold.Jobs.Dispatch.Permissions["pull-requests"])
+
+	// #6587 review: a workflow_call caller may only downgrade the callee's
+	// grant — request more and the run fails validation before any job. So
+	// each caller shim's dispatch job must cover the job it fronts: the
+	// scaffold dispatch job for the per-org shim, and the label-clearing job
+	// (the widest-scoped addition here) for the per-repo shim.
+	rank := map[string]int{"": 0, "read": 1, "write": 2}
+	for shim, callee := range map[string]map[string]string{
+		"templates/shim-workflow-call.yaml": scaffold.Jobs.Dispatch.Permissions,
+		"templates/shim-per-repo.yaml":      job.Permissions,
+	} {
+		var caller struct {
+			Jobs struct {
+				Dispatch struct {
+					Permissions map[string]string `yaml:"permissions"`
+				} `yaml:"dispatch"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(loadScaffoldFile(shim)(t), &caller))
+		for perm, need := range callee {
+			assert.GreaterOrEqualf(t, rank[caller.Jobs.Dispatch.Permissions[perm]], rank[need],
+				"%s dispatch job must grant %s: %s to cover the callee", shim, perm, need)
+		}
+	}
+
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	// run executes the script with the given KILL_SWITCH against a stub gh
+	// whose DELETE answers with status (an HTTP code; 200 succeeds),
+	// recording every call.
+	run := func(t *testing.T, status, killSwitch string) (calls string, out string, err error) {
+		t.Helper()
+		dir := t.TempDir()
+		stub := "#!/usr/bin/env bash\n" +
+			"echo \"$*\" >> \"$GH_STUB_CALLS\"\n" +
+			"if [[ \"$GH_STUB_STATUS\" == 200 ]]; then echo '[]'; exit 0; fi\n" +
+			"echo \"gh: Label does not exist (HTTP $GH_STUB_STATUS)\" >&2; exit 1\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+		scriptPath := filepath.Join(dir, "clear.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+		callsFile := filepath.Join(dir, "calls")
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_STUB_CALLS="+callsFile,
+			"GH_STUB_STATUS="+status,
+			"GH_TOKEN=stub",
+			"SOURCE_REPO=octo/repo",
+			"PR_NUMBER=7",
+			"KILL_SWITCH="+killSwitch,
+		)
+		outB, err := cmd.CombinedOutput()
+		callsB, _ := os.ReadFile(callsFile)
+		return string(callsB), string(outB), err
+	}
+
+	t.Run("removes both labels", func(t *testing.T) {
+		calls, out, err := run(t, "200", "false")
+		require.NoError(t, err, out)
+		assert.Equal(t,
+			"api --method DELETE repos/octo/repo/issues/7/labels/ready-for-merge\n"+
+				"api --method DELETE repos/octo/repo/issues/7/labels/ready-for-review\n",
+			calls)
+		assert.Contains(t, out, "Removed stale ready-for-merge")
+		assert.Contains(t, out, "Removed stale ready-for-review")
+	})
+
+	t.Run("absent label is not an error", func(t *testing.T) {
+		calls, out, err := run(t, "404", "false")
+		require.NoError(t, err, out)
+		assert.Equal(t, 2, strings.Count(calls, "DELETE"), "both labels are still attempted")
+		assert.NotContains(t, out, "::error::")
+	})
+
+	t.Run("any other failure fails the job", func(t *testing.T) {
+		_, out, err := run(t, "403", "false")
+		require.Error(t, err, "a label that could not be removed must not be silently kept")
+		assert.Contains(t, out, "::error::Could not remove ready-for-merge")
+	})
+
+	t.Run("kill switch on: no label is touched", func(t *testing.T) {
+		calls, out, err := run(t, "200", "true")
+		require.NoError(t, err, out)
+		assert.Empty(t, calls, "a halted repo must not mutate labels")
+		assert.Contains(t, out, "Kill switch is active")
+	})
+
+	// The other half of the chain: what the route job's kill-switch step
+	// publishes on a skip path (no stage routed), given the config it finds.
+	// publish returns that value and whether the step halted dispatch.
+	publish := func(t *testing.T, config, stage string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		if config != "" {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(config), 0o600))
+		}
+		scriptPath := filepath.Join(dir, "kill-switch.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(killSwitchScript), 0o644))
+		outputFile := filepath.Join(dir, "github_output")
+		require.NoError(t, os.WriteFile(outputFile, nil, 0o600))
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "STAGE="+stage, "GITHUB_OUTPUT="+outputFile)
+		_, err := cmd.CombinedOutput()
+		got, readErr := os.ReadFile(outputFile)
+		require.NoError(t, readErr)
+		return strings.TrimSpace(strings.TrimPrefix(string(got), "kill_switch=")), err
+	}
+
+	t.Run("switch is published on the skip paths", func(t *testing.T) {
+		got, err := publish(t, "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "false", got, "a repo without a config is not halted")
+
+		if _, lookErr := exec.LookPath("yq"); lookErr != nil {
+			t.Skip("yq not available")
+		}
+		got, err = publish(t, "kill_switch: true\n", "")
+		require.NoError(t, err, "with no stage routed there is no dispatch to halt — the step must still succeed so the route job publishes its outputs")
+		assert.Equal(t, "true", got)
+		calls, out, err := run(t, "200", got)
+		require.NoError(t, err, out)
+		assert.Empty(t, calls, "a push to a draft or fullsend-no-review PR in a halted repo must leave the labels alone")
+
+		got, err = publish(t, "kill_switch: true\n", "review")
+		require.Error(t, err, "a routed stage in a halted repo must still fail the route job")
+		assert.Equal(t, "true", got)
+	})
+}
+
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
 // observation stages (triage/review) but not mutation stages (code/fix).
 // See #5223 and ADR 0054.
