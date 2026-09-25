@@ -135,7 +135,10 @@ func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol s
 		}
 		var orig, rewr safetyFields
 		if yaml.Unmarshal(frontBytes, &orig) == nil {
-			if yaml.Unmarshal(marshaled, &rewr) == nil && !reflect.DeepEqual(orig, rewr) {
+			if err := yaml.Unmarshal(marshaled, &rewr); err != nil {
+				return nil, fmt.Errorf("safety check: cannot verify rewritten frontmatter: %w", err)
+			}
+			if !reflect.DeepEqual(orig, rewr) {
 				return nil, fmt.Errorf("frontmatter rewrite altered security-sensitive fields (name/model/tools/disallowedTools)")
 			}
 		}
