@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -124,6 +125,21 @@ func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol s
 	if err := yaml.Unmarshal(marshaled, &validated); err != nil {
 		return nil, fmt.Errorf("validating rewritten frontmatter: %w", err)
 	}
+	// Verify security-sensitive fields survived the YAML round-trip unchanged.
+	if len(frontBytes) > 0 {
+		type safetyFields struct {
+			Name            string `yaml:"name"`
+			Model           string `yaml:"model"`
+			Tools           any    `yaml:"tools"`
+			DisallowedTools any    `yaml:"disallowedTools"`
+		}
+		var orig, rewr safetyFields
+		if yaml.Unmarshal(frontBytes, &orig) == nil {
+			if yaml.Unmarshal(marshaled, &rewr) == nil && !reflect.DeepEqual(orig, rewr) {
+				return nil, fmt.Errorf("frontmatter rewrite altered security-sensitive fields (name/model/tools/disallowedTools)")
+			}
+		}
+	}
 	return marshaled, nil
 }
 
@@ -133,9 +149,10 @@ func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol s
 // If the agent has no frontmatter, one is created. If skillDirs is empty,
 // the data is returned unchanged.
 //
-// This ensures harness-listed skills reliably activate: Claude Code loads
-// skills listed in the agent frontmatter without requiring an explicit
-// Skill tool call in the prompt body.
+// This declares harness-listed skills in the agent frontmatter so Claude
+// Code can load them alongside any explicitly invoked skills (#6681).
+// Whether the declaration causes activation without an explicit Skill
+// tool call still requires empirical validation.
 func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 	if len(skillDirs) == 0 {
 		return data, nil

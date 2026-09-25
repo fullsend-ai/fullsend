@@ -818,7 +818,7 @@ func uploadBytes(sandboxName, remotePath string, data []byte) error {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	tmp.Close()
-	return sandbox.Upload(sandboxName, tmp.Name(), remotePath)
+	return sandbox.UploadFile(sandboxName, tmp.Name(), remotePath)
 }
 
 // piManifestMaxBytes bounds the manifest read back through exec stdout; a
