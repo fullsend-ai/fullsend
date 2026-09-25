@@ -351,6 +351,77 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 	assert.Len(t, again.PerModelUsage, 1, "only the parent's own iteration")
 }
 
+// fakeOpenshellPiStall serves Bootstrap's uploads and cat reads like
+// fakeOpenshellPi, but the agent stream emits one liveness line and then
+// hangs, so the watchdog fires; it also answers the stray-process sweep the
+// stall kill runs. Swap it in after Bootstrap so the config/manifest are
+// already written by the ordinary fake.
+func fakeOpenshellPiStall(t *testing.T, logPath, storeDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "upload" ]; then
+  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  exit 0
+fi
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "pi --version") echo "0.84.2"; exit 0 ;;
+    "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
+    *"stray processes killed"*) echo "stray processes killed: 1"; exit 0 ;;
+    *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
+    cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
+    *"--print --mode json"*) printf '{"type":"noop"}\n'; exec sleep 60 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestPiRuntimeRun_FoldsSubagentUsageOnStall: a parent that stalls waiting on
+// its children must still fold their completed spend into the run metrics.
+// The usage file is the only record of what children spent, so dropping it on
+// the stall kill would leave per_model_usage no longer summing to the totals.
+func TestPiRuntimeRun_FoldsSubagentUsageOnStall(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piAgentThinkingEnv, "")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fixture, err := filepath.Abs(filepath.Join("testdata", "pi", "basic_run.ndjson"))
+	require.NoError(t, err)
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, fixture)
+
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview."), agentName: "review",
+	}))
+	// A completed child's usage, written before the parent stalls.
+	require.NoError(t, os.WriteFile(filepath.Join(store, piFakeUsageFile), []byte(
+		`{"seq":1,"model":"anthropic-vertex/claude-sonnet-4-6","usage":{"input":300,"output":40,"cacheRead":10,"cacheWrite":5,"cost":0.2},"stopReason":"stop","isError":false}`+"\n"), 0o644))
+
+	// Swap in a stream that goes silent so the watchdog fires mid-run.
+	fakeOpenshellPiStall(t, filepath.Join(work, "openshell-stall.log"), store)
+
+	var metrics RunMetrics
+	_, err = PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", AgentBaseName: "review", RepoDir: "/sandbox/workspace/repo",
+		Timeout:      60 * time.Second,
+		StallTimeout: 300 * time.Millisecond,
+		OnEvent:      func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &metrics)
+
+	require.ErrorIs(t, err, ErrStalled, "a silent stream must fail as stalled")
+	child := metrics.PerModelUsage["anthropic-vertex/claude-sonnet-4-6"]
+	assert.Equal(t, 1, child.Requests, "the completed child's spend must survive the stall kill")
+	assert.InDelta(t, 0.2, child.CostUSD, 1e-9)
+}
+
 // Without sub-agent usage the totals are exactly what the stream reported,
 // and the breakdown is the parent's single entry.
 func TestPiRuntimeRun_NoSubagentUsageLeavesMetricsAlone(t *testing.T) {
