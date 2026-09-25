@@ -80,7 +80,7 @@ case "${FULLSEND_VERSION}" in
     # is in the runner base image for this purpose).
     if ! command -v go >/dev/null 2>&1; then
       echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)" >&2
-      echo "Use a runner image with Go 1.20+ installed or pin to a release version tag"
+      echo "Use a runner image with Go 1.20+ installed or pin to a release version tag" >&2
       exit 1
     fi
     export GOPATH="${RUNNER_TEMP:-/tmp}/go"

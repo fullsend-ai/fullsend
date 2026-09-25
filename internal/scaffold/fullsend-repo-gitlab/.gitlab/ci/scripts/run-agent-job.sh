@@ -271,7 +271,7 @@ if [ -n "${CONFIG_YAML}" ]; then
   fi
   if [ "${KILL_SWITCH}" = "true" ]; then
     echo "ERROR: Kill switch is active — all agent dispatch halted" >&2
-    echo "Set kill_switch: false in .fullsend/config.yaml to resume"
+    echo "Set kill_switch: false in .fullsend/config.yaml to resume" >&2
     exit 1
   fi
 fi
