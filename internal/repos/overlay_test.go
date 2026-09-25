@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -238,6 +239,20 @@ github:
 	assert.Contains(t, err.Error(), "mint_url must be a valid HTTPS URL")
 }
 
+func TestValidate_ConfigOverlayAcceptsMintURLWithPath(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        mint_url: "https://mint.example.com/v1/mint"
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	assert.NoError(t, m.Validate(), "mint_url with a path is accepted, matching validateMintURLHTTPS and RepoEntry.MintURL")
+}
+
 func TestValidate_ConfigOverlayRejectsMintURLWithUserinfo(t *testing.T) {
 	input := `
 version: 1
@@ -404,6 +419,26 @@ github:
 	assert.NotContains(t, text, "allowed_remote_resources:")
 	assert.NotContains(t, text, "version:")
 	assert.NotContains(t, text, "claude", "code default runtime must not be baked in")
+}
+
+func TestRenderManagedOverlay_NoUnmanagedFileHeader(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        kill_switch: true
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	require.NoError(t, err)
+	require.True(t, ok)
+	text := string(body)
+	assert.NotContains(t, text, "per-repo installation mode", "must not emit the unmanaged per-repo-install header")
+	assert.NotContains(t, text, "# fullsend per-repo configuration", "must not emit the unmanaged per-repo-install header")
+	assert.True(t, strings.HasPrefix(text, "kill_switch:"), "body must start with config content, not a header; the ownership marker is prefixed by install (#7632)")
 }
 
 func TestRenderManagedOverlay_InvalidOverlay(t *testing.T) {

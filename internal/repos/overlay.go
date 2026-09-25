@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // overlayManaged reports whether defaults.config or the repository config
@@ -32,9 +33,20 @@ func overlayAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 	return defaults.AllowedRemoteResources
 }
 
-// RenderManagedOverlay returns the canonical sparse .fullsend/config.yaml
-// bytes for an overlay-managed repository. ok is false when the repository
-// is not overlay-managed; data is then nil.
+// RenderManagedOverlay returns the canonical sparse overlay YAML body for
+// an overlay-managed repository — the explicitly supplied manifest values,
+// with no code defaults or config.base.yaml baked in. ok is false when the
+// repository is not overlay-managed; data is then nil.
+//
+// The returned bytes deliberately carry no file header. perRepoConfig's
+// Marshal() prepends perRepoConfigHeader, the unmanaged per-repo-install
+// header — not the ADR 0122 ownership marker
+// ("# This file is managed by 'fullsend repos': ...") that every managed
+// .fullsend/config.yaml must begin with. Whether to write that marker (on
+// first creation), or require an adoption acknowledgement first (existing
+// unmarked config.yaml), depends on adoption-detection state this function
+// does not have. That decision, and prefixing the marker, belongs to the
+// install path (#7632); this only renders the config body.
 func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, err error) {
 	if !overlayManaged(m.Defaults.Config, entry.Config) {
 		return nil, false, nil
@@ -46,7 +58,7 @@ func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, 
 	if err := validateOverlayMintAndWIF(overlay); err != nil {
 		return nil, true, fmt.Errorf("managed config overlay: %w", err)
 	}
-	body, err := overlay.Marshal()
+	body, err := yaml.Marshal(overlay)
 	if err != nil {
 		return nil, true, fmt.Errorf("marshaling managed config overlay: %w", err)
 	}
@@ -119,23 +131,27 @@ func validateOverlayBlock(field string, o config.OverlayConfig) error {
 }
 
 // validateOverlayMintAndWIF runs the same mint_url HTTPS/userinfo gate
-// used for RepoEntry.MintURL, plus the WIF provider resource-name
-// pattern check, on an overlay layer or the shorthand-merged overlay.
-// Neither field is touched by ApplyOverlayShorthands, so the same check
-// is correct whether r is an isolated layer or the merged overlay; an
-// unset value resolves through the parent chain to the code default
-// (always a valid HTTPS mint URL), so this only ever flags a value the
-// overlay itself set. Overlay install/converge (which would actually
-// use these values to drive a mint install) is follow-on work
-// (#7632, #7633); this closes the format gate before that lands.
+// used for RepoEntry.MintURL and the CLI's validateMintURLHTTPS, plus the
+// WIF provider resource-name pattern check, on an overlay layer or the
+// shorthand-merged overlay. Neither field is touched by
+// ApplyOverlayShorthands, so the same check is correct whether r is an
+// isolated layer or the merged overlay; an unset value resolves through
+// the parent chain to the code default (always a valid HTTPS mint URL),
+// so this only ever flags a value the overlay itself set. Overlay
+// install/converge (which would actually use these values to drive a
+// mint install) is follow-on work (#7632, #7633); this closes the format
+// gate before that lands. Unlike github.url/gitlab.url (validated via
+// RejectExtraneousURLParts), mint_url is allowed to carry a path — e.g. a
+// Cloud Functions mint endpoint — matching every other mint_url gate in
+// this codebase.
 func validateOverlayMintAndWIF(r config.PerRepoConfigReader) error {
 	if mintURL := r.ConfigMintURL(); mintURL != "" {
 		mu, err := url.Parse(mintURL)
 		if err != nil || mu.Scheme != "https" || mu.Host == "" {
 			return fmt.Errorf("mint_url must be a valid HTTPS URL, got %q", mintURL)
 		}
-		if err := RejectExtraneousURLParts(mu, "mint_url"); err != nil {
-			return err
+		if mu.User != nil {
+			return fmt.Errorf("mint_url must not contain userinfo, got %q", mintURL)
 		}
 	}
 	if wif := r.ConfigInferenceWIFProvider(); wif != "" && !WIFProviderPattern.MatchString(wif) {
