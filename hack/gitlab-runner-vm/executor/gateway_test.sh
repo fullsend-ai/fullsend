@@ -67,10 +67,25 @@ if grep -Fq 'configure_per_job_gateway' "${SETUP}"; then
 else
   fail "setup.sh missing configure_per_job_gateway"
 fi
+if grep -E '^[[:space:]]+systemctl --user' "${SCRIPT_DIR}/gateway.sh" >/dev/null; then
+  fail "gateway.sh still invokes systemctl --user directly; use user_systemctl so the user-session env is set"
+else
+  pass "gateway.sh routes user-systemd calls through user_systemctl"
+fi
+if type ensure_user_systemd_env >/dev/null 2>&1 && type user_systemctl >/dev/null 2>&1; then
+  pass "gateway.sh defines ensure_user_systemd_env and user_systemctl"
+else
+  fail "gateway.sh missing ensure_user_systemd_env / user_systemctl"
+fi
 if grep -Fq 'EXECUTOR_DIR}/.github/scripts' "${SETUP}"; then
   pass "install_executor ships the version pin alongside the flattened executor scripts"
 else
   fail "install_executor does not copy openshell-version.sh into EXECUTOR_DIR"
+fi
+if type prune_unused_podman_storage >/dev/null 2>&1; then
+  pass "gateway.sh defines prune_unused_podman_storage"
+else
+  fail "gateway.sh missing prune_unused_podman_storage"
 fi
 
 echo "== flattened EXECUTOR_DIR layout resolves the version pin (regression: #7244) =="
@@ -175,6 +190,49 @@ else
   fail "reap_openshell_sandboxes podman log: $(tr '\n' '|' < "${PODMAN_LOG}")"
 fi
 
+echo "== reap orphaned runner containers =="
+reset_logs
+cat > "${SHIM_DIR}/podman" <<'PODMAN'
+#!/bin/sh
+echo "$@" >> "${PODMAN_LOG}"
+for a in "$@"; do
+  case "$a" in
+    '{{.Names}}') echo "runner-1"; echo "runner-2"; echo "openshell-abc"; exit 0 ;;
+  esac
+done
+exit 0
+PODMAN
+sed -i "s|\${PODMAN_LOG}|${PODMAN_LOG}|" "${SHIM_DIR}/podman"
+chmod +x "${SHIM_DIR}/podman"
+reap_orphaned_runner_containers "runner-2"
+if grep -q 'rm -f -- runner-1' "${PODMAN_LOG}" \
+  && ! grep -q 'rm -f -- runner-2' "${PODMAN_LOG}" \
+  && ! grep -q 'rm -f -- openshell-abc' "${PODMAN_LOG}"; then
+  pass "reap_orphaned_runner_containers removes other runner-* containers, keeps the caller's own and openshell-*"
+else
+  fail "reap_orphaned_runner_containers podman log: $(tr '\n' '|' < "${PODMAN_LOG}")"
+fi
+
+reset_logs
+cat > "${SHIM_DIR}/podman" <<'PODMAN'
+#!/bin/sh
+echo "$@" >> "${PODMAN_LOG}"
+for a in "$@"; do
+  case "$a" in
+    '{{.Names}}') echo "runner-9"; exit 0 ;;
+  esac
+done
+exit 0
+PODMAN
+sed -i "s|\${PODMAN_LOG}|${PODMAN_LOG}|" "${SHIM_DIR}/podman"
+chmod +x "${SHIM_DIR}/podman"
+reap_orphaned_runner_containers "runner-9"
+if ! grep -q 'rm -f -- runner-9' "${PODMAN_LOG}"; then
+  pass "reap_orphaned_runner_containers never removes the caller's own container name"
+else
+  fail "reap_orphaned_runner_containers removed its own container: $(tr '\n' '|' < "${PODMAN_LOG}")"
+fi
+
 echo "== start_fresh wipes then starts (does not enable) =="
 reset_logs
 mkdir -p "${HOME}/.local/state/openshell/gateway"
@@ -201,6 +259,69 @@ if start_fresh_openshell_gateway; then
 else
   fail "start_fresh_openshell_gateway returned non-zero"
 fi
+
+echo "== ensure_user_systemd_env pins canonical paths (does not trust inherited env) =="
+unset XDG_RUNTIME_DIR || true
+unset DBUS_SESSION_BUS_ADDRESS || true
+export XDG_RUNTIME_DIR=/wrong
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/wrong
+ensure_user_systemd_env
+expected_runtime="/run/user/$(id -u)"
+expected_bus="unix:path=${expected_runtime}/bus"
+if [ "${XDG_RUNTIME_DIR}" = "${expected_runtime}" ] \
+  && [ "${DBUS_SESSION_BUS_ADDRESS}" = "${expected_bus}" ]; then
+  pass "ensure_user_systemd_env overwrites inherited values with canonical paths"
+else
+  fail "ensure_user_systemd_env left XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
+fi
+
+echo "== start/stop helpers set user-systemd env themselves =="
+reset_logs
+# GitLab Runner is a system service and does not inherit a login session.
+# Simulate that by unsetting both variables; start/stop must still succeed
+# and the systemctl stub must observe the canonical paths (regression: #7453).
+cat > "${SHIM_DIR}/systemctl" <<SYS
+#!/bin/sh
+echo "\$@" >> "${SYSTEMCTL_LOG}"
+if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ -z "\${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  echo "Failed to connect to user scope bus via local transport: env not defined" >&2
+  exit 1
+fi
+printf 'XDG_RUNTIME_DIR=%s\\nDBUS_SESSION_BUS_ADDRESS=%s\\n' \\
+  "\${XDG_RUNTIME_DIR}" "\${DBUS_SESSION_BUS_ADDRESS}" > "${SYSTEMCTL_LOG}.env"
+exit 0
+SYS
+chmod +x "${SHIM_DIR}/systemctl"
+printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${PODMAN_LOG}" > "${SHIM_DIR}/podman"
+chmod +x "${SHIM_DIR}/podman"
+
+unset XDG_RUNTIME_DIR || true
+unset DBUS_SESSION_BUS_ADDRESS || true
+if ! start_fresh_openshell_gateway; then
+  fail "start_fresh_openshell_gateway should succeed without inherited user-session env"
+elif grep -q "XDG_RUNTIME_DIR=${expected_runtime}" "${SYSTEMCTL_LOG}.env" \
+  && grep -q "DBUS_SESSION_BUS_ADDRESS=${expected_bus}" "${SYSTEMCTL_LOG}.env"; then
+  pass "start_fresh sets XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS itself"
+else
+  fail "start_fresh did not pin user-session env: $(tr '\n' '|' < "${SYSTEMCTL_LOG}.env" 2>/dev/null)"
+fi
+
+reset_logs
+rm -f "${SYSTEMCTL_LOG}.env"
+unset XDG_RUNTIME_DIR || true
+unset DBUS_SESSION_BUS_ADDRESS || true
+stop_openshell_gateway
+if [ ! -f "${SYSTEMCTL_LOG}.env" ]; then
+  fail "stop_openshell_gateway did not invoke systemctl with user-session env"
+elif grep -q "XDG_RUNTIME_DIR=${expected_runtime}" "${SYSTEMCTL_LOG}.env" \
+  && grep -q "DBUS_SESSION_BUS_ADDRESS=${expected_bus}" "${SYSTEMCTL_LOG}.env"; then
+  pass "stop_openshell_gateway sets XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS itself"
+else
+  fail "stop did not pin user-session env: $(tr '\n' '|' < "${SYSTEMCTL_LOG}.env")"
+fi
+# Restore the default stub so later cases do not require the env file.
+printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SYSTEMCTL_LOG}" > "${SHIM_DIR}/systemctl"
+chmod +x "${SHIM_DIR}/systemctl"
 
 echo "== teardown stops gateway and wipes =="
 reset_logs
@@ -360,6 +481,50 @@ if ensure_job_openshell_gateway "registry.example.com/runner:dev"; then
   fi
 else
   fail "ensure_job_openshell_gateway returned non-zero on match"
+fi
+
+echo "== prune_unused_podman_storage =="
+reset_logs
+# No helper installed: must be a no-op (existing VMs before re-provision).
+if prune_unused_podman_storage; then
+  pass "prune_unused_podman_storage is a no-op when the helper is missing"
+else
+  fail "prune_unused_podman_storage should succeed when the helper is missing"
+fi
+
+mkdir -p "${FAKE_HOME}/.local/lib/fullsend"
+PRUNE_LOG="${SHIM_DIR}/prune.log"
+printf '#!/bin/sh\necho ran >> "%s"\nexit 0\n' "${PRUNE_LOG}" \
+  > "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+chmod +x "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+: > "${PRUNE_LOG}"
+if prune_unused_podman_storage \
+  && grep -Fq ran "${PRUNE_LOG}"; then
+  pass "prune_unused_podman_storage invokes the installed helper"
+else
+  fail "prune_unused_podman_storage did not invoke the installed helper"
+fi
+printf '#!/bin/sh\necho ran >> "%s"\nexit 1\n' "${PRUNE_LOG}" \
+  > "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+chmod +x "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+: > "${PRUNE_LOG}"
+if prune_unused_podman_storage; then
+  pass "prune_unused_podman_storage ignores helper failure"
+else
+  fail "prune_unused_podman_storage must not fail the job stage when prune errors"
+fi
+
+# prepare.sh passes the job's own image so podman-prune.sh protects it from
+# rmi during the pre-pull invocation (#7663).
+printf '#!/bin/sh\necho "extra=${FULLSEND_PODMAN_PRUNE_EXTRA_KEEP}" >> "%s"\nexit 0\n' "${PRUNE_LOG}" \
+  > "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+chmod +x "${FAKE_HOME}/.local/lib/fullsend/podman-prune.sh"
+: > "${PRUNE_LOG}"
+if prune_unused_podman_storage "registry.example.com/job:latest" \
+  && grep -Fq "extra=registry.example.com/job:latest" "${PRUNE_LOG}"; then
+  pass "prune_unused_podman_storage forwards its argument as the extra keep-ref"
+else
+  fail "prune_unused_podman_storage did not forward the extra keep-ref: $(tr '\n' '|' < "${PRUNE_LOG}")"
 fi
 
 if [ "${FAILURES}" -ne 0 ]; then

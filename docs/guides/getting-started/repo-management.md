@@ -7,19 +7,31 @@ sidebar_position: 5
 Manage per-repo fullsend installations at scale using a declarative
 `repos.yaml` manifest. The `fullsend repos` command group provides bulk
 install, status checking, drift detection, configuration sync, and
-version upgrades across multiple repos and GitHub orgs.
+version upgrades across multiple repos, GitHub orgs, and GitLab groups.
 
 **Target audience:** Platform administrators (SRE/DevOps) managing
-fullsend across an organization. Individual repo owners should use
-`fullsend github setup` for single-repo installation (see
-[Configuring GitHub](configuring-github.md)).
+fullsend across an organization. For a single repository, GitHub owners
+should use `fullsend github setup` (see [Configuring GitHub](configuring-github.md));
+GitLab project owners should use `fullsend repos install --forge gitlab`
+(see [Configuring GitLab](configuring-gitlab.md)).
 
 ## Prerequisites
 
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+
+The remaining prerequisites are forge-specific:
+
+**GitHub:**
+
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
 - **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+
+**GitLab:**
+
+GitLab does not use `gh`, `fullsend inference provision`, or mint
+enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+for the GitLab token, GCP inference project, and runner requirements.
 
 ## Getting started
 
@@ -46,9 +58,11 @@ fullsend repos migrate <org> --project <gcp-project> --dry-run
 
 The command discovers enrolled repos from the per-org config, provisions
 WIF infrastructure per repo, installs per-repo (scaffold, variables,
-secrets), unenrolls migrated repos from per-org config, and generates
-a `repos.yaml` manifest. If a manifest already exists, newly migrated
-repos are merged into it rather than overwriting it.
+secrets), removes migrated repository entries from the per-org config,
+and generates a `repos.yaml` manifest. If a manifest already exists,
+newly migrated repos are merged into it rather than overwriting it.
+Successful migrations delete the source config entry entirely rather
+than setting `enabled: false`.
 
 ### Creating a manifest from scratch
 
@@ -94,12 +108,17 @@ GitHub repos use a token mint for authentication. The
 `mint_mode` and `mint_url` can be overridden per-repo.
 
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
-`--gitlab-token` to `fullsend repos` subcommands. When no manifest URL
-is set, the base URL falls back through `FULLSEND_GITLAB_URL` →
-`GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to `gitlab.com` when
-none are set. You can also pass `--gitlab-url` to `fullsend repos install`
-to set `gitlab.url` in the manifest (this also implies `--forge=gitlab`
-when no forge is specified).
+`--gitlab-token` to `fullsend repos` subcommands. Manifest-driven commands
+(`repos install` and `repos status`) require `gitlab.url` whenever GitLab
+repos are present, including gitlab.com; there is no manifest default. Pass
+`--gitlab-url` to `fullsend repos install` to set it (this also implies
+`--forge=gitlab` when no forge is specified), or set it later with
+`fullsend repos set-default gitlab.url <url>`. The env-var fallback chain
+(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
+gitlab.com) applies only to call paths without a manifest URL, such as
+`repos migrate`; it does not override manifest validation. Self-hosted
+instances that use a private CA need runner `tls-ca-file` plus separate
+sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -116,8 +135,59 @@ github:
 ```
 
 The `none` sentinel works for string fields (`fullsend_ref`,
-`mint_url`, `mint_mode`). List fields like `allowed_remote_resources`
-are managed at the `defaults` level and cannot be cleared per-repo.
+`mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). List fields like
+`allowed_remote_resources` are managed at the `defaults` level and
+cannot be cleared per-repo.
+
+### Configuration presets
+
+`repos.yaml` can declare a configuration preset so fleet installs
+reproduce `github setup --config`. The preset is a local file or HTTPS
+URL written byte-for-byte as `.fullsend/config.base.yaml`.
+`.fullsend/config.yaml` remains the repository-local overlay and is not
+merged with the preset.
+
+```yaml
+version: 1
+defaults:
+  config_base:
+    source: https://example.com/presets/org.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+github:
+  repos:
+    - name: acme/api          # inherits the fleet preset
+    - name: acme/special
+      config_base:
+        source: ./special.yaml  # per-repo override (path is relative to repos.yaml's directory)
+        sha256: none            # do not apply the fleet hash to this source
+    - name: acme/legacy
+      config_base:
+        source: none            # disable inheritance; existing base is preserved
+```
+
+`config_base.sha256` is optional. When set, it must be a 64-character SHA-256
+hex digest of the fetched content, matching `github setup --config-hash`.
+A per-repo `config_base.source` override still inherits
+`defaults.config_base.sha256` unless you set `config_base.sha256` on that
+entry (`none` skips validation). A hash mismatch or invalid source fails
+before any files are written. Remote presets without a hash are accepted,
+but content integrity is not verified. Local preset paths are resolved
+relative to the directory containing `repos.yaml`, not the process working
+directory, and must stay within that directory (`../` paths that escape it
+are rejected). A manifest loaded from an HTTPS URL must declare preset
+sources as HTTPS URLs; local preset paths are not allowed in that case.
+
+Changing the declared preset replaces the complete base file. Repeated
+installs are idempotent when the desired bytes already match. If no
+preset is declared, an existing `.fullsend/config.base.yaml` is left
+alone and is not compared. `repos status` reports base-file drift only
+when a preset is declared. The same path applies to GitHub and GitLab.
+
+On a fresh install of a repo with a declared preset, `--roles` is left
+unset in the written overlay unless `--roles` was explicitly passed on
+the `repos install` command line — so the preset's own roles (rather
+than the fleet-wide `--roles` default) take effect through the layered
+config.
 
 ### Manifest paths and URLs
 
@@ -150,17 +220,26 @@ Install runs in two phases:
 1. **Manifest add** — repos specified as positional arguments that are
    not already in the manifest are added (requires `--forge`).
 2. **Convergence** — every repo flows through a single probe → diff →
-   apply pipeline. New repos are fully provisioned (scaffold files,
-   variables, secrets). Already-installed repos are checked for
-   component drift (workflow, thin callers, variables, secrets,
-   pipeline schedules), scaffold content drift, and scaffold ref drift. Missing or drifted
-   components are repaired automatically; ref updates are committed as
-   PRs (or direct pushes with `--direct`).
+   apply pipeline. Repos whose shim workflow is not yet on the default
+   branch are treated as new and fully provisioned (scaffold files,
+   variables, secrets) onto the initialization branch. That includes a
+   re-run while the initialization PR/MR is still open: variables and
+   secrets may already exist from the first run, but the installer
+   still updates the same initialization PR/MR rather than opening a
+   separate upgrade PR. Repos whose workflow is already on the default
+   branch are checked for component drift (workflow, thin callers,
+   variables, secrets, pipeline schedules, GitLab poller protected-ref
+   pipeline access), scaffold content drift,
+   scaffold ref drift, and declared configuration-preset drift against
+   `.fullsend/config.base.yaml`. Missing or drifted components are
+   repaired automatically; ref updates are committed as PRs (or direct
+   pushes with `--direct`).
 
-> **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
-> must be completed before running install. For self-managed mints,
-> also run `fullsend mint enroll`. The hosted community mint needs no
-> enrollment.
+> **GitHub prerequisite:** GCP WIF provisioning
+> (`fullsend inference provision`) must be completed before running install.
+> For self-managed mints, also run `fullsend mint enroll`. The hosted
+> community mint needs no enrollment. For GitLab prerequisites and inference
+> setup, see [Configuring GitLab](configuring-gitlab.md#prerequisites).
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold
@@ -178,6 +257,12 @@ Glob patterns are supported:
 ```bash
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
+
+A filtered install requires credentials only for the selected
+repositories' forges. With both GitHub and GitLab entries in the
+manifest, `fullsend repos install gallen/integration-service` needs
+`GITLAB_TOKEN` but not `GH_TOKEN`. Installing the whole manifest still
+requires credentials for every forge that has repos.
 
 Install a subset of agent roles (defaults to
 `triage,coder,review,fix,retro,prioritize`):
@@ -215,8 +300,10 @@ fullsend repos status -f repos.yaml --json
 ### Detecting and reconciling configuration drift
 
 Run `repos install` to detect and fix component drift (workflow, thin
-callers, variables, secrets, pipeline schedules), scaffold ref drift,
-and scaffold content drift across all manifest repos:
+callers, variables, secrets, pipeline schedules, GitLab poller
+protected-ref pipeline access), scaffold ref drift,
+scaffold content drift, and declared configuration-preset drift across
+all manifest repos:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -229,12 +316,22 @@ fullsend repos install -f repos.yaml --dry-run
 ```
 
 The convergence phase checks all components (workflow, thin callers,
-variables, secrets, pipeline schedules), scaffold content drift, and scaffold workflow refs
-against the manifest. Missing or drifted components are repaired
-automatically; ref updates are committed as PRs (or direct pushes with
+variables, secrets, pipeline schedules, GitLab poller protected-ref
+pipeline access — a disabled GitLab schedule is
+reported as drift and reactivated only when `--reactivate-schedules` is
+passed), scaffold content drift (including structural rewrites of
+`.gitlab/ci/fullsend-dispatch.yml` at an unchanged template ref),
+declared configuration-preset drift, and scaffold workflow refs against
+the manifest. Missing or drifted components are repaired automatically
+(disabled pipeline schedules are the exception — see above); a changed
+preset replaces only `.fullsend/config.base.yaml` and leaves the overlay
+intact. Ref updates are committed as PRs (or direct pushes with
 `--direct`).
 
-Use `repos status` for a read-only drift report (no changes applied):
+Use `repos status` for a read-only drift report (no changes applied). For
+GitLab repos, status also reports `protected-ref-pipeline` drift when the
+poller loses merge access to create pipelines on the protected default
+branch:
 
 ```bash
 fullsend repos status -f repos.yaml --json
@@ -273,7 +370,7 @@ flag is install-time only and is not stored in the manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). Pass `--direct` to push file deletions to the default branch:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api
@@ -367,6 +464,24 @@ Common causes:
   manifest schema (such as the legacy `mint:` key) are rejected.
 - **Wrong nesting level** — e.g., placing `fullsend_ref` under `defaults`
   instead of under `github` or `gitlab`.
+- **Renamed fields** — the old flat `config` / `config_hash` preset keys
+  were replaced by a nested `config_base` object. Rewrite `config:` as
+  `config_base: {source: <value>}` and `config_hash:` as
+  `config_base: {sha256: <value>}`, for both `defaults` and per-repo
+  entries:
+
+  ```yaml
+  # Before
+  defaults:
+    config: presets/base.yaml
+    config_hash: <sha256>
+
+  # After
+  defaults:
+    config_base:
+      source: presets/base.yaml
+      sha256: <sha256>
+  ```
 
 To fix, correct the field name or remove the unrecognized entry and re-run
 the command.
@@ -401,9 +516,11 @@ fullsend repos migrate <org> --project <gcp-project>
 
 This discovers enrolled repos from the per-org config, provisions WIF
 infrastructure, installs per-repo (scaffold, variables, secrets) with
-config carried over from the org config, unenrolls migrated repos,
-and writes `repos.yaml`. If a manifest already exists, new entries are
-merged in rather than overwriting it.
+config carried over from the org config, removes migrated repository
+entries from the per-org config, and writes `repos.yaml`. If a manifest
+already exists, new entries are merged in rather than overwriting it.
+Successful migrations delete the source config entry entirely rather
+than setting `enabled: false`.
 
 Preview first with `--dry-run`:
 
@@ -481,7 +598,7 @@ infrastructure, coordinate between roles:
 | Step | Role | Command |
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
-| 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
+| 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
 | 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` (self-hosted mints only; not needed for the hosted community mint) |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
@@ -490,6 +607,7 @@ commands.
 
 ## See also
 
+- [Configuring GitLab](configuring-gitlab.md) — GitLab-specific getting-started guide
 - [Operations](operations.md) — Day-2 per-repo administration and standalone commands
 - [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference

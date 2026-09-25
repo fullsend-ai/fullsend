@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +47,10 @@ const (
 	openAIIdentityProviderIDEnv = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
 	openAIServiceAccountIDEnv   = "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"
 	openAIStaticKeyEnv          = "OPENAI_API_KEY"
+	// openAIRepoSecretName is the GitHub Actions secret workflows export as
+	// OPENAI_API_KEY. Named FULLSEND_* so an unrelated repository secret is
+	// never picked up by accident (#7295).
+	openAIRepoSecretName = "FULLSEND_OPENAI_API_KEY"
 )
 
 // openAIExchange is the WIF exchange; tests substitute it.
@@ -322,10 +327,13 @@ func checkOpenAIScope(scope string) (warning string, err error) {
 // resolveOpenAICredential picks the credential source for a fullsend-openai
 // provider, in order:
 //
-//  1. WIF — all three FULLSEND_OPENAI_* ids present: exchange the job's
-//     GitHub OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN) for an OpenAI
-//     access token.
-//  2. Static — OPENAI_API_KEY present in the runner environment (local runs).
+//  1. WIF — all three FULLSEND_OPENAI_* ids present, from variables or (with
+//     a GitHub OIDC endpoint) the committed config.yaml block: exchange the
+//     job's GitHub OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN) for an
+//     OpenAI access token. Wins over a static key whenever the trio is
+//     available, in CI or locally.
+//  2. Static — OPENAI_API_KEY present in the runner environment: a local
+//     run, or a CI run where no WIF trio is configured (ADR 0092).
 //  3. Neither — an error naming the variables, before any gateway work.
 //
 // A partially configured WIF trio is an error rather than a silent fall
@@ -343,10 +351,12 @@ func resolveOpenAICredential(ctx context.Context, getenv func(string) string, fr
 	// partially set source is an error rather than a silent fallback.
 	fromConfig = fromConfig.Trimmed()
 	// A committed block applies where an exchange is possible (a GitHub
-	// OIDC endpoint) or where nothing else is available; a developer's
-	// OPENAI_API_KEY on a laptop is not overridden by the repository's
-	// CI configuration.
-	configApplies := !fromConfig.IsZero() && (getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" || getenv(openAIStaticKeyEnv) == "")
+	// OIDC endpoint, i.e. in CI) or where nothing else is available: a
+	// static key never overrides a usable WIF block, but does win when
+	// the block isn't usable here — a developer's OPENAI_API_KEY on a
+	// laptop, or a CI run with no committed WIF config, is not blocked
+	// by a config.yaml block that can't be exchanged in this run.
+	configApplies := !fromConfig.IsZero() && (getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" || strings.TrimSpace(getenv(openAIStaticKeyEnv)) == "")
 	configIgnored := !fromConfig.IsZero() && !configApplies
 	if audience == "" && identityProviderID == "" && serviceAccountID == "" && configApplies {
 		if missing := fromConfig.Missing(); len(missing) > 0 {
@@ -406,7 +416,7 @@ func resolveOpenAICredential(ctx context.Context, getenv func(string) string, fr
 		return cred, nil
 	}
 
-	if key := getenv(openAIStaticKeyEnv); key != "" {
+	if key := strings.TrimSpace(getenv(openAIStaticKeyEnv)); key != "" {
 		detail := openAIStaticKeyEnv + " from the runner environment"
 		if configIgnored {
 			detail += " (inference.openai in config.yaml not used: no GitHub OIDC endpoint here)"
@@ -418,8 +428,8 @@ func resolveOpenAICredential(ctx context.Context, getenv func(string) string, fr
 		}, nil
 	}
 
-	return openAICredential{}, fmt.Errorf("no OpenAI credential: set %s, %s and %s (or inference.openai in config.yaml) for Workload Identity Federation (the job needs `permissions: id-token: write`), or %s in the runner environment for a local run",
-		openAIAudienceEnv, openAIIdentityProviderIDEnv, openAIServiceAccountIDEnv, openAIStaticKeyEnv)
+	return openAICredential{}, fmt.Errorf("no OpenAI credential: set %s, %s and %s (or inference.openai in config.yaml) for Workload Identity Federation (the job needs `permissions: id-token: write`), or set %s in the runner environment for a local run, a masked GitLab CI/CD variable, or the %s GitHub repository secret",
+		openAIAudienceEnv, openAIIdentityProviderIDEnv, openAIServiceAccountIDEnv, openAIStaticKeyEnv, openAIRepoSecretName)
 }
 
 // runScopedProviderName derives the provider instance name for this run
@@ -947,6 +957,34 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 		expiresAt = next
 		printer.StepDone(fmt.Sprintf("OpenAI credential refreshed for %s (%s, next expiry in %s)", h.name, h.source, time.Until(expiresAt).Round(time.Minute)))
 	}
+}
+
+// startOpenAIRefreshers launches one refresh goroutine per handle, mirroring
+// the launch in the run-scoped provider creation loop in runAgent. It
+// returns one stop-and-wait func per handle, in the same order as handles,
+// for the caller to register via `defer` directly (defer is lexically
+// scoped, so this helper cannot register the cleanup itself) and to reuse
+// when a stage needs to pause and later resume refreshers around a token
+// remint's os.Setenv/os.Unsetenv calls — see the pre-script remint call site
+// in runAgent, which pauses refreshers around maybeRemintAgentTokenForStage
+// and preRestore, then restarts them with this helper so the credential
+// keeps refreshing for the sandbox stage that follows.
+func startOpenAIRefreshers(handles []openAIProviderHandle, printer *ui.Printer) []func() {
+	stops := make([]func(), 0, len(handles))
+	for _, handle := range handles {
+		refreshCtx, stopRefresh := context.WithCancel(context.Background())
+		var refreshWg sync.WaitGroup
+		refreshWg.Add(1)
+		go func(handle openAIProviderHandle) {
+			defer refreshWg.Done()
+			runOpenAIRefresh(refreshCtx, handle, printer)
+		}(handle)
+		stops = append(stops, func() {
+			stopRefresh()
+			refreshWg.Wait()
+		})
+	}
+	return stops
 }
 
 // cleanupRunScopedProvider removes a run-scoped provider at the end of the

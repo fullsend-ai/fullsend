@@ -43,3 +43,5 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 - Behaviour tests share the halfsend org pool and lock mechanism with admin e2e tests (`e2e.yml` runs both jobs). Lock hold time scales with scenario count; pool size was doubled to absorb the additional load and can be increased again if contention appears.
 
 > **Note (2026-07):** Shared live-test infrastructure (org pool, CLI runner, cleanup) lives in `pkg/e2etest/`; the Gherkin framework lives in `pkg/behaviourtest/`. In-repo runners remain under `e2e/behaviour/` and `e2e/admin/`.
+>
+> **Note (2026-09):** Live-test infrastructure moved from `pkg/e2etest/` to `internal/e2etest/` so it is not part of the public module surface ([#7279](https://github.com/fullsend-ai/fullsend/issues/7279)).

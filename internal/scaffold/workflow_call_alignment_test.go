@@ -361,6 +361,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	commonSecrets := []string{
 		"FULLSEND_GCP_WIF_PROVIDER",
 		"FULLSEND_GCP_PROJECT_ID",
+		"FULLSEND_OPENAI_API_KEY",
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 		"OTEL_EXPORTER_OTLP_HEADERS",
 	}
@@ -468,6 +469,80 @@ func TestReusableDispatchFixInstructionNormalizesCRLF(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "instruction<<INSTRUCTION_fixed-delimiter\nChange A\nChange B\nINSTRUCTION_fixed-delimiter\n")
 	assert.NotContains(t, string(output), "\r")
+}
+
+// TestOpenAIAPIKeySecretThreading validates that the opt-in static OpenAI
+// key (#7295) is forwarded by every scaffold shim that already forwards
+// FULLSEND_GCP_PROJECT_ID, and that every reusable-*.yml callee it calls
+// declares the secret and exports it as OPENAI_API_KEY (#7295, 333ad967e).
+func TestOpenAIAPIKeySecretThreading(t *testing.T) {
+	forward := "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
+		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
+		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
+		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
+		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		// This repo's own installed shims (not just the scaffold templates
+		// new installs get) must forward the secret too, or fullsend's own
+		// runs could never use it.
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, string(tc.content(t)), forward,
+				"%s must forward %s", tc.name, "FULLSEND_OPENAI_API_KEY")
+		})
+	}
+
+	declaration := "FULLSEND_OPENAI_API_KEY:\n        required: false"
+	export := "OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+
+	// Standalone reusable-{stage}.yml files have exactly one job/one agent
+	// step each, so a whole-file substring check is unambiguous.
+	standaloneStages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range standaloneStages {
+		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
+			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
+			assert.Contains(t, content, declaration,
+				"reusable-%s.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets", stage)
+			assert.Contains(t, content, export,
+				"reusable-%s.yml must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", stage)
+		})
+	}
+
+	// reusable-dispatch.yml inlines seven jobs in one file (TestOpenAIVariableForwarding
+	// above uses the same step markers): a whole-file substring check would still pass
+	// if any single step's export were dropped or mistyped, since the other six would
+	// remain. Scope the export check to each step's own section.
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		assert.Contains(t, content, declaration,
+			"reusable-dispatch.yml must declare FULLSEND_OPENAI_API_KEY (required: false) under on.workflow_call.secrets")
+
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				assert.Contains(t, section, export,
+					"%q step must export FULLSEND_OPENAI_API_KEY as OPENAI_API_KEY", marker)
+			})
+		}
+	})
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
@@ -764,6 +839,64 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 
 			// Retro on PR close remains intentionally ungated (documented)
 			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+
+			// OWNERS role→permission mapping: approvers in write|triage arm,
+			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
+			// A ;& (unconditional fallthrough) would silently give reviewers
+			// write-level access — this assertion catches that.
+			assert.Regexp(t, `(?s)write\|triage\).*_owners_has_user approvers`, s,
+				"OWNERS approvers must be checked in the write|triage case arm")
+			assert.Regexp(t, `(?s);;&\s*\n\s+triage\).*_owners_has_user reviewers`, s,
+				"OWNERS reviewers must be in the triage-only arm after ;;&  (not ;&)")
+			assert.Contains(t, s, `[.authorization[]? | select(.provider == "owners_file")] | length`,
+				"OWNERS auth must be gated on the owners_file provider in config.yaml")
+			assert.Contains(t, s, `lc_user="${username,,}"`,
+				"OWNERS username comparison must be case-insensitive")
+			assert.Contains(t, s, `_owners_has_user approvers "${lc_user}"`,
+				"OWNERS approver check must use lowercased lc_user, not original username")
+			assert.Contains(t, s, `_owners_has_user reviewers "${lc_user}"`,
+				"OWNERS reviewer check must use lowercased lc_user, not original username")
+			assert.Regexp(t, `::notice::OWNERS file resolved user '\$\{username\}'`, s,
+				"OWNERS audit log must use original username casing, not lc_user")
+		})
+	}
+}
+
+// TestOwnersCheckoutRefPin validates that every checkout step whose
+// sparse-checkout includes OWNERS files pins to base branch SHA for
+// pull_request_review events. Without this, a PR author can add
+// themselves to OWNERS in their branch and self-authorize on the
+// pull_request_review dispatch path.
+func TestOwnersCheckoutRefPin(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			// Split into sections by checkout step boundary. Each section
+			// starting with "uses: actions/checkout@" contains one step's
+			// with: block up to the next step or job boundary.
+			sections := regexp.MustCompile(`(?m)^[ \t]*- name:`).Split(s, -1)
+
+			var ownersCheckouts int
+			for _, section := range sections {
+				if !strings.Contains(section, "actions/checkout@") {
+					continue
+				}
+				if !strings.Contains(section, "OWNERS") {
+					continue
+				}
+				ownersCheckouts++
+				assert.Contains(t, section, "pull_request_review",
+					"checkout that sparse-checks-out OWNERS must pin ref for pull_request_review events")
+			}
+			require.NotZero(t, ownersCheckouts,
+				"should find at least one checkout step with OWNERS in sparse-checkout")
 		})
 	}
 }
@@ -1404,7 +1537,8 @@ func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
 // replace the canonical profiles the fleet resolves from fullsend-ai/agents
 // (fullsend-github-ro, fullsend-vertex-ai, ...). A profile a runner needs
 // for its own provider type — fullsend-openai — is imported from the
-// embedded scaffold by `fullsend run` instead.
+// embedded scaffold by `fullsend run` instead. policies/ is on neither list:
+// the scaffold ships no policy (#6834).
 func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	notLayered := map[string]bool{"profiles": true}
 	want := make([]string, 0, len(layeredDirs))

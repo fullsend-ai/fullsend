@@ -7,6 +7,7 @@
 #   - rootless Podman + an OCI hook that injects the host CA bundle
 #   - OpenShell CLI (pinned) and a per-job gateway (no long-lived daemon)
 #   - pre-pulled runner + supervisor images
+#   - a user systemd timer that prunes unused Podman images (#7663)
 #
 # Idempotent: safe to re-run, and must stay that way. Each step is guarded
 # (version checks, grep-for-existing-config, early returns) so a second run
@@ -58,9 +59,9 @@ if [ -f "${_openshell_version_sh}" ]; then
 fi
 OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
 
-# Source the executor's gateway helpers (wait_for_openshell_gateway) so
-# configure_per_job_gateway can wait for the seed start instead of assuming
-# it worked.
+# Source the executor's gateway helpers (wait_for_openshell_gateway,
+# user_systemctl) so configure_per_job_gateway can wait for the seed start
+# and every systemctl --user call has a user-session bus.
 _gateway_sh="${SCRIPT_DIR}/executor/gateway.sh"
 if [ -f "${_gateway_sh}" ]; then
   # shellcheck source=executor/gateway.sh
@@ -72,6 +73,8 @@ BUILDS_DIR="${HOME}/builds"
 CACHE_DIR="${HOME}/cache"
 CONFIG_TOML="/etc/gitlab-runner/config.toml"
 RUNNER_USER="${USER:-$(whoami)}"
+# Overridable so setup_test.sh can point the drop-in at a temp dir.
+GITLAB_RUNNER_OVERRIDE_DIR="/etc/systemd/system/gitlab-runner.service.d"
 
 # Source the central gitlab-runner version pin.
 _runner_version_sh="${SCRIPT_DIR}/gitlab-runner-version.sh"
@@ -306,10 +309,31 @@ register_runner() {
 setup_runner_user() {
   info "Configuring gitlab-runner to run as ${RUNNER_USER}"
 
-  local override_dir="/etc/systemd/system/gitlab-runner.service.d"
+  local override_dir="${GITLAB_RUNNER_OVERRIDE_DIR}"
   local override_file="${override_dir}/user.conf"
+  local runner_uid
 
-  if [ -f "${override_file}" ] && grep -q "User=${RUNNER_USER}" "${override_file}"; then
+  # GitLab Runner is a system service, so it does not go through pam_systemd
+  # and does not inherit a user-session bus. Linger keeps user@UID.service
+  # alive; these Environment= lines let systemctl --user and rootless podman
+  # talk to it.
+  #
+  # Resolve the numeric UID at generation time. systemd %U/%u specifiers
+  # expand to the *manager instance* (root / 0 for a system-scope unit),
+  # not to User= — interpolating %U produced /run/user/0 and broke
+  # rootless Podman (#7696).
+  #
+  # The skip path must require the env lines with this UID: a VM
+  # provisioned before #7453 has User= already, and a VM provisioned with
+  # the #7453 %U drop-in still expands to UID 0. Re-running setup.sh has
+  # to rewrite the drop-in so existing runners converge without manual
+  # repair.
+  runner_uid="$(id -u "${RUNNER_USER}")" || fail "cannot resolve UID for ${RUNNER_USER}"
+
+  if [ -f "${override_file}" ] \
+    && grep -q "User=${RUNNER_USER}" "${override_file}" \
+    && grep -Fq "XDG_RUNTIME_DIR=/run/user/${runner_uid}" "${override_file}" \
+    && grep -Fq "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus" "${override_file}"; then
     ok "systemd override already in place"
     return
   fi
@@ -320,6 +344,8 @@ setup_runner_user() {
 User=${RUNNER_USER}
 Group=${RUNNER_USER}
 WorkingDirectory=${HOME}
+Environment=XDG_RUNTIME_DIR=/run/user/${runner_uid}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus
 ExecStart=
 ExecStart=/usr/local/bin/gitlab-runner run --config ${CONFIG_TOML} --working-directory ${HOME} --service gitlab-runner
 EOF
@@ -349,7 +375,7 @@ setup_podman() {
   sudo loginctl enable-linger "${RUNNER_USER}"
   ok "linger enabled for ${RUNNER_USER}"
 
-  systemctl --user enable --now podman.socket
+  user_systemctl enable --now podman.socket
   ok "podman socket enabled"
 }
 
@@ -359,7 +385,7 @@ setup_podman() {
 install_openshell() {
   info "Installing OpenShell ${OPENSHELL_VERSION}"
 
-  if command -v openshell &>/dev/null && systemctl --user cat openshell-gateway.service &>/dev/null; then
+  if command -v openshell &>/dev/null && user_systemctl cat openshell-gateway.service &>/dev/null; then
     local current
     current=$(openshell --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
     if [ "${current}" = "${OPENSHELL_VERSION}" ]; then
@@ -384,7 +410,7 @@ install_openshell() {
   if ! command -v openshell &>/dev/null; then
     fail "openshell binary not found after install"
   fi
-  if ! systemctl --user cat openshell-gateway.service &>/dev/null; then
+  if ! user_systemctl cat openshell-gateway.service &>/dev/null; then
     fail "openshell-gateway.service not found after RPM install"
   fi
 
@@ -623,7 +649,7 @@ EOF
   fi
 
   # Restart the Podman socket so it picks up the hooks_dir config.
-  systemctl --user restart podman.socket
+  user_systemctl restart podman.socket
 
   ok "OCI hook installed for CA trust injection"
 }
@@ -639,7 +665,7 @@ EOF
 configure_per_job_gateway() {
   info "Configuring per-job OpenShell gateway (no long-lived daemon)"
 
-  systemctl --user daemon-reload
+  user_systemctl daemon-reload
 
   # Already-seeded re-run: a previous setup.sh patched the runner to the
   # custom executor and left the unit disabled and stopped. Skip the
@@ -652,9 +678,9 @@ configure_per_job_gateway() {
   # pin it back to per-job.
   if [ -f "${CONFIG_TOML}" ] \
     && grep -q 'executor = "custom"' "${CONFIG_TOML}" \
-    && systemctl --user cat openshell-gateway.service >/dev/null 2>&1 \
-    && ! systemctl --user is-enabled --quiet openshell-gateway.service \
-    && ! systemctl --user is-active --quiet openshell-gateway.service; then
+    && user_systemctl cat openshell-gateway.service >/dev/null 2>&1 \
+    && ! user_systemctl is-enabled --quiet openshell-gateway.service \
+    && ! user_systemctl is-active --quiet openshell-gateway.service; then
     openshell gateway remove openshell >/dev/null 2>&1 || true
     ok "openshell-gateway.service already seeded and disabled; skipping seed start"
     return
@@ -662,12 +688,12 @@ configure_per_job_gateway() {
 
   # Seed PKI + gateway.toml.default via a one-shot start, then stop and
   # disable. The next job's prepare.sh starts it for real with a wiped store.
-  systemctl --user start openshell-gateway.service || true
+  user_systemctl start openshell-gateway.service || true
   if ! wait_for_openshell_gateway; then
     fail "openshell-gateway.service did not become active during the seed start — check: journalctl --user -u openshell-gateway"
   fi
-  systemctl --user stop openshell-gateway.service 2>/dev/null || true
-  systemctl --user disable openshell-gateway.service 2>/dev/null || true
+  user_systemctl stop openshell-gateway.service 2>/dev/null || true
+  user_systemctl disable openshell-gateway.service 2>/dev/null || true
 
   # Drop any CLI registration from the seed start; prepare.sh re-adds it.
   openshell gateway remove openshell >/dev/null 2>&1 || true
@@ -797,6 +823,76 @@ prepull_images() {
 }
 
 # --------------------------------------------------------------------------
+# 8b. Periodic Podman prune (user systemd timer)
+# --------------------------------------------------------------------------
+# Long-lived VMs accumulate superseded rootless images until the ~30 GiB
+# root disk fills (#7663). A user-level timer reclaims unused images and
+# stopped leftovers without touching in-flight job containers. Re-running
+# setup.sh on an already-provisioned VM installs the timer (idempotent).
+install_podman_prune() {
+  info "Installing Podman prune timer"
+
+  local src="${SCRIPT_DIR}/podman-prune.sh"
+  if [ ! -f "${src}" ]; then
+    fail "podman-prune.sh not found: ${src}"
+  fi
+
+  local libdir="${HOME}/.local/lib/fullsend"
+  local unitdir="${HOME}/.config/systemd/user"
+  local keepdir="${HOME}/.config/fullsend-gitlab-runner"
+  mkdir -p "${libdir}" "${unitdir}" "${keepdir}"
+
+  cp "${src}" "${libdir}/podman-prune.sh"
+  chmod +x "${libdir}/podman-prune.sh"
+
+  local supervisor="ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+  cat > "${keepdir}/keep-images" <<EOF
+# Warm-cache images pre-pulled by setup.sh. podman-prune.sh will not rmi these.
+${RUNNER_IMAGE}
+${supervisor}
+EOF
+
+  cat > "${unitdir}/fullsend-podman-prune.service" <<'EOF'
+[Unit]
+Description=Prune unused rootless Podman images on the GitLab runner
+After=podman.socket
+
+[Service]
+Type=oneshot
+Nice=19
+# The observed failure mode was ~45 GiB of unused images; without this,
+# the systemd manager's DefaultTimeoutStartSec (typically 90s) SIGTERMs a
+# still-running reclaim before it frees enough space, so the very next
+# pull can still hit ENOSPC (review on #7663/#7669).
+TimeoutStartSec=infinity
+ExecStart=%h/.local/lib/fullsend/podman-prune.sh
+EOF
+
+  cat > "${unitdir}/fullsend-podman-prune.timer" <<'EOF'
+[Unit]
+Description=Periodically prune unused rootless Podman images on the GitLab runner
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=5min
+Unit=fullsend-podman-prune.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  user_systemctl daemon-reload
+  user_systemctl enable --now fullsend-podman-prune.timer
+  # Asynchronous first run so already-full VMs reclaim space without
+  # waiting for OnBootSec. --no-block keeps setup.sh from waiting on a
+  # multi-gigabyte prune.
+  user_systemctl start --no-block fullsend-podman-prune.service || true
+  ok "podman prune timer enabled"
+}
+
+# --------------------------------------------------------------------------
 # 9. Verify
 # --------------------------------------------------------------------------
 verify() {
@@ -810,21 +906,27 @@ verify() {
     echo "  WARN: openshell version mismatch"; errors=$((errors + 1))
   fi
 
-  if systemctl --user is-enabled --quiet openshell-gateway.service 2>/dev/null; then
+  if user_systemctl is-enabled --quiet openshell-gateway.service 2>/dev/null; then
     echo "  WARN: openshell-gateway.service is enabled — jobs expect a per-job gateway"; errors=$((errors + 1))
   else
     ok "openshell-gateway.service not enabled (per-job)"
   fi
-  if systemctl --user is-active --quiet openshell-gateway.service; then
+  if user_systemctl is-active --quiet openshell-gateway.service; then
     echo "  WARN: gateway is running at setup end — prepare.sh should start it per job"; errors=$((errors + 1))
   else
     ok "gateway not running (started per job in prepare.sh)"
   fi
 
-  if systemctl --user is-active --quiet podman.socket; then
+  if user_systemctl is-active --quiet podman.socket; then
     ok "podman socket active"
   else
     echo "  WARN: podman socket not active"; errors=$((errors + 1))
+  fi
+
+  if user_systemctl is-enabled --quiet fullsend-podman-prune.timer; then
+    ok "podman prune timer enabled"
+  else
+    echo "  WARN: podman prune timer not enabled"; errors=$((errors + 1))
   fi
 
   if systemctl is-active --quiet gitlab-runner; then
@@ -923,5 +1025,6 @@ configure_per_job_gateway
 install_executor
 patch_config
 prepull_images
+install_podman_prune
 sudo systemctl restart gitlab-runner
 verify

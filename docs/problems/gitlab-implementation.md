@@ -491,11 +491,14 @@ func detectForge(repoURL string) (string, error) {
 ```yaml
 # repos.yaml (manifest)
 gitlab:
-  url: https://gitlab.example.com  # optional, defaults to gitlab.com
+  url: https://gitlab.example.com  # required whenever GitLab repos are present, including gitlab.com
 ```
 
 > **Note:** The original design proposed `gitlab_instance_url` in `config.yaml`;
-> the implementation uses `gitlab.url` in the repos manifest instead.
+> the implementation uses `gitlab.url` in the repos manifest instead, and requires it
+> (rather than defaulting to gitlab.com) whenever GitLab repos are present. See
+> [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) for the
+> current setup flow.
 
 ### New Packages
 
@@ -531,6 +534,21 @@ Modified packages (minimized via forge.Client abstraction):
 - `FULLSEND_TRIAGE_TOKEN`, `FULLSEND_CODE_TOKEN`, `FULLSEND_REVIEW_TOKEN`, `FULLSEND_FIX_TOKEN` (per-role credentials)
 - `WEBHOOK_TOKEN_<sha256(project_path)>` (webhook validation tokens for each enrolled repo)
 - Any GCP/Anthropic/cloud provider credentials used by agents
+
+> The per-agent token names above are the abandoned webhook-era sketch
+> (one PAT per agent). The current registered-role contract — built-in
+> Poller, Analyst, and Coder plus administrator-registered custom roles,
+> with `FULLSEND_GITLAB_*_TOKEN` identifiers, a trusted install-state
+> registry, and an explicit migration gate — is defined in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` provisions built-in and custom role credentials on
+> fresh and existing shared-token installs and, when every registered
+> role is ready, cuts over to `enforced` mode and retires
+> `FULLSEND_FORGE_TOKEN` automatically. When the migration gate is
+> `migrating` or `enforced`, GitLab CI poll/agent jobs and `fullsend poll`
+> / `fullsend run` select the registered role credential; disabled and
+> rollback keep `FULLSEND_FORGE_TOKEN`. Role registration is not accepted
+> from repository or merge-request content.
 
 **How protected variables work**: GitLab restricts protected variables to pipelines running on protected branches only. Pipelines triggered on unprotected branches cannot access these variables, regardless of how the pipeline was triggered (webhook, trigger API, manual, etc.).
 
@@ -612,6 +630,8 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 - Agent Infrastructure design doc (for compute/isolation model)
 - Implementation PR for GitLab runner setup (for executor configuration)
 - Deployment guide (for runner registration and management)
+
+Private-CA trust is split the same way: job containers consume GitLab Runner's `CI_SERVER_TLS_CA_FILE`, while sandbox hosts are provisioned independently (the Kubernetes executor does not inherit the Podman VM OCI CA hook). See [Private CA (self-hosted GitLab)](../guides/getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 **Assumption**: Agents will execute in isolated environments (containers or VMs) managed by GitLab runners, similar to the current GitHub Actions model. The dispatch pipelines (covered in this doc) trigger agent jobs; the agent execution details are implementation-specific.
 

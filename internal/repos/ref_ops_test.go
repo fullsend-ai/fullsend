@@ -364,6 +364,47 @@ func TestReplaceShimRef_DollarSignInRef(t *testing.T) {
 	}
 }
 
+func TestCollectGitLabUpgradeTemplates_IncludesPipelineWrapper(t *testing.T) {
+	files, err := collectGitLabUpgradeTemplates(nil, "v0.1.0", "")
+	if err != nil {
+		t.Fatalf("collectGitLabUpgradeTemplates: %v", err)
+	}
+	var hasPipeline, hasDispatch, hasAgent, hasPoll bool
+	for _, f := range files {
+		switch f.Path {
+		case ".gitlab/ci/fullsend-pipeline.yml":
+			hasPipeline = true
+		case ".gitlab/ci/fullsend-dispatch.yml":
+			hasDispatch = true
+		case ".gitlab/ci/fullsend-agent.yml":
+			hasAgent = true
+		case ".gitlab/ci/fullsend-poll.yml":
+			hasPoll = true
+		}
+	}
+	if !hasPipeline {
+		t.Error("expected fullsend-pipeline.yml in upgrade templates (#7322)")
+	}
+	if !hasDispatch {
+		t.Error("expected fullsend-dispatch.yml in upgrade templates so structural rewrites reach enrolled repos")
+	}
+	if !hasAgent || !hasPoll {
+		t.Error("expected agent and poll templates in upgrade set")
+	}
+	for _, f := range files {
+		if f.Path != ".gitlab/ci/fullsend-dispatch.yml" {
+			continue
+		}
+		body := string(f.Content)
+		if !strings.Contains(body, "# fullsend-ref: v0.1.0") {
+			t.Error("upgrade dispatch file must carry the target version marker")
+		}
+		if strings.Contains(body, "dispatch-mr-agents:") {
+			t.Error("upgrade dispatch file must be the current version-marker stub, not the native-dispatch job")
+		}
+	}
+}
+
 func TestValidateConcurrency(t *testing.T) {
 	if err := validateConcurrency(1); err != nil {
 		t.Errorf("expected 1 to be valid: %v", err)

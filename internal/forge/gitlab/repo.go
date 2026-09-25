@@ -14,9 +14,10 @@ import (
 )
 
 // maxTreePages is the pagination safety bound for tree-listing endpoints
-// (getTreeMap, ListDirectoryContents, ListRepositoryFiles). Set higher than
-// the entity-listing cap (100 pages) because file trees can have orders of
-// magnitude more entries in monorepos.
+// (getTreeMap, ListDirectoryContents, ListRepositoryFiles) and for walking
+// first-parent commit history (resolveRootCommitSHA). Set higher than the
+// entity-listing cap (100 pages) because file trees and commit histories can
+// have orders of magnitude more entries in monorepos.
 const maxTreePages = 1000
 
 type treeEntry struct {
@@ -400,6 +401,12 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	return nil
 }
 
+// DeleteBranch deletes a git branch. Returns forge.ErrNotFound (wrapped)
+// if the branch does not exist.
+func (c *LiveClient) DeleteBranch(ctx context.Context, owner, repo, branchName string) error {
+	return c.DeleteRef(ctx, owner, repo, "heads/"+branchName)
+}
+
 // DeleteRef deletes a git ref via the GitLab Branches or Tags API.
 // refPath must be in the form "heads/<branch>" or "tags/<tag>".
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.
@@ -589,6 +596,8 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 		proj, url.PathEscape(path), url.QueryEscape(ref))
 	resp, err := c.get(ctx, apiPath)
 	if err != nil {
+		// GitLab 404 unwraps to forge.ErrNotFound via APIError.Unwrap, so
+		// a missing state file is distinguishable from other failures.
 		return nil, fmt.Errorf("get file content: %w", err)
 	}
 
@@ -776,6 +785,99 @@ func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string
 	return paths, nil
 }
 
+const skipCIMarker = "[skip ci]"
+
+func withSkipCI(message string) string {
+	if strings.Contains(message, skipCIMarker) {
+		return message
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return skipCIMarker
+	}
+	return message + " " + skipCIMarker
+}
+
+// commitOptions controls optional GitLab Commits API fields used by
+// force-re-root writes. Zero value preserves the existing non-force path.
+type commitOptions struct {
+	force    bool
+	startSHA string
+}
+
+// ForceCommitFileToBranch force-updates branch to a single-file commit
+// re-rooted on the repository's root commit. The branch is created if it
+// does not exist. Each call leaves the branch at base+1 commit (prior
+// force-commits become unreachable). The commit message is suffixed with
+// [skip ci] when not already present.
+func (c *LiveClient) ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
+	if branch == "" || path == "" {
+		return fmt.Errorf("force commit: branch and path are required")
+	}
+	startSHA, err := c.resolveRootCommitSHA(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("resolve force-commit base: %w", err)
+	}
+	_, err = c.commitFilesImpl(ctx, owner, repo, branch, withSkipCI(message), []forge.TreeFile{
+		{Path: path, Content: content, Mode: "100644"},
+	}, commitOptions{force: true, startSHA: startSHA})
+	if err != nil {
+		return fmt.Errorf("force commit %s to %s: %w", path, branch, err)
+	}
+	return nil
+}
+
+// resolveRootCommitSHA finds the repository's DAG root commit (the fixed
+// base for force-re-root writes). The commits-list endpoint does not
+// support order_by/sort (those belong to other GitLab endpoints); it only
+// supports first_parent plus standard offset pagination. So the root is
+// found by walking first-parent history to its last page and taking that
+// page's last entry.
+func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo string) (string, error) {
+	branch, err := c.getDefaultBranch(ctx, owner, repo)
+	if err != nil {
+		return "", fmt.Errorf("get default branch: %w", err)
+	}
+	proj := projectPath(owner, repo)
+
+	var root string
+	for page := 1; page <= maxTreePages; page++ {
+		params := url.Values{}
+		if branch != "" {
+			params.Set("ref_name", branch)
+		}
+		params.Set("first_parent", "true")
+		params.Set("per_page", "100")
+		params.Set("page", fmt.Sprintf("%d", page))
+		resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/commits?%s", proj, params.Encode()))
+		if err != nil {
+			return "", fmt.Errorf("list root commits: %w", err)
+		}
+
+		nextPage := resp.Header.Get("X-Next-Page")
+
+		var commits []struct {
+			ID string `json:"id"`
+		}
+		if err := decodeJSON(resp, &commits); err != nil {
+			return "", fmt.Errorf("decode commits: %w", err)
+		}
+		if len(commits) == 0 {
+			break
+		}
+		root = commits[len(commits)-1].ID
+
+		if nextPage == "" || len(commits) < 100 {
+			break
+		}
+	}
+
+	if root == "" {
+		return "", fmt.Errorf("%w: no root commit for %s/%s", forge.ErrNotFound, owner, repo)
+	}
+	return root, nil
+}
+
 // CommitFiles atomically commits multiple files to the default branch
 // via GitLab's Commits API. Returns (false, nil) when all files already
 // match the current tree (idempotent).
@@ -787,28 +889,52 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 	if err != nil {
 		return false, fmt.Errorf("get default branch: %w", err)
 	}
-	return c.commitFilesImpl(ctx, owner, repo, branch, message, files)
+	return c.commitFilesImpl(ctx, owner, repo, branch, message, files, commitOptions{})
 }
 
 func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
 	if len(files) == 0 {
 		return false, nil
 	}
-	return c.commitFilesImpl(ctx, owner, repo, branch, message, files)
+	return c.commitFilesImpl(ctx, owner, repo, branch, message, files, commitOptions{})
 }
 
 // commitFilesImpl reads the tree, computes a diff, and POSTs a commit.
 // This is a non-atomic read-modify-write; concurrent branch updates may
 // cause a 409 Conflict (mapped to ErrNonFastForward). The GitHub client
 // shares this structural pattern.
-func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
-	existing, err := c.getTreeMap(ctx, owner, repo, branch)
-	if err != nil {
-		return false, fmt.Errorf("get tree: %w", err)
+//
+// When opts.force is set with opts.startSHA, the commit is re-rooted on
+// that SHA and the target branch is force-updated (created if absent).
+// Actions are applied to the start SHA's tree, not the target branch.
+func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile, opts commitOptions) (bool, error) {
+	var existing map[string]treeEntry
+	if opts.force && opts.startSHA != "" {
+		// Actions apply to start_sha's tree (the fixed base), not the
+		// target branch. The base typically does not contain the file,
+		// so treating the tree as empty yields "create" actions — the
+		// correct force-re-root shape. Reading the target branch would
+		// send "update" and GitLab would 400 because the file is absent
+		// from start_sha.
+		existing = map[string]treeEntry{}
+	} else {
+		var err error
+		existing, err = c.getTreeMap(ctx, owner, repo, branch)
+		if err != nil {
+			return false, fmt.Errorf("get tree: %w", err)
+		}
 	}
 
 	var actions []map[string]any
+	// GitLab rejects two create actions for the same path in one commit
+	// (400 "A file with this name already exists"). Skip a path once it
+	// has been queued; the first actionable entry wins.
+	queued := make(map[string]struct{}, len(files))
 	for _, f := range files {
+		if _, ok := queued[f.Path]; ok {
+			continue
+		}
+
 		if f.Delete {
 			if _, ok := existing[f.Path]; !ok {
 				continue
@@ -817,6 +943,7 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 				"action":    "delete",
 				"file_path": f.Path,
 			})
+			queued[f.Path] = struct{}{}
 			continue
 		}
 
@@ -844,6 +971,7 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		}
 
 		actions = append(actions, entry)
+		queued[f.Path] = struct{}{}
 	}
 
 	if len(actions) == 0 {
@@ -855,6 +983,12 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		"branch":         branch,
 		"commit_message": message,
 		"actions":        actions,
+	}
+	if opts.force {
+		payload["force"] = true
+	}
+	if opts.startSHA != "" {
+		payload["start_sha"] = opts.startSHA
 	}
 
 	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/commits", proj), payload)

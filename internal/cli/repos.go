@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -65,14 +66,14 @@ func newReposMigrateCmd() *cobra.Command {
 For each repo enrolled in the org's per-org config (.fullsend config repo):
   1. Check inference WIF status; provision if needed
   2. Install per-repo (scaffold, variables, secrets) with config carried over
-  3. Unenroll from per-org config
+  3. Remove the repository entry from per-org config
 
 Generates a repos.yaml manifest reflecting the migrated state.
 
 Re-running after a partial migration picks up where it left off:
   - Already per-repo installed → skipped
   - Inference already provisioned → reuse existing WIF provider
-  - Already unenrolled → no-op
+  - Already removed from per-org config → no-op
 
 Individual repo failures do not abort the batch.
 
@@ -263,7 +264,7 @@ func newReposStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Compare manifest against actual repo state",
-		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo.",
+		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReposStatus(cmd, manifest, jsonOutput, repoFilter, concurrency)
 		},
@@ -294,6 +295,7 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 	if err != nil {
 		return err
 	}
+	annotateGitLabRoleLifecycle(ctx, clients, result)
 
 	return renderStatusResult(cmd, result, jsonOutput)
 }
@@ -346,6 +348,23 @@ func formatRef(currentRef, expectedRef string) string {
 	}
 
 	return display
+}
+
+func showGitLabRoleStatus(s repos.RepoStatus) bool {
+	if len(s.GitLabRoleDiagnostics) == 0 {
+		return false
+	}
+	switch s.GitLabRoleMode {
+	case string(gitlabroles.ModeMigrating), string(gitlabroles.ModeRollback), string(gitlabroles.ModeEnforced):
+		return true
+	case "":
+		// appendGitLabRoleStatus leaves GitLabRoleMode empty on a
+		// parse/read/registry error, but still records a diagnostic.
+		// Surface it in the table view too, not just JSON output.
+		return true
+	default:
+		return s.GitLabRolesPartial
+	}
 }
 
 func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
@@ -403,6 +422,16 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	}
 	fmt.Fprintln(out)
 
+	for _, s := range result.Repos {
+		if !showGitLabRoleStatus(s) {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s GitLab roles (mode=%s):\n", s.Owner+"/"+s.Repo, s.GitLabRoleMode)
+		for _, d := range s.GitLabRoleDiagnostics {
+			fmt.Fprintf(out, "  %s\n", d)
+		}
+	}
+
 	for _, w := range result.Warnings {
 		fmt.Fprintf(out, "WARNING: %s\n", w)
 	}
@@ -411,15 +440,17 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 // reposInstallConfig holds flags and test overrides for repos install.
 type reposInstallConfig struct {
 	// Core flags
-	manifest    string
-	dryRun      bool
-	repoFilter  []string
-	concurrency int
-	roles       []string
-	direct      bool
-	force       bool
-	gitlabToken string
-	forge       string
+	manifest            string
+	dryRun              bool
+	repoFilter          []string
+	concurrency         int
+	roles               []string
+	rolesChanged        bool
+	direct              bool
+	force               bool
+	reactivateSchedules bool
+	gitlabToken         string
+	forge               string
 
 	// GCP credentials (install-time only)
 	inferenceProject       string
@@ -428,8 +459,21 @@ type reposInstallConfig struct {
 	inferenceRegion        string
 
 	// GitLab-specific
-	gitlabURL      string
-	gitlabBotToken string
+	gitlabURL           string
+	gitlabBotToken      string
+	gitlabRoleMigration string
+	gitlabRoleRegistry  string
+	gitlabRoleTokens    []string
+
+	gitlabRoleRegistryJSON      string
+	gitlabRoleProvided          map[gitlabroles.Role]string
+	gitlabRoleModeFlag          gitlabroles.Mode
+	gitlabRoleCutover           bool
+	gitlabRoleCutoverDrained    bool
+	gitlabRoleRollbackConfirmed bool
+	rotateGitLabRoles           bool
+	rotateGitLabRoleNames       []string
+	rotateGitLabRoleFilter      []gitlabroles.Role
 
 	// Per-repo overrides
 	fullsendRef            string
@@ -444,8 +488,10 @@ type reposInstallConfig struct {
 	vendorChanged  bool
 
 	// Test overrides
-	testClient          forge.Client
-	testProjectNumberFn func(ctx context.Context, projectID string) (string, error)
+	testClient               forge.Client
+	testFactory              repos.ForgeClientFactory
+	testGitLabTokenInventory repos.ProjectAccessTokenClient
+	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -457,13 +503,19 @@ func newReposInstallCmd() *cobra.Command {
 		Long: `Idempotent convergence operator for repos.yaml manifest entries.
 
 For repos not yet in the manifest, adds them (requires --forge). For repos
-not yet provisioned, scaffolds workflow files and writes variables/secrets.
-For already-installed repos, reconciles variable drift and upgrades scaffold
-refs to match the manifest.
+whose shim workflow is not yet on the default branch, scaffolds workflow
+files and writes variables/secrets onto the initialization branch, including
+re-runs while an initialization PR/MR is still open. For repos whose workflow
+is already on the default branch, reconciles variable drift, disabled GitLab
+pipeline schedules (reported as drift; reactivated only when
+--reactivate-schedules is passed), declared configuration-preset drift
+against .fullsend/config.base.yaml, and upgrades scaffold refs to match
+the manifest.
 
 When repos are specified as positional arguments, only those repos are
 processed. Glob patterns (e.g. "acme/*") are matched against manifest
 entries. When no repos are specified, all manifest repos are converged.
+Credentials are required only for the forges of the selected repos.
 
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
@@ -478,6 +530,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 				return err
 			}
 			opts.vendorChanged = cmd.Flags().Changed("vendor")
+			opts.rolesChanged = cmd.Flags().Changed("roles")
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
@@ -488,6 +541,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
+	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
 	cmd.Flags().StringVar(&opts.forge, "forge", "", "forge type for repos not yet in the manifest (github or gitlab)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
@@ -498,6 +552,14 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
+	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: migrating, enforced, rollback, or disabled (default: provision role credentials and cut over to enforced; passing enforced explicitly assumes in-flight shared-token jobs are drained, the same as ordinary install, and does not require --gitlab-role-cutover-drained; rollback and disabled are emergency recovery only)")
+	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
+	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
+	cmd.Flags().BoolVar(&opts.gitlabRoleCutover, "gitlab-role-cutover", false, "explicitly verify GitLab roles, enable enforced mode, and retire the shared credential (ordinary install already does this when roles are ready)")
+	cmd.Flags().BoolVar(&opts.gitlabRoleCutoverDrained, "gitlab-role-cutover-drained", false, "confirm in-flight shared-token jobs are drained; required with --gitlab-role-cutover")
+	cmd.Flags().BoolVar(&opts.gitlabRoleRollbackConfirmed, "gitlab-role-rollback-confirmed", false, "confirm reopening the shared GitLab credential path after enforced cutover")
+	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
+	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
 	return cmd
@@ -538,6 +600,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if err := repos.RejectExtraneousURLParts(gu, "--gitlab-url"); err != nil {
 			return err
 		}
+	}
+	if err := prepareGitLabRoleFlags(opts); err != nil {
+		return err
 	}
 
 	printer := ui.New(os.Stdout)
@@ -602,9 +667,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
+	switch {
+	case opts.testFactory != nil:
+		clients = opts.testFactory
+	case opts.testClient != nil:
 		clients = newSingleClientFactory(opts.testClient)
-	} else {
+	default:
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
@@ -757,7 +825,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
-	if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
+	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("determining targeted forges: %w", err)
+	}
+	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
 		return err
 	}
 
@@ -814,9 +886,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	// Resolve the review app client ID for provenance validation.
 	// Best-effort: a missing client ID does not block installation.
+	// Skip the GitHub lookup when this run does not target any GitHub repo.
 	var reviewAppClientID string
-	if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
-		reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+	if forgeListIncludesGitHub(targetedForges) {
+		if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
+			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+		}
 	}
 
 	convergeCfg := repos.ConvergeConfig{
@@ -825,10 +900,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		RepoFilter:             opts.repoFilter,
 		MaxConcurrency:         opts.concurrency,
 		Roles:                  opts.roles,
+		RolesExplicit:          opts.rolesChanged,
 		UpstreamRef:            upstreamRef,
 		UpstreamTag:            upstreamTag,
 		Direct:                 opts.direct,
 		Force:                  opts.force,
+		ReactivateSchedules:    opts.reactivateSchedules,
 		InferenceProject:       opts.inferenceProject,
 		InferenceProjectNumber: opts.inferenceProjectNumber,
 		InferenceRegion:        opts.inferenceRegion,
@@ -909,13 +986,36 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	// GitLab post-install: set up bot token and pipeline schedules for
-	// newly installed GitLab repos. Only fresh installs need this —
-	// converged repos already have working bot tokens and schedules.
-	// Running on converged repos would revoke live bot PATs, breaking
-	// in-flight pipelines.
-	var postInstallFailed int
-	if !opts.dryRun && len(installed) > 0 {
-		for _, r := range installed {
+	// repos whose convergence result says an artifact is missing. Entry into
+	// the loop body is gated on
+	// NeedsGitLabPostInstall (true when either artifact is missing), but
+	// the two destructive actions inside are each gated on their own
+	// specific flag (NeedsGitLabBotToken / NeedsGitLabPipelineSchedules)
+	// rather than the combined flag — a repo re-run while its
+	// initialization MR is still open (#7417) keeps Installed true (the
+	// shim workflow is still absent from the default branch) even though
+	// some GitLab post-install artifacts already exist from a prior run.
+	// Running bot-token setup when only the token exists (or schedule
+	// setup when only the schedules exist) would still revoke/recreate
+	// the live fullsend-bot PAT or delete/recreate pipeline schedules
+	// that didn't need it, breaking in-flight pipelines.
+	// failedRepoKeys tracks owner/repo pairs that have already failed in an
+	// earlier stage (post-install setup, poll-state provisioning) so the
+	// role-provisioning pass below can skip them instead of double-counting
+	// them as both a stage failure and a role failure.
+	failedRepoKeys := make(map[string]bool)
+
+	var installedPostFail int
+	var postInstallFailedRepos []repos.ConvergeResult
+	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
+	postInstallRepos = append(postInstallRepos, installed...)
+	postInstallRepos = append(postInstallRepos, converged...)
+	postInstallRepos = append(postInstallRepos, alreadyCurrent...)
+	if !opts.dryRun && len(postInstallRepos) > 0 {
+		for _, r := range postInstallRepos {
+			if !r.NeedsGitLabPostInstall {
+				continue
+			}
 			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
 			if !ok || rc.Forge != repos.ForgeGitLab {
 				continue
@@ -927,43 +1027,244 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
 			if fcErr != nil {
 				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client: %v", repoFullName, fcErr))
-				postInstallFailed++
+				r.Error = fcErr
+				postInstallFailedRepos = append(postInstallFailedRepos, r)
+				if r.Installed {
+					installedPostFail++
+				}
+				failedRepoKeys[repoFullName] = true
 				continue
 			}
 			glClient, ok := fc.Client.(*gl.LiveClient)
 			if !ok {
-				printer.StepWarn(fmt.Sprintf("[%s] GitLab client type assertion failed — bot token setup skipped", repoFullName))
-				postInstallFailed++
+				err := fmt.Errorf("GitLab client type assertion failed — post-install setup skipped")
+				printer.StepWarn(fmt.Sprintf("[%s] %v", repoFullName, err))
+				r.Error = err
+				postInstallFailedRepos = append(postInstallFailedRepos, r)
+				if r.Installed {
+					installedPostFail++
+				}
+				failedRepoKeys[repoFullName] = true
 				continue
 			}
 
-			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
-			if botErr != nil {
-				printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
-				postInstallFailed++
-				continue
+			if r.NeedsGitLabBotToken {
+				_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
+				if botErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
+					r.Error = botErr
+					postInstallFailedRepos = append(postInstallFailedRepos, r)
+					if r.Installed {
+						installedPostFail++
+					}
+					failedRepoKeys[repoFullName] = true
+					continue
+				}
 			}
 
-			targetRepo, repoErr := fc.Client.GetRepo(ctx, r.Owner, r.Repo)
-			if repoErr != nil {
-				printer.StepWarn(fmt.Sprintf("[%s] Could not get repo info for schedule setup: %v", repoFullName, repoErr))
-				continue
-			}
+			if r.Installed && r.NeedsGitLabPipelineSchedules {
+				targetRepo, repoErr := fc.Client.GetRepo(ctx, r.Owner, r.Repo)
+				if repoErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s] Could not get repo info for schedule setup: %v", repoFullName, repoErr))
+					r.Error = repoErr
+					postInstallFailedRepos = append(postInstallFailedRepos, r)
+					if r.Installed {
+						installedPostFail++
+					}
+					failedRepoKeys[repoFullName] = true
+					continue
+				}
 
-			schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
-			if schedErr != nil {
-				printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
+				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
+				if schedErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
+					r.Error = schedErr
+					postInstallFailedRepos = append(postInstallFailedRepos, r)
+					if r.Installed {
+						installedPostFail++
+					}
+					failedRepoKeys[repoFullName] = true
+				}
 			}
 
 			healGitLabResourceGroups(ctx, glClient, printer, r.Owner, r.Repo)
 		}
 	}
 
+	// GitLab poll-state provisioning for already-enrolled repos.
+	// Fresh installs are handled above via repos.Install (Step 5b);
+	// converged and already-current repos still need
+	// FULLSEND_DISPATCH_SECRET and the two poll-state branches, with
+	// any legacy CI/CD variables migrated into signed documents. This
+	// runs with the operator's Maintainer-level client and never
+	// touches the bot PAT, so it is safe on live repos.
+	var pollStateFail int
+	var pollStateFailedRepos []repos.ConvergeResult
+	if !opts.dryRun {
+		existing := make([]repos.ConvergeResult, 0, len(converged)+len(alreadyCurrent))
+		existing = append(existing, converged...)
+		existing = append(existing, alreadyCurrent...)
+		for _, r := range existing {
+			if failedRepoKeys[r.Owner+"/"+r.Repo] {
+				continue
+			}
+			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] Could not get GitLab client for poll-state provisioning: %v", r.Owner, r.Repo, fcErr))
+				pollStateFail++
+				r.Error = fcErr
+				pollStateFailedRepos = append(pollStateFailedRepos, r)
+				failedRepoKeys[r.Owner+"/"+r.Repo] = true
+				continue
+			}
+			if err := provisionGitLabPollState(ctx, fc.Client, printer, r.Owner, r.Repo); err != nil {
+				pollStateFail++
+				r.Error = err
+				pollStateFailedRepos = append(pollStateFailedRepos, r)
+				failedRepoKeys[r.Owner+"/"+r.Repo] = true
+			}
+		}
+	}
+
+	var roleFail int
+	var roleFailedRepos []repos.ConvergeResult
+	var roleFailInstalledCount int
+	{
+		type tagged struct {
+			r     repos.ConvergeResult
+			fresh bool
+		}
+		all := make([]tagged, 0, len(installed)+len(converged)+len(alreadyCurrent))
+		for _, r := range installed {
+			all = append(all, tagged{r: r, fresh: true})
+		}
+		for _, r := range converged {
+			all = append(all, tagged{r: r, fresh: false})
+		}
+		for _, r := range alreadyCurrent {
+			all = append(all, tagged{r: r, fresh: false})
+		}
+		for _, item := range all {
+			// Skip repos that already failed at an earlier stage (post-install
+			// setup, poll-state provisioning) so they are not double-counted
+			// as both a stage failure and a role-provisioning failure.
+			if item.r.Error != nil || failedRepoKeys[item.r.Owner+"/"+item.r.Repo] {
+				continue
+			}
+			rc, ok := manifest.ResolveConfigWithGlobs(item.r.Owner, item.r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] Could not get GitLab client for role provisioning: %v", item.r.Owner, item.r.Repo, fcErr))
+				roleFail++
+				item.r.Error = fcErr
+				roleFailedRepos = append(roleFailedRepos, item.r)
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				continue
+			}
+			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role provisioning failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			if !opts.dryRun && (opts.gitlabRoleModeFlag == gitlabroles.ModeRollback || opts.gitlabRoleModeFlag == gitlabroles.ModeDisabled) {
+				secretExists, secretErr := fc.Client.RepoSecretExists(ctx, item.r.Owner, item.r.Repo, forge.SecretForgeToken)
+				if secretErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] Could not check shared GitLab credential recovery state: %v", item.r.Owner, item.r.Repo, secretErr))
+					roleFail++
+					item.r.Error = secretErr
+					roleFailedRepos = append(roleFailedRepos, item.r)
+					if item.fresh {
+						roleFailInstalledCount++
+					}
+					continue
+				}
+				if !secretExists {
+					glClient, ok := fc.Client.(*gl.LiveClient)
+					if !ok {
+						err := fmt.Errorf("GitLab client type assertion failed during shared credential recovery")
+						printer.StepWarn(fmt.Sprintf("[%s/%s] %v", item.r.Owner, item.r.Repo, err))
+						roleFail++
+						item.r.Error = err
+						roleFailedRepos = append(roleFailedRepos, item.r)
+						if item.fresh {
+							roleFailInstalledCount++
+						}
+						continue
+					}
+					if _, err := setupGitLabBotToken(ctx, fc.Client, glClient, printer, item.r.Owner, item.r.Repo, opts.gitlabBotToken); err != nil {
+						printer.StepWarn(fmt.Sprintf("[%s/%s] Shared GitLab credential recovery failed: %v", item.r.Owner, item.r.Repo, err))
+						roleFail++
+						item.r.Error = err
+						roleFailedRepos = append(roleFailedRepos, item.r)
+						if item.fresh {
+							roleFailInstalledCount++
+						}
+						continue
+					}
+				}
+			}
+			if err := maybeRotateGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role rotation failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			if err := maybeCutoverGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role cutover failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+			}
+			if item.r.Error != nil {
+				continue
+			}
+			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+			}
+		}
+	}
+
 	printer.Blank()
-	installedCount := len(installed) - postInstallFailed
-	failedCount := len(failed) + postInstallFailed
+	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
+	failedCount := len(failed) + len(postInstallFailedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range pollStateFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range postInstallFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range roleFailedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 
@@ -986,7 +1287,9 @@ type reposUninstallConfig struct {
 	uninstallOnly bool
 	gitlabToken   string
 
-	testClient forge.Client
+	testClient       forge.Client
+	testFactory      repos.ForgeClientFactory
+	testGitLabTokens repos.ProjectAccessTokenClient
 }
 
 func newReposUninstallCmd() *cobra.Command {
@@ -1086,16 +1389,21 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	}
 
 	var clients repos.ForgeClientFactory
-	if opts.testClient != nil {
+	switch {
+	case opts.testFactory != nil:
+		clients = opts.testFactory
+	case opts.testClient != nil:
 		clients = newSingleClientFactory(opts.testClient)
-	} else {
+	default:
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
 	progressFn := func(repo, phase, msg string) {
-		switch phase {
-		case "done", "manifest":
+		switch {
+		case phase == "done" || phase == "manifest":
 			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		case strings.HasPrefix(msg, "Warning:"):
+			printer.StepWarn(fmt.Sprintf("[%s] %s", repo, msg))
 		default:
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
 		}
@@ -1128,7 +1436,11 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	var succeededRepos []string
 	var teardownFailed int
 	if !opts.manifestOnly {
-		if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
+		targetedForges, err := manifest.DistinctForgesFor(concreteRepos)
+		if err != nil {
+			return fmt.Errorf("determining targeted forges: %w", err)
+		}
+		if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
 			return err
 		}
 
@@ -1138,6 +1450,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			DryRun:         opts.dryRun,
 			Direct:         opts.direct,
 			MaxConcurrency: opts.concurrency,
+			GitLabTokens:   gitLabUninstallTokens(opts, clients, printer, manifest, concreteRepos),
 		}
 
 		printer.Blank()
@@ -1161,7 +1474,10 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			}
 		}
 
-		// GitLab post-uninstall: clean up pipeline schedules and bot tokens.
+		// GitLab post-uninstall: clean up pipeline schedules. Role and
+		// shared-bot project access tokens are revoked inside Uninstall
+		// when GitLabTokens is set, and a revocation failure fails the
+		// uninstall so the manifest entry remains for retry.
 		if !opts.dryRun {
 			for _, r := range results {
 				if !r.Success {
@@ -1181,13 +1497,6 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 					continue
 				}
 				_ = cleanupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo)
-
-				if glClient, ok := fc.Client.(*gl.LiveClient); ok {
-					_ = cleanupGitLabBotToken(ctx, glClient, printer, r.Owner, r.Repo)
-				} else {
-					printer.StepWarn(fmt.Sprintf("[%s] GitLab client type assertion failed — bot token cleanup skipped", repoFullName))
-				}
-
 			}
 		}
 	} else {
@@ -1255,11 +1564,21 @@ func confirmBulkAction(printer *ui.Printer, action string, patterns []string, ma
 	return nil
 }
 
-// checkAllForgeScopes validates GitHub token permissions for forges used
-// in the manifest. Only GitHub forges are checked because scope
-// introspection is not supported by other forge providers.
-func checkAllForgeScopes(ctx context.Context, m *repos.Manifest, clients repos.ForgeClientFactory, printer *ui.Printer) error {
-	for _, forgeName := range m.DistinctForges() {
+func forgeListIncludesGitHub(forges []string) bool {
+	for _, forgeName := range forges {
+		if forgeName == "" || forgeName == repos.ForgeGitHub {
+			return true
+		}
+	}
+	return false
+}
+
+// checkAllForgeScopes validates GitHub token permissions for the given
+// forges. Only GitHub forges are checked because scope introspection is
+// not supported by other forge providers. Callers must pass the forges
+// actually targeted by the operation, not every forge in the manifest.
+func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer, forges []string) error {
+	for _, forgeName := range forges {
 		if forgeName != "" && forgeName != repos.ForgeGitHub {
 			continue
 		}

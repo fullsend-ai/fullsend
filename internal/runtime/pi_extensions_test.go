@@ -359,9 +359,10 @@ func TestBuildPiRunCommand_Extensions(t *testing.T) {
 	assert.Contains(t, guard, strings.Repeat("b", 64))
 	assert.Contains(t, guard, "exit 96")
 
-	// -e order: provider extension, hook adapter, then declared extensions
-	// in harness order with their args quoted verbatim after the path.
-	eList := `-e '/usr/local/share/pi-extensions/anthropic-vertex' -e '/sandbox/pi-config/fullsend-hooks.js' -e '/sandbox/pi-config/extensions/go-diagnostics' -e '/sandbox/pi-config/extensions/pi-fff' '--fff-mode' 'over'\''ride'`
+	// -e order: provider extension, hook adapter, edit repair (default tool
+	// set includes edit), then declared extensions in harness order with
+	// their args quoted verbatim after the path.
+	eList := `-e '/usr/local/share/pi-extensions/anthropic-vertex' -e '/sandbox/pi-config/fullsend-hooks.js' -e '/sandbox/pi-config/fullsend-edit-repair.js' -e '/sandbox/pi-config/extensions/go-diagnostics' -e '/sandbox/pi-config/extensions/pi-fff' '--fff-mode' 'over'\''ride'`
 	assert.Contains(t, cmd, eList, cmd)
 
 	// env: exported right before pi, after the runtime's own exports, keys

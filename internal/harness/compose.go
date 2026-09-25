@@ -407,19 +407,53 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving containment root: %w", err)
 		}
 		absWorkspace = filepath.Clean(absWorkspace)
-		rel, err := filepath.Rel(absWorkspace, absBasePath)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
-		}
-
-		if visited[absBasePath] {
-			return nil, nil, fmt.Errorf("circular base reference: %s", absBasePath)
-		}
-		visited[absBasePath] = true
-
-		base, err = LoadRaw(basePath)
+		unresolvedWorkspace := absWorkspace
+		absWorkspace, err = filepath.EvalSymlinks(absWorkspace)
 		if err != nil {
-			return nil, nil, fmt.Errorf("loading base harness %s: %w", basePath, err)
+			return nil, nil, fmt.Errorf("resolving containment root symlinks: %w", err)
+		}
+		// Preserve the lexical base reference relative to the referencing harness
+		// directory. This distinguishes explicit traversal from an intermediate
+		// symlink escape without being confused by workspace-root aliases.
+		lexicalRel, lexicalRelErr := filepath.Rel(childDir, absBasePath)
+		lexicallyEscapes := lexicalRelErr != nil || strings.HasPrefix(lexicalRel, "..")
+		// Resolve existing paths before comparing so workspace aliases such as
+		// macOS's /var and /private/var forms compare consistently.
+		resolvedBasePath, resolveErr := filepath.EvalSymlinks(absBasePath)
+		if resolveErr != nil {
+			// The base file may not exist yet, but its parent should still be
+			// canonicalized so workspace aliases compare consistently.
+			resolvedBaseDir, dirErr := filepath.EvalSymlinks(filepath.Dir(absBasePath))
+			if dirErr != nil {
+				// The workspace and child paths may use different forms of the same
+				// alias. Reject only when neither form contains the unresolved base.
+				unresolvedRel, unresolvedRelErr := filepath.Rel(unresolvedWorkspace, absBasePath)
+				resolvedRel, resolvedRelErr := filepath.Rel(absWorkspace, absBasePath)
+				unresolvedEscapes := unresolvedRelErr != nil || strings.HasPrefix(unresolvedRel, "..")
+				resolvedEscapes := resolvedRelErr != nil || strings.HasPrefix(resolvedRel, "..")
+				if unresolvedEscapes && resolvedEscapes {
+					return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+				}
+				return nil, nil, fmt.Errorf("resolving base path symlinks: %w", dirErr)
+			}
+			resolvedBasePath = filepath.Join(resolvedBaseDir, filepath.Base(absBasePath))
+		}
+		rel, err := filepath.Rel(absWorkspace, resolvedBasePath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			if lexicallyEscapes {
+				return nil, nil, fmt.Errorf("base path %q escapes workspace root", baseRef)
+			}
+			return nil, nil, fmt.Errorf("base path %q escapes workspace root via symlink", baseRef)
+		}
+
+		if visited[resolvedBasePath] {
+			return nil, nil, fmt.Errorf("circular base reference: %s", resolvedBasePath)
+		}
+		visited[resolvedBasePath] = true
+
+		base, err = LoadRaw(resolvedBasePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading base harness %s: %w", resolvedBasePath, err)
 		}
 
 		baseDir = filepath.Dir(absBasePath)
@@ -614,8 +648,9 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 //   - Slices (skills, plugins, providers, api_servers): base +
 //     child (concatenated; plugins must still have distinct basenames,
 //     which Validate enforces after the merge)
-//   - Maps (runner_env): base merged with child; child keys win
-//   - Pointer structs (validation_loop, security): child replaces if non-nil
+//   - Maps (runner_env, privilege_levels): base merged with child; child keys win
+//   - Pointer struct (validation_loop): field-level merge; child non-zero wins
+//   - Pointer struct (security): child replaces if non-nil
 //   - host_files: concatenated with last-writer-wins dedup by Dest
 //   - allowed_remote_resources: NOT merged (security; child must declare its own)
 //
@@ -657,6 +692,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 	if child.Effort == "" {
 		child.Effort = base.Effort
+	}
+	if child.Trigger == "" {
+		child.Trigger = base.Trigger
 	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
@@ -730,6 +768,19 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.RunnerEnv = merged
 	}
 
+	// PrivilegeLevels: merge maps, child keys win. A child can override a
+	// single stage (e.g. runtime: read) while inheriting the base default.
+	if base.PrivilegeLevels != nil {
+		merged := make(map[string]string, len(base.PrivilegeLevels)+len(child.PrivilegeLevels))
+		for k, v := range base.PrivilegeLevels {
+			merged[k] = v
+		}
+		for k, v := range child.PrivilegeLevels {
+			merged[k] = v
+		}
+		child.PrivilegeLevels = merged
+	}
+
 	// Env: merge sub-maps independently, child keys win (ADR 0055)
 	if base.Env != nil {
 		if child.Env == nil {
@@ -738,15 +789,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// Pointer structs: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (avoids silently dropping inherited
-	// preflight checks — see #5074).
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
-	}
+	// ValidationLoop: field-level merge (child non-zero wins, base fills
+	// gaps). A child that sets only schema still inherits script,
+	// max_iterations, feedback_mode, and preflight_check from the base.
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 	// Security: child inherits base's config if nil. Note that a base harness
 	// (even integrity-pinned) could set fail_mode: open. Child authors must
 	// explicitly set their own security block to prevent inheriting a weaker posture.
@@ -2386,14 +2432,8 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// ValidationLoop: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (see #5074).
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
-	}
+	// ValidationLoop: field-level merge (child non-zero wins, base fills gaps).
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 }
 
 // FetchAgentHarness fetches a URL-sourced agent harness using the same

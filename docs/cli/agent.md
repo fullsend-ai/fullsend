@@ -15,7 +15,7 @@ Manage agents in fullsend config. Generate a new agent, add, list, set (runtime,
 | `fullsend agent new <name>` | Generate a complete custom agent and register it |
 | `fullsend agent add <url-or-path>` | Register an agent in config |
 | `fullsend agent list` | List registered agents |
-| `fullsend agent update <name> [sha]` | Update a URL agent to a new commit SHA |
+| `fullsend agent update <name> [sha]` | Update a URL agent or a local harness `base:` URL to a new commit SHA |
 | `fullsend agent set <name>` | Set an agent's runtime, model or effort |
 | `fullsend agent remove <name>` | Remove an agent from config |
 
@@ -48,8 +48,13 @@ Next:
   2. Test locally:
        fullsend run lint-docs --fullsend-dir .fullsend \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION
-     and GH_TOKEN. See docs/guides/user/running-agents-locally.md.
+     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
+     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP
+     credentials file — the harness copies that file into the sandbox, so the
+     run stops before it starts without it. GH_TOKEN must be a real token: a
+     connectivity check runs before the agent does. See
+     docs/guides/user/running-agents-locally.md.
   3. Commit .fullsend, then comment `/fs-lint-docs` on an issue or pull request to run it in CI.
 ```
 
@@ -90,9 +95,16 @@ it ships with marked sections to fill in. Everything else is complete.
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
 The policy, provider and profile files are shared by every agent in the
-directory, so they are never overwritten — including with `--force`.
-`fullsend github setup` does not copy these into your repository, which is why
-`agent new` writes them when they are absent.
+directory. `agent new` writes them once, never overwrites them (not even with
+`--force`), and `fullsend github setup` does not create them — so commit
+them with the agent. In CI they behave differently, which matters when you
+want to change one:
+
+| Directory | In CI | To customize |
+|-----------|-------|--------------|
+| `policies/` | Your committed copy is used as-is | Edit `policies/base.yaml`, or add another policy file and point the harness `policy:` at it |
+| `profiles/` | Your committed copy is used as-is | Edit the file |
+| `providers/` | Replaced with the scaffold's copies on every run | Add a provider under a new name; edits to a scaffold-named file are overwritten |
 
 ### Flags
 
@@ -288,6 +300,8 @@ post-script prints its comment instead of posting it:
 export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json
 POST_LINT_DOCS_DRY_RUN=1 \
   GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
+  ISSUE_NUMBER=99 \
+  REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
   ANTHROPIC_VERTEX_PROJECT_ID=... CLOUD_ML_REGION=us-east5 \
   fullsend run lint-docs --fullsend-dir .fullsend \
@@ -367,8 +381,8 @@ request.
 | `unknown --on preset "..."` followed by the preset list | `--on` is not one of the four presets | Use a listed preset, or pass raw CEL with `--trigger` |
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
-| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | A hand-edited harness references a file that is not there | Re-run `agent new`, which writes the policy when absent |
-| Agent crashes at 0s in CI | The sandbox cannot reach Vertex — a provider or profile file is missing | Confirm `providers/` and `profiles/` exist next to the harness |
+| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
+| Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
 | `runner env ... is not set` at `fullsend run` | A `${VAR}` in the harness `env` block is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
 
 ## `agent add`
@@ -414,11 +428,12 @@ my-lint  harness/my-lint.yaml
 
 ## `agent update`
 
-Update a URL-based agent to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored (backward-compatible entries), the default branch HEAD is used.
+Update a URL-based agent, or a local-path agent's `base:` URL, to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored, the default branch HEAD is used. `agent add` never stores a ref for local-path sources, so an `agent update` on a local-path agent's `base:` URL without an explicit SHA always resolves the base repo's default branch — pass an explicit SHA if the `base:` URL was originally pinned to a different branch.
 
 ```bash
 fullsend agent update triage --fullsend-dir .fullsend
 fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend-dir .fullsend
+fullsend agent update code --fullsend-dir .fullsend
 ```
 
 ### Flags
@@ -427,7 +442,7 @@ fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend
 |------|---------|-------------|
 | `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
-Only URL agents can be updated — local path agents have nothing to pin. Non-GitHub URL agents require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
+URL agents are re-pinned in `config.yaml`. Local-path agents whose harness YAML has a `base:` URL are re-pinned in that YAML file; `config.yaml` is left unchanged. Local-path agents without a `base:` URL have nothing to pin. Non-GitHub URLs require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
 
 ## `agent set`
 

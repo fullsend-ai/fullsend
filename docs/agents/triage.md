@@ -92,18 +92,22 @@ regardless of the allowlist.
 ### Skill: `issue-labels`
 
 The triage agent includes a built-in `issue-labels` skill that discovers your
-repo's labels and applies them opportunistically during triage. You can replace
-it with your own version to encode your team's labeling knowledge directly in
-the skill, keeping it out of `AGENTS.md` (where it would bloat context for
-every agent).
+repo's labels and applies them opportunistically during triage. You can encode
+your team's labeling knowledge in a skill, keeping it out of `AGENTS.md`
+(where it would bloat context for every agent).
 
-To overload the built-in skill, create your own `issue-labels` skill in
-`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level using config-driven agent
-registration — see [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
+To **extend** the agent, add a uniquely named skill in `.agents/skills/` and
+symlink `.claude/skills` to `.agents/skills` so it is discoverable by both
+fullsend and local agent tooling. A same-named `issue-labels` skill in that
+directory is shadowed by the built-in version and is ignored.
 
-Here's an example that encodes domain-specific labeling rules:
+To **override** the built-in skill, register the triage agent with a harness
+that uses `base:` composition and include your replacement `issue-labels`
+skill in the `skills:` list — see
+[Configuring with Skills](../guides/user/customizing-with-skills.md#overriding-built-in-skills)
+and [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
+
+Here is an example replacement skill for the override path:
 
 ```markdown
 ---

@@ -57,8 +57,8 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — install, convergence (provision, sync, upgrade), status, and uninstall across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md), [ADR 0074](ADRs/0074-repos-command-consolidation.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
-- Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
-- GitLab event dispatch: two-path model — cron-based polling for issues/comments/labels, MR-open review, and MR-merge retro; native `merge_request_event` no-ops review because protected CI/CD variables are unavailable on unprotected MR refs. No external infrastructure (no webhook bridge). Bot PAT stored as a protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- Ready-made configuration presets: `fullsend github setup --config <path-or-url>` commits the preset unchanged as `.fullsend/config.base.yaml` and writes any explicitly-passed persistent setup flags (`--runtime`, `--agents`, `--mint-url`, `--inference-*`) into `.fullsend/config.yaml`, overriding matching preset values; a stub overlay is written only when no persistent flags are passed. `fullsend repos install` converges the same preset through `defaults.config_base` / per-repo `config_base` in `repos.yaml` (optional `sha256`, `none` to disable inheritance), replacing `.fullsend/config.base.yaml` wholesale while preserving the overlay. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
+- GitLab event dispatch: cron-based polling for all events (issues/comments/labels, MR-open review, MR-merge retro, and closed-unmerged retro). Native `merge_request_event` dispatch was removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); protected CI/CD variables are unavailable on unprotected MR refs. No external infrastructure (no webhook bridge). Bot PAT is Developer-level and stored as a protected CI/CD variable; poller state lives on dedicated HMAC-signed branches. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
@@ -121,7 +121,9 @@ repo baseline and overrides)
   for the current field classifications and merge rules). Forge blocks
   inherit from top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md), superseded by
-  [ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
+  [ADR 0088](ADRs/0088-cel-guarded-overlays.md)). `validation_loop` fields
+  merge independently during `base:` composition and forge/overlay
+  resolution: child/forge non-zero values win, omitted fields inherit.
 - Unified env var delivery: a single `env:` key with `runner` and `sandbox`
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
@@ -149,9 +151,13 @@ repo baseline and overrides)
   Branch-targeting logic lives in the portable post-script, not in workflow
   YAML ([ADR 0053](ADRs/0053-agent-driven-branch-targeting.md)).
 - Harness trigger expressions: each harness may declare an optional CEL
-  `trigger` boolean evaluated against a forge-neutral `NormalizedEvent`.
-  `fullsend dispatch` matches events to harnesses via input/output drivers
-  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+  `trigger` boolean evaluated against a required forge-neutral normalized
+  entity and an optional prompting `NormalizedEvent`. `fullsend dispatch`
+  resolves each event's entity before matching; scheduled discovery evaluates
+  resolved entities with no prompting event. Harnesses without entity sources
+  remain event-triggered only and may rely on the event being present
+  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
 - Portable provider and profile resolution: provider and profile definitions
   can be URL-referenced (sha256-pinned) or specified as local file paths in
   the harness, enabling portable base harnesses that carry their own
@@ -234,7 +240,7 @@ flowchart TB
 
 ### Behaviour testing
 
-End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` (with live-test infrastructure in `pkg/e2etest/`); the in-repo runner and Gherkin features live under `e2e/behaviour/`. They validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy and dummy-playback runtimes. Tests exercise real GitHub (and GitLab) SCM and GitHub Actions CI through pluggable drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
+End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` (with live-test infrastructure in `internal/e2etest/`); the in-repo runner and Gherkin features live under `e2e/behaviour/`. They validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy and dummy-playback runtimes. Tests exercise real GitHub (and GitLab) SCM and GitHub Actions CI through pluggable drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
 
 **Open questions:**
 
@@ -252,6 +258,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 **Decided:**
 
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)). OpenAI inference on the pi runtime is the first tier-2 use: the runner exchanges the job's GitHub OIDC token for a short-lived OpenAI access token and hands it to a run-scoped OpenShell provider, so no OpenAI credential enters the sandbox ([ADR 0092](ADRs/0092-openai-wif-credential-delivery.md)); the codex runtime reuses that provider and follows its refreshes by re-reading a runner-seeded token file through codex's `auth.command`, since its process environment cannot carry a placeholder that survives a refresh ([ADR 0099](ADRs/0099-codex-agent-runtime.md)).
+- GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, readable only by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)).
 - Host-side API server design: Credential delivery tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`ALLOWED_ORGS=*`) with upstream-only workflow provenance is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS` ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)). Repo-level `FULLSEND_FOREIGN_<role>_REPOS` variables enable per-repo foreign grants (scoped to the specific target repo) and intra-org cross-repo access for per-repo callers, with disjoint authorization boundaries from org-level grants — repo-level for repo-scoped requests, org-level for installation-wide requests ([ADR 0083](ADRs/0083-repo-level-foreign-allow-list.md)).
@@ -260,6 +267,15 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `HasRole`, `RolePermissionsForLevel`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. Both the standalone and GCF mints call `ParseCustomRolePermissions` + `RegisterCustomRoleLevels` when `CUSTOM_ROLE_PERMISSIONS` is set. See the [standalone mint guide](guides/infrastructure/standalone-mint.md). For mintcore internals (platform accessors, load-site construction, WASM constraints), see the [mintcore contributor guide](contributing/mintcore.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
 - Named privilege levels: each role defines named levels as keys — `read` and `write` are mandatory, extra named levels are allowed on custom roles. The mint looks up the requested level on the role and returns the stored permission map, or fails if the level is missing. Built-in roles statically define both `read` (all values `"read"`) and `write` (the canonical ceiling) in the permission table. The mint API accepts an optional `level` field (default `write` — temporary compatibility default; a future release will change to `read`). Flat-format `CUSTOM_ROLE_PERMISSIONS` entries are stored as both `read` and `write` (same permissions for either level). Multi-level format uses a `levels` key for distinct per-level maps; extra named levels beyond read/write are permitted. The harness `privilege_levels` flag maps run-stages to levels; omitting it defaults to `write`, preserving backward compatibility for existing harness configurations ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
+- Adding a built-in agent role: a request must pass six tests — no path
+  without a role (the user's own workflow with the job token, or an existing
+  role), the agent's output needs the scope (no write access on control-plane
+  scopes such as `actions` or `workflows`), the App's name shows on the issue
+  or pull request where it acts, one purpose with named endpoints, every write
+  group justified in combination with the others, and a need beyond one
+  agent. Roles with two or more write groups get the closest review. A need
+  specific to one agent goes to a custom role on its author's standalone mint
+  ([ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -268,7 +284,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT stored as a protected CI/CD variable — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a Developer-level bot PAT stored as a protected CI/CD variable; poller state lives on dedicated HMAC-signed branches rather than Maintainer-only CI/CD variables — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md). The registered-role credential contract (built-in Poller/Analyst/Coder plus administrator-registered custom roles) is specified in [gitlab-role-credentials.md](contributing/gitlab-role-credentials.md); job routing (#7499) has landed for `fullsend poll`, `fullsend run`, and `fullsend post-review`, selecting the registered role credential when the migration gate is `migrating` or `enforced` and keeping the shared `FULLSEND_FORGE_TOKEN` path as the default while the gate is unset, `disabled`, or `rollback`.
 - Which agent roles need Discussions (or other chat) write scopes, and how do those scopes map onto named mint privilege levels? Conversation participation requires least-privilege identity deltas per [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md).
 
 ## Agent Dispatch and Coordination Layer
@@ -283,40 +299,79 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Routing moves from workflow bash to harness CEL `trigger` expressions
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
-  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+- Automatic runs are serialized per harness and event subject. Later events do
+  not cancel an active run. Each event still passes through authorization and
+  CEL routing; the execution platform coalesces matching events into one latest
+  pending run, and each run reconciles the subject's current state. Authority
+  over other comments and content discovered during reconciliation remains a
+  separate decision
+  ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+- Dispatch runs no follow-up stage after an agent. Every run publishes the
+  `fullsend-<agent>` artifact, and users who want to act on a result chain
+  their own workflow on the shim's `workflow_run` event
+  ([guide](guides/user/chaining-follow-up-workflows.md),
+  [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
-- GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events, MR-open review, and MR-merge retro. Native `merge_request_event` no-ops review (protected variables are unavailable on MR refs). No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- Harness routing uses one CEL predicate over a required normalized entity and
+  an optional prompting event. Webhooks provide low-latency candidates;
+  `fullsend poll` and its input drivers enumerate and resolve scheduled
+  candidates without reconstructing a complete event stream. Entity activity
+  retains actor and authorization provenance, while harness-defined evidence —
+  existing entity activity or explicit receipts — distinguishes handled work
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
+  superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- GitLab dispatch uses cron-polled scheduled pipelines for all events (issues/comments/labels, MR-open review, MR-merge retro, and closed-unmerged retro). Native `merge_request_event` dispatch was removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322). No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
-  dispatch as `NormalizedEvent` entities with `entity.kind: conversation`,
-  express threading on `transition.comment.id` / `parent_id` (`parent_id` always
-  names the thread root), reuse CEL harness triggers and ADR 0054 authorization,
-  and write back through host/post-script or host-side API servers via
-  `conversation.Client` — not a separate always-on chat bot and not an
-  extension of `forge.Client`
+  dispatch as resolved entities with `entity.kind: conversation`; when a
+  prompting event is available, it expresses threading on
+  `transition.comment.id` / `parent_id` (`parent_id` always names the thread
+  root). They reuse CEL harness triggers and ADR 0054 authorization, and write
+  back through host/post-script or host-side API servers via
+  `conversation.Client` — not a separate always-on chat bot and not an extension
+  of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
-- Dispatch authorization gate: all agent dispatch paths — slash commands
-  and automatic event triggers — require authorization before dispatching.
-  GitHub paths check the acting user's collaborator permission via the
-  repository API (`write` or above for mutation commands; `triage` or above
-  for observation stages). Non-GitHub dispatch paths (e.g., Jira polling)
-  map source-system roles to dispatch authorization roles (`read`, `write`,
-  `admin`) using source-native role resolution; the resolved role feeds the
-  same authorization gate with no cross-system identity verification
+- Event-backed dispatch authorization: event-triggered paths authorize the prompting
+  actor before dispatch. This includes schedule/manual dispatch represented as
+  a `NormalizedEvent`, whose actor is the configured service identity. GitHub
+  paths check the acting user's collaborator permission via the repository API
+  (`write` or above for mutation commands; `triage` or above for observation
+  stages); a repo that enables the `owners_file` authorization provider also
+  grants these roles to its Prow `OWNERS` approvers and reviewers. Non-GitHub event paths map source-system roles to dispatch
+  authorization roles (`read`, `write`, `admin`) using source-native role
+  resolution, with no cross-system identity verification
   ([Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+- Poll entity-discovery authorization: `fullsend poll` has no prompting event
+  actor; verified, non-user-assertable Fullsend invocation provenance authorizes
+  entity enumeration and evaluation, and callers without it are denied. Before
+  each candidate harness's CEL predicate, the platform fail-closed enumerates a
+  closed superset of action-indicating entity elements, resolves each actor's
+  current permission, and removes elements below that harness's observation or
+  mutation threshold. Later input-selection and injection filtering are defense
+  in depth for prompt construction. Entity-first execution remains disabled
+  until its versioned normalized-entity contract exists. Every run uses the
+  harness's configured identity
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
 
 **Open questions:**
 
+- What normative entity-history, query-planning, and handled-state contract
+  can support entity-first harness evaluation without unbounded provider reads
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh.)
+  lock refresh; ADR 0098 does not resolve this question.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
-- What happens when work needs to be cancelled, retried, or reassigned?
+- How should explicit cancellation, retry, and reassignment interact with the
+  automatic event-coalescing policy in
+  [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
 - When should a conversation or thread be linked to a work item (e.g. Discussion
   → issue) so a conversation-native agent can hand off to `/fs-code` without
@@ -370,8 +425,16 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 - JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
+- Scheduled entity-discovery runs are attributable to the verified Fullsend
+  invocation identity, target repository, effective policy, harness revision,
+  and resolved entity; retained action-indicating elements preserve their actor
+  provenance. State-only predicates trace to the configured service identity
+  and versioned policy/harness configuration
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
+
+- Tool-call span topology: every id-bearing tool call the runtime reports — Claude Code today; pi and codex emit no call ids — becomes an `execute_tool` child span of its iteration's `agent` span, up to 1,024 per iteration. The spans carry semantic-convention metadata only, timed at runner receipt; tool content stays on the `agent` span's message record ([ADR 0108](ADRs/0108-tool-call-span-topology.md)).
 
 **Open questions:**
 
@@ -379,7 +442,12 @@ Observability is a cross-cutting concern that touches every other component. Eac
 - ~~How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?~~ Decided in [ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md): instrument all lifecycle steps comprehensively; volume is managed by backends not by suppressing data at the source.
 - ~~How do we score wild agent traces for trends without a second export stack?~~ Decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md): eval measurements write local JSONL beside telemetry when at least one new score row is produced (including `label: skip`); portable remote export uses the same OTLP config as traces (`gen_ai.evaluation.result` events). The JSONL is absent (not empty) when telemetry/manifest is missing, no traces match, or every candidate is already in the ledger.
 - What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy and broader log access remain open.)
-- How does observability interact with the security requirement that "every action is logged, attributable, and reviewable"? (See [security-threat-model.md](problems/security-threat-model.md).)
+- How does observability interact with the security requirement that "every
+  action is logged, attributable, and reviewable"? Scheduled entity-discovery
+  attribution is decided in
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md); broader audit-log
+  requirements remain open. (See
+  [security-threat-model.md](problems/security-threat-model.md).)
 - Is there a real-time monitoring requirement (agent is stuck, agent is behaving anomalously), or is observability primarily forensic?
 
 ## Agent Registry
@@ -405,7 +473,7 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 
 **Open questions:**
 
-- How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests provide a framework for testing agent roles against controlled fixtures — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Promotion workflow remains open.)
+- How are new agent roles added, tested, and promoted to production? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests provide a framework for testing agent roles against controlled fixtures — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Admission criteria for a new built-in role are in [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md). Promotion workflow remains open.)
 - Does the registry include version information, so we can roll back to a previous agent configuration?
 - How does the registry relate to the policy store — does policy reference registry entries, or are they independent?
 
@@ -860,9 +928,9 @@ flowchart TB
     end
     subgraph PL["runtime: pi"]
       direction TB
-      P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-manifest.json"]
+      P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-edit-repair.js · fullsend-manifest.json"]
       P0{"shell guard, before .env:\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
-      P2["pi --print --mode json --no-approve\n--no-extensions [-e anthropic-vertex, on Vertex] -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
+      P2["pi --print --mode json --no-approve\n--no-extensions [-e anthropic-vertex, on Vertex] -e fullsend-hooks.js\n[-e fullsend-edit-repair.js, with edit] --tools … --model anthropic-vertex/… #lt;/dev/null"]
       PX["exit 97 — never runs unhooked\n(Run refuses earlier, exit -1, if the manifest has no hook plan)"]
       P1 --> P0
       P0 -- yes --> P2

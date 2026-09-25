@@ -92,6 +92,8 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   across bot and human triggers.
 - When a bot-triggered run is approaching the bot cap, the agent applies the
   `needs-human` label.
+- When the cap is exceeded, the run fails before the sandbox starts and the
+  status comment shows the escalation message (a human can still `/fs-fix`).
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
 
@@ -121,7 +123,9 @@ direct control over what to fix:
   ([details](#links-and-urls-in-instructions))
 
 The fix agent also triggers automatically when the [review agent](review.md) submits a
-"changes requested" review on a same-repo PR (fork PRs are blocked).
+"changes requested" review on a same-repo PR (fork PRs are blocked). On GitHub
+this is the native `pull_request_review` event; on GitLab it is a poller-routed
+MR note that contains `<!-- fullsend:changes-requested -->`.
 
 For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`),
 automatic fixing happens with no extra setup — the fix agent responds to review
@@ -141,12 +145,23 @@ automatic (bot-triggered) runs.
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
 
+**GitLab scope note:** on GitLab, the dispatch router enforces the
+`fullsend-no-fix` stop valve for the changes-requested MR-note path
+described above. The `fullsend-fix` opt-in gate for human-authored and
+non-coder-bot MRs — enforced on GitHub by
+[`check-fix-eligibility.sh`](../../.github/scripts/check-fix-eligibility.sh) —
+is not yet implemented for GitLab: the router does not currently have
+enough MR-author identity information to distinguish the fullsend code
+agent from other authors. Until that parity lands, bot-triggered fix
+runs on GitLab MRs are gated only by `fullsend-no-fix`, not by
+`fullsend-fix`.
+
 ## Control labels
 
 | Label | Meaning |
 |-------|---------|
-| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs and PRs from bots other than the fullsend code agent. Without this label, the fix agent only runs when explicitly invoked via `/fs-fix`. PRs authored by `fullsend-ai-coder[bot]` are always eligible without this label. |
-| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. |
+| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs and PRs from bots other than the fullsend code agent. Without this label, the fix agent only runs when explicitly invoked via `/fs-fix`. PRs authored by `fullsend-ai-coder[bot]` are always eligible without this label. **GitLab:** not yet enforced — see the scope note above. |
+| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. Enforced on both GitHub and GitLab. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when a bot-triggered fix iteration reaches the warning threshold. |
 
 ## Configuration and extension

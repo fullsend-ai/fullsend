@@ -489,6 +489,43 @@ func TestOrgConfigWriter_SetRepo_RoundTrip(t *testing.T) {
 	assert.False(t, w.RepoMap()["repo-a"].Enabled)
 }
 
+func TestOrgConfig_DeleteRepo(t *testing.T) {
+	cfg := &orgConfig{Repos: map[string]RepoConfig{
+		"keep": {Enabled: true},
+		"drop": {Enabled: true, Roles: []string{"triage"}},
+	}}
+	cfg.DeleteRepo("drop")
+	_, exists := cfg.RepoMap()["drop"]
+	assert.False(t, exists)
+	assert.True(t, cfg.RepoMap()["keep"].Enabled)
+
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "drop:")
+	assert.Contains(t, string(data), "keep:")
+}
+
+func TestOrgConfig_DeleteRepo_MissingAndNil(t *testing.T) {
+	cfg := &orgConfig{}
+	cfg.DeleteRepo("nope")
+	assert.Empty(t, cfg.RepoMap())
+
+	cfg.Repos = map[string]RepoConfig{"keep": {Enabled: true}}
+	cfg.DeleteRepo("nope")
+	assert.True(t, cfg.RepoMap()["keep"].Enabled)
+	assert.Len(t, cfg.RepoMap(), 1)
+}
+
+func TestOrgConfigWriter_DeleteRepo_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(
+		[]string{"repo-a", "repo-b"}, []string{"repo-a", "repo-b"}, nil, "", "",
+	)
+	w.DeleteRepo("repo-a")
+	_, exists := w.RepoMap()["repo-a"]
+	assert.False(t, exists)
+	assert.True(t, w.RepoMap()["repo-b"].Enabled)
+}
+
 func TestPerRepoConfig_ConfigForge(t *testing.T) {
 	t.Run("returns forge when set", func(t *testing.T) {
 		cfg := &perRepoConfig{Forge: "gitlab"}
@@ -909,4 +946,76 @@ func TestPerRepoConfig_InferenceOpenAI_Fallback(t *testing.T) {
 		assert.NotContains(t, string(out), "openai:")
 	})
 	assert.Equal(t, []string{"identity_provider_id", "service_account_id"}, OpenAIWIFConfig{Audience: "a"}.Missing())
+}
+
+// --- IsOwnersFileAuthEnabled: intentionally no parent fallback ---
+
+func TestPerRepoConfig_IsOwnersFileAuthEnabled_NoFallback(t *testing.T) {
+	t.Run("returns false when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.False(t, cfg.IsOwnersFileAuthEnabled())
+	})
+
+	t.Run("does not fall through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		child := &perRepoConfig{parent: parent}
+		assert.False(t, child.IsOwnersFileAuthEnabled())
+	})
+
+	t.Run("returns true when set locally", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		assert.True(t, cfg.IsOwnersFileAuthEnabled())
+	})
+}
+
+func TestPerRepoConfig_SetOwnersFileAuthEnabled(t *testing.T) {
+	t.Run("enable adds provider", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetOwnersFileAuthEnabled(true)
+		assert.True(t, cfg.IsOwnersFileAuthEnabled())
+		assert.Len(t, cfg.Authorization, 1)
+	})
+
+	t.Run("enable is idempotent", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetOwnersFileAuthEnabled(true)
+		cfg.SetOwnersFileAuthEnabled(true)
+		assert.Len(t, cfg.Authorization, 1)
+	})
+
+	t.Run("disable removes provider", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		cfg.SetOwnersFileAuthEnabled(false)
+		assert.False(t, cfg.IsOwnersFileAuthEnabled())
+		assert.Nil(t, cfg.Authorization)
+	})
+
+	t.Run("disable preserves other providers", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{
+				{Provider: "owners_file"},
+				{Provider: "other"},
+			},
+		}
+		cfg.SetOwnersFileAuthEnabled(false)
+		assert.False(t, cfg.IsOwnersFileAuthEnabled())
+		assert.Equal(t, []AuthorizationProvider{{Provider: "other"}}, cfg.Authorization)
+	})
+
+	t.Run("disable is no-op when not set", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		cfg.SetOwnersFileAuthEnabled(false)
+		assert.Nil(t, cfg.Authorization)
+	})
+}
+
+func TestPerRepoDefaults_AuthorizationOwnersFile(t *testing.T) {
+	d := &perRepoDefaults{}
+	assert.False(t, d.IsOwnersFileAuthEnabled())
 }

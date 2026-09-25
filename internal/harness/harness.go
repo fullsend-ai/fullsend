@@ -274,6 +274,36 @@ type ValidationLoop struct {
 	PreflightCheck string `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation
 }
 
+// mergeValidationLoop merges base ValidationLoop fields into child.
+// Child non-zero values win; base fills gaps. If only one is non-nil,
+// returns it as-is (not a copy). If both are non-nil, returns a new
+// struct so neither input is mutated.
+func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
+	if child == nil {
+		return base
+	}
+	if base == nil {
+		return child
+	}
+	merged := *child
+	if merged.Script == "" {
+		merged.Script = base.Script
+	}
+	if merged.Schema == "" {
+		merged.Schema = base.Schema
+	}
+	if merged.MaxIterations == 0 {
+		merged.MaxIterations = base.MaxIterations
+	}
+	if merged.FeedbackMode == "" {
+		merged.FeedbackMode = base.FeedbackMode
+	}
+	if merged.PreflightCheck == "" {
+		merged.PreflightCheck = base.PreflightCheck
+	}
+	return &merged
+}
+
 // EnvConfig holds environment variable maps for runner and sandbox targets.
 // Replaces runner_env (ADR 0055). Values support ${VAR} expansion from the
 // host environment.
@@ -348,6 +378,7 @@ type Harness struct {
 	Effort                 string                  `yaml:"effort,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
+	PrivilegeLevels        map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
@@ -489,6 +520,9 @@ func (h *Harness) Validate() error {
 	}
 	if strings.Contains(h.Role, "--") {
 		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
+	}
+	if err := h.validatePrivilegeLevels(); err != nil {
+		return err
 	}
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
@@ -815,7 +849,10 @@ func (h *Harness) ValidateFilesExist() error {
 		return err
 	}
 	if err := check("policy", h.Policy); err != nil {
-		return err
+		// CI layers no policy, so a relative path resolves only if the file is
+		// committed (#6834). Re-running `agent new` is no fix: it refuses on
+		// the existing agent's files before writing the policy.
+		return fmt.Errorf("%w (commit a copy of the fleet policy in fullsend-ai/agents at that path, or set policy: to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
 	}
 	if err := check("pre_script", h.PreScript); err != nil {
 		return err

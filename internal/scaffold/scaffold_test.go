@@ -165,6 +165,8 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "stop-fix:")
 	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
 	assert.Contains(t, s, "install_mode: per-repo")
+	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
@@ -532,6 +534,52 @@ func TestWalkFullsendRepo(t *testing.T) {
 	assert.True(t, len(paths) >= 10, "expected at least 10 installed files, got %d", len(paths))
 }
 
+// vestigialLayeredDirs are layeredDirs entries the embed has shipped nothing
+// under since #5552 moved agent content to fullsend-ai/agents. Nothing may
+// rely on CI layering them (#6689, #6834). Drop an entry once it ships content.
+var vestigialLayeredDirs = map[string]bool{
+	"agents/":  true,
+	"skills/":  true,
+	"schemas/": true,
+	"harness/": true,
+	"plugins/": true,
+	"env/":     true,
+}
+
+// TestLayeredDirsShipContent: every non-vestigial layered directory has
+// embedded files, so workspace preparation's [[ -d ]] guard never skips one a
+// consumer relies on, and no vestigial entry hides a directory that ships.
+func TestLayeredDirsShipContent(t *testing.T) {
+	counts := make(map[string]int, len(layeredDirs))
+	require.NoError(t, WalkLayeredContent(func(path string, _ []byte) error {
+		for _, dir := range layeredDirs {
+			if strings.HasPrefix(path, dir) {
+				counts[dir]++
+			}
+		}
+		return nil
+	}))
+
+	for _, dir := range layeredDirs {
+		if vestigialLayeredDirs[dir] {
+			assert.Zero(t, counts[dir],
+				"%s ships %d embedded file(s) but is listed as vestigial; remove it from vestigialLayeredDirs", dir, counts[dir])
+			continue
+		}
+		assert.NotZero(t, counts[dir],
+			"%s is layered but the embed has no files under it, so CI never layers it (#6834); ship content or drop the entry", dir)
+	}
+	for dir := range vestigialLayeredDirs {
+		assert.Contains(t, layeredDirs, dir, "vestigialLayeredDirs entry %s is not in layeredDirs", dir)
+	}
+
+	// An empty policies/ entry is #6834; a file behind it would be a second
+	// fleet policy with no drift guard (#7268).
+	assert.NotContains(t, layeredDirs, "policies/")
+	_, err := FullsendRepoFile("policies/base.yaml")
+	assert.Error(t, err, "scaffold must not ship policies/base.yaml; see #7268")
+}
+
 func TestLayeredDirsNotInstalled(t *testing.T) {
 	skippedPrefixes := []string{
 		"agents/",
@@ -539,7 +587,6 @@ func TestLayeredDirsNotInstalled(t *testing.T) {
 		"schemas/",
 		"harness/",
 		"plugins/",
-		"policies/",
 		"profiles/",
 		"providers/",
 		"scripts/",
@@ -608,6 +655,7 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-triage-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -631,6 +679,7 @@ func TestCodeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.NotContains(t, s, "GCP_WIF_SA_EMAIL")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-code-")
@@ -657,6 +706,7 @@ func TestReviewWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-review-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -682,6 +732,7 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-fix-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -707,6 +758,7 @@ func TestRetroWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-retro-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -943,6 +995,7 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")
@@ -951,6 +1004,28 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "issues: write")
 	assert.Contains(t, s, "contents: read")
+}
+
+func TestScaffoldShimsForwardOpenAIAPIKey(t *testing.T) {
+	const gcpForward = "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}"
+	const openAIForward = "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
+	var checked int
+	err := WalkFullsendRepoAll(func(path string, content []byte) error {
+		if !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".yaml") {
+			return nil
+		}
+		s := string(content)
+		if !strings.Contains(s, gcpForward) {
+			return nil
+		}
+		checked++
+		assert.Contains(t, s, openAIForward,
+			"%s forwards FULLSEND_GCP_PROJECT_ID but not FULLSEND_OPENAI_API_KEY", path)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, checked, 7,
+		"expected at least the six agent shims plus the per-repo shim to forward GCP_PROJECT_ID")
 }
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {

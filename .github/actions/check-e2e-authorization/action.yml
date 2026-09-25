@@ -26,6 +26,10 @@ inputs:
     description: github.event.pull_request.user.login (for collaborator permission API fallback)
     required: false
     default: ""
+  label_actor_login:
+    description: github.event.sender.login (who applied the label on labeled events)
+    required: false
+    default: ""
   docs_url:
     description: Link to e2e testing documentation
     required: false
@@ -56,6 +60,7 @@ runs:
         EVENT_ACTION: ${{ inputs.event_action }}
         PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
         PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
+        LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     - name: Post gate comment
@@ -86,6 +91,10 @@ runs:
             body+="The \`ok-to-test\` label was removed because new commits landed after it was applied. A maintainer must re-apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
+          untrusted_labeler)
+            body+="The \`ok-to-test\` label was removed because it was applied by a user without write access. A maintainer with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
+        "
+            ;;
           error)
             body+="The authorization check failed (GitHub API error). Re-run the workflow when the API is available; if this persists, contact a maintainer.
         "
@@ -93,12 +102,12 @@ runs:
           *)
             body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
 
-        For other contributors, a maintainer must add the \`ok-to-test\` label **after** the latest push.
+        For other contributors, a maintainer with write access must add the \`ok-to-test\` label **after** the latest push.
         "
             ;;
         esac
 
-        if [[ "${LABEL_REMOVED}" == "true" ]]; then
+        if [[ "${LABEL_REMOVED}" == "true" && "${REASON}" == "stale_ok_to_test" ]]; then
           body+="
         > **Note:** \`ok-to-test\` was cleared due to new commits.
         "

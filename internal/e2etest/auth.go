@@ -9,9 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
-	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 // resolveLocalToken returns a user token from env or gh auth.
@@ -41,8 +39,16 @@ func runningInGitHubActions() bool {
 	return os.Getenv("GITHUB_ACTIONS") == "true"
 }
 
+// defaultMintURL is the hosted public mint URL used when FULLSEND_MINT_URL
+// is unset. Duplicated from internal/cli.DefaultMintURL so this package
+// does not import internal/cli (which pulls the nested mintcore module).
+const defaultMintURL = "https://mint.fullsend.sh"
+
+// hostedMintHost is the hostname of the hosted community mint.
+const hostedMintHost = "mint.fullsend.sh"
+
 // DefaultPoolOrgInstallMintURL is written into pool orgs as FULLSEND_MINT_URL by
-// admin e2e install tests. Distinct from resolveMintURL() / cli.DefaultMintURL,
+// admin e2e install tests. Distinct from resolveMintURL() / defaultMintURL,
 // which CI uses for cross-org e2e org locking.
 //
 // Admin e2e tests exercise per-org installation; workflows on the installed org
@@ -53,7 +59,7 @@ const DefaultPoolOrgInstallMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.
 
 // poolOrgMintHost is the hostname of DefaultPoolOrgInstallMintURL, parsed
 // once so isPoolOrgMintURL can do a case-insensitive hostname comparison
-// (same approach as cli.IsHostedMintURL) instead of exact string equality.
+// (same approach as isHostedMintURL) instead of exact string equality.
 var poolOrgMintHost = func() string {
 	u, _ := url.Parse(DefaultPoolOrgInstallMintURL)
 	return u.Hostname()
@@ -67,13 +73,24 @@ func isPoolOrgMintURL(raw string) bool {
 	return strings.EqualFold(parsed.Hostname(), poolOrgMintHost)
 }
 
+// isHostedMintURL reports whether raw is the hosted community mint URL
+// (mint.fullsend.sh). Duplicated from internal/cli.IsHostedMintURL so this
+// package does not import internal/cli (which pulls the nested mintcore module).
+func isHostedMintURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), hostedMintHost)
+}
+
 // resolveMintURL returns the mint endpoint from FULLSEND_MINT_URL or the hosted
 // default (same as fullsend admin --mint-url).
 func resolveMintURL() string {
 	if u := os.Getenv("FULLSEND_MINT_URL"); u != "" {
 		return u
 	}
-	return cli.DefaultMintURL
+	return defaultMintURL
 }
 
 // DefaultHostedMintGCPProject is the GCP project hosting the public mint service.
@@ -89,13 +106,20 @@ func MintEnrollProjectID(cfg EnvConfig) string {
 	}
 	mintURL := strings.TrimSpace(cfg.MintURL)
 	if mintURL == "" {
-		mintURL = cli.DefaultMintURL
+		mintURL = defaultMintURL
 	}
-	if isPoolOrgMintURL(mintURL) || cli.IsHostedMintURL(mintURL) {
+	if isPoolOrgMintURL(mintURL) || isHostedMintURL(mintURL) {
 		return DefaultHostedMintGCPProject
 	}
 	return strings.TrimSpace(cfg.GCPProjectID)
 }
+
+// e2eMintLevel is the mint privilege level requested for e2e installation
+// tokens. Duplicated from internal/mintcore.LevelWrite so this package does
+// not import internal/mintcore (which is nested outside this module's
+// replace-free dependency graph). Kept in sync by
+// TestE2EMintLevelMatchesMintcore.
+const e2eMintLevel = "write"
 
 // resolveE2EToken mints a cross-org e2e installation token for targetOrg.
 // Repos is set to ["*"] to explicitly request an org-wide token (needed to
@@ -107,7 +131,7 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 	result, err := mintclient.MintToken(ctx, mintclient.MintRequest{
 		MintURL:   mintURL,
 		Role:      "e2e",
-		Level:     mintcore.LevelWrite,
+		Level:     e2eMintLevel,
 		Repos:     []string{"*"},
 		TargetOrg: targetOrg,
 	})

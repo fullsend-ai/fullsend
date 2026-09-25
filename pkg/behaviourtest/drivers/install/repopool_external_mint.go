@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // NewRepoPoolExternalMint is a Factory that returns a unified Driver

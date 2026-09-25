@@ -8,9 +8,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 const (
@@ -67,6 +67,8 @@ type repoEnsurer struct {
 	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
 	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
 	setupOpts common.GitHubSetupOpts
+	// actorGrants are re-applied to every recreated repo.
+	actorGrants []actorGrant
 
 	mu       sync.Mutex
 	ensured  map[string]struct{} // keyed by org/repo; only successful results cached
@@ -75,14 +77,17 @@ type repoEnsurer struct {
 
 // newRepoEnsurer returns an ensurer backed by the given forge client
 // and CLI binary. The ensurer shares the same credentials and
-// configuration as the per-repo install driver.
+// configuration as the per-repo install driver. BEHAVIOUR_CONFIG_PRESET
+// is applied onto the vendored-mode defaults when set.
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),
 ) ensurer {
-	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, common.DefaultGitHubSetupOpts(), logf)
+	opts := common.DefaultGitHubSetupOpts()
+	opts.ConfigPreset = envConfigPreset()
+	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, opts, logf)
 }
 
 // newRepoEnsurerWithOpts returns an ensurer like newRepoEnsurer but with
@@ -96,15 +101,16 @@ func newRepoEnsurerWithOpts(
 	logf func(string, ...any),
 ) ensurer {
 	return &repoEnsurer{
-		e2eCfg:    e2eCfg,
-		client:    client,
-		token:     token,
-		binary:    binary,
-		logf:      logf,
-		runCLI:    e2etest.TryRunCLI,
-		settle:    awaitWorkflowReady,
-		setupOpts: opts,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2eCfg,
+		client:      client,
+		token:       token,
+		binary:      binary,
+		logf:        logf,
+		runCLI:      e2etest.TryRunCLI,
+		settle:      awaitWorkflowReady,
+		setupOpts:   opts,
+		actorGrants: actorGrantsFromEnv(context.Background(), logf),
+		ensured:     make(map[string]struct{}),
 	}
 }
 
@@ -166,6 +172,12 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 
 	// Step 2: create repo (needed after reset, or if it never existed).
 	if err := e.ensureRepoExists(ctx, org, repoName, target); err != nil {
+		return err
+	}
+
+	// Grant before install so the grants have the install and settle time
+	// to reach the dispatch side (see doc.go).
+	if err := e.grantActors(ctx, org, repoName); err != nil {
 		return err
 	}
 

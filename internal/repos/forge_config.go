@@ -13,8 +13,11 @@ var (
 	ghShimRefPattern = regexp.MustCompile(
 		`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
 	)
-	// \b prevents matching head_ref:/base_ref: in dispatch template jq scripts.
-	// The optional (?:\s+\(.*?\))? matches SHA annotations like "(v0.34.0)".
+	// \b anchors the match to a bare ref: token so it does not match a
+	// longer *_ref: key. The optional (?:\s+\(.*?\))? matches SHA
+	// annotations like "(v0.34.0)". The GitLab version marker is a ref:
+	// line injected into the dispatch stub at install time (native
+	// dispatch, and its jq scripts, were removed in #7322).
 	glWorkflowRefPattern = regexp.MustCompile(
 		`(?m)\bref:\s+['"]?(\S+?)['"]?(?:\s+\(.*?\))?[ \t]*$`,
 	)
@@ -68,10 +71,10 @@ func GitHubForgeConfig() ForgeConfig {
 
 // GitLabForgeConfig returns the ForgeConfig for GitLab repositories.
 // GitLab CI files live under .gitlab/ci/ and use include: directives
-// with ref: fields. Patterns here are placeholders for the GitLab CI
-// dispatch template structure (see ADR 0067). The ShimRefPattern
-// matches any ref: line in the file — the dispatch file must contain
-// only the fullsend include (single-include constraint).
+// with ref: fields. The dispatch file is now a version-marker carrier
+// only — native dispatch was removed in #7322 (see ADR 0067) — so the
+// ShimRefPattern matches the injected ref: marker line for upgrade
+// drift detection.
 func GitLabForgeConfig() ForgeConfig {
 	return ForgeConfig{
 		WorkflowPaths: []string{

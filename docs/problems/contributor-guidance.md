@@ -162,6 +162,7 @@ The goal: make implicit knowledge explicit (which helps AI agents) **without** m
 - **[Autonomy spectrum](autonomy-spectrum.md)** — CODEOWNERS boundaries affect what changes contributors can make
 - **[Architectural invariants](architectural-invariants.md)** — contributors need to know what constraints exist
 - **[Human factors](human-factors.md)** — while this document focuses on making rules accessible, human factors explores whether the resulting contribution experience remains meaningful and rewarding for human participants
+- **[Security threat model](security-threat-model.md#threat-7-coordinated-inauthentic-contributions)** — speed-to-merge and "always accept review" can be cooperation from a good-faith contributor or a campaign. Guidance that rewards apparent compliance without a way to question authenticity can be gamed
 
 ## Open questions
 

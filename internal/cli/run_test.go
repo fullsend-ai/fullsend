@@ -31,6 +31,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -758,6 +759,72 @@ openshell:
 	assert.NotContains(t, err.Error(), "importing profile")
 	assert.NotContains(t, err.Error(), "ensuring provider")
 	assert.NotContains(t, err.Error(), "creating sandbox")
+}
+
+// TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
+// fix: an unlisted file under the fullsend dir's profiles/ directory must
+// never be scanned or imported, even when it shares an id with a profile
+// the harness does resolve via openshell.profiles. Before #7095, the
+// now-removed sandbox.ImportProfiles(profilesDir) call imported every file
+// in profiles/ regardless of harness listing, so a stale unlisted copy
+// could become the live gateway profile for a shared id. This test uses
+// recordingProvidersStub to record every openshell invocation and asserts
+// the unlisted file's path is never referenced.
+func TestRunAgent_UnlistedProfileDirectoryFileIsNotImported(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "profiles"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// listed.yaml is the only profile the harness references; unlisted.yaml
+	// shares its id but sits in profiles/ without being named anywhere on
+	// the harness, so it must be inert.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "listed.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Listed\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "profiles", "unlisted.yaml"),
+		[]byte("id: shared-profile\ndisplay_name: Unlisted-Poison\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nopenshell:\n  profiles:\n    - profiles/listed.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nagents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the run
+	// must get past the profile-import step without error.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "importing profile")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	listedPath := filepath.Join(dir, "profiles", "listed.yaml")
+	unlistedPath := filepath.Join(dir, "profiles", "unlisted.yaml")
+	assert.Contains(t, log, "provider profile import --file "+listedPath, "the harness-listed profile must be imported")
+	assert.NotContains(t, log, unlistedPath, "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "unlisted.yaml", "the unlisted directory file must never be referenced")
+	assert.NotContains(t, log, "provider profile import --from", "the removed directory-wide import must never be invoked")
 }
 
 func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
@@ -2305,6 +2372,97 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
 	}
 	assert.Len(t, oidcDenyKeys, len(expected), "oidcDenyKeys must contain exactly %d keys", len(expected))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
+}
+
+func TestProviderOnlyKeys_WorkflowToken(t *testing.T) {
+	assert.True(t, providerOnlyKeys[workflowTokenEnv])
+	assert.True(t, reservedSandboxKeys[workflowTokenEnv], "env.sandbox must not inject GH_WORKFLOW_TOKEN")
+	assert.True(t, harnessExpansionDenied(workflowTokenEnv))
+	assert.False(t, oidcDenyKeys[workflowTokenEnv])
+
+	t.Setenv("SAFE_VAR", "ok")
+	val, ok := harnessEnvLookup("SAFE_VAR")
+	assert.True(t, ok)
+	assert.Equal(t, "ok", val)
+	assert.Equal(t, "ok", harnessEnvExpand("SAFE_VAR"))
+
+	_, ok = harnessEnvLookup(workflowTokenEnv)
+	assert.False(t, ok, "lookup must fail closed so harness validation rejects the reference")
+}
+
+func TestHarnessExpansion_RefusesWorkflowTokenAtEachSite(t *testing.T) {
+	const token = "ghs_workflow_token_value_xx"
+	t.Setenv(workflowTokenEnv, token)
+
+	t.Run("runner_env validation", func(t *testing.T) {
+		h := &harness.Harness{RunnerEnv: map[string]string{"X": "${" + workflowTokenEnv + "}"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.runner validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("env.sandbox validation", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"X": "${" + workflowTokenEnv + "}"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("host_files src validation", func(t *testing.T) {
+		h := &harness.Harness{HostFiles: []harness.HostFile{{Src: "${" + workflowTokenEnv + "}", Dest: "/tmp/x"}}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("validation_loop.schema validation", func(t *testing.T) {
+		h := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Schema: "${" + workflowTokenEnv + "}/schema.json"}}
+		err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), workflowTokenEnv)
+	})
+	t.Run("runner_env env.runner env.sandbox schema expansion", func(t *testing.T) {
+		assert.Empty(t, harnessEnvExpand(workflowTokenEnv))
+		assert.NotContains(t, os.Expand("${"+workflowTokenEnv+"}", harnessEnvExpand), token)
+	})
+	t.Run("host_files src expansion", func(t *testing.T) {
+		assert.Empty(t, safeExpandEnv("${"+workflowTokenEnv+"}"))
+		assert.NotContains(t, safeExpandEnv("${"+workflowTokenEnv+"}"), token)
+	})
+	t.Run("host_files content expansion", func(t *testing.T) {
+		got := shellSafeExpandEnv("token=${" + workflowTokenEnv + "}")
+		assert.NotContains(t, got, token)
+	})
+}
+
+func TestBuildSandboxEnvLines_SkipsWorkflowToken(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "coder",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":     "allowed",
+				workflowTokenEnv: "ghs_should_not_land_in_sandbox",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
+func TestStripOIDCEnv_StripsWorkflowToken(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		workflowTokenEnv + "=ghs_workflow_token_value_xx",
+		"SAFE_VAR=value",
+	}
+	result := stripOIDCEnv(env)
+	assert.Equal(t, []string{"PATH=/usr/bin", "SAFE_VAR=value"}, result)
 }
 
 func TestNeedsCrossCompilation(t *testing.T) {
@@ -2873,8 +3031,18 @@ func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
 	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
 }
 
+func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
+	const token = "ghs_workflow_redact_me_xx"
+	t.Setenv(workflowTokenEnv, token)
+	out := redactFeedback("leaked "+token+" here", nil)
+	assert.NotContains(t, out, token)
+	assert.Contains(t, out, "[REDACTED:"+workflowTokenEnv+"]")
+	assert.Contains(t, out, "leaked ")
+	assert.Contains(t, out, " here")
+}
+
 func TestSensitiveEnvKey(t *testing.T) {
-	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS"} {
+	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "GH_WORKFLOW_TOKEN"} {
 		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)
 	}
 	for _, k := range []string{"TARGET_BRANCH", "REPO_FULL_NAME", "ISSUE_NUMBER", "KEYCHAIN"} {
@@ -3213,8 +3381,103 @@ func TestPostScriptRepoEnv(t *testing.T) {
 			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoDir, tt.repoExtractedOK, tt.validatedIterNum)
 			assert.Equal(t, tt.wantRepoDir, repoDir, "REPO_DIR")
 			assert.Equal(t, tt.wantIterDir, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR")
+			if repoDir != "" {
+				assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+			}
+			if iterDir != "" {
+				assert.True(t, filepath.IsAbs(iterDir), "FULLSEND_VALIDATED_ITERATION_DIR must be absolute, got %q", iterDir)
+			}
 		})
 	}
+}
+
+func TestResolveOutputBase(t *testing.T) {
+	t.Run("empty uses temp dir and is absolute", func(t *testing.T) {
+		got, err := resolveOutputBase("")
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(got))
+		assert.Equal(t, filepath.Join(os.TempDir(), "fullsend"), got)
+	})
+
+	t.Run("relative becomes absolute against cwd", func(t *testing.T) {
+		cwd := t.TempDir()
+		t.Chdir(cwd)
+		got, err := resolveOutputBase("rel-output")
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(got))
+		assert.Equal(t, filepath.Join(cwd, "rel-output"), got)
+	})
+
+	t.Run("absolute is unchanged", func(t *testing.T) {
+		abs := filepath.Join(t.TempDir(), "out")
+		got, err := resolveOutputBase(abs)
+		require.NoError(t, err)
+		assert.Equal(t, abs, got)
+	})
+}
+
+func TestPostScriptRepoEnv_RelativeOutputBaseYieldsAbsoluteIterDir(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	absBase, err := resolveOutputBase("rel-output")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(absBase))
+
+	runDir := filepath.Join(absBase, "fs-test-sandbox")
+	hostRepoDir := filepath.Join(t.TempDir(), "host-repo")
+	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
+	noLoop := &harness.Harness{}
+
+	t.Run("validation loop", func(t *testing.T) {
+		repoDir, iterDir := postScriptRepoEnv(withLoop, runDir, hostRepoDir, true, 2)
+		assert.Equal(t, hostRepoDir, repoDir)
+		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+		assert.True(t, filepath.IsAbs(iterDir), "FULLSEND_VALIDATED_ITERATION_DIR must be absolute, got %q", iterDir)
+		assert.Equal(t, filepath.Join(runDir, "iteration-2/output"), iterDir)
+	})
+
+	t.Run("no validation loop", func(t *testing.T) {
+		repoDir, iterDir := postScriptRepoEnv(noLoop, runDir, hostRepoDir, true, 3)
+		assert.Equal(t, hostRepoDir, repoDir)
+		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
+		assert.Empty(t, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR is unset without a validation loop")
+	})
+}
+
+func TestRunAgent_RelativeOutputDirResolvesBeforeGateway(t *testing.T) {
+	// Fails at CheckGateway (fake openshell) after resolveOutputBase, so a
+	// relative --output-dir is exercised without waiting on sandbox create.
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "rel-out", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.NotContains(t, err.Error(), "resolving output dir")
 }
 
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
@@ -3868,10 +4131,12 @@ func TestReservedSandboxKeys_IncludesTimeoutKeys(t *testing.T) {
 	t.Parallel()
 	assert.True(t, reservedSandboxKeys["FULLSEND_TIMEOUT_MINUTES"])
 	assert.True(t, reservedSandboxKeys["FULLSEND_ITERATION_DEADLINE"])
+	assert.True(t, reservedSandboxKeys["TRACEPARENT"])
 }
 
-// TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES
-// and FULLSEND_ITERATION_DEADLINE in env.sandbox are rejected as reserved (#7042).
+// TestBuildSandboxEnvLines_SkipsTimeoutKeys verifies that FULLSEND_TIMEOUT_MINUTES,
+// FULLSEND_ITERATION_DEADLINE, and TRACEPARENT in env.sandbox are rejected as
+// reserved (#7042, #7593).
 func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
 	t.Parallel()
 	h := &harness.Harness{
@@ -3882,6 +4147,7 @@ func TestBuildSandboxEnvLines_SkipsTimeoutKeys(t *testing.T) {
 				"CUSTOM_VAR":                  "allowed",
 				"FULLSEND_TIMEOUT_MINUTES":    "999",
 				"FULLSEND_ITERATION_DEADLINE": "1234567890",
+				"TRACEPARENT":                 "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01",
 			},
 		},
 	}
@@ -3920,13 +4186,21 @@ func TestIterationEnvSourceLine(t *testing.T) {
 
 // TestIterationEnvCommand pins the shell the runner executes before every
 // iteration: it rewrites (not appends to) the runner-owned file with the
-// budget and the kill time as Unix seconds (#7042).
+// budget, the kill time as Unix seconds (#7042), and TRACEPARENT (#7593).
 func TestIterationEnvCommand(t *testing.T) {
 	t.Parallel()
 	deadline := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
-	assert.Equal(t,
-		fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix()),
-		iterationEnvCommand(20, deadline))
+	const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	want := func(traceparent string) string {
+		return fmt.Sprintf("mkdir -p /sandbox/workspace/.fullsend && printf 'export FULLSEND_TIMEOUT_MINUTES=20\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > /sandbox/workspace/.fullsend/iteration.env", deadline.Unix(), traceparent)
+	}
+	assert.Equal(t, want(tp), iterationEnvCommand(20, deadline, tp))
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, ""),
+		"empty TRACEPARENT is still exported so a harness value cannot linger")
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "abc"),
+		"non-W3C TRACEPARENT is dropped rather than interpolated")
+	assert.Equal(t, want(""), iterationEnvCommand(20, deadline, "'; rm -rf /; echo '"),
+		"shell metacharacters must not reach the printf")
 }
 
 // TestWriteIterationEnv checks the exit code is not swallowed: sandbox.Exec
@@ -3942,15 +4216,27 @@ func TestWriteIterationEnv(t *testing.T) {
 			got = cmd
 			return "", "", 0, nil
 		}
-		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline))
-		assert.Equal(t, iterationEnvCommand(20, deadline), got)
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, ""))
+		assert.Equal(t, iterationEnvCommand(20, deadline, ""), got)
+	})
+	t.Run("with traceparent", func(t *testing.T) {
+		t.Parallel()
+		const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+		var got string
+		exec := func(_, cmd string, _ time.Duration) (string, string, int, error) {
+			got = cmd
+			return "", "", 0, nil
+		}
+		require.NoError(t, writeIterationEnv(exec, "fs-test", 20, deadline, tp))
+		assert.Equal(t, iterationEnvCommand(20, deadline, tp), got)
+		assert.Contains(t, got, "export TRACEPARENT="+tp)
 	})
 	t.Run("non-zero exit", func(t *testing.T) {
 		t.Parallel()
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "sh: read-only file system\n", 1, nil
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
 		require.Error(t, err)
 		assert.Equal(t, "exit 1: sh: read-only file system", err.Error())
 	})
@@ -3959,7 +4245,7 @@ func TestWriteIterationEnv(t *testing.T) {
 		exec := func(string, string, time.Duration) (string, string, int, error) {
 			return "", "", 124, fmt.Errorf("command timed out after 10s")
 		}
-		err := writeIterationEnv(exec, "fs-test", 20, deadline)
+		err := writeIterationEnv(exec, "fs-test", 20, deadline, "")
 		require.EqualError(t, err, "command timed out after 10s")
 	})
 	t.Run("clear", func(t *testing.T) {
@@ -5124,6 +5410,7 @@ func TestMintAgentToken_CoderRole(t *testing.T) {
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		assert.Equal(t, "https://mint.example.com", req.MintURL)
 		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, "write", req.Level)
 		assert.Equal(t, []string{"my-repo"}, req.Repos)
 		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
 	}
@@ -5151,8 +5438,59 @@ func TestMintAgentToken_CoderRole(t *testing.T) {
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE to original empty value")
 
 	output := buf.String()
-	assert.Contains(t, output, "Minting agent token (role: coder)")
+	assert.Contains(t, output, "Minting agent token")
+	assert.Contains(t, output, "role: coder")
+	assert.Contains(t, output, "level: write")
 	assert.Contains(t, output, "Agent token minted")
+}
+
+func TestMintAgentTokenAtLevel_PassesLevel(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_read_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	assert.Equal(t, "read", gotLevel)
+	assert.Equal(t, "ghs_read_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMintAgentTokenAtLevel_EmptyLevelDefaultsToWrite(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_write_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.Equal(t, "write", gotLevel)
+}
+
+func TestMintAgentTokenAtLevel_RejectsInvalidLevel(t *testing.T) {
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "WRITE", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid privilege level")
 }
 
 func TestMintAgentToken_ReviewRole(t *testing.T) {
@@ -5593,6 +5931,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	}
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GH_TOKEN", "ghp_original_pat")
 	t.Setenv("PUSH_TOKEN", "ghp_original_push")
 	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
@@ -5610,6 +5949,237 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
 	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
 	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "non-Actions mint must not derive GH_WORKFLOW_TOKEN from a local PAT")
+}
+
+func TestMintAgentToken_PreservesWorkflowTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const workflowToken = "ghs_workflow_token_aaa"
+	const mintedToken = "ghs_minted_token_bbb"
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		return &mintclient.MintResult{Token: mintedToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", workflowToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, mintedToken, os.Getenv("GH_TOKEN"), "minted token still lands in GH_TOKEN")
+	assert.Equal(t, mintedToken, os.Getenv("PUSH_TOKEN"), "minted token still lands in PUSH_TOKEN")
+	assert.Equal(t, "github-app", os.Getenv("PUSH_TOKEN_SOURCE"))
+	assert.Equal(t, workflowToken, os.Getenv(workflowTokenEnv), "pre-mint GH_TOKEN is preserved for provider credentials")
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	assert.Contains(t, buf.String(), "::add-mask::"+mintedToken)
+	assert.Contains(t, buf.String(), "::add-mask::"+workflowToken)
+
+	// Post-agent output scan uses SecretRedactor; the preserved value is
+	// registered so it is stripped from artifacts even without a prefix match.
+	scan := security.NewSecretRedactor().Scan("log " + workflowToken + " here")
+	assert.NotContains(t, scan.Sanitized, workflowToken)
+
+	cleanup()
+	assert.Equal(t, workflowToken, os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup should unset GH_WORKFLOW_TOKEN when it was not preset")
+}
+
+func TestMintAgentToken_DoesNotDeriveWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not copy a local PAT into GH_WORKFLOW_TOKEN")
+}
+
+func TestMintAgentToken_HonoursPresetWorkflowTokenOutsideActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const preset = "ghs_caller_set_workflow_token_xx"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_local_pat_not_copied")
+	t.Setenv(workflowTokenEnv, preset)
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	assert.True(t, minted)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "caller-set GH_WORKFLOW_TOKEN is left alone outside Actions")
+
+	cleanup()
+	assert.Equal(t, preset, os.Getenv(workflowTokenEnv), "cleanup must not unset a caller-set token outside Actions")
+}
+
+// TestMintAgentToken_WarnsWhenNoPreMintTokenInActions covers the case a
+// future caller overrides the workflow's github_token input to empty: the
+// preserve step must skip loudly (a StepWarn), not silently, so the #6649
+// failure mode is diagnosable (review finding: logic-error, run.go:5137).
+func TestMintAgentToken_WarnsWhenNoPreMintTokenInActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "no pre-mint GH_TOKEN was found")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not preserve a workflow token when none was found")
+}
+
+// TestMintAgentToken_WarnsWhenPreMintTokenMalformed covers an operator- or
+// caller-controlled GH_TOKEN override that doesn't match mintTokenPattern:
+// the preserve step must fail closed (skip Setenv/add-mask/RegisterRuntimeSecret)
+// the same way result.Token is gated, and warn rather than fail silently
+// (review finding: injection, run.go:5144).
+func TestMintAgentToken_WarnsWhenPreMintTokenMalformed(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "not a valid token\nwith control chars")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var stderrBuf bytes.Buffer
+	_, _ = io.Copy(&stderrBuf, r)
+
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+
+	assert.Contains(t, buf.String(), "unexpected format")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "malformed pre-mint token must not be preserved")
+	assert.NotContains(t, stderrBuf.String(), "::add-mask::not a valid token", "malformed token must not reach add-mask")
+}
+
+// TestMintAgentToken_RemintDoesNotClobberWorkflowToken covers the remint
+// path: remintAgentTokenForPostScript calls mintAgentToken a second time
+// after the first mint already replaced GH_TOKEN with the App installation
+// token. Before the fix, the second call's Actions preserve branch copied
+// that App token (mistaken for a fresh pre-mint value) over the workflow
+// token the first call had already preserved, since childScriptEnv strips
+// the var this wasn't user-visible in shipped code paths, but any reader of
+// the raw process env between remint and remintCleanup would observe the
+// wrong token (review finding: logic-error, run.go:5357).
+func TestMintAgentToken_RemintDoesNotClobberWorkflowToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const realWorkflowToken = "ghs_real_workflow_token_ccc"
+	const firstAppToken = "ghs_first_app_token_ddd"
+	const secondAppToken = "ghs_second_app_token_eee"
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: firstAppToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: secondAppToken, ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", realWorkflowToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv(workflowTokenEnv, "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	require.Equal(t, 1, calls)
+	require.Equal(t, firstAppToken, os.Getenv("GH_TOKEN"))
+	require.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "first mint preserves the real pre-mint token")
+
+	h := &harness.Harness{Role: "coder"}
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, secondAppToken, os.Getenv("GH_TOKEN"), "remint replaces GH_TOKEN with the freshly minted token")
+	assert.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "remint must not clobber the already-preserved workflow token with the just-replaced App token")
+
+	// Under LIFO, remintCleanup runs before the first mint's own cleanup.
+	remintCleanup()
+	assert.Equal(t, firstAppToken, os.Getenv("GH_TOKEN"), "remintCleanup restores the first-mint token")
+	assert.Equal(t, realWorkflowToken, os.Getenv(workflowTokenEnv), "remintCleanup must leave the preserved workflow token untouched")
+
+	cleanup()
+	assert.Equal(t, realWorkflowToken, os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint value set by the test")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup unsets the workflow token that was empty before the first mint")
 }
 
 func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {
@@ -5687,7 +6257,8 @@ func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T)
 	}
 	assert.Equal(t, "ghs_original_token", h.RunnerEnv["PUSH_TOKEN"])
 
-	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
 
 	env := postScriptEnv(h, "")
 	assert.Equal(t, 2, calls)
@@ -5707,6 +6278,165 @@ func TestRemintAgentTokenForPostScript_PostScriptEnvUsesFreshToken(t *testing.T)
 	cleanup()
 	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
 	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup must restore the pre-mint value after remintCleanup has already run")
+}
+
+func TestRemintAgentTokenForPostScript_UsesPostScriptPrivilegeLevel(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var levels []string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		levels = append(levels, req.Level)
+		return &mintclient.MintResult{Token: "ghs_" + req.Level + "_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "read",
+			harness.PrivilegeStagePostScript: "write",
+		},
+		RunnerEnv: map[string]string{
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "read", printer)
+	require.NoError(t, remintErr)
+	defer remintCleanup()
+
+	require.Equal(t, []string{"read", "write"}, levels)
+	assert.Equal(t, "ghs_write_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMaybeRemintAgentTokenForStage_SkipsWhenLevelsMatch(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "ghs_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	h := &harness.Harness{Role: "coder"} // omitted privilege_levels → write everywhere
+	printer := ui.New(io.Discard)
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "write", printer)
+	require.NoError(t, err)
+	restore()
+	assert.Equal(t, 0, calls)
+}
+
+func TestMaybeRemintAgentTokenForStage_RemintsAndRestores(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var levels []string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		levels = append(levels, req.Level)
+		return &mintclient.MintResult{Token: "ghs_" + req.Level + "_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	_, cleanup, err := mintAgentTokenAtLevel(context.Background(), "coder", "https://mint.example.com", "", "read", printer)
+	require.NoError(t, err)
+	defer cleanup()
+
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:   "read",
+			harness.PrivilegeStagePreScript: "write",
+		},
+		RunnerEnv: map[string]string{
+			"GH_TOKEN":   os.Getenv("GH_TOKEN"),
+			"PUSH_TOKEN": os.Getenv("PUSH_TOKEN"),
+		},
+	}
+	assert.Equal(t, "ghs_read_token", h.RunnerEnv["GH_TOKEN"])
+
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"read", "write"}, levels)
+	assert.Equal(t, "ghs_write_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_write_token", h.RunnerEnv["GH_TOKEN"])
+
+	restore()
+	assert.Equal(t, "ghs_read_token", os.Getenv("GH_TOKEN"), "restore must put the runtime token back")
+	assert.Equal(t, "ghs_read_token", h.RunnerEnv["GH_TOKEN"])
+}
+
+func TestMaybeRemintAgentTokenForStage_ErrorIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected write level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:   "read",
+			harness.PrivilegeStagePreScript: "write",
+		},
+	}
+	printer := ui.New(io.Discard)
+	_, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint rejected write level")
+}
+
+func TestMaybeRemintAgentTokenForStage_EmptyMintURLOrNilHarness(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called")
+		return nil, nil
+	}
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{Role: "coder", PrivilegeLevels: map[string]string{harness.PrivilegeStagePreScript: "write"}}
+
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
+
+	restore, err = maybeRemintAgentTokenForStage(context.Background(), nil, "https://mint.example.com", "", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
+}
+
+func TestMaybeRemintAgentTokenForStage_SkipsGitLab(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called on GitLab")
+		return nil, nil
+	}
+	h := &harness.Harness{
+		Role:            "coder",
+		PrivilegeLevels: map[string]string{harness.PrivilegeStagePreScript: "write"},
+	}
+	printer := ui.New(io.Discard)
+	restore, err := maybeRemintAgentTokenForStage(context.Background(), h, "https://mint.example.com", "gitlab", harness.PrivilegeStagePreScript, "read", printer)
+	require.NoError(t, err)
+	restore()
 }
 
 // TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx exercises the
@@ -5744,7 +6474,8 @@ func TestRemintAgentTokenForPostScript_SurvivesCancelledParentCtx(t *testing.T) 
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	remintCleanup := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", printer)
+	remintCleanup, remintErr := remintAgentTokenForPostScript(cancelledCtx, h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
 	defer remintCleanup()
 
 	assert.Equal(t, 1, calls, "remint must still call mint despite an already-cancelled parent ctx")
@@ -5779,7 +6510,8 @@ func TestRemintAgentTokenForPostScript_DeadlineExceededGetsDistinctWarning(t *te
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	cleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
 	defer cleanup()
 
 	assert.Contains(t, buf.String(), "timed out", "a context.DeadlineExceeded must produce a distinct message from a generic mint failure")
@@ -5819,7 +6551,8 @@ func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
 		},
 	}
 
-	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr, "a same-level remint failure must stay non-fatal")
 	defer remintCleanup()
 
 	assert.Equal(t, 2, calls)
@@ -5838,6 +6571,69 @@ func TestRemintAgentTokenForPostScript_ErrorIsNonFatal(t *testing.T) {
 	got, readErr := os.ReadFile(marker)
 	require.NoError(t, readErr)
 	assert.Equal(t, "ghs_original_token\n", string(got))
+}
+
+// TestRemintAgentTokenForPostScript_DowngradeErrorIsFatal covers the
+// privilege-escalation case a plain non-fatal remint failure would allow: a
+// harness author configuring the post-script stage at a strictly lower
+// privilege level than the runtime stage (runtime: write, post_script:
+// read). A remint failure there must not silently leave the more-privileged
+// runtime-stage token active for the post-script — it must be reported as
+// an error so the caller can fail the run instead of running the
+// post-script at all.
+func TestRemintAgentTokenForPostScript_DowngradeErrorIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected read level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "write",
+			harness.PrivilegeStagePostScript: "read",
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.Error(t, remintErr, "a remint failure that would leave a more-privileged leftover token active must be fatal")
+	assert.Contains(t, remintErr.Error(), "mint rejected read level")
+	cleanup()
+}
+
+// TestRemintAgentTokenForPostScript_UnrankedCustomLevelMismatchIsFatal
+// covers a custom privilege level name (neither read, write, nor admin):
+// its relative rank against the active level cannot be determined by
+// mintcore.PermissionLevelAtLeast, but the configured post-script level
+// still differs from the active level, so a remint failure must be fatal
+// rather than silently leaving the leftover token active — ranking is not
+// required to detect the mismatch.
+func TestRemintAgentTokenForPostScript_UnrankedCustomLevelMismatchIsFatal(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("mint rejected custom level")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	h := &harness.Harness{
+		Role: "coder",
+		PrivilegeLevels: map[string]string{
+			harness.PrivilegeStageRuntime:    "write",
+			harness.PrivilegeStagePostScript: "custom-level",
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.Error(t, remintErr, "a level mismatch must be fatal even when the levels involved cannot be ranked")
+	assert.Contains(t, remintErr.Error(), "mint rejected custom level")
+	cleanup()
 }
 
 // TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL covers
@@ -5873,7 +6669,8 @@ func TestRemintAgentTokenForPostScript_SkipsMintOnGitLabOrEmptyMintURL(t *testin
 				},
 			}
 
-			cleanup := remintAgentTokenForPostScript(context.Background(), h, tc.mintURL, tc.forgePlatform, printer)
+			cleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, tc.mintURL, tc.forgePlatform, "write", printer)
+			require.NoError(t, remintErr)
 			cleanup()
 
 			assert.Equal(t, 0, calls, "gitlab/empty mint URL must not call mint")
@@ -5912,7 +6709,8 @@ func TestRemintAgentTokenForPostScript_RunnerEnvMissingTokenKeys(t *testing.T) {
 		RunnerEnv: map[string]string{"UNRELATED_VAR": "keep-me"},
 	}
 
-	remintCleanup := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", printer)
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
 	defer remintCleanup()
 
 	assert.Equal(t, 1, calls)
@@ -5967,6 +6765,7 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
 		mintCalled = true
 		assert.Equal(t, "https://mint-from-env.example.com", req.MintURL)
+		assert.Equal(t, "write", req.Level, "omitted privilege_levels must mint write")
 		return &mintclient.MintResult{Token: "ghs_env_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
 	}
 
@@ -5985,6 +6784,52 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
+}
+
+func TestRunAgent_MintsRuntimePrivilegeLevel(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\nprivilege_levels:\n  runtime: read\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var gotLevel string
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		gotLevel = req.Level
+		return &mintclient.MintResult{Token: "ghs_read_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.Equal(t, "read", gotLevel, "initial mint must request the runtime privilege level")
 }
 
 func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
@@ -6072,8 +6917,9 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 }
 
 // TestRunAgent_GitLabSkipsMint verifies that mintAgentToken is not called
-// when --forge=gitlab. Minting is GitHub-only; on GitLab the bot PAT
-// (FULLSEND_FORGE_TOKEN) serves as the push/API token. #6865.
+// when --forge=gitlab. Minting is GitHub-only; on GitLab the registered
+// role credential (shared token while the migration gate is disabled)
+// serves as the push/API token. #6865 #7499.
 func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -6106,6 +6952,9 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 
 	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv(forge.SecretForgeToken, "glpat-test-shared")
+	t.Setenv(forge.VarGitLabRoleMigration, "")
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -6118,6 +6967,57 @@ func TestRunAgent_GitLabSkipsMint(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 	// No "skipping token minting" warning on GitLab
 	assert.NotContains(t, buf.String(), "skipping token minting")
+	assert.NotContains(t, buf.String(), "glpat-")
+}
+
+// TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled verifies the
+// backward-compatibility fix from the review on PR #7510: before this PR,
+// `fullsend run --forge gitlab` was a no-op when migration is
+// disabled/rollback, leaving a directly-set GITLAB_TOKEN untouched. This
+// PR made GitLab credential routing unconditional, which broke that case
+// by hard-failing when FULLSEND_FORGE_TOKEN is absent even though
+// GITLAB_TOKEN is already set (the documented local-run workflow). The
+// fallback must restore the no-op so this keeps working.
+func TestRunAgent_GitLabMissingSharedFallsBackWhenDisabled(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv(forge.SecretForgeToken, "")
+	t.Setenv(forge.VarGitLabRoleMigration, "")
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
+	t.Setenv("GITLAB_TOKEN", "glpat-preset-by-user")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	// Expect error from openshell (later in the run), not from GitLab
+	// credential resolution.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, buf.String(), "FULLSEND_FORGE_TOKEN is not set")
+	assert.Equal(t, "glpat-preset-by-user", os.Getenv("GITLAB_TOKEN"), "a directly-set GITLAB_TOKEN must survive the fallback")
 }
 
 // TestRunAgent_SetsEnvFromFlags verifies that run.go exports TARGET_REPO_DIR,
@@ -6517,102 +7417,6 @@ func TestDedupResolvedProfiles(t *testing.T) {
 	}
 }
 
-func TestShadowedProfiles(t *testing.T) {
-	const profilesDir = "/ws/.fullsend/profiles"
-	url := func(id string) resolve.ResolvedProfile {
-		return resolve.ResolvedProfile{ID: id, LocalPath: "/cache/sha256/" + id + "/content.yaml", FromURL: true}
-	}
-	ids := func(profiles []resolve.ResolvedProfile) []string {
-		var out []string
-		for _, p := range profiles {
-			out = append(out, p.ID)
-		}
-		return out
-	}
-	tests := []struct {
-		name      string
-		dirIDs    []string
-		resolved  []resolve.ResolvedProfile
-		generated map[string]bool
-		want      []string
-	}{
-		{
-			name:     "no overlap",
-			dirIDs:   []string{"local-only"},
-			resolved: []resolve.ResolvedProfile{url("remote-only")},
-			want:     nil,
-		},
-		{
-			name:     "empty dir",
-			dirIDs:   nil,
-			resolved: []resolve.ResolvedProfile{url("a")},
-			want:     nil,
-		},
-		{
-			name:     "empty resolved",
-			dirIDs:   []string{"a"},
-			resolved: nil,
-			want:     nil,
-		},
-		{
-			name:     "one shadow",
-			dirIDs:   []string{"fullsend-vertex-ai"},
-			resolved: []resolve.ResolvedProfile{url("fullsend-vertex-ai")},
-			want:     []string{"fullsend-vertex-ai"},
-		},
-		{
-			name:     "multiple shadows sorted",
-			dirIDs:   []string{"z-profile", "a-profile", "local-only"},
-			resolved: []resolve.ResolvedProfile{url("z-profile"), url("a-profile"), url("remote-only")},
-			want:     []string{"a-profile", "z-profile"},
-		},
-		{
-			name:   "local-path profile in the same directory is not a shadow",
-			dirIDs: []string{"byo"},
-			resolved: []resolve.ResolvedProfile{
-				{ID: "byo", LocalPath: profilesDir + "/byo.yaml", FromURL: false},
-			},
-			want: nil,
-		},
-		{
-			name:   "local-path profile elsewhere in the workspace is a shadow",
-			dirIDs: []string{"byo"},
-			resolved: []resolve.ResolvedProfile{
-				{ID: "byo", LocalPath: "/ws/custom/byo.yaml", FromURL: false},
-			},
-			want: []string{"byo"},
-		},
-		{
-			name:     "duplicate directory ids reported once",
-			dirIDs:   []string{"dup", "dup"},
-			resolved: []resolve.ResolvedProfile{url("dup")},
-			want:     []string{"dup"},
-		},
-		{
-			name:   "runner-generated gitlab forge profile is not a shadow",
-			dirIDs: []string{"fullsend-gitlab-forge"},
-			resolved: []resolve.ResolvedProfile{
-				{ID: "fullsend-gitlab-forge", LocalPath: "/tmp/fullsend-gitlab-profile-123/fullsend-gitlab-forge.yaml"},
-			},
-			generated: map[string]bool{"fullsend-gitlab-forge": true},
-			want:      nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := shadowedProfiles(tt.dirIDs, tt.resolved, profilesDir, tt.generated)
-			assert.Equal(t, tt.want, ids(got))
-		})
-	}
-}
-
-func TestShadowedProfiles_ReturnsResolvedCopy(t *testing.T) {
-	rp := resolve.ResolvedProfile{ID: "fullsend-vertex-ai", LocalPath: "/cache/x/content.yaml", FromURL: true}
-	got := shadowedProfiles([]string{"fullsend-vertex-ai"}, []resolve.ResolvedProfile{rp}, "/ws/profiles", nil)
-	require.Len(t, got, 1)
-	assert.Equal(t, rp, got[0], "the returned entry must carry the shadowed copy's path so the warning can name it")
-}
-
 func TestDedupResolvedProviders(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -6818,12 +7622,10 @@ func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T)
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
 	tests := []struct {
-		name          string
-		providers     []resolve.ResolvedProvider
-		profiles      []resolve.ResolvedProfile
-		dirProfileIDs []string
-		wantWarn      bool
-		wantErr       bool
+		name      string
+		providers []resolve.ResolvedProvider
+		profiles  []resolve.ResolvedProfile
+		wantErr   bool
 	}{
 		{
 			name:      "no providers",
@@ -6831,12 +7633,12 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			profiles:  nil,
 		},
 		{
-			name: "providers without profiles warns",
+			name: "providers without profiles errors",
 			providers: []resolve.ResolvedProvider{
 				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}, FromURL: true},
 			},
 			profiles: nil,
-			wantWarn: true,
+			wantErr:  true,
 		},
 		{
 			name: "all providers match profiles",
@@ -6872,12 +7674,12 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "local provider matched by directory profile",
+			name: "local provider unmatched without harness profile errors",
 			providers: []resolve.ResolvedProvider{
 				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
 			},
-			profiles:      nil,
-			dirProfileIDs: []string{"jira-oauth"},
+			profiles: nil,
+			wantErr:  true,
 		},
 		{
 			name: "local provider unmatched errors",
@@ -6897,8 +7699,19 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			},
 			profiles: []resolve.ResolvedProfile{
 				{ID: "anthropic", FromURL: true},
+				{ID: "jira-oauth", FromURL: false},
 			},
-			dirProfileIDs: []string{"jira-oauth"},
+		},
+		{
+			name: "directory-only profile not considered",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-p", Type: "anthropic"}, FromURL: true},
+				{Def: harness.ProviderDef{Name: "local-p", Type: "jira-oauth"}, FromURL: false},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic", FromURL: true},
+			},
+			wantErr: true,
 		},
 		{
 			name: "local provider matched by harness profile",
@@ -6912,7 +7725,7 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles, tt.dirProfileIDs)
+			err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "unknown profile types")
@@ -6923,11 +7736,6 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-			}
-			if tt.wantWarn {
-				assert.NotEmpty(t, warn)
-			} else if !tt.wantErr {
-				assert.Empty(t, warn)
 			}
 		})
 	}

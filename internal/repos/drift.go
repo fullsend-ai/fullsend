@@ -37,8 +37,9 @@ type ContentDriftFile struct {
 // Both the status and converge paths use this function so they share
 // the same comparison logic and cannot diverge.
 //
-// Files that are not found on the forge are skipped — presence drift
-// is detected separately by ProbeComponents.
+// Missing workflow and thin-caller files are handled by ProbeComponents;
+// auxiliary scaffold files with forge-specific health semantics are also
+// checked there.
 func CheckFileContentDrift(ctx context.Context, client forge.Client,
 	owner, repo string, fc ForgeConfig, forgeName string,
 	expectedFiles []forge.TreeFile) ([]ContentDriftFile, error) {
@@ -46,9 +47,10 @@ func CheckFileContentDrift(ctx context.Context, client forge.Client,
 	var drifted []ContentDriftFile
 
 	for _, ef := range expectedFiles {
-		// Skip config.yaml — role configuration is not tracked by
-		// drift detection.
-		if ef.Path == ".fullsend/config.yaml" {
+		// Skip overlay and base config files. Overlay is owned by the
+		// repository; base-file drift is compared against the declared
+		// preset, not against the generated overlay from BuildScaffoldFiles.
+		if ef.Path == ".fullsend/config.yaml" || ef.Path == ".fullsend/config.base.yaml" {
 			continue
 		}
 
@@ -166,7 +168,10 @@ type OrphanVar struct {
 // CheckOrphanVars lists all repository variables on the forge and returns
 // those with the FULLSEND_ prefix that are not in the managed variable set
 // for the given forge. These are orphan variables — leftover from a
-// previous installation or a removed feature.
+// previous installation or a removed feature. GitLab retired poll-state
+// variables (gitlabRetiredLegacyVars) are known-retired: they are not
+// reported as orphans so already-installed repos do not warn during the
+// migrate-then-delete transition.
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,
@@ -201,6 +206,19 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	for _, s := range requiredSecretsForForge(cfg.Forge) {
 		managedNames[s] = true
 	}
+	// FULLSEND_DISPATCH_SECRET is auto-provisioned by install/converge
+	// to sign poll state. It is managed, not an orphan, but is
+	// intentionally not in requiredSecretsForForge — that would mark
+	// existing installs incomplete solely because the secret is new.
+	if cfg.Forge == ForgeGitLab {
+		managedNames[forge.SecretDispatch] = true
+		for _, name := range gitlabRetiredLegacyVars {
+			managedNames[name] = true
+		}
+		for _, name := range gitLabRoleUninstallVars {
+			managedNames[name] = true
+		}
+	}
 
 	forgeVars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {
@@ -213,6 +231,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 			continue
 		}
 		if managedNames[name] {
+			continue
+		}
+		if cfg.Forge == ForgeGitLab && IsGitLabRoleManagedVar(name) {
 			continue
 		}
 		orphans = append(orphans, OrphanVar{Name: name})

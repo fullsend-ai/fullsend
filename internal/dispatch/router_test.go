@@ -1,6 +1,10 @@
 package dispatch
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
 
 func TestHarnessRouter_SlashCommand(t *testing.T) {
 	r := NewHarnessRouter([]string{"triage", "code", "review", "fix", "retro", "custom-agent"})
@@ -202,6 +206,24 @@ func TestHarnessRouter_Merged(t *testing.T) {
 	}
 }
 
+func TestHarnessRouter_Closed(t *testing.T) {
+	r := NewHarnessRouter([]string{"retro", "code"})
+
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "change_proposal", ID: 42},
+		Transition: Transition{Kind: "closed"},
+		Actor:      Actor{ID: "alice", Role: "write"},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "retro" {
+		t.Fatalf("expected [retro] for closed-unmerged, got %v", stages)
+	}
+}
+
 func TestHarnessRouter_Opened(t *testing.T) {
 	r := NewHarnessRouter([]string{"review", "retro"})
 
@@ -256,13 +278,19 @@ func TestHarnessRouter_OpenedReviewNotInValidSet(t *testing.T) {
 	}
 }
 
+func TestChangesRequestedMarkerMatchesSharedConstant(t *testing.T) {
+	if changesRequestedMarker != forge.ChangesRequestedMarker {
+		t.Fatalf("dispatch marker %q != forge.ChangesRequestedMarker %q", changesRequestedMarker, forge.ChangesRequestedMarker)
+	}
+}
+
 func TestHarnessRouter_ChangesRequestedMarker(t *testing.T) {
 	r := NewHarnessRouter([]string{"fix", "review"})
 
 	event := &NormalizedEvent{
 		Entity: Entity{Kind: "change_proposal", ID: 10},
 		Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{
-			Body: "Changes needed <!-- fullsend:changes-requested --> please fix",
+			Body: "Changes needed " + forge.ChangesRequestedMarker + " please fix",
 		}},
 		Actor: Actor{ID: "bot", Kind: "bot", Role: "write"},
 		State: State{ChangeProposal: &ChangeProposalState{IsFork: false}},
@@ -274,6 +302,75 @@ func TestHarnessRouter_ChangesRequestedMarker(t *testing.T) {
 	}
 	if len(stages) != 1 || stages[0] != "fix" {
 		t.Fatalf("expected [fix], got %v", stages)
+	}
+}
+
+func TestHarnessRouter_ChangesRequestedNoFixLabelBlocked(t *testing.T) {
+	r := NewHarnessRouter([]string{"fix", "review"})
+
+	event := &NormalizedEvent{
+		Entity: Entity{Kind: "change_proposal", ID: 10},
+		Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{
+			Body: "Changes needed " + forge.ChangesRequestedMarker + " please fix",
+		}},
+		Actor: Actor{ID: "bot", Kind: "bot", Role: "write"},
+		State: State{
+			Labels:         []string{"fullsend-no-fix"},
+			ChangeProposal: &ChangeProposalState{IsFork: false},
+		},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages when fullsend-no-fix label is present, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_ChangesRequestedOtherLabelsAllowed(t *testing.T) {
+	r := NewHarnessRouter([]string{"fix", "review"})
+
+	event := &NormalizedEvent{
+		Entity: Entity{Kind: "change_proposal", ID: 10},
+		Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{
+			Body: "Changes needed " + forge.ChangesRequestedMarker + " please fix",
+		}},
+		Actor: Actor{ID: "bot", Kind: "bot", Role: "write"},
+		State: State{
+			Labels:         []string{"fullsend-fix", "some-other-label"},
+			ChangeProposal: &ChangeProposalState{IsFork: false},
+		},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "fix" {
+		t.Fatalf("expected [fix] when fullsend-no-fix is absent, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_CommentOnlyReviewDoesNotDispatchFix(t *testing.T) {
+	r := NewHarnessRouter([]string{"fix", "review"})
+
+	event := &NormalizedEvent{
+		Entity: Entity{Kind: "change_proposal", ID: 10},
+		Transition: Transition{Kind: "comment_added", Comment: &TransitionComment{
+			Body: "Please consider this suggestion <!-- fullsend:review-agent -->",
+		}},
+		Actor: Actor{ID: "bot", Kind: "bot", Role: "write"},
+		State: State{ChangeProposal: &ChangeProposalState{IsFork: false}},
+	}
+
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("expected no stages for comment-only review, got %v", stages)
 	}
 }
 

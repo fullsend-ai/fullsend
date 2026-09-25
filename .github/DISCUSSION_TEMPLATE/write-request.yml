@@ -1,0 +1,49 @@
+title: "Write request: [your GitHub username]"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Write Role Request
+
+        Use this form to request write access. See
+        [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md)
+        for the full role definition, criteria, and approval requirements.
+
+        **Write in your own words.** Do not have an AI generate this request.
+
+  - type: textarea
+    id: contributions
+    attributes:
+      label: Contribution history
+      description: >
+        Link to merged PRs across different areas of the codebase, or
+        evidence of deep expertise in a specific subsystem. Show
+        sustained contributions demonstrating understanding of project
+        conventions.
+      placeholder: |
+        - https://github.com/fullsend-ai/fullsend/pull/NNN
+        - https://github.com/fullsend-ai/fullsend/pull/NNN
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why do you need write access?
+      description: >
+        Explain what you plan to do with write capabilities
+        (e.g., using mutation agents, pushing to non-protected branches).
+      placeholder: "I want to help by..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I wrote this request myself (not AI-generated)
+          required: true
+        - label: I have read [LADDER.md](https://github.com/fullsend-ai/fullsend/blob/main/LADDER.md) and meet the criteria for write access
+          required: true

@@ -112,6 +112,14 @@ enabled only for the agents that list it.
 First scorer: **`trace_fitness`** (catalog id `em-001`) — span tree + expected
 attributes so later scorers can trust the trace.
 
+Second scorer: **`run_health`** (catalog id `em-002`) — deterministic
+tool-call defect detection over the always-on `execute_tool` spans
+([ADR 0108](../../ADRs/0108-tool-call-span-topology.md)). It fails a run only
+on an unambiguous integrity break (a tool result with no matching call) and
+reports tool errors and unanswered calls as signals; runs whose runtime emits
+no `execute_tool` spans (pi, codex) and runs that made no tool calls are
+skipped.
+
 Manifest shape (first ship — enablement only):
 
 ```yaml
@@ -175,7 +183,7 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 
 | Topic | Relationship to measurements |
 |---|---|
-| Level 3 content capture ([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md); activation draft closed without merge in [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)) | First ship scores Level 1/2 metadata fitness. **Planned:** content-aware scorers on Level 3 prompt/completion bodies once L3 is implemented — that is the real quality signal. Measure CLI is host-side after the sandbox exits. |
+| Level 3 content capture ([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md); activation draft closed without merge in [#5947](https://github.com/fullsend-ai/fullsend/pull/5947)) | First ship scores Level 1/2 metadata fitness. **Planned:** content-aware scorers on Level 3 prompt/completion bodies once L3 is implemented — that is the real quality signal. Measure CLI is host-side after the sandbox exits. Tool-result content and `execute_tool` spans are Claude-only until the pi and codex parsers emit call ids and results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)); a scorer that reads tool I/O should key on `fullsend.runtime` and skip, not fail, other runtimes. |
 | [#5944](https://github.com/fullsend-ai/fullsend/pull/5944) Span status from run outcome *(merged)* | Unblocks outcome scorers keyed on Status, not raw exit alone. |
 | Semantic observability / observer / lessons (draft closed without merge in [#2423](https://github.com/fullsend-ai/fullsend/pull/2423)) | Observer + lessons → fixtures remains a sibling idea; measurements are the online score path. |
 | [#5524](https://github.com/fullsend-ai/fullsend/pull/5524) Harness snapshot / forge join keys *(open)* | Complementary join/identity proposal beside telemetry; measurements are derived scores, not primary run facts. |

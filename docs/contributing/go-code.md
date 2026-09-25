@@ -6,11 +6,15 @@
 
 When changing **any** non-test `.go` file in `internal/mint/`, copy it to the corresponding `.embed` file in `internal/dispatch/gcf/mintsrc/`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too. The `lint-mint-embed-sync` pre-commit hook checks all files — not just `main.go`.
 
+**Build metadata stamping:** The mint Cloud Function receives version and commit metadata via deploy-time source stamping, not runtime environment variables. The provisioner writes `mintcore/version.go` into the function source zip at bundle time. Never use environment variables for values that must stay in lockstep with the deployed source. See [Mintcore Architecture](mintcore.md#build-metadata-stamping).
+
 **Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
 **CF Worker adapter:** `internal/dispatch/cf/workersrc/` is a thin TypeScript Cloudflare Worker adapter that consumes mintcore via WASM (`cmd/mint-wasm`). The adapter handles I/O only (Worker secrets, host fetch, Fetch Request/Response mapping); all mint logic stays in Go. The Go WASM bridge registers `mintcoreInitMint` and `mintcoreHandleFetch` on `globalThis` via `syscall/js`; changes to these entry points in `cmd/mint-wasm` or to the contracts they consume in `internal/mintcore/` require updating `workersrc/src/index.ts` to match.
 
-**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements.
+**Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements. It must not import `internal/mintcore` or `internal/mintcore/mintconsts` — `mintconsts` lives in the nested mintcore module even though it has no mintcore imports of its own.
+
+**Public behaviourtest graph must not import mintcore.** `internal/mintcore` is a nested module resolved in this repository by a local `replace` that downstream modules do not inherit. Packages reachable from `pkg/behaviourtest`'s public build must not import `internal/mintcore` or `internal/mintcore/mintconsts`, and must not import other in-module packages whose production graph includes mintcore (`internal/cli`, `internal/layers`, `internal/repos`). Duplicate a string or helper locally instead (see `pkg/e2etest/auth.go`, `internal/mintclient/mintclient.go`, `pkg/behaviourtest/drivers/install/validate.go`). `TestBehaviourtestDepsExcludeMintcore` asserts `go list -deps` (with and without `-tags behaviour`) never lists the nested module.
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
@@ -58,15 +62,15 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
-2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
+2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines has an **80% target** and a **75% enforced floor** (5% threshold). Codecov PR comments mark ✗ below 80% even when the `codecov/patch` status check is green. **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
 3. **Vet:** Run `make go-vet` to catch common issues.
 4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
 ## Verifying patch coverage locally
 
 `make go-test` runs tests with `-cover` but does not check whether your
-changed lines meet the **80% patch coverage** threshold from
-[`.codecov.yml`](../../.codecov.yml). You must approximate this check
+changed lines meet the **80% patch coverage** target (75% enforced floor)
+from [`.codecov.yml`](../../.codecov.yml). You must approximate this check
 yourself before committing. Skipping this step is the most common cause
 of `codecov/patch` failures on first push.
 
@@ -89,6 +93,13 @@ of `codecov/patch` failures on first push.
      | sed 's|^|./|'
    ```
 
+   Before running coverage, check each affected package for `_test.go`
+   files; if none exist, add direct unit tests for the changed code
+   first, since missing or zero coverage cannot satisfy the patch
+   coverage threshold. See the
+   [check-patch-coverage skill](../../skills/check-patch-coverage/SKILL.md#3-check-for-packages-with-no-test-files)
+   for the detection script.
+
 3. **Run tests with a cover profile** for the affected packages:
 
    ```bash
@@ -108,17 +119,20 @@ of `codecov/patch` failures on first push.
    you added or modified — these approximate Codecov's line-level patch
    metric.
 
-5. **Assess against the threshold.** If the functions you changed or
-   added show coverage well below 80%, add or extend `_test.go` files
-   to cover the missing lines. Then re-run from step 3.
+5. **Assess against the 80% target (75% floor).** If the functions you
+   changed or added show coverage well below 80%, add or extend
+   `_test.go` files to cover the missing lines. Then re-run from step 3.
 
 ### What counts as covered
 
 Codecov measures line-level coverage on the diff. Locally, `go tool
 cover -func` reports function-level coverage, which is a coarser
-approximation. Target **≥ 80%** on the functions you touched. If a
-function has complex branching, use `go tool cover -html=coverage.out`
-to visually inspect which lines are covered.
+approximation. The `codecov/patch` status check passes at **≥ 75%**
+(80% target minus 5% threshold); PR comments still mark ✗ below 80%.
+Target **≥ 80%** on the functions you touched so both signals agree and
+to leave margin for the function-vs-line approximation. If a function
+has complex branching, use `go tool cover -html=coverage.out` to
+visually inspect which lines are covered.
 
 ### When to skip
 
@@ -248,7 +262,7 @@ cancellation patterns.
 
 ## httptest handler-invocation assertions
 
-When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — `httptest`'s default mux returns 404 for unregistered routes, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
+When writing tests that use `httptest.NewServer` with a custom `http.ServeMux`, always assert that the registered handler was actually invoked. Without this assertion, a test can silently pass when the handler path does not match the code's actual request path — an unmatched route on the `http.ServeMux` returns 404, and if the test expects a "not found" or error outcome, the wrong path produces the right status code by coincidence.
 
 ### Pattern: `handlerCalled` boolean
 
@@ -461,37 +475,53 @@ function in `internal/cli/run.go` is the canonical implementation.
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
    or `"true"` cause false-positive mangling.
 
-2. **Apply `security.SecretRedactor` as a second-pass fallback.**
-   The `RunnerEnv` scan only catches credentials the harness declared.
-   A `security.NewSecretRedactor().Scan(content)` call catches
+2. **Scan `providerOnlyKeys` from the process environment
+   (`os.Getenv`) for credential literal values.** Provider-only
+   credentials such as `GH_WORKFLOW_TOKEN` are intentionally kept
+   out of `RunnerEnv` (see #6649) so harness-controlled `${}` expansion
+   can't reach them, which means the `RunnerEnv` scan in invariant 1
+   never sees them. Iterate `providerOnlyKeys`, read each value with
+   `os.Getenv`, and replace it the same way (skipping values shorter
+   than `minRedactableSecretLen`). A future credential class kept out
+   of `RunnerEnv` for the same reason needs the same treatment here.
+
+3. **Apply `security.SecretRedactor` as a fallback pass.**
+   The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
+   the runner explicitly declared. A
+   `security.NewSecretRedactor().Scan(content)` call catches
    credentials with recognizable shapes (known-prefix tokens such as
    `ghp_`, `sk-ant-`, `AKIA`, PEM blocks, connection strings) that
-   never passed through the runner
-   environment — for example, a key baked into a test fixture or a
-   pre-commit hook printing its own secrets.
+   never passed through either source — for example, a key baked into
+   a test fixture or a pre-commit hook printing its own secrets.
 
-3. **Use `truncateUTF8` when enforcing size limits on external
+4. **Use `truncateUTF8` when enforcing size limits on external
    content.** Naive byte slicing (`s[:max]`) can split a multi-byte
    UTF-8 rune, producing invalid text that breaks downstream JSON
    serialization or LLM tokenization. Use `truncateUTF8(s, max)`
    (defined in `internal/cli/run.go`), which backs up to the last
    valid rune boundary before appending a `[truncated]` marker.
 
-4. **Write files containing potential secrets with mode `0600`.**
+5. **Write files containing potential secrets with mode `0600`.**
    Feedback files, redacted logs, and any file derived from external
    content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
    The run directory is uploaded as a CI artifact; restrictive
    permissions limit exposure if the artifact is downloaded to a
    shared filesystem.
 
-### Why both passes are needed
+### Why all three passes are needed
 
-Neither pass alone is sufficient. Opaque tokens (e.g., a GitHub
-installation token with no recognizable prefix) have no pattern for the
-`SecretRedactor` to match — only the literal `RunnerEnv` scan catches
-those. Conversely, credentials that never entered the runner environment
-(a PEM key printed by a repo hook, a fixture secret) are invisible to
-the env scan — only the pattern-based `SecretRedactor` catches those.
+No single pass is sufficient. Opaque tokens declared in `RunnerEnv`
+(e.g., a GitHub installation token with no recognizable prefix) have no
+pattern for the `SecretRedactor` to match — only the literal `RunnerEnv`
+scan catches those. Provider-only credentials such as
+`GH_WORKFLOW_TOKEN` are deliberately excluded from `RunnerEnv`, so
+neither the `RunnerEnv` scan nor an unrelated `SecretRedactor` pattern
+match is guaranteed to catch them — only the `providerOnlyKeys` scan of
+the process environment does, though `SecretRedactor` may also match
+this token's shape as a fallback. Conversely, credentials that never
+entered either the runner environment or `providerOnlyKeys` (a PEM key
+printed by a repo hook, a fixture secret) are invisible to both env
+scans — only the pattern-based `SecretRedactor` catches those.
 
 ### When this applies
 

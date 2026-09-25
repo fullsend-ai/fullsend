@@ -20,6 +20,14 @@ const ConfigRepoName = ".fullsend"
 // per-org enrollment from overriding a per-repo installation.
 const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 
+// ChangesRequestedMarker is the hidden HTML comment the GitLab review
+// bot embeds in REQUEST_CHANGES MR notes. The poller retains bot-authored
+// notes that contain this marker, and the dispatch router routes them to
+// the fix stage. GitHub uses the native pull_request_review event instead.
+// Keep this value in one place so the poster, poller, and router cannot
+// silently diverge.
+const ChangesRequestedMarker = "<!-- fullsend:changes-requested -->"
+
 // Repo management variable and secret names.
 //
 // These constants cover every FULLSEND_* name used by repos install,
@@ -32,7 +40,9 @@ const (
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 
-	// Managed variables — GitLab.
+	// Retired GitLab poller state variables. Superseded by HMAC-signed
+	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
+	// Install no longer seeds them; converge migrate-then-deletes them.
 	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
 	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
 	VarLabelState         = "FULLSEND_LABEL_STATE"
@@ -48,6 +58,36 @@ const (
 	// Secrets — GitLab only.
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
+	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
+	// These are not required on existing installations. Probe/converge must
+	// not treat their absence as health drift while migration mode is
+	// disabled. Built-in names are fixed; custom roles derive
+	// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning is #7498; job
+	// routing is #7499 (`internal/gitlabroles.Select`).
+	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
+	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
+	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
+
+	// SecretDispatch is the shared HMAC secret used to sign dispatch
+	// variables and poll-state documents. GitLab install/converge
+	// auto-provisions it as a masked, protected CI/CD variable so
+	// signing is on by default; see poll.EnsureDispatchSecret.
+	SecretDispatch = "FULLSEND_DISPATCH_SECRET"
+
+	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
+	// of requiredSecrets/requiredSecretsForForge — a repository with no
+	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
+	// deletes it if present so a torn-down repo doesn't keep a long-lived
+	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
+	// `fullsend github set` or pasted directly into GitHub settings)
+	// fullsend can safely delete regardless of who created it — unlike
+	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
+	// variable, which fullsend never forwards and does not delete on
+	// uninstall — see gitlabUninstallSecrets
+	// in internal/repos/uninstall.go for why that one is deliberately not
+	// deleted.
+	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
+
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
 	VarLegacySA             = "FULLSEND_SA"
@@ -59,6 +99,24 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
+
+	// VarGitLabRoleMigration is the explicit role-credential migration
+	// and rollback gate. Absent or empty means disabled: jobs use only
+	// FULLSEND_FORGE_TOKEN. Valid values: disabled, migrating, rollback,
+	// enforced. See internal/gitlabroles.
+	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
+
+	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
+	// registry (JSON policy and credential *references*, never raw
+	// secret values). Absent or empty means built-in roles only. Must
+	// be a protected CI/CD variable, not repository or merge-request
+	// content. See internal/gitlabroles.
+	VarGitLabRoleRegistry = "FULLSEND_GITLAB_ROLE_REGISTRY"
+
+	// VarGitLabRoleRotation is the protected, unmasked rotation-state
+	// document (per-role lock, token IDs, expiry dates, phase). It
+	// never stores token values. See internal/gitlabroles and #7500.
+	VarGitLabRoleRotation = "FULLSEND_GITLAB_ROLE_ROTATION"
 )
 
 // ErrNotFound indicates a requested resource was not found on the forge.
@@ -209,8 +267,15 @@ type ChangeProposal struct {
 	Title  string
 	Number int
 	Head   string
-	Base   string
-	Author string // login of the user who opened the PR/MR
+	// HeadRepo identifies the repository the head branch lives in, as
+	// "owner/repo" on both GitHub and GitLab (GitLab resolves a fork's
+	// numeric source project ID to its path_with_namespace). Empty when
+	// the forge doesn't report it (e.g. a deleted fork). Used to tell a
+	// same-named branch in an unrelated fork apart from one in the repo
+	// actually being checked, since Head alone is just a bare ref name.
+	HeadRepo string
+	Base     string
+	Author   string // login of the user who opened the PR/MR
 }
 
 // PullRequestInfo carries branch/repo context for dispatch enrichment.
@@ -551,6 +616,7 @@ type Client interface {
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
 	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 	// the default branch, this reads from the specified ref.
+	// Returns forge.ErrNotFound if the file or ref does not exist.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 
 	// CommitFiles atomically commits multiple files to the repository's
@@ -563,6 +629,16 @@ type Client interface {
 	// branch. Like CommitFiles, it is idempotent: if all files already
 	// have the expected content, no commit is created.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
+
+	// ForceCommitFileToBranch force-updates branch to a single-file commit
+	// re-rooted on a fixed base SHA (the repository's root commit). The
+	// target branch is created if it does not exist. History is pruned:
+	// each call leaves the branch at base + 1 commit. The commit message
+	// is suffixed with [skip ci] if not already present.
+	//
+	// This is used for GitLab poller state persistence on Developer-writable
+	// unprotected branches. GitHub returns ErrNotSupported.
+	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 
 	// Ref operations
 	// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
@@ -582,6 +658,15 @@ type Client interface {
 	// Returns forge.ErrAlreadyExists if the branch already exists,
 	// and forge.ErrForbidden on insufficient permissions.
 	CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error
+
+	// DeleteBranch deletes the named git branch.
+	// Returns forge.ErrNotFound if the branch does not exist.
+	//
+	// This is a destructive operation. Callers must verify ownership
+	// or authorization at the call site before invoking it, especially
+	// when the branch name is predictable (for example
+	// fullsend/scaffold-install).
+	DeleteBranch(ctx context.Context, owner, repo, branchName string) error
 
 	// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 	// Returns forge.ErrNotFound if the ref does not exist.
@@ -774,6 +859,19 @@ type Client interface {
 	// expose branch-protection queries.
 	IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error)
 
+	// GetProtectedBranch returns who may push or merge the given branch.
+	// A nil rule with a nil error means the branch is not protected.
+	// GitLab uses these access levels to decide who may create pipelines
+	// for the ref. GitHub returns ErrNotSupported.
+	GetProtectedBranch(ctx context.Context, owner, repo, branch string) (*ProtectedBranchRule, error)
+
+	// GrantProtectedBranchMergeUser grants userID merge access on a
+	// protected branch. Idempotent if the user already has merge or push
+	// access. Used on GitLab so a Developer-level poller can create
+	// pipelines without widening Developer-class merge policy. GitHub
+	// returns ErrNotSupported.
+	GrantProtectedBranchMergeUser(ctx context.Context, owner, repo, branch string, userID int) error
+
 	// Pipeline schedules and branch-restricted CI variables live on
 	// the base Client because both GitHub Actions and GitLab CI support
 	// timed triggers. However, the branch-restricted/protected variable
@@ -794,6 +892,10 @@ type Client interface {
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
+	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
+	// active. Used to reactivate required GitLab schedules that exist but
+	// were disabled. GitHub returns ErrNotSupported.
+	UpdatePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64, active bool) error
 
 	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
 	// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
@@ -814,6 +916,25 @@ type Client interface {
 type Pipeline struct {
 	ID     int64
 	WebURL string
+}
+
+// ProtectedBranchAccess is one grant on a protected branch.
+// A role-based grant has AccessLevel set and UserID/GroupID zero.
+// A user or group grant has the corresponding ID set.
+// GitLab access levels: 0 (No one), 30 (Developer), 40 (Maintainer),
+// 60 (Admin). A role-based grant of N allows identities at N or above.
+type ProtectedBranchAccess struct {
+	AccessLevel int
+	UserID      int
+	GroupID     int
+}
+
+// ProtectedBranchRule is the protection configuration for a branch.
+// A nil value from GetProtectedBranch means the branch is not protected.
+type ProtectedBranchRule struct {
+	Name              string
+	PushAccessLevels  []ProtectedBranchAccess
+	MergeAccessLevels []ProtectedBranchAccess
 }
 
 // PipelineSchedule represents a scheduled pipeline trigger.
@@ -840,4 +961,10 @@ type GitHubExtensions interface {
 	// permission role_name for username on owner/repo.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+
+	// AddCollaborator grants username a direct collaborator permission
+	// (pull, triage, push, maintain, admin) on owner/repo. It returns an
+	// error when GitHub only sends an invitation (the user is not an org
+	// member), because access does not start until it is accepted.
+	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 }

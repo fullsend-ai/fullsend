@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
@@ -12,7 +13,6 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	scmgl "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/gitlab"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // installFactoryFor selects the install driver based on ENVIRONMENT:

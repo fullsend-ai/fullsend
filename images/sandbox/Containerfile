@@ -98,7 +98,12 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
-ARG PI_VERSION=0.85.0
+# Also run internal/runtime/pi_extension/fullsend-edit-repair.test.mjs with
+# FULLSEND_TEST_PI_BIN at the new pin. That extension works around pi
+# rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
+# the test's without-extension control stops failing, this pi repairs both
+# shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
+ARG PI_VERSION=0.87.1
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -383,9 +388,9 @@ RUN apt-get update \
 # Pinned version + sha256 checksum for supply chain safety.
 # Renovate bumps TIRITH_VERSION; postUpgradeTasks runs
 # scripts/renovate/update-tirith-checksums.sh to refresh the SHA256 ARGs.
-ARG TIRITH_VERSION=0.4.1
-ARG TIRITH_SHA256_AMD64=a5035f4fde81b34cd0cf69d24151b1504552ae352b4eb7c88c49acd56289362e
-ARG TIRITH_SHA256_ARM64=a01e368e58a0c48714d9c85cf3a9c78b05d0256007d2c49caf15e92c349c3462
+ARG TIRITH_VERSION=0.4.2
+ARG TIRITH_SHA256_AMD64=efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77
+ARG TIRITH_SHA256_ARM64=c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569
 RUN case "$TARGETARCH" in \
       amd64) TI_ARCH="x86_64";  TI_SHA="$TIRITH_SHA256_AMD64" ;; \
       arm64) TI_ARCH="aarch64"; TI_SHA="$TIRITH_SHA256_ARM64" ;; \

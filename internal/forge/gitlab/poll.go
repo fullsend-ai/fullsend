@@ -16,8 +16,9 @@ import (
 // *poll.Issue while forge.Client.GetIssue returns *forge.Issue. Go does
 // not allow two methods with the same name and different return types on
 // a single struct, so PollClient shadows GetIssue with the poll-specific
-// version and inherits the remaining methods (UpdateCIVariable,
-// GetAuthenticatedUser) from the embedded LiveClient.
+// version and inherits the remaining methods (ForceCommitFileToBranch,
+// GetFileContentAtRef, DeleteRef, GetAuthenticatedUser) from the
+// embedded LiveClient.
 type PollClient struct {
 	*LiveClient
 }

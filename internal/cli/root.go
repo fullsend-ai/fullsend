@@ -10,6 +10,12 @@ import (
 var version = "dev"
 var commitSHA = "dev"
 
+// upstreamRefOverride pins scaffold workflow refs to one fullsend-ai/fullsend
+// commit. It is set only through -ldflags: the e2e build stamps the commit
+// under test so e2e runs that commit's scaffold scripts, not main's (#7622).
+// Release and dev builds leave it empty.
+var upstreamRefOverride = ""
+
 // Version returns the CLI version string set at build time.
 func Version() string {
 	return version
@@ -38,9 +44,14 @@ func resolveBuildVersion() (sha, tag string) {
 }
 
 // resolveUpstreamRef returns the SHA and version tag for pinning scaffold
-// workflow refs. Delegates to resolveBuildVersion; dev builds return empty
+// workflow refs. A build-time upstreamRefOverride wins, with no tag;
+// otherwise it delegates to resolveBuildVersion, and dev builds return empty
 // strings, causing the render layer to fall back to config.DefaultUpstreamRef.
+// The override does not affect resolveAgentsRef.
 func resolveUpstreamRef() (ref, tag string) {
+	if upstreamRefOverride != "" {
+		return upstreamRefOverride, ""
+	}
 	return resolveBuildVersion()
 }
 

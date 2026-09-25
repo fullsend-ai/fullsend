@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // writeTree writes a rendered file set into dir, as the command does.
@@ -101,6 +102,29 @@ func TestGeneratedHarnessHasNoDeprecatedShapes(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "policy: policies/base.yaml") {
 		t.Error("generated harness must always set policy:")
+	}
+}
+
+// TestSharedPolicyIsTheOnlyPolicy: the scaffold ships no policy and CI layers
+// none, so the policies/base.yaml written here is the one a repo-local agent
+// runs with (#6834). OpenShell 0.0.116+ refuses a policy without run_as_user.
+func TestSharedPolicyIsTheOnlyPolicy(t *testing.T) {
+	if _, err := scaffold.FullsendRepoFile("policies/base.yaml"); err == nil {
+		t.Fatal("scaffold ships policies/base.yaml; agent new must not become a second copy (#7268)")
+	}
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fileByPath(t, files, "policies/base.yaml")
+	if !got.Shared {
+		t.Error("policies/base.yaml must be a shared asset")
+	}
+	policy := string(got.Data)
+	for _, want := range []string{"version: 1", "filesystem_policy:", "landlock:", "process:", "run_as_user: sandbox", "run_as_group: sandbox"} {
+		if !strings.Contains(policy, want) {
+			t.Errorf("generated policies/base.yaml lacks %q", want)
+		}
 	}
 }
 
@@ -361,5 +385,46 @@ func TestTriggerReachesTheHarness(t *testing.T) {
 		if strings.TrimSpace(h.Trigger) != strings.TrimSpace(trigger) {
 			t.Errorf("--on %s: trigger did not survive marshalling\n got: %q\nwant: %q", on, h.Trigger, trigger)
 		}
+	}
+}
+
+// TestGeneratedPromptFetchesByNumberAndRepo pins #7563: a github.com URL in
+// a `gh` command is blocked by the SSRF PreToolUse hook (github.com does not
+// resolve in the sandbox and github-ro allowlists api.github.com only), so
+// the generated prompt must fetch by number and -R owner/repo instead.
+func TestGeneratedPromptFetchesByNumberAndRepo(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	md := string(fileByPath(t, files, "agents/lint-docs.md").Data)
+	wantCmd := `gh issue view "$ISSUE_NUMBER" -R "$REPO_FULL_NAME" --json title,body,labels`
+	if !strings.Contains(md, wantCmd) {
+		t.Errorf("generated prompt must fetch by number and repo; missing %q\n%s", wantCmd, md)
+	}
+	for _, banned := range []string{
+		`gh issue view "$ISSUE_URL"`,
+		`gh issue view "$GITHUB_ISSUE_URL"`,
+	} {
+		if strings.Contains(md, banned) {
+			t.Errorf("generated prompt still fetches by URL (%q), which the SSRF hook blocks", banned)
+		}
+	}
+
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if h.Env == nil || h.Env.Sandbox == nil {
+		t.Fatal("generated harness has no env.sandbox")
+	}
+	if got := h.Env.Sandbox["ISSUE_NUMBER"]; got != "${ISSUE_NUMBER}" {
+		t.Errorf("env.sandbox ISSUE_NUMBER = %q, want ${ISSUE_NUMBER}", got)
+	}
+	if got := h.Env.Sandbox["REPO_FULL_NAME"]; got != "${REPO_FULL_NAME}" {
+		t.Errorf("env.sandbox REPO_FULL_NAME = %q, want ${REPO_FULL_NAME}", got)
 	}
 }

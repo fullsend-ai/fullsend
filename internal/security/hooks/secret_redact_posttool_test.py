@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Unit tests for secret_redact_posttool.py hook."""
 
+import inspect
 import json
+import os
+import re
+import string
 import subprocess
 import sys
 import unittest
@@ -319,6 +323,52 @@ class TestVerifyRound(unittest.TestCase):
         for leaked in (glpat, glrt, ya29, asia):
             self.assertNotIn(leaked, text)
 
+    def test_service_account_token_redacted(self):
+        # WIF-provisioned runs mint ya29.c.<blob> tokens; the one-char c
+        # segment must not defeat the match (mirrors the Go redactor).
+        ya29c = "ya29.c." + "b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS"
+        _, stdout, _ = run_hook(f"got token {ya29c} from the metadata server\n")
+        # Google's workforce STS response carries ya29.dr.<blob>; any one- or
+        # two-letter type segment defeats the length floor the same way.
+        for prefix in ("ya29.dr.", "ya29.d."):
+            tok = prefix + "AaT61Tc6Ntv1ktbGkaQ9U_MQfiQwXyZ0123456789"
+            _, out, _ = run_hook(f"access_token {tok}\n")
+            self.assertTrue(out, prefix)
+            self.assertNotIn(tok, json.loads(out)["tool_result"], prefix)
+        self.assertTrue(stdout)
+        self.assertNotIn(ya29c, json.loads(stdout)["tool_result"])
+
+    def test_ghs_wrapped_jwt_fully_redacted(self):
+        # GitHub's 2026 installation-token format wraps a JWT: the whole
+        # token must mask, not just the ghs_ prefix and header segment
+        # (mirrors the Go redactor's github_server_token).
+        token = (
+            "ghs_12345_"
+            + "eyJhbGciOiJSUzI1NiJ9"
+            + "."
+            + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            + "."
+            + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        )
+        _, stdout, _ = run_hook(f"Token: {token}\n")
+        self.assertTrue(stdout)
+        text = json.loads(stdout)["tool_result"]
+        self.assertNotIn("eyJzdWIiOiIxMjM0NTY3ODkwIn0", text)
+        self.assertNotIn("dBjftJeZ4CVP", text)
+
+    def test_bare_jwt_redacted(self):
+        # Segments concatenated so the fixture does not trip gitleaks.
+        jwt = (
+            "eyJhbGciOiJSUzI1NiJ9"
+            + "."
+            + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            + "."
+            + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        )
+        _, stdout, _ = run_hook(f"curl output: {jwt}\n")
+        self.assertTrue(stdout)
+        self.assertNotIn(jwt, json.loads(stdout)["tool_result"])
+
     def test_short_prefixed_fakes_still_untouched(self):
         _, stdout, _ = run_hook(
             'Token: "ghs_maskable"\n"token": "glpat-new"\nGitToken: "ghp_test123"\n'
@@ -351,6 +401,663 @@ class TestVerifyRound(unittest.TestCase):
         page = f'{{"NextToken": "{next_token}", "ContinuationToken": "{continuation}"}}'
         _, stdout, _ = run_hook(page)
         self.assertEqual(stdout, "")
+
+
+class TestRepeatedPrefixInput(unittest.TestCase):
+    """The bare-JWT pattern must scan hostile output in linear time. Under
+    Claude Code the hook has 30 s and fails open: a stall passes the tool
+    output through unredacted. pi (60 s) and codex (25 s) fail closed and
+    withhold the result instead. Unanchored, every ``eyJ`` in a dot-free
+    run was a match start and the greedy segment backtracked each time —
+    quadratic, ~4 s at 120 KB and minutes at 1 MB. Anchored, a token must
+    start within five characters of a non-token character or of the
+    output's start, so each alternative fires at one fixed offset from the
+    start of a token run and a run is scanned at most twice, however long
+    it is."""
+
+    TOKEN_CHARS = string.ascii_letters + string.digits + "_-"
+    # Every printable character outside the alphabet, then a dozen that are
+    # not printable or not ASCII: NUL, ESC, DEL, NEL, NBSP, a zero-width, an
+    # em and an ideographic space, a BOM, and accented, sharp-s and CJK
+    # letters — the boundaries a Unicode class would swallow.
+    NON_TOKEN_CHARS = [c for c in string.printable if not re.fullmatch("[A-Za-z0-9_-]", c)] + list(
+        "\x00\x1b\x7f\x85\xa0\u200b\u2003\u3000\ufeff\u00e9\u00df\u4ee4"
+    )
+
+    # Segments concatenated so the fixtures do not trip gitleaks.
+    JWT = (
+        "eyJhbGciOiJSUzI1NiJ9"
+        + "."
+        + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        + "."
+        + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    )
+    # A realistic token: a kid of `??` puts a `_` in the header, a name
+    # with ` ?~` in it puts one in the payload, and the signature carries
+    # both `-` and `_`.
+    LONG_JWT = (
+        "eyJhbGciOiJSUzI1NiIsImtpZCI6Ij8_In0"
+        + "."
+        + "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IueUsOS4reWkqumDjiA_fiIsImlhdCI6"
+        + "MTUxNjIzOTAyMiwic2NvcGUiOiJvcGVuaWQgZW1haWwifQ"
+        + "."
+        + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    )
+    # The runner's own OIDC token is an order of magnitude longer than the
+    # fixtures above (a GitHub Actions one: 136 / 1452 / 342), with `-` and
+    # `_` possible in every segment.
+    OIDC_SIZED = "eyJ" + "h-_" * 44 + "h" + "." + "eyJ" + "p_-" * 483 + "." + "s-_" * 114
+    # The shortest shape the pattern accepts: `eyJ` plus ten characters,
+    # then ten per segment. And every token character in every segment.
+    MIN_JWT = "eyJ" + "a" * 10 + "." + "b" * 10 + "." + "c" * 10
+    FULL_ALPHABET_JWT = "eyJ" + TOKEN_CHARS + "." + TOKEN_CHARS + "." + TOKEN_CHARS
+
+    def test_jwt_pattern_scans_repeated_prefix_runs_linearly(self):
+        import time
+
+        import secret_redact_posttool as sr
+
+        masked = sr.mask_token(self.JWT)
+        # ~200 KB per run, ~10 s unanchored and ~30 ms anchored: a bare run,
+        # one behind every character of the token alphabet (a character
+        # dropped from it turns that flood quadratic), a run of five (the
+        # anchor's reach), one behind every character outside the alphabet
+        # that the class lists (a first-segment class widened by any of them
+        # turns that flood quadratic, or swallows it), and the delimiters
+        # that end in a token character — a
+        # diff's removed line, the same inside a JSON string, JSON escapes,
+        # a percent-encoded byte once and twice. Then 1.2 MB, the size the
+        # review cited. The trailing token pins that the run was scanned,
+        # not skipped; the exact text, that the mask is whole. The time
+        # bound is outside the subtest so one stall ends the test instead
+        # of every run after it.
+        heads = ["", "aaaaa", *self.TOKEN_CHARS, *self.NON_TOKEN_CHARS]
+        heads += ["\n-", "\\n-", "\\n", "\\u0022", "%3D", "%253D"]
+        runs = [(head + "eyJ") * (200_000 // (len(head) + 3)) for head in heads]
+        runs.append("eyJ" * 400_000)
+        for run in runs:
+            start = time.perf_counter()
+            text, findings = sr.redact_text(f"{run} {self.JWT}\n")
+            elapsed = time.perf_counter() - start
+            self.assertLess(
+                elapsed, 2.0, f"{elapsed:.1f}s for a {len(run) // 1024} KB run of {run[:8]!r}"
+            )
+            with self.subTest(head=run[:8], kb=len(run) // 1024):
+                self.assertEqual(text, f"{run} {masked}\n")
+                self.assertEqual([f["pattern"] for f in findings], ["jwt"])
+
+    def test_jwt_masks_after_any_boundary_within_reach(self):
+        import secret_redact_posttool as sr
+
+        masked = sr.mask_token(self.JWT)
+        # Every character outside the token alphabet that the class lists,
+        # five token characters before it so a widened alphabet shows, and
+        # again with one token character after it so it is pinned as a
+        # boundary; every offset from one to five after the output's start
+        # and after a boundary; then shapes seen in tool output — plain
+        # boundaries in context (a header word, an assignment, a dotted
+        # prefix, a tab, a comma) and the delimiters that are token
+        # characters or end in one: a diff's removed line (LF, CRLF,
+        # combined `--` and `+-`,
+        # word-diff `[-`, mail-quoted `>-`, and `\n-` inside a JSON string),
+        # JSON escapes including `\u0022`, a percent-encoded byte (upper,
+        # lower, double), a glued short flag, a non-ASCII character or a
+        # dash after one, mid-line. The whole token masks, and no finding
+        # carries it.
+        prefixes = ["abcde" + c for c in self.NON_TOKEN_CHARS]
+        prefixes += ["x" + c + "a" for c in self.NON_TOKEN_CHARS]
+        prefixes += ["a" * n for n in range(1, 6)]
+        prefixes += ["x!" + "a" * n for n in range(1, 6)]
+        prefixes += [
+            "Bearer ",
+            "token=",
+            "a.",
+            "x\n-",
+            "x\r\n-",
+            " --",
+            "+-",
+            "[-",
+            ">-",
+            '{"patch":"@@\\n-',
+            '"a\\t',
+            '"a\\r',
+            '{"a":"\\u0022',
+            "id_token%3D",
+            "%3d",
+            "id_token%253D",
+            " -p",
+            "abcdeé",
+            "abcde令牌",
+            "xé-",
+            "alice\t",
+            "alice,",
+        ]
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                text, findings = sr.redact_text(f"{prefix}{self.JWT}\n")
+                self.assertEqual(text, f"{prefix}{masked}\n")
+                self.assertEqual([f["pattern"] for f in findings], ["jwt"])
+                self.assertNotIn(self.JWT, json.dumps(findings))
+        # Beyond the reach there is no boundary to anchor on: the stated
+        # drop. A ghs_…_eyJ wrap among those masks whole as
+        # github_server_token (test_ghs_wrapped_jwt_fully_redacted).
+        for prefix in ("a" * 6, "x!" + "a" * 6, " prefix_"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    sr.redact_text(f"{prefix}{self.JWT}\n"), (f"{prefix}{self.JWT}\n", [])
+                )
+
+    def test_jwt_segments_stop_at_every_non_token_character(self):
+        import secret_redact_posttool as sr
+
+        # Each segment's class is the token alphabet exactly: a character
+        # outside it inside the header or the payload breaks the token
+        # (nothing masks), and after the signature ends it (the mask stops
+        # there). A widened class would match, or swallow, the rest.
+        header, payload, signature = self.JWT.split(".")
+        masked = sr.mask_token(self.JWT)
+        for c in self.NON_TOKEN_CHARS:
+            with self.subTest(c=c):
+                split_header = f"{header[:8]}{c}{header[8:]}.{payload}.{signature}\n"
+                self.assertEqual(sr.redact_text(split_header), (split_header, []))
+                split_payload = f"{header}.{payload[:5]}{c}{payload[5:]}.{signature}\n"
+                self.assertEqual(sr.redact_text(split_payload), (split_payload, []))
+                text, findings = sr.redact_text(f"{self.JWT}{c}{'x' * 10}.{'y' * 10}\n")
+                self.assertEqual(text, f"{masked}{c}{'x' * 10}.{'y' * 10}\n")
+                self.assertEqual([f["pattern"] for f in findings], ["jwt"])
+
+    def test_jwt_of_realistic_shape_and_size_masks_whole(self):
+        import secret_redact_posttool as sr
+
+        for token in (self.MIN_JWT, self.FULL_ALPHABET_JWT, self.LONG_JWT, self.OIDC_SIZED):
+            with self.subTest(length=len(token)):
+                text, findings = sr.redact_text(f"curl output: {token}\n")
+                self.assertEqual(text, f"curl output: {sr.mask_token(token)}\n")
+                self.assertEqual([f["pattern"] for f in findings], ["jwt"])
+
+    def test_jwt_masks_every_copy_and_every_distinct_token(self):
+        import secret_redact_posttool as sr
+
+        # A glued copy of a token that also appears anchored masks with it,
+        # and a second, distinct token in the same output is its own
+        # finding — the replace pass must keep both when it is reworked.
+        text, findings = sr.redact_text(
+            f"curl: {self.JWT}\nprefix_{self.JWT}\nid {self.LONG_JWT}\n"
+        )
+        self.assertEqual(
+            text,
+            f"curl: {sr.mask_token(self.JWT)}\nprefix_{sr.mask_token(self.JWT)}\n"
+            f"id {sr.mask_token(self.LONG_JWT)}\n",
+        )
+        self.assertEqual([f["pattern"] for f in findings], ["jwt", "jwt"])
+
+    def test_skip_leaves_later_patterns_running(self):
+        import secret_redact_posttool as sr
+
+        # The skip is per pattern: a Read inside the checkout skips the
+        # bare-JWT shape and nothing after it in the list.
+        token = "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+        text, findings = sr.redact_text(f"{token} {self.JWT}\n", skip=frozenset({"jwt"}))
+        self.assertEqual([f["pattern"] for f in findings], ["hf_token"])
+        self.assertIn(self.JWT, text)
+
+
+class TestBareJwtToolScope(unittest.TestCase):
+    """A bare JWT has no fixture-shaped escape, so the pattern skips file
+    content inside the checkout: a committed jwt.io example is not the live
+    STS/OIDC token the pattern exists to catch, and masking it hands the
+    agent text that is not in the file. Anything outside the checkout — the
+    runner's own token file included — still masks. The layout mirrors the
+    sandbox: a checkout with .git beside the runner's token file."""
+
+    # Segments concatenated so the fixture does not trip gitleaks.
+    JWT = (
+        "eyJhbGciOiJSUzI1NiJ9"
+        + "."
+        + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        + "."
+        + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    )
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = os.path.realpath(tmp.name)
+        self.ws = os.path.join(self.tmp, "ws")
+        self.repo = os.path.join(self.ws, "repo")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, "pkg"))
+        os.makedirs(os.path.join(self.repo, "internal", "cli"))
+        self.fixture = os.path.join(self.repo, "pkg", "x_test.go")
+        Path(self.fixture).write_text("x")
+        self.token = os.path.join(self.ws, ".gcp-oidc-token")
+        Path(self.token).write_text("x")
+        # The tempdir stands in for /sandbox/workspace: the checkout must be
+        # a proper subdirectory of it, so the boundary is bound per test.
+        import secret_redact_posttool as sr
+
+        self._orig_workspace = sr.SANDBOX_WORKSPACE
+        sr.SANDBOX_WORKSPACE = self.ws
+        self.addCleanup(setattr, sr, "SANDBOX_WORKSPACE", self._orig_workspace)
+        self.assertIsNone(
+            sr._checkout_root(self.ws, self.ws), "the workspace itself is never a root"
+        )
+
+    def _hook_input(self, tool_name, path=None, *, cwd=None, tool_input=None) -> dict:
+        body: dict = {"tool_name": tool_name, "cwd": self.repo if cwd is None else cwd}
+        if tool_input is not None:
+            body["tool_input"] = tool_input
+        elif path is not None:
+            body["tool_input"] = {"file_path": path}
+        return body
+
+    def test_skip_for_checkout_paths(self):
+        import secret_redact_posttool as sr
+
+        for tool in ("Read", "Edit", "MultiEdit", "Write"):
+            with self.subTest(tool=tool):
+                self.assertEqual(sr.content_skips(self._hook_input(tool, self.fixture)), {"jwt"})
+        for tool in ("NotebookEdit", "NotebookRead"):
+            with self.subTest(tool=tool):
+                body = self._hook_input(tool, tool_input={"notebook_path": self.fixture})
+                self.assertEqual(sr.content_skips(body), {"jwt"})
+        pkg = os.path.join(self.repo, "pkg")
+        grep = self._hook_input("Grep", tool_input={"pattern": "eyJ", "path": pkg})
+        self.assertEqual(sr.content_skips(grep), {"jwt"})
+        self.assertEqual(sr.content_skips(self._hook_input("Read", "pkg/x_test.go")), {"jwt"})
+        grep = self._hook_input("Grep", tool_input={"pattern": "eyJ"})
+        self.assertEqual(sr.content_skips(grep), {"jwt"})
+
+    def test_no_skip_outside_checkout(self):
+        import secret_redact_posttool as sr
+
+        plain = os.path.join(self.ws, "plain")
+        os.makedirs(plain)
+        Path(os.path.join(plain, "f.go")).write_text("x")
+        cases = [
+            self._hook_input("Read", self.token),
+            self._hook_input("Grep", tool_input={"pattern": "eyJ", "path": self.ws}),
+            # No .git anywhere above cwd: no checkout, no skip.
+            self._hook_input("Read", os.path.join(plain, "f.go"), cwd=plain),
+            self._hook_input("Bash", tool_input={"command": "cat x"}),
+            self._hook_input("WebFetch", tool_input={"url": "https://x"}),
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(sr.content_skips(body), frozenset())
+
+    def test_traversal_and_tilde_never_skip(self):
+        # The runtime opens the normalized path; realpath would follow a
+        # committed symlink first, so link/../../token lands outside while
+        # looking inside. No fixture needs '..', so refuse it outright.
+        import secret_redact_posttool as sr
+
+        dotted = os.path.join(self.repo, "pkg", "..", "pkg", "x_test.go")
+        # A literal "~" directory inside the checkout: the refusal, not a
+        # missing file, is what denies the skip.
+        os.makedirs(os.path.join(self.repo, "~"), exist_ok=True)
+        Path(self.repo, "~", "x_test.go").write_text("x")
+        for path in (dotted, "pkg/../pkg/x_test.go", "~/x_test.go"):
+            with self.subTest(path=path):
+                self.assertEqual(sr.content_skips(self._hook_input("Read", path)), frozenset())
+
+    def test_symlink_out_of_checkout_is_resolved(self):
+        import secret_redact_posttool as sr
+
+        link = os.path.join(self.repo, "token.txt")
+        os.symlink(self.token, link)
+        self.assertEqual(sr.content_skips(self._hook_input("Read", link)), frozenset())
+        deep = os.path.join(self.repo, "link")
+        os.symlink("a/b", deep)
+        escape = f"{deep}/../../.gcp-oidc-token"
+        self.assertEqual(sr.content_skips(self._hook_input("Read", escape)), frozenset())
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture)), {"jwt"})
+
+    def test_symlinked_cwd_never_reaches_outside(self):
+        # A cd through a symlink resolves to the real directory: outward,
+        # nothing there holds .git, so no skip whatever the path; inward, the
+        # checkout is found.
+        import secret_redact_posttool as sr
+
+        ws_link = os.path.join(self.repo, "ws")
+        os.symlink(self.ws, ws_link)
+        cases = [
+            self._hook_input("Read", self.token, cwd=ws_link),
+            self._hook_input("Read", ".gcp-oidc-token", cwd=ws_link),
+            self._hook_input("Grep", cwd=ws_link, tool_input={"pattern": "eyJ"}),
+        ]
+        up = os.path.join(self.repo, "up")
+        os.symlink("..", up)
+        cases.append(self._hook_input("Read", self.token, cwd=up))
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(sr.content_skips(body), frozenset())
+        inward = os.path.join(self.ws, "inward")
+        os.symlink(os.path.join(self.repo, "internal"), inward)
+        self.assertEqual(
+            sr.content_skips(self._hook_input("Read", self.fixture, cwd=inward)), {"jwt"}
+        )
+
+    def test_forged_git_above_the_checkout_never_becomes_the_root(self):
+        # An agent can create a .git entry at the workspace level and get
+        # its cwd to resolve there (a symlink inside the checkout, or a plain
+        # cd); the checkout must be a proper subdirectory of the sandbox
+        # workspace, so that entry can never widen the root to the runner's
+        # token file.
+        import secret_redact_posttool as sr
+
+        os.makedirs(os.path.join(self.ws, ".git"))
+        ws_link = os.path.join(self.repo, "ws")
+        os.symlink(self.ws, ws_link)
+        for cwd in (ws_link, self.ws):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", self.token, cwd=cwd)), frozenset()
+                )
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", ".gcp-oidc-token", cwd=cwd)),
+                    frozenset(),
+                )
+                grep = self._hook_input("Grep", cwd=cwd, tool_input={"pattern": "eyJ"})
+                self.assertEqual(sr.content_skips(grep), frozenset())
+        # A .git planted ABOVE the workspace is out of bounds the same way —
+        # including for a cwd inside the workspace but outside any checkout,
+        # where an unbounded walk would find it. The workspace-level plant is
+        # removed first so the one above is genuinely the nearest ancestor.
+        os.rmdir(os.path.join(self.ws, ".git"))
+        os.makedirs(os.path.join(self.tmp, ".git"))
+        plain = os.path.join(self.ws, "plain")
+        os.makedirs(plain)
+        for cwd in (self.ws, plain):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(
+                    sr.content_skips(self._hook_input("Read", self.token, cwd=cwd)), frozenset()
+                )
+        # The real checkout, a proper subdirectory of the workspace, still skips.
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture)), {"jwt"})
+
+    def test_runtime_rewritten_path_forms_never_skip(self):
+        # pi strips a leading '@', turns a file:// URL into a path and expands
+        # '~' before opening, while its adapter forwards the raw argument; the
+        # hook cannot see the rewrite, so those forms never skip — a rewritten
+        # form can name the token beside the checkout as easily as a fixture.
+        import secret_redact_posttool as sr
+
+        for path in (
+            "@" + self.token,
+            "@../.gcp-oidc-token",
+            "@~/.gcp-oidc-token",
+            "file://" + self.token,
+            "FILE://" + self.token,
+            "@" + self.fixture,
+            "file://" + self.fixture,
+        ):
+            with self.subTest(path=path):
+                # The raw name exists inside the checkout, so only the refusal
+                # of the form stands between it and the skip.
+                raw = os.path.normpath(os.path.join(self.repo, path))
+                os.makedirs(os.path.dirname(raw), exist_ok=True)
+                Path(raw).write_text("decoy")
+                read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": path}}
+                grep = {"tool_name": "Grep", "cwd": self.repo, "tool_input": {"path": path}}
+                self.assertEqual(sr.content_skips(read), frozenset())
+                self.assertEqual(sr.content_skips(grep), frozenset())
+
+    def test_workspace_boundary_is_resolved_before_comparison(self):
+        # The boundary is compared in resolved space, like cwd, so a symlink
+        # path for the workspace still finds the checkout below it.
+        import secret_redact_posttool as sr
+
+        link = os.path.join(self.tmp, "wslink")
+        os.symlink(self.ws, link)
+        sr.SANDBOX_WORKSPACE = link
+        read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": self.fixture}}
+        self.assertEqual(sr.content_skips(read), {"jwt"})
+
+    def test_boundary_comes_from_argv_never_from_the_environment(self):
+        # Claude Code applies a checkout's .claude/settings.json env block to
+        # hook processes over the launch environment, so the boundary is never
+        # taken from there: with only the environment naming this workspace,
+        # the checkout is not below the real boundary and the JWT masks; the
+        # command-line seam is what moves it.
+        import json
+        import subprocess
+        import sys
+
+        import secret_redact_posttool as sr
+
+        body = {
+            "tool_name": "Read",
+            "cwd": self.repo,
+            "tool_input": {"file_path": self.fixture},
+            "tool_response": self.JWT,
+        }
+        run = lambda *extra, env: subprocess.run(  # noqa: E731
+            [sys.executable, sr.__file__, *extra],
+            input=json.dumps(body),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        # The module reads no environment variable for the boundary under any
+        # name: its only environ read is the trace id, and getenv is unused.
+        src = inspect.getsource(sr)
+        self.assertEqual(
+            set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', src)), {"FULLSEND_TRACE_ID"}
+        )
+        self.assertNotIn("os.environ[", src)
+        self.assertNotIn("getenv", src)
+        env_only = run(env={**os.environ, "FULLSEND_SANDBOX_WORKSPACE": self.ws})
+        self.assertEqual(env_only.returncode, 0, env_only.stderr)
+        self.assertNotIn(self.JWT, env_only.stdout)
+        self.assertIn("updatedToolOutput", env_only.stdout)
+        flagged = run("--sandbox-workspace=" + self.ws, env=os.environ.copy())
+        self.assertEqual(flagged.returncode, 0, flagged.stderr)
+        self.assertEqual(flagged.stdout.strip(), "")
+        # A relative value that WOULD resolve to this workspace from the
+        # process's cwd is still ignored, so the JWT masks.
+        relative = subprocess.run(
+            [sys.executable, sr.__file__, "--sandbox-workspace=" + os.path.basename(self.ws)],
+            input=json.dumps(body),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=os.environ.copy(),
+            cwd=self.tmp,
+        )
+        self.assertEqual(relative.returncode, 0, relative.stderr)
+        self.assertIn("updatedToolOutput", relative.stdout)
+
+    def test_sandbox_workspace_from_argv(self):
+        import secret_redact_posttool as sr
+
+        self.assertEqual(
+            sr.sandbox_workspace_from_argv(["--sandbox-workspace=" + self.ws]), self.ws
+        )
+        self.assertIsNone(sr.sandbox_workspace_from_argv(["--sandbox-workspace=relative/ws"]))
+        self.assertIsNone(sr.sandbox_workspace_from_argv(["--sandbox-workspace", self.ws]))
+        self.assertIsNone(sr.sandbox_workspace_from_argv([]))
+
+    def test_unicode_space_twin_of_a_symlink_never_skips(self):
+        # pi replaces the spaces in its class with an ASCII space before
+        # opening, so "a<NBSP>b/token" opens the ASCII-space entry —
+        # here a symlink out of the checkout to the runner's token — while
+        # the raw path names nothing inside the checkout; the hook must not
+        # skip on a path it cannot have resolved the way pi did.
+        import secret_redact_posttool as sr
+
+        os.symlink(self.ws, os.path.join(self.repo, "a b"))
+        # The 15 code points pi normalizes.
+        pi_class = ["\u00a0", "\u202f", "\u205f", "\u3000"]
+        pi_class += [chr(c) for c in range(0x2000, 0x200B)]
+        for space in pi_class:
+            with self.subTest(space=hex(ord(space))):
+                # The raw name also exists inside the checkout, so only the
+                # whitespace refusal stands between the twin and the skip.
+                twin = os.path.join(self.repo, "a" + space + "b")
+                os.makedirs(twin, exist_ok=True)
+                Path(twin, ".gcp-oidc-token").write_text("decoy")
+                path = os.path.join(twin, ".gcp-oidc-token")
+                read = {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": path}}
+                self.assertEqual(sr.content_skips(read), frozenset())
+        # The ASCII-space form resolves out of the checkout and masks too.
+        plain = os.path.join(self.repo, "a b", ".gcp-oidc-token")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", plain)), frozenset())
+
+    def test_non_ascii_fixture_name_still_skips(self):
+        # Only whitespace is refused: a fixture whose name carries accented
+        # or non-Latin letters is opened by pi as named and keeps the skip.
+        import secret_redact_posttool as sr
+
+        fixture = os.path.join(self.repo, "pkg", "donn\u00e9es_\u30c6\u30b9\u30c8_test.go")
+        Path(fixture).write_text("x")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", fixture)), {"jwt"})
+
+    def test_missing_target_never_skips(self):
+        # A pi Read of a missing name retries variants (NFD, curly quote,
+        # narrow NBSP before AM/PM), so a path that resolves to nothing inside
+        # the checkout may still have opened something else; the hook runs
+        # after the tool, so a real target exists by then.
+        import secret_redact_posttool as sr
+
+        missing = os.path.join(self.repo, "pkg", "nope_test.go")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", missing)), frozenset())
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture)), {"jwt"})
+
+    def test_checkout_outside_the_workspace_never_skips(self):
+        # A .git-bearing directory that is not under the sandbox workspace is
+        # not a checkout the skip may trust, however it was reached.
+        import tempfile
+
+        import secret_redact_posttool as sr
+
+        with tempfile.TemporaryDirectory() as other:
+            repo = os.path.join(os.path.realpath(other), "repo")
+            os.makedirs(os.path.join(repo, ".git"))
+            f = os.path.join(repo, "x_test.go")
+            Path(f).write_text("x")
+            self.assertEqual(sr.content_skips(self._hook_input("Read", f, cwd=repo)), frozenset())
+
+    def test_root_is_nearest_git_ancestor_of_cwd(self):
+        # cwd follows the agent's persisted cd; the checkout is still the root.
+        import secret_redact_posttool as sr
+
+        cwd = os.path.join(self.repo, "internal", "cli")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", self.fixture, cwd=cwd)), {"jwt"})
+        self.assertEqual(
+            sr.content_skips(self._hook_input("Read", self.token, cwd=cwd)), frozenset()
+        )
+        grep = self._hook_input("Grep", cwd=cwd, tool_input={"pattern": "eyJ", "path": self.repo})
+        self.assertEqual(sr.content_skips(grep), {"jwt"})
+        # A submodule cwd narrows the root to the submodule: its own files
+        # skip, superproject fixtures mask again — the safe direction.
+        dep = os.path.join(self.repo, "vendor", "dep")
+        os.makedirs(dep)
+        Path(os.path.join(dep, ".git")).write_text("gitdir: ../../.git/modules/dep\n")
+        dep_file = os.path.join(dep, "x.go")
+        Path(dep_file).write_text("x")
+        self.assertEqual(sr.content_skips(self._hook_input("Read", dep_file, cwd=dep)), {"jwt"})
+        self.assertEqual(
+            sr.content_skips(self._hook_input("Read", self.fixture, cwd=dep)), frozenset()
+        )
+
+    def test_grep_uses_its_own_path_key(self):
+        import secret_redact_posttool as sr
+
+        stray = {"pattern": "eyJ", "path": self.ws, "file_path": self.fixture}
+        self.assertEqual(sr.content_skips(self._hook_input("Grep", tool_input=stray)), frozenset())
+        self.assertEqual(sr.content_skips(self._hook_input("Grep", tool_input={})), {"jwt"})
+        self.assertEqual(sr.content_skips({"tool_name": "Grep", "cwd": self.repo}), frozenset())
+
+    def test_malformed_input_means_mask_not_error(self):
+        import secret_redact_posttool as sr
+
+        read = {"file_path": self.fixture}
+        cases = [
+            {"tool_name": ["Read"], "cwd": self.repo, "tool_input": read},
+            {"tool_name": "Read", "tool_input": read},
+            {"tool_name": "Read", "cwd": None, "tool_input": read},
+            {"tool_name": "Read", "cwd": "repo", "tool_input": read},
+            {"tool_name": "Read", "cwd": self.repo},
+            {"tool_name": "Read", "cwd": self.repo, "tool_input": "not json"},
+            {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": [self.fixture]}},
+            {"tool_name": "Read", "cwd": self.repo, "tool_input": {"file_path": ""}},
+            {
+                "tool_name": "Read",
+                "cwd": self.repo,
+                "tool_input": {"file_path": self.fixture + "\x00"},
+            },
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                self.assertEqual(sr.content_skips(body), frozenset())
+        text, findings = sr.redact_text(f"tok {self.JWT}\n", skip=sr.content_skips(cases[0]))
+        self.assertNotIn(self.JWT, text)
+        self.assertEqual([f["pattern"] for f in findings], ["jwt"])
+
+    def test_tool_input_as_json_string(self):
+        import secret_redact_posttool as sr
+
+        body = {
+            "tool_name": "Read",
+            "cwd": self.repo,
+            "tool_input": json.dumps({"file_path": self.fixture}),
+        }
+        self.assertEqual(sr.content_skips(body), {"jwt"})
+
+    def test_skip_is_jwt_only(self):
+        import secret_redact_posttool as sr
+
+        self.assertEqual(sr._CHECKOUT_SKIPS, frozenset({"jwt"}))
+        ya29c = "ya29.c." + "b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS"
+        ghs = "ghs_12345_" + self.JWT
+        text, findings = sr.redact_text(
+            f"a = {ya29c}\nb = {ghs}\nc = {self.JWT}\n", skip=frozenset({"jwt"})
+        )
+        self.assertNotIn(ya29c, text)
+        self.assertNotIn(ghs, text)
+        self.assertIn(self.JWT, text)
+        self.assertEqual(
+            sorted(f["pattern"] for f in findings), ["github_server_token", "google_oauth_token"]
+        )
+
+    def test_named_assignment_still_masked_by_structural_pattern(self):
+        # The skip covers the context-free pattern only: an assignment whose
+        # name says it is a token is masked by env_secret on every tool, as
+        # before this pattern existed.
+        import secret_redact_posttool as sr
+
+        text, findings = sr.redact_text(f'var testToken = "{self.JWT}"\n', skip=frozenset({"jwt"}))
+        self.assertNotIn(self.JWT, text)
+        self.assertEqual([f["pattern"] for f in findings], ["env_secret"])
+
+    def test_script_honours_checkout_scope(self):
+        def run(path: str, tool_result: str) -> str:
+            body = {
+                "tool_name": "Read",
+                "cwd": self.repo,
+                "tool_input": {"file_path": path},
+                "tool_result": tool_result,
+            }
+            proc = subprocess.run(
+                [sys.executable, HOOK, "--sandbox-workspace=" + self.ws],
+                input=json.dumps(body),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=os.environ.copy(),
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return proc.stdout
+
+        fixture = f'\t{{name: "valid", input: "{self.JWT}"}},\n'
+        self.assertEqual(run(self.fixture, fixture), "")
+        stdout = run(self.token, f"{self.JWT}\n")
+        self.assertTrue(stdout)
+        self.assertNotIn(self.JWT, json.loads(stdout)["tool_result"])
 
 
 class TestPaginationVsSecretNames(unittest.TestCase):

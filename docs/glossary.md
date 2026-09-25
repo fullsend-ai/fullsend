@@ -127,7 +127,18 @@ See [ADR 0035](ADRs/0035-layered-content-resolution.md) (original mechanism) and
 
 ### Debouncing
 
-Collapsing rapid-fire events on the same issue or PR into a single agent invocation. Without debouncing, a burst of edits to an issue body could trigger multiple redundant triage runs. The [webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service) is responsible for deduplicating flapping events before dispatching work to agents. On GitHub this uses real-time webhooks; on GitLab the cron poller provides watermark-based deduplication at 5–60 minute intervals, which is functionally analogous but operates on a coarser time scale (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+Collapsing rapid-fire events on the same issue or PR so they do not produce
+redundant agent work. Today, the
+[webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service)
+deduplicates flapping events before dispatch. On GitHub this uses real-time
+webhooks; on GitLab the cron poller provides watermark-based deduplication at
+5–60 minute intervals, which is functionally analogous but operates on a
+coarser time scale (see
+[ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+[ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
+additionally adopts preserve-and-coalesce scheduling at the execution-platform
+layer: after implementation, an active run finishes while later matching
+events collapse into one pending follow-up run.
 See [architecture.md](architecture.md) (building block 1).
 
 ### Default Agent

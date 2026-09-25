@@ -76,6 +76,9 @@ Environment variables set by the runner, present in every agent's shell:
 - `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
 - `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
   write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
+- `TRACEPARENT` — W3C trace context of this iteration's agent span, so runtime telemetry
+  can join the Fullsend trace; empty when telemetry produced no valid span context
+  (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
 
 ## Process
 
@@ -149,6 +152,11 @@ providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
 
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml  # must be listed explicitly to be imported
+    - profiles/fullsend-github.yaml
+
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
@@ -175,6 +183,10 @@ validation_loop:
   max_iterations: 2
 
 post_script: scripts/post-my-agent.sh
+
+# Optional: give the sandbox a read-only token (default is write everywhere).
+# privilege_levels:
+#   runtime: read
 
 env:
   runner:
@@ -221,7 +233,7 @@ process:
   run_as_group: sandbox
 ```
 
-Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+Most custom agents can reuse the `policies/base.yaml` that [`fullsend agent new`](../../cli/agent.md#agent-new) writes — the same policy the fleet agents run under — and only write their own when they need different filesystem or process rules. Either way, commit the policy: CI does not supply one.
 
 ### Network access via providers (recommended)
 
@@ -232,9 +244,15 @@ providers:
   - vertex-ai       # Anthropic API + GCP (required for model access)
   - github           # GitHub API + Git transport
   - package-registries  # npm, PyPI, Go modules (optional)
+
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+    - profiles/fullsend-github.yaml
+    - profiles/fullsend-package-registries.yaml
 ```
 
-Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+Each provider has a profile that defines its endpoints and binaries. Every profile a provider needs must be listed under `openshell.profiles` (or inherited via `base:` composition) — the gateway only composes the profiles named there into the effective network policy, not every file that happens to exist under `profiles/`. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
 
 The scaffold ships with profiles for common services. To see what's available:
 
@@ -242,6 +260,8 @@ The scaffold ships with profiles for common services. To see what's available:
 ls .fullsend/providers/     # provider definitions (name + type)
 ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
 ```
+
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
 
 For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
@@ -365,6 +385,19 @@ error does not block the skip. See the
 [normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
 for full details.
 
+**Hard failures.** A non-zero exit other than 78 fails the run. Print a GitHub
+Actions error annotation so the message appears in the PR status comment
+instead of a bare `exit status 1`:
+
+```bash
+echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+exit 1
+```
+
+Without an annotation, the last non-empty stderr line (then stdout) is used.
+See the [normative spec](../../normative/prescript-output/v1/README.md#hard-failure-diagnostics)
+for the full preference order and sanitization rules.
+
 ### Post-script (action execution)
 
 `.fullsend/scripts/post-my-agent.sh`:
@@ -374,9 +407,10 @@ for full details.
 set -euo pipefail
 
 # Prefer the validated iteration directory set by the harness
-# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, scanning for the last
-# iteration can pick up output that failed validation. Fall back to
-# scanning for the last iteration for harnesses with no validation_loop.
+# (FULLSEND_VALIDATED_ITERATION_DIR, always an absolute path) — without
+# it, scanning for the last iteration can pick up output that failed
+# validation. Fall back to scanning for the last iteration for
+# harnesses with no validation_loop.
 if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
   RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
 else
@@ -493,10 +527,11 @@ jobs:
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          # Agent files (harness, agents, policies, etc.) are now resolved
-          # from the fullsend-ai/agents repo at runtime by `fullsend run`.
-          # Only infrastructure scripts remain in the scaffold.
-          LAYERED_DIRS="scripts"
+          # Layer the scaffold's provider definitions so the providers
+          # configured in Step 2 resolve without vendoring copies into this
+          # repository. The policy (Step 3) and profiles are committed with
+          # the harness; this step layers neither.
+          LAYERED_DIRS="providers scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"
@@ -542,6 +577,13 @@ jobs:
           name: fullsend-my-agent
           path: ${{ github.workspace }}/output
 ```
+
+This example reflects the currently deployed cancellation policy. Under
+[ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
+the platform will change subject-scoped agent workflows to
+`cancel-in-progress: false` once preserve-and-coalesce scheduling is
+implemented. Until that migration lands, keep the setting aligned with the
+reusable workflow that invokes the agent.
 
 ### Critical workflow steps
 

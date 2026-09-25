@@ -23,6 +23,14 @@ resolve through fullsend's pinned alias table, and a bare id gets the provider f
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
 
+The OTEL GenAI identity (`gen_ai.system` / `gen_ai.provider.name`) on the
+agent span is the serving-endpoint prefix of that spec, not the model
+publisher and not the runtime name: `anthropic-vertex`, `google-vertex`,
+`xai-vertex`, `openai`. A Claude model on Vertex is `anthropic-vertex` even
+though the publisher is Anthropic; `fullsend.runtime` stays `pi`. An explicit
+`anthropic/...` spec reports `anthropic` because that is the endpoint the run
+actually called.
+
 > **Grok's spec has three segments on purpose.** pi sends the model id on the wire verbatim and
 > Vertex wants the publisher-qualified `xai/grok-4.6`, so the id keeps its slash. Use the full
 > `xai-vertex/xai/grok-4.6`; a bare `xai/grok-4.6` would otherwise reach pi's **built-in** `xai`
@@ -78,8 +86,13 @@ models:
 
 **If it goes wrong.** A key or value the block does not accept stops `fullsend run` before the
 sandbox is created, naming the key (`models.aliases: unknown alias key "grok"`). A model your
-project cannot serve is not caught here: the run fails at the first model call, and pi has no
-fallback.
+project cannot serve is not caught here: aliased models (opus, sonnet, etc.) fall back through
+`FULLSEND_FALLBACK_MODELS` when Vertex answers that it does not serve the model: the 404
+`Publisher model ... not found` or the 403 `... data sharing to be enabled for publisher ...`. Any
+other error, including a 403 `PERMISSION_DENIED`, fails the run. Pinned ids fail at the first
+model call. A fallback
+must resolve to the same pi provider as the primary model; others are ignored with a warning.
+Sub-agent children get no fallback: each is launched with the one model its alias maps to.
 
 ### Each provider has its own GCP project
 
@@ -117,7 +130,8 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce`, `FULLSEND_PI_SUBAGENT_THINKING` |
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
-| Not supported | Fallback chains, Claude-format plugins (named and skipped), Bedrock/Azure providers |
+| Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
+| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers |
 
 ## Running it locally
 
@@ -194,6 +208,14 @@ What a local pi run needs, beyond the guide:
   Code does not, so redaction and unicode normalization apply on both paths.
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
+- **Malformed `edit` calls are repaired.** Some models send the `edit` tool's `edits` as a JSON
+  string holding raw newlines, or as an array of JSON strings; the pinned pi rejects both with
+  `edits.0: must be object` and the model has to redo the call
+  ([earendil-works/pi#8521](https://github.com/earendil-works/pi/issues/8521),
+  [#8962](https://github.com/earendil-works/pi/issues/8962)). When the agent has `edit`, the runner
+  loads `fullsend-edit-repair.js`, which parses the argument before pi validates it and logs each
+  repair to stderr. Hooks still see the edits that get applied. It goes once the pinned pi handles
+  both shapes.
 
 ## Plugins (pi extensions)
 
@@ -238,9 +260,12 @@ ever picked up from the target repository.
 - **Do not vendor pi's own packages** (`@earendil-works/pi-coding-agent`, `pi-agent-core`,
   `pi-tui`). pi resolves those imports to the running pi, so an extension written against the
   pinned `PI_VERSION` just works.
-- **Pick a free name.** Not `fullsend-hooks`, `anthropic-vertex` or `xai-vertex` — those are the
-  runner's own sandbox names — and not the directory name another entry already uses. Allowed
-  characters are `a-z`, `A-Z`, `0-9`, `_` and `-`.
+- **Pick a free name.** Not `fullsend-hooks`, `fullsend-agent`, `fullsend-edit-repair`,
+  `anthropic-vertex` or `xai-vertex` — those are the runner's own sandbox names — and not the
+  directory name another entry already uses. Allowed characters are `a-z`, `A-Z`, `0-9`, `_`
+  and `-`. Also do not register a tool named `edit`: pi rejects two extensions that register the
+  same tool name, and the runner's own `fullsend-edit-repair` extension already registers `edit`
+  whenever the agent has the edit tool.
 - **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
   repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
   sources and `..` segments are refused: pi would fetch them from the network at startup.
@@ -558,7 +583,8 @@ tool, and the runtime note telling it to execute sub-agent definitions itself, i
 |---|---|---|
 | `model "<spec>": ...; use opus, sonnet, haiku, or one of ...` | The `model` argument is not one this run can serve | Use one of the forms the message lists, or omit `model` to inherit the parent's |
 | `manifest changed since load; refusing to dispatch` | `fullsend-manifest.json` changed after the extension read it | Runner-owned config was rewritten inside the sandbox — treat it as tampering, not a transient |
-| `hook adapter changed since load; refusing to dispatch` | `fullsend-hooks.js` changed after bootstrap recorded its digest | The same: the child would otherwise have come up unhooked |
+| `fullsend-hooks.js changed since load; refusing to dispatch` | The hook adapter changed after bootstrap recorded its digest | The same: the child would otherwise have come up unhooked |
+| `fullsend-edit-repair.js changed since load; refusing to dispatch` | The edit-repair extension changed after bootstrap recorded its digest | The same: the child would otherwise run rewritten code in pi |
 | A child call fails after 15 minutes | The per-child deadline; the child is signalled and reaped | Narrow the child's prompt, or split the task across more children |
 | A child call reports `error` or `aborted` | The child's own run failed — model error, non-zero exit, or no `agent_end` | Read that child's transcript under `transcripts/<agent>-sub<seq>-*.jsonl` |
 
@@ -599,6 +625,15 @@ pi; the plan block's `Runtime:` line and stderr's `runtime: selected ...` show w
 
 **`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write
 `--debug='*'` (with `=`).
+
+**`fullsend: pi edit-repair extension missing or modified; refusing to run` (exit 93).** The
+runner-owned `/sandbox/pi-config/fullsend-edit-repair.js` is not the copy bootstrap wrote. Treat it
+as tampering, like the hook adapter's guard: something inside the sandbox rewrote runner config.
+
+**`Tool "edit" conflicts with .../fullsend-edit-repair.js` and pi exits 1.** One of the harness's
+own extensions registers an `edit` tool, and pi refuses two extensions claiming one tool name
+whatever order they load in. Rename that tool, or drop `Edit` from the agent's `tools:` so the
+repair does not load ([Plugins](#plugins-pi-extensions)).
 
 **The agent fails with nothing in the terminal.** Sandbox-side pi failures land in `pi-debug.log`
 inside the run directory, next to the transcripts; kept sandboxes must be removed manually

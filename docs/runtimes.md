@@ -56,17 +56,18 @@ sequenceDiagram
 |---|---|---|---|
 | Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT only**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)) |
 | Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
-| Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Ignored with a warning | Ignored with a warning |
+| Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Top-level run only: alias requests tried in order when Vertex does not serve the model ([two 404/403 messages](runtimes/pi.md#per-repo-alias-overrides)), same provider only; pinned ids and sub-agent children fail loudly | Ignored with a warning |
 | Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
 | Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
+| Content capture (Level 3) | Text, reasoning, tool calls and tool results (correlating ids) | Text, reasoning, tool calls (no correlating ids) — pi's parser emits neither ids nor tool results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | Text, reasoning, tool calls (no correlating ids) — codex's parser emits neither ids nor tool results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
+| Tool spans (`execute_tool`) | One per id-bearing tool call (server-side tools get none), up to 1,024 per iteration, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
 
-All three run unattended in the same sandbox, behind the same egress allowlist. Stay on `claude`
-when you need a fallback chain. Choose `pi` when you want a non-Anthropic model, several vendors
-from one runtime, or its `Agent`/`Task` sub-agent roster. Choose `codex` when you want OpenAI models
-specifically and codex's shell-centric way of working.
+All three run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
+want a non-Anthropic model, several vendors from one runtime, or its `Agent`/`Task` sub-agent roster.
+Choose `codex` when you want OpenAI models specifically and codex's shell-centric way of working.
 
 ## Selecting a runtime and model
 
@@ -168,7 +169,9 @@ silently shadowed. Bump the workflow's fullsend pin to a version that carries pe
 *before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
 whereas a current CLI validates the settings on every run.
 
-Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi`. Repos on pi need a
+Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi` (GitHub). For GitLab,
+use `fullsend repos install --runtime pi` or set `runtime` in `.fullsend/config.yaml` — see
+[Choosing a runtime](guides/getting-started/choosing-a-runtime.md). Repos on pi need a
 sandbox image that carries `PI_VERSION`; repos on codex need one that carries `CODEX_VERSION`.
 
 ## Models
@@ -207,7 +210,7 @@ frontmatter is not remapped).
 | Run plan block | `Runtime: <name> (from <source>)` next to Model and Effort; `<source>` is the flag, the variable, or `<config path>` (suffixed ` agents.<name>` when the agent's entry decided) |
 | stderr | `runtime: selected "<name>" from <source>` |
 | Status comment / `::notice::` | `Runtime · Model: <requested → reported> · Effort · Cost` |
-| OTel span | `fullsend.runtime`, next to `gen_ai.request.model` |
+| OTel span | `fullsend.runtime` (harness), `gen_ai.system` / `gen_ai.provider.name` (serving endpoint of the model used), next to `gen_ai.request.model` |
 | `metrics.json` | `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, `override_source` |
 
 `requested_model` is the model after the per-run overrides (an alias stays the alias name) and

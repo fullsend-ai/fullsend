@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -16,8 +17,8 @@ import (
 // reports it.
 type ComponentStatus struct {
 	// Name identifies the component, prefixed by category:
-	//   "workflow", "thin-caller:<path>", "var:<name>", "secret:<name>",
-	//   "schedule:<name>"
+	//   "workflow", "thin-caller:<path>", "scaffold:<path>", "var:<name>",
+	//   "secret:<name>", "schedule:<name>"
 	Name string
 
 	// Present is true when the component exists on the forge.
@@ -62,6 +63,7 @@ func DriftFieldName(componentName string) string {
 //
 // Components checked:
 //   - Shim workflow file (presence)
+//   - GitLab trust script (presence)
 //   - Per-repo thin callers (presence, GitHub only)
 //   - Required variables (presence; values compared when expectedVarValues
 //     contains a non-empty entry for the variable name)
@@ -93,6 +95,25 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		Actual:  workflowRef,
 		Match:   workflowPresent,
 	})
+
+	// Auxiliary GitLab scripts are sourced by the poll and agent templates
+	// but are not themselves the workflow component. Probe them separately
+	// so status and converge can detect and repair installs missing only
+	// these files.
+	if forgeName == ForgeGitLab {
+		for _, path := range []string{gitlabTrustScriptPath, gitlabRoleTokenScriptPath} {
+			_, err := client.GetFileContent(ctx, owner, repo, path)
+			if err != nil && !forge.IsNotFound(err) {
+				return nil, fmt.Errorf("checking GitLab scaffold file %s: %w", path, err)
+			}
+			present := err == nil
+			results = append(results, ComponentStatus{
+				Name:    "scaffold:" + path,
+				Present: present,
+				Match:   present,
+			})
+		}
+	}
 
 	// Per-repo thin callers (GitHub only).
 	if forgeName == ForgeGitHub || forgeName == "" {
@@ -180,22 +201,50 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 		for _, spec := range pipelineScheduleSpecs {
 			found := false
+			active := false
 			for _, s := range schedules {
 				if s.Description == spec.Description {
 					found = true
-					break
+					if s.Active {
+						active = true
+						break
+					}
+				}
+			}
+			actual := ""
+			if found {
+				if active {
+					actual = "active"
+				} else {
+					actual = "inactive"
 				}
 			}
 			results = append(results, ComponentStatus{
-				Name:    spec.ComponentName,
-				Present: found,
-				Match:   found,
+				Name:     spec.ComponentName,
+				Present:  found,
+				Expected: "active",
+				Actual:   actual,
+				Match:    found && active,
 			})
 		}
 	}
 
 	// Required secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecretsForForge(forgeName) {
+	migrationMode := ""
+	migrationExists := false
+	if forgeName == ForgeGitLab {
+		var migrationErr error
+		migrationMode, migrationExists, migrationErr = client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleMigration)
+		if migrationErr != nil {
+			return nil, fmt.Errorf("checking variable %s: %w", forge.VarGitLabRoleMigration, migrationErr)
+		}
+		if migrationExists {
+			if _, err := gitlabroles.ParseMode(migrationMode); err != nil {
+				return nil, fmt.Errorf("invalid GitLab role migration mode: %w", err)
+			}
+		}
+	}
+	for _, secretName := range requiredSecretsForForgeMode(forgeName, migrationMode, migrationExists) {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", secretName, err)

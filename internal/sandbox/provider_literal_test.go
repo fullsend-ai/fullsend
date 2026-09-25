@@ -173,6 +173,19 @@ func TestProfileExists(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestExpandProviderValue_AllowsWorkflowToken(t *testing.T) {
+	const token = "ghs_workflow_token_value_xx"
+	t.Setenv("GH_WORKFLOW_TOKEN", token)
+	got := expandProviderValue("${GH_WORKFLOW_TOKEN}")
+	assert.Equal(t, token, got, "provider credentials may expand GH_WORKFLOW_TOKEN (#6649)")
+
+	args, extraEnv, secrets := buildProviderArgs("github-packages", "fullsend-github-packages",
+		map[string]string{"GITHUB_TOKEN": "${GH_WORKFLOW_TOKEN}"}, nil, false)
+	assert.Contains(t, extraEnv, "GITHUB_TOKEN="+token)
+	assert.Contains(t, secrets, token)
+	assert.NotContains(t, strings.Join(args, " "), token, "the real token must not appear on the command line")
+}
+
 func TestProviderDefinitionsCannotExpandDeniedKeys(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-real-static-key")
 	t.Setenv("HARMLESS", "ok")
@@ -196,4 +209,23 @@ func TestProfileListed(t *testing.T) {
 	textOut := []byte("Provider profiles\n\n  Cloud\n    aws              AWS              endpoints: 3\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n")
 	assert.True(t, profileListed(textOut, "fullsend-openai"), "human table: first column is the id")
 	assert.False(t, profileListed(textOut, "OpenAI"))
+}
+
+func TestProviderConfigCannotExpandCredentialOnlyKeys(t *testing.T) {
+	token := "ghs_" + strings.Repeat("W", 36)
+	t.Setenv("GH_WORKFLOW_TOKEN", token)
+	CredentialOnlyExpansionKeys("GH_WORKFLOW_TOKEN")
+
+	args, extraEnv, _ := buildProviderArgs("github-packages", "fullsend-github-packages",
+		map[string]string{"GITHUB_TOKEN": "${GH_WORKFLOW_TOKEN}"},
+		map[string]string{"URL": "https://x/${GH_WORKFLOW_TOKEN}"}, false)
+	assert.Contains(t, extraEnv, "GITHUB_TOKEN="+token, "credential values still expand the key")
+	assert.Contains(t, args, "URL=https://x/", "config values expand a credential-only key to empty (#6649)")
+	assert.NotContains(t, strings.Join(args, " "), token, "the token must never reach argv through config")
+
+	upd := buildProviderUpdateArgs("github-packages",
+		map[string]string{"GITHUB_TOKEN": "${GH_WORKFLOW_TOKEN}"},
+		map[string]string{"URL": "https://x/${GH_WORKFLOW_TOKEN}"}, false)
+	assert.Contains(t, upd, "URL=https://x/")
+	assert.NotContains(t, strings.Join(upd, " "), token)
 }

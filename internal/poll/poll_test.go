@@ -2,8 +2,8 @@ package poll
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +69,7 @@ func (r *stubRouter) Route(_ *dispatch.NormalizedEvent) ([]string, error) {
 func TestRunEmptyPoll(t *testing.T) {
 	mc := newMockClient()
 
-	p := New(mc, nil, "org/project", Options{Mode: "events"})
+	p := New(mc, nil, "org/project", withTestSecret(Options{Mode: "events"}))
 
 	err := p.Run(context.Background())
 	if err != nil {
@@ -81,26 +81,41 @@ func TestRunEmptyPoll(t *testing.T) {
 		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+	got, ok := mc.getPollState()
+	if !ok || got.LastPollAtFull == "" {
 		t.Error("watermark not updated")
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (one persist per poll cycle)", mc.forceCommits)
 	}
 }
 
 func TestRunSlashMode(t *testing.T) {
 	// When mode is "slash", the poller should use the fast watermark.
 	now := time.Now()
+	seeded := now.Add(-5 * time.Minute).Format(time.RFC3339)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FAST"] = now.Add(-5 * time.Minute).Format(time.RFC3339)
+	mc.setSlashState(persistedPollState{LastPollAtFast: seeded})
 
-	p := New(mc, nil, "org/project", Options{Mode: "slash"})
+	p := New(mc, nil, "org/project", withTestSecret(Options{Mode: "slash"}))
 
 	err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FAST"]; !ok {
+	got, ok := mc.getSlashState()
+	if !ok || got.LastPollAtFast == "" {
 		t.Error("fast watermark not updated in slash mode")
+	}
+	if got.LastPollAtFast == seeded {
+		t.Error("expected fast watermark to advance from the seeded value, but updateWatermark did not run")
+	}
+	if _, ok := mc.getPollState(); ok {
+		t.Error("slash mode must not write the events branch")
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (one persist per poll cycle)", mc.forceCommits)
 	}
 }
 
@@ -108,14 +123,15 @@ func TestRunEventsMode(t *testing.T) {
 	// When mode is "events", the poller should use the full watermark.
 	mc := newMockClient()
 
-	p := New(mc, nil, "org/project", Options{Mode: "events"})
+	p := New(mc, nil, "org/project", withTestSecret(Options{Mode: "events"}))
 
 	err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+	got, ok := mc.getPollState()
+	if !ok || got.LastPollAtFull == "" {
 		t.Error("full watermark not updated in events mode")
 	}
 }
@@ -124,14 +140,15 @@ func TestRunDefaultModeIsEvents(t *testing.T) {
 	// When mode is empty (default), the poller should behave like events mode.
 	mc := newMockClient()
 
-	p := New(mc, nil, "org/project", Options{})
+	p := New(mc, nil, "org/project", withTestSecret(Options{}))
 
 	err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
+	got, ok := mc.getPollState()
+	if !ok || got.LastPollAtFull == "" {
 		t.Error("full watermark not updated on default mode")
 	}
 }
@@ -181,7 +198,7 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -192,7 +209,7 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -223,7 +240,7 @@ func TestRunMultipleStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
 	}
@@ -242,7 +259,7 @@ func TestRunMultipleStages(t *testing.T) {
 	mc.memberLevel[5] = 30
 
 	router := &stubRouter{stages: []string{"triage", "code"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -257,8 +274,18 @@ func TestRunMultipleStages(t *testing.T) {
 		t.Fatalf("expected 2 dispatches, got %d", len(p.dispatches))
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LABEL_STATE"]; !ok {
+	got, ok := mc.getPollState()
+	if !ok || got.LabelState == nil {
 		t.Error("expected label state to be persisted")
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (one persist per poll cycle)", mc.forceCommits)
+	}
+	if got.LastPollAtFull == "" {
+		t.Error("expected watermark to be persisted in the same commit")
+	}
+	if len(got.DispatchedKeysFull) == 0 {
+		t.Error("expected dispatched keys to be persisted in the same commit")
 	}
 }
 
@@ -266,7 +293,7 @@ func TestRunLabelEventThreadsActorID(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
 	}
@@ -285,7 +312,7 @@ func TestRunLabelEventThreadsActorID(t *testing.T) {
 	mc.memberLevel[77] = 30
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -305,7 +332,7 @@ func TestRunDispatchesBotAppliedLabel(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
 	}
@@ -324,7 +351,7 @@ func TestRunDispatchesBotAppliedLabel(t *testing.T) {
 	mc.memberLevel[200] = 40
 
 	router := &stubRouter{stages: []string{"code"}}
-	p := New(mc, router, "group/project", Options{BotUserID: 200})
+	p := New(mc, router, "group/project", withTestSecret(Options{BotUserID: 200}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -349,7 +376,7 @@ func TestRunNoMatchingStages(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -360,7 +387,7 @@ func TestRunNoMatchingStages(t *testing.T) {
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: nil}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -376,7 +403,7 @@ func TestRunRouterError(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -387,10 +414,14 @@ func TestRunRouterError(t *testing.T) {
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{err: fmt.Errorf("routing failed")}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() should not return error on router failure, got: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error on router failure")
+	}
+	if !strings.Contains(err.Error(), "dispatch core error") {
+		t.Errorf("error = %q, want dispatch core error", err)
 	}
 }
 
@@ -398,7 +429,7 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now},
 	}
@@ -407,15 +438,20 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 	}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error when conversion fails")
 	}
 
 	// Conversion error → no pipelines created.
 	if mc.pipelineCounter != 0 {
 		t.Errorf("expected 0 pipelines for unresolvable actor, got %d", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok || got.FailedKeysFull["note-10"] != 1 {
+		t.Errorf("failed keys = %v, want note-10:1", got.FailedKeysFull)
 	}
 }
 
@@ -423,7 +459,11 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{
+		LastPollAtFull:     since.Format(time.RFC3339),
+		DispatchedKeysFull: map[string]int64{"prior-dispatch": now.Unix()},
+		LabelState:         LabelState{99: {"ready-to-code"}},
+	})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now},
 		{IID: 2, Labels: []string{"bug"}, UpdatedAt: now},
@@ -436,14 +476,24 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("Run() should return error when all events fail")
 	}
 
-	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; ok {
+	got, ok := mc.getPollState()
+	if ok && got.LastPollAtFull != "" && got.LastPollAtFull != since.Format(time.RFC3339) {
 		t.Error("watermark should not be advanced when all events fail")
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (failed keys only)", mc.forceCommits)
+	}
+	if !ok || got.DispatchedKeysFull["prior-dispatch"] != now.Unix() {
+		t.Errorf("dispatched keys from a prior cycle should survive an all-failed persist: %v", got.DispatchedKeysFull)
+	}
+	if got := got.LabelState[99]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Errorf("label state from a prior cycle should survive an all-failed persist: %v", got)
 	}
 }
 
@@ -451,7 +501,7 @@ func TestRunNilRouter(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -461,7 +511,7 @@ func TestRunNilRouter(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	p := New(mc, nil, "group/project", Options{})
+	p := New(mc, nil, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -472,7 +522,7 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -483,7 +533,7 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("first Run() error: %v", err)
@@ -492,12 +542,14 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	if mc.pipelineCounter != 1 {
 		t.Fatalf("first run: expected 1 pipeline, got %d", mc.pipelineCounter)
 	}
+	if mc.forceCommits != 1 {
+		t.Fatalf("first run: force commits = %d, want 1", mc.forceCommits)
+	}
 
-	// Simulate persisted state being readable on next cycle.
-	mc.variables["FULLSEND_DISPATCHED_KEYS_FULL"] = mc.updatedVars["FULLSEND_DISPATCHED_KEYS_FULL"]
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]
+	// Branch-backed mock writes through, so the next cycle reads
+	// the state persisted by the first run.
 
-	p2 := New(mc, router, "group/project", Options{})
+	p2 := New(mc, router, "group/project", withTestSecret(Options{}))
 	if err := p2.Run(context.Background()); err != nil {
 		t.Fatalf("second Run() error: %v", err)
 	}
@@ -505,6 +557,9 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	// Second run should not create new pipelines (idempotent).
 	if mc.pipelineCounter != 1 {
 		t.Errorf("second run: expected no new pipelines (total 1), got %d", mc.pipelineCounter)
+	}
+	if mc.forceCommits != 2 {
+		t.Errorf("second run: force commits = %d, want 2 (one persist per cycle)", mc.forceCommits)
 	}
 }
 
@@ -515,7 +570,7 @@ func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -527,7 +582,7 @@ func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
 	mc.issue[3] = &Issue{IID: 3, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -547,7 +602,7 @@ func TestRunEntityDedup_DifferentIssues(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 		{IID: 4, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 43}},
@@ -564,7 +619,7 @@ func TestRunEntityDedup_DifferentIssues(t *testing.T) {
 	mc.issue[4] = &Issue{IID: 4, Author: UserRef{ID: 43}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -582,7 +637,7 @@ func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 5, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
 	}
@@ -594,7 +649,7 @@ func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
 
 	// Router returns two stages for the single event.
 	router := &stubRouter{stages: []string{"triage", "review"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -610,7 +665,7 @@ func TestRunLabelFailureRollback(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
 	mc := newMockClient()
-	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
 	mc.issues = []Issue{
 		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
 		{IID: 2, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
@@ -633,25 +688,120 @@ func TestRunLabelFailureRollback(t *testing.T) {
 	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
 
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{})
+	p := New(mc, router, "group/project", withTestSecret(Options{}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("Run() should return error when a label event fails conversion")
 	}
 
-	persisted, ok := mc.updatedVars["FULLSEND_LABEL_STATE"]
+	got, ok := mc.getPollState()
 	if !ok {
 		t.Fatal("expected label state to be persisted")
 	}
-	var ls LabelState
-	if err := json.Unmarshal([]byte(persisted), &ls); err != nil {
-		t.Fatalf("unmarshal label state: %v", err)
-	}
+	ls := got.LabelState
 	if labels, ok := ls[1]; ok && len(labels) > 0 {
 		for _, l := range labels {
 			if l == "ready-to-code" {
 				t.Error("expected ready-to-code to be rolled back from label state after dispatch failure")
 			}
 		}
+	}
+}
+
+func slashNoteFixture(t *testing.T, failedCount int, pipelineErr error) (*mockClient, *Poller, time.Time) {
+	t.Helper()
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.pipelineErr = pipelineErr
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: since.Format(time.RFC3339),
+		FailedKeysFull: map[string]int{"note-10": failedCount},
+	})
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage handle this", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+	return mc, p, since
+}
+
+func TestRunLastRetrySurfacesDrop(t *testing.T) {
+	mc, p, _ := slashNoteFixture(t, maxEventRetries-1, fmt.Errorf("API error: 403 forbidden"))
+
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error on the last retry")
+	}
+	if !strings.Contains(err.Error(), "dispatch") {
+		t.Errorf("error = %q, want dispatch failure", err)
+	}
+	if !strings.Contains(err.Error(), "exhausted retry budget") {
+		t.Errorf("error = %q, want exhausted retry budget drop", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok || got.FailedKeysFull["note-10"] != maxEventRetries {
+		t.Errorf("failed keys = %v, want note-10:%d", got.FailedKeysFull, maxEventRetries)
+	}
+}
+
+func TestRunAlreadyDroppedEventDoesNotFailCycle(t *testing.T) {
+	mc, p, since := slashNoteFixture(t, maxEventRetries, nil)
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() should succeed when skipping an already-dropped event, got: %v", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines for dropped event, got %d", mc.pipelineCounter)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be persisted")
+	}
+	if got.LastPollAtFull == "" || got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Error("watermark should advance past a dropped event so the poller does not stall")
+	}
+}
+
+func TestRecordEventFailure(t *testing.T) {
+	failedKeys := map[string]int{"note-1": maxEventRetries - 1}
+	var cycleErrs []error
+	var minFailedAt time.Time
+	failedLabels := make(map[int]map[string]bool)
+	event := RoutableEvent{
+		Type:         "issue_label",
+		IID:          7,
+		NoteID:       1,
+		ChangedLabel: "ready-to-code",
+		UpdatedAt:    time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+	}
+
+	recordEventFailure(&cycleErrs, failedKeys, event, &minFailedAt, failedLabels, fmt.Errorf("dispatch boom"))
+
+	if failedKeys["note-1"] != maxEventRetries {
+		t.Errorf("count = %d, want %d", failedKeys["note-1"], maxEventRetries)
+	}
+	if len(cycleErrs) != 2 {
+		t.Fatalf("cycleErrs = %v, want cause + drop", cycleErrs)
+	}
+	if !strings.Contains(cycleErrs[1].Error(), "exhausted retry budget") {
+		t.Errorf("second error = %q, want drop", cycleErrs[1])
+	}
+	if !minFailedAt.Equal(event.UpdatedAt) {
+		t.Errorf("minFailedAt = %v, want %v", minFailedAt, event.UpdatedAt)
+	}
+	if !failedLabels[7]["ready-to-code"] {
+		t.Error("label failure not tracked")
 	}
 }

@@ -13,10 +13,10 @@
 # matched on argv with any directory stripped from the command word
 # (/usr/bin/sleep infinity counts), so an agent-started literal
 # "sleep infinity" is spared as well. TERM first, then KILL whatever is
-# still alive after 2s. The count goes to stdout; a process listing or a
-# liveness probe that fails exits 3 so the runner warns instead of
-# trusting a zero. The user is selected by numeric uid: the sandbox user
-# need not be resolvable through NSS.
+# still alive after 2s. The count goes to stdout; a process listing, the
+# awk that turns it into targets, or a liveness probe that fails exits 3
+# so the runner warns instead of trusting a zero. The user is selected by
+# numeric uid: the sandbox user need not be resolvable through NSS.
 me=$$
 listing=$(ps -o pid= -o ppid= -o stat= -o args= -u "$(id -u)" 2>/dev/null) || {
   echo 'stray processes: ps failed' >&2
@@ -59,7 +59,10 @@ targets=$(printf '%s\n' "$listing" | awk -v me="$me" -v keep='sleep infinity' '
       if (cmd[p] == keep) continue
       print p
     }
-  }')
+  }') || {
+  echo 'stray processes: awk failed' >&2
+  exit 3
+}
 count=0
 pids=""
 signalled=""

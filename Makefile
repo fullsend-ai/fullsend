@@ -197,12 +197,14 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/gateway_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/lib_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
+	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test lint-eval-cases

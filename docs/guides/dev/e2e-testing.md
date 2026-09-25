@@ -43,7 +43,7 @@ Behaviour tests use the same pool orgs (for `ENVIRONMENT=dev`) but install via `
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `pkg/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
 
 ## CI runs
 
@@ -179,7 +179,10 @@ e2e testing of permission-sensitive behaviour:
 | `fstest-triage` | member | triage |
 | `fstest-outsider` | none | public read only (no collaborator grant) |
 
-Elevated access uses direct collaborator grants (not team membership). Fork repos
+Elevated access uses direct collaborator grants (not team membership). The
+behaviour suite deletes and recreates each pool repo at the start of a run, which
+drops these grants, so it re-applies the `fstest-write` and `fstest-triage` grants
+for every actor whose PAT is set. Fork repos
 (`test-repo-fork`) are intentionally excluded — they are not base/enrolled
 targets for permission grants.
 
@@ -220,9 +223,11 @@ see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer apply the
-**`ok-to-test`** label **after** the latest push. The label must be created once
-in GitHub repo settings (Settings → Labels).
+External contributors and fork PR authors must have a maintainer with write
+access apply the **`ok-to-test`** label **after** the latest push. A label from
+anyone else (for example a triage-role user) is removed and does not authorize
+the run. The label must be created once in GitHub repo settings (Settings →
+Labels).
 
 ### Stale labels
 

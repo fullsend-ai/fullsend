@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,25 @@ func (p *fakeProvisioner) Provision(_ context.Context, owner, repo string) (stri
 
 func nopScaffoldCommit(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
 	return nil
+}
+
+func parseOrgConfigFile(t *testing.T, fc *forge.FakeClient, org string) config.OrgConfigReader {
+	t.Helper()
+	data, ok := fc.FileContents[org+"/"+forge.ConfigRepoName+"/config.yaml"]
+	require.True(t, ok, "org config missing from fake client")
+	cfg, err := config.ParseOrgConfig(data)
+	require.NoError(t, err)
+	return cfg
+}
+
+func orgConfigWrites(fc *forge.FakeClient) []forge.FileRecord {
+	var out []forge.FileRecord
+	for _, rec := range fc.CreatedFiles {
+		if rec.Repo == forge.ConfigRepoName && rec.Path == "config.yaml" {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 // --- Migrate: basic validation ---
@@ -158,6 +178,14 @@ repos:
 	assert.Empty(t, result.Failed)
 	assert.Equal(t, 3, result.Unenrolled)
 	assert.NotNil(t, result.Manifest)
+
+	orgCfg := parseOrgConfigFile(t, fc, "acme")
+	assert.Empty(t, orgCfg.RepoMap(), "migrated repos must be removed, not disabled")
+	assert.Equal(t, "github-actions", orgCfg.DispatchSettings().Platform)
+	writes := orgConfigWrites(fc)
+	require.Len(t, writes, 1)
+	assert.Contains(t, writes[0].Message, "remove 3 repos")
+	assert.NotContains(t, string(writes[0].Content), "enabled: false")
 }
 
 // --- Migrate: idempotent re-run ---
@@ -201,6 +229,12 @@ repos:
 	assert.Equal(t, "api", result.Skipped[0].Repo)
 	assert.Len(t, result.Migrated, 1, "web should be migrated")
 	assert.Equal(t, "web", result.Migrated[0].Repo)
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	_, apiExists := repos["api"]
+	_, webExists := repos["web"]
+	assert.False(t, apiExists, "already-installed api must be removed from source config")
+	assert.False(t, webExists, "migrated web must be removed from source config")
 }
 
 // --- Migrate: pre-provisioned inference ---
@@ -268,6 +302,12 @@ repos:
 	assert.Len(t, result.Failed, 1, "api should have failed")
 	assert.Len(t, result.Migrated, 1, "web should have succeeded")
 	assert.Equal(t, 1, result.Unenrolled, "only web should be unenrolled")
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	_, webExists := repos["web"]
+	assert.False(t, webExists, "successfully migrated web must be removed")
+	require.Contains(t, repos, "api")
+	assert.True(t, repos["api"].Enabled, "failed api entry must remain enabled")
 }
 
 // --- Migrate: dry-run ---
@@ -300,6 +340,11 @@ repos:
 	assert.Empty(t, prov.provisionCalls, "dry-run should not provision")
 	assert.Equal(t, 0, result.Unenrolled, "dry-run should not unenroll")
 	assert.NotNil(t, result.Manifest)
+	assert.Empty(t, orgConfigWrites(fc), "dry-run must not write source config")
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	require.Contains(t, repos, "api")
+	assert.True(t, repos["api"].Enabled, "dry-run must leave the source entry enabled")
 }
 
 // --- Migrate: subset --repo filter ---
@@ -337,6 +382,14 @@ repos:
 	require.NoError(t, err)
 	assert.Len(t, result.Migrated, 1)
 	assert.Equal(t, "api", result.Migrated[0].Repo)
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	_, apiExists := repos["api"]
+	assert.False(t, apiExists, "filtered-in api must be removed")
+	require.Contains(t, repos, "web")
+	require.Contains(t, repos, "lib")
+	assert.True(t, repos["web"].Enabled)
+	assert.True(t, repos["lib"].Enabled)
 }
 
 func TestMigrate_RepoFilter_WithOrgPrefix(t *testing.T) {
@@ -551,6 +604,10 @@ repos:
 	assert.NotNil(t, result.UnenrollError, "should surface unenroll write error")
 	assert.Contains(t, result.UnenrollError.Error(), "writing org config")
 	assert.Equal(t, 0, result.Unenrolled)
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	require.Contains(t, repos, "api")
+	assert.True(t, repos["api"].Enabled, "source entry must remain so cleanup can be retried")
 }
 
 // --- Migrate: status error propagation ---
@@ -724,6 +781,163 @@ repos:
 	assert.Empty(t, result.Migrated)
 	assert.NotNil(t, result.Manifest, "should generate manifest even when nothing to migrate")
 	assert.Equal(t, 1, result.Unenrolled, "should unenroll skipped repos still enabled in org config")
+
+	_, exists := parseOrgConfigFile(t, fc, "acme").RepoMap()["api"]
+	assert.False(t, exists, "already-installed recovery must remove the still-enabled source entry")
+}
+
+func TestMigrate_RemovesSuccessfulEntries_PreservesOthers(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+defaults:
+  runtime: claude
+repos:
+  api:
+    enabled: true
+  worker:
+    enabled: true
+    roles:
+      - triage
+  lib:
+    enabled: true
+  archived:
+    enabled: false
+`)
+	for _, name := range []string{"api", "worker", "lib"} {
+		setWorkflowFile(fc, "acme", name,
+			"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	}
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov-api"
+	prov.provisionErrors["acme/worker"] = fmt.Errorf("GCP permission denied")
+
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:            "acme",
+		Project:        "my-project",
+		RepoFilter:     []string{"api", "worker"},
+		MaxConcurrency: 1,
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	assert.Len(t, result.Migrated, 1)
+	assert.Equal(t, "api", result.Migrated[0].Repo)
+	assert.Len(t, result.Failed, 1)
+	assert.Equal(t, "worker", result.Failed[0].Repo)
+	assert.Equal(t, 1, result.Unenrolled)
+
+	orgCfg := parseOrgConfigFile(t, fc, "acme")
+	repos := orgCfg.RepoMap()
+	_, apiExists := repos["api"]
+	assert.False(t, apiExists, "successfully migrated api must be removed from source config")
+
+	require.Contains(t, repos, "worker")
+	assert.True(t, repos["worker"].Enabled, "failed worker entry must remain enabled")
+	assert.Equal(t, []string{"triage"}, repos["worker"].Roles, "failed worker extra fields must be preserved")
+
+	require.Contains(t, repos, "lib")
+	assert.True(t, repos["lib"].Enabled, "unselected lib entry must remain enabled")
+
+	require.Contains(t, repos, "archived")
+	assert.False(t, repos["archived"].Enabled, "pre-existing disabled entries must be left alone")
+
+	assert.Equal(t, "github-actions", orgCfg.DispatchSettings().Platform)
+	assert.Equal(t, "https://mint.example.com", orgCfg.DispatchSettings().MintURL)
+	assert.Equal(t, "claude", orgCfg.OrgRepoDefaults().Runtime)
+}
+
+func TestMigrate_DiscoveryFailure_PreservesSourceEntry(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+  worker:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	fc.GetFileContentErrors = map[string]error{
+		"acme/worker/.github/workflows/fullsend.yml": fmt.Errorf("temporary github outage"),
+	}
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov-api"
+
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:            "acme",
+		Project:        "my-project",
+		MaxConcurrency: 1,
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+	require.NoError(t, err)
+	assert.Len(t, result.Migrated, 1)
+	assert.Equal(t, "api", result.Migrated[0].Repo)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, "worker", result.Failed[0].Repo)
+	assert.ErrorContains(t, result.Failed[0].Error, "discovery failed")
+
+	repos := parseOrgConfigFile(t, fc, "acme").RepoMap()
+	_, apiExists := repos["api"]
+	assert.False(t, apiExists, "successfully migrated api must be removed")
+	require.Contains(t, repos, "worker")
+	assert.True(t, repos["worker"].Enabled, "discovery-failed worker must remain in source config")
+}
+
+func TestMigrate_RepeatedRunAfterCleanup_IsNoOp(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+  mode: oidc-mint
+  mint_url: https://mint.example.com
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov-api"
+
+	first, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	require.NoError(t, err)
+	assert.Len(t, first.Migrated, 1)
+	assert.Equal(t, 1, first.Unenrolled)
+
+	// After cleanup the source entry is gone. Mark the repo as already
+	// per-repo installed so a rerun would skip-and-unenroll if the entry
+	// were still present.
+	setRepoVars(fc, "acme", "api", map[string]string{
+		forge.PerRepoGuardVar: "true",
+		"FULLSEND_MINT_URL":   "https://mint.example.com",
+		"FULLSEND_GCP_REGION": "us-central1",
+	})
+
+	second, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+	require.NoError(t, err)
+	assert.Empty(t, second.Migrated)
+	assert.Empty(t, second.Skipped)
+	assert.Equal(t, 0, second.Unenrolled)
+	assert.Empty(t, parseOrgConfigFile(t, fc, "acme").RepoMap())
 }
 
 // --- Migrate: org config carry-over ---

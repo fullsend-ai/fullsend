@@ -209,6 +209,55 @@ func TestFakeClient_CreateBranch(t *testing.T) {
 	assert.Equal(t, []string{"owner/repo/feature-branch"}, fc.CreatedBranches)
 }
 
+func TestFakeClient_DeleteBranch(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("records deletion and clears ExistingBranches", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.ExistingBranches["owner/repo/feature-branch"] = true
+
+		err := fc.DeleteBranch(ctx, "owner", "repo", "feature-branch")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"owner/repo/feature-branch"}, fc.DeletedBranches)
+		assert.False(t, fc.ExistingBranches["owner/repo/feature-branch"])
+
+		// Subsequent create should succeed now that the branch was deleted.
+		err = fc.CreateBranch(ctx, "owner", "repo", "feature-branch")
+		require.NoError(t, err)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Errors["DeleteBranch"] = errors.New("api down")
+		err := fc.DeleteBranch(ctx, "owner", "repo", "feature-branch")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "api down")
+		assert.Empty(t, fc.DeletedBranches)
+	})
+}
+
+func TestFakeClient_CreateBranch_ExistingBranches(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.ExistingBranches["owner/repo/feature-branch"] = true
+
+	err := fc.CreateBranch(ctx, "owner", "repo", "feature-branch")
+	require.Error(t, err)
+	assert.True(t, IsAlreadyExists(err))
+	assert.Empty(t, fc.CreatedBranches)
+}
+
+func TestFakeClient_CreateBranchFromSHA_ExistingBranches(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.ExistingBranches["owner/repo/feature"] = true
+
+	err := fc.CreateBranchFromSHA(ctx, "owner", "repo", "feature", "abc123")
+	require.Error(t, err)
+	assert.True(t, IsAlreadyExists(err))
+	assert.Empty(t, fc.CreatedBranchSHAs)
+}
+
 func TestFakeClient_DeleteRef(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -742,6 +791,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
 		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
 		{"CreateBranchFromSHA", func(fc *FakeClient) error { return fc.CreateBranchFromSHA(ctx, "o", "r", "b", "sha") }},
+		{"DeleteBranch", func(fc *FakeClient) error { return fc.DeleteBranch(ctx, "o", "r", "b") }},
 		{"DeleteRef", func(fc *FakeClient) error { return fc.DeleteRef(ctx, "o", "r", "heads/b") }},
 		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
 		{"CreateChangeProposal", func(fc *FakeClient) error {
@@ -787,6 +837,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"CommitFiles", func(fc *FakeClient) error {
 			_, err := fc.CommitFiles(ctx, "o", "r", "m", nil)
 			return err
+		}},
+		{"ForceCommitFileToBranch", func(fc *FakeClient) error {
+			return fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
 		}},
 		{"CreateOrUpdateOrgVariable", func(fc *FakeClient) error {
 			return fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", nil)
@@ -886,6 +939,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
 			_ = fc.CreateBranch(ctx, "o", "r", "b")
 			_ = fc.CreateBranchFromSHA(ctx, "o", "r", "sha-branch", "abc123")
+			_ = fc.DeleteBranch(ctx, "o", "r", "b")
 			_ = fc.DeleteRef(ctx, "o", "r", "heads/b")
 			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
@@ -904,6 +958,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteOrgSecret(ctx, "o", "n")
 			_ = fc.SetOrgSecretRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}})
+			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data"))
 			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgVariableExists(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
@@ -989,6 +1044,46 @@ func TestFakeClient_CreateFork(t *testing.T) {
 		}
 		_, _, err := fc.CreateFork(ctx, "upstream", "repo")
 		require.Error(t, err)
+	})
+
+	t.Run("returns default owner when AuthenticatedUser is empty", func(t *testing.T) {
+		fc := &FakeClient{}
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner", forkOwner,
+			"should return a sane default when both ForkOwner and AuthenticatedUser are empty")
+		assert.Equal(t, "repo", forkRepo)
+	})
+
+	t.Run("auto-populates Repos so GetRepo finds the fork", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.AuthenticatedUser = "contributor"
+
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "api")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "api", forkRepo)
+
+		// GetRepo should find the auto-populated fork.
+		repo, err := fc.GetRepo(ctx, "contributor", "api")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor/api", repo.FullName)
+		assert.True(t, repo.Fork, "auto-populated repo should be marked as a fork")
+		assert.Equal(t, "main", repo.DefaultBranch)
+	})
+
+	t.Run("auto-populates Repos with default owner fallback", func(t *testing.T) {
+		fc := NewFakeClient()
+		// Both ForkOwner and AuthenticatedUser are empty.
+
+		forkOwner, _, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner", forkOwner)
+
+		// GetRepo should find it under the default owner.
+		repo, err := fc.GetRepo(ctx, "fake-fork-owner", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "fake-fork-owner/repo", repo.FullName)
 	})
 }
 
@@ -1466,6 +1561,7 @@ func TestFakeClient_CreateForkInOrg(t *testing.T) {
 func TestNewFakeClient_MapsInitialized(t *testing.T) {
 	fc := NewFakeClient()
 	assert.NotNil(t, fc.ProtectedBranches)
+	assert.NotNil(t, fc.ProtectedBranchRules)
 	assert.NotNil(t, fc.PipelineSchedules)
 }
 
@@ -1484,6 +1580,23 @@ func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
 	assert.Equal(t, "main", schedules[0].Ref)
 	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
 	assert.True(t, schedules[0].Active)
+
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", id, false)
+	require.NoError(t, err)
+	schedules, err = fc.ListPipelineSchedules(ctx, "org", "repo")
+	require.NoError(t, err)
+	require.Len(t, schedules, 1)
+	assert.False(t, schedules[0].Active)
+	assert.Equal(t, []int64{id}, fc.UpdatedScheduleIDs)
+
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", 999, true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	fc.Errors["UpdatePipelineSchedule"] = errors.New("api error")
+	err = fc.UpdatePipelineSchedule(ctx, "org", "repo", id, true)
+	require.Error(t, err)
+	delete(fc.Errors, "UpdatePipelineSchedule")
 
 	err = fc.DeletePipelineSchedule(ctx, "org", "repo", id)
 	require.NoError(t, err)
@@ -1550,6 +1663,103 @@ func TestFakeClient_IsProtectedBranch(t *testing.T) {
 	protected, err = fc.IsProtectedBranch(ctx, "org", "repo", "dev")
 	require.NoError(t, err)
 	assert.False(t, protected)
+}
+
+func TestCloneProtectedBranchRule_Nil(t *testing.T) {
+	assert.Nil(t, cloneProtectedBranchRule(nil))
+}
+
+func TestFakeClient_GetProtectedBranch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	rule, err := fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.Nil(t, rule)
+
+	fc.ProtectedBranches["org/repo/main"] = true
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, 30, rule.MergeAccessLevels[0].AccessLevel)
+
+	fc.ProtectedBranchRules["org/repo/release"] = &ProtectedBranchRule{
+		Name:              "release",
+		MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "release")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	rule.MergeAccessLevels[0].AccessLevel = 0
+	rule2, err := fc.GetProtectedBranch(ctx, "org", "repo", "release")
+	require.NoError(t, err)
+	assert.Equal(t, 40, rule2.MergeAccessLevels[0].AccessLevel, "returned rule must be a copy")
+}
+
+func TestFakeClient_GrantProtectedBranchMergeUser(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not protected")
+
+	fc.ProtectedBranchRules["org/repo/main"] = &ProtectedBranchRule{
+		Name:              "main",
+		MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.NoError(t, err)
+	require.Len(t, fc.GrantedProtectedBranchMergeUsers, 2)
+	assert.Equal(t, 99, fc.GrantedProtectedBranchMergeUsers[1].UserID)
+
+	rule, err := fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	require.Len(t, rule.MergeAccessLevels, 2)
+	assert.Equal(t, 99, rule.MergeAccessLevels[1].UserID)
+
+	protected, err := fc.IsProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.True(t, protected)
+
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 99)
+	require.NoError(t, err)
+
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 0)
+	require.Error(t, err)
+
+	fc.Errors["GrantProtectedBranchMergeUser"] = fmt.Errorf("denied")
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 7)
+	require.Error(t, err)
+	delete(fc.Errors, "GrantProtectedBranchMergeUser")
+
+	fc.Errors["GetProtectedBranch"] = fmt.Errorf("lookup failed")
+	_, err = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.Error(t, err)
+	delete(fc.Errors, "GetProtectedBranch")
+
+	fc.ProtectedBranches["org/repo/dev"] = true
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "dev", 8)
+	require.NoError(t, err)
+	rule, err = fc.GetProtectedBranch(ctx, "org", "repo", "dev")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	found := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.UserID == 8 {
+			found = true
+		}
+	}
+	assert.True(t, found)
+
+	fc.ProtectedBranchRules["org/repo/push"] = &ProtectedBranchRule{
+		Name:             "push",
+		PushAccessLevels: []ProtectedBranchAccess{{UserID: 9}},
+	}
+	err = fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "push", 9)
+	require.NoError(t, err)
 }
 
 func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {
@@ -1800,4 +2010,136 @@ func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestFakeClient_ForceCommitFileToBranch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	t.Run("create-on-first-write", func(t *testing.T) {
+		_, err := fc.GetBranchRef(ctx, "owner", "repo", "fullsend-poll-state-slash")
+		require.ErrorIs(t, err, ErrNotFound)
+
+		err = fc.ForceCommitFileToBranch(ctx, "owner", "repo", "fullsend-poll-state-slash", "state.json", "init", []byte(`{"v":1}`))
+		require.NoError(t, err)
+
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "fullsend-poll-state-slash")
+		require.NoError(t, err)
+		assert.NotEmpty(t, sha)
+
+		content, err := fc.GetFileContentAtRef(ctx, "owner", "repo", "state.json", "fullsend-poll-state-slash")
+		require.NoError(t, err)
+		assert.Equal(t, `{"v":1}`, string(content))
+
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		rec := fc.ForceCommittedFiles[0]
+		assert.True(t, rec.Force)
+		assert.Equal(t, ForceCommitFixedBaseSHA, rec.StartSHA)
+		assert.Equal(t, "init [skip ci]", rec.Message)
+		assert.Equal(t, 1, fc.ForceReachableCommits["owner/repo/fullsend-poll-state-slash"])
+	})
+
+	t.Run("last-write-wins and prune to one commit", func(t *testing.T) {
+		fc := NewFakeClient()
+		for i := 1; i <= 5; i++ {
+			body := []byte(fmt.Sprintf("v%d", i))
+			err := fc.ForceCommitFileToBranch(ctx, "o", "r", "state", "state.json", fmt.Sprintf("w%d", i), body)
+			require.NoError(t, err)
+		}
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/state"])
+		content, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "state")
+		require.NoError(t, err)
+		assert.Equal(t, "v5", string(content))
+		require.Len(t, fc.ForceCommittedFiles, 5)
+		for _, rec := range fc.ForceCommittedFiles {
+			assert.Equal(t, ForceCommitFixedBaseSHA, rec.StartSHA)
+			assert.True(t, rec.Force)
+		}
+	})
+
+	t.Run("per-branch files do not clobber", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "slash", "state.json", "s", []byte("fast")))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "events", "state.json", "e", []byte("full")))
+
+		fast, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "slash")
+		require.NoError(t, err)
+		full, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "events")
+		require.NoError(t, err)
+		assert.Equal(t, "fast", string(fast))
+		assert.Equal(t, "full", string(full))
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/slash"])
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/events"])
+	})
+
+	t.Run("re-root drops sibling files on the same branch", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "a.json", "a", []byte("A")))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "b.json", "b", []byte("B")))
+
+		_, err := fc.GetFileContentAtRef(ctx, "o", "r", "a.json", "b")
+		require.ErrorIs(t, err, ErrNotFound)
+		got, err := fc.GetFileContentAtRef(ctx, "o", "r", "b.json", "b")
+		require.NoError(t, err)
+		assert.Equal(t, "B", string(got))
+	})
+
+	t.Run("idempotent write of unchanged content still prunes", func(t *testing.T) {
+		fc := NewFakeClient()
+		body := []byte("same")
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "m", body))
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "m", body))
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/b"])
+		got, err := fc.GetFileContentAtRef(ctx, "o", "r", "f", "b")
+		require.NoError(t, err)
+		assert.Equal(t, "same", string(got))
+	})
+
+	t.Run("required args", func(t *testing.T) {
+		fc := NewFakeClient()
+		err := fc.ForceCommitFileToBranch(ctx, "o", "r", "", "f", "m", []byte("x"))
+		require.Error(t, err)
+		err = fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "", "m", []byte("x"))
+		require.Error(t, err)
+		assert.Empty(t, fc.ForceCommittedFiles)
+	})
+
+	t.Run("skip ci already present", func(t *testing.T) {
+		fc := NewFakeClient()
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "msg [skip ci]", []byte("x")))
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		assert.Equal(t, "msg [skip ci]", fc.ForceCommittedFiles[0].Message)
+	})
+
+	t.Run("empty message becomes skip ci", func(t *testing.T) {
+		fc := &FakeClient{}
+		require.NoError(t, fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "f", "", []byte("x")))
+		require.Len(t, fc.ForceCommittedFiles, 1)
+		assert.Equal(t, "[skip ci]", fc.ForceCommittedFiles[0].Message)
+		assert.Equal(t, 1, fc.ForceReachableCommits["o/r/b"])
+	})
+}
+
+func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	const goroutines = 12
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state", "state.json", "w", []byte(fmt.Sprintf("v%d", n)))
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, fc.ForceReachableCommits["o/r/state"])
+	content, err := fc.GetFileContentAtRef(ctx, "o", "r", "state.json", "state")
+	require.NoError(t, err)
+	assert.NotEmpty(t, content)
+	sha, err := fc.GetBranchRef(ctx, "o", "r", "state")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sha)
 }

@@ -1,12 +1,15 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -430,19 +433,29 @@ func TestListRepoPullRequests(t *testing.T) {
 
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{
-				"iid":           1,
-				"title":         "MR One",
-				"web_url":       "https://gitlab.com/myorg/myrepo/-/merge_requests/1",
-				"source_branch": "branch-1",
-				"target_branch": "main",
+				"iid":               1,
+				"title":             "MR One",
+				"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/1",
+				"source_branch":     "branch-1",
+				"target_branch":     "main",
+				"source_project_id": 5,
+				"target_project_id": 5,
 			},
 			{
-				"iid":           2,
-				"title":         "MR Two",
-				"web_url":       "https://gitlab.com/myorg/myrepo/-/merge_requests/2",
-				"source_branch": "branch-2",
-				"target_branch": "main",
+				"iid":               2,
+				"title":             "MR Two",
+				"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/2",
+				"source_branch":     "branch-2",
+				"target_branch":     "main",
+				"source_project_id": 9,
+				"target_project_id": 5,
 			},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/9", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"path_with_namespace": "contributor/myrepo",
 		})
 	})
 
@@ -451,7 +464,39 @@ func TestListRepoPullRequests(t *testing.T) {
 	require.Len(t, mrs, 2)
 	assert.Equal(t, "MR One", mrs[0].Title)
 	assert.Equal(t, "branch-1", mrs[0].Head)
+	assert.Equal(t, "myorg/myrepo", mrs[0].HeadRepo, "same source/target project id means the head lives in this repo")
 	assert.Equal(t, "MR Two", mrs[1].Title)
+	assert.Equal(t, "contributor/myrepo", mrs[1].HeadRepo, "differing source project id means the head lives in a fork, resolved to its owner/repo path")
+}
+
+func TestListRepoPullRequests_ForkProjectLookupEmptyPath(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"iid":               2,
+				"title":             "MR Two",
+				"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/2",
+				"source_branch":     "branch-2",
+				"target_branch":     "main",
+				"source_project_id": 9,
+				"target_project_id": 5,
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/v4/projects/9", func(w http.ResponseWriter, r *http.Request) {
+		// A 200 response that decodes successfully but omits
+		// path_with_namespace must not be treated as a resolved (empty)
+		// HeadRepo — it must fail closed like a decode/get error would.
+		writeJSON(t, w, http.StatusOK, map[string]any{})
+	})
+
+	mrs, err := client.ListRepoPullRequests(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Nil(t, mrs)
 }
 
 func TestListRepoPullRequests_Author(t *testing.T) {
@@ -631,6 +676,8 @@ func TestCreatePullRequestReview_Comment(t *testing.T) {
 		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes), "body": body["body"]})
 	})
 
+	// No MR endpoint is registered, so fetching diff_refs fails and the
+	// line-level finding falls back to a general note.
 	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "Review body", "sha123", []forge.ReviewComment{
 		{Path: "main.go", Line: 10, Body: "Fix this"},
 	})
@@ -639,6 +686,9 @@ func TestCreatePullRequestReview_Comment(t *testing.T) {
 	assert.Equal(t, "Review body", notes[0])
 	assert.Contains(t, notes[1], "`main.go:10`")
 	assert.Contains(t, notes[1], "Fix this")
+	for _, note := range notes {
+		assert.NotContains(t, note, requestChangesMarker)
+	}
 }
 
 func TestCreatePullRequestReview_CommentWithFileLevel(t *testing.T) {
@@ -663,6 +713,450 @@ func TestCreatePullRequestReview_CommentWithFileLevel(t *testing.T) {
 	assert.Contains(t, notes[0], "File-level comment")
 	// Should NOT contain a line number
 	assert.NotContains(t, notes[0], "readme.md:0")
+}
+
+func mockMRDiffRefs(t *testing.T, mux *http.ServeMux, headSHA string) {
+	t.Helper()
+	mockMRDiffRefsFull(t, mux, "base-sha", "start-sha", headSHA)
+}
+
+func mockMRDiffRefsFull(t *testing.T, mux *http.ServeMux, baseSHA, startSHA, headSHA string) {
+	t.Helper()
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid": 30,
+			"sha": headSHA,
+			"diff_refs": map[string]string{
+				"base_sha":  baseSHA,
+				"start_sha": startSHA,
+				"head_sha":  headSHA,
+			},
+		})
+	})
+}
+
+type capturedDiscussion struct {
+	Body     string `json:"body"`
+	Position struct {
+		BaseSHA      string `json:"base_sha"`
+		StartSHA     string `json:"start_sha"`
+		HeadSHA      string `json:"head_sha"`
+		PositionType string `json:"position_type"`
+		NewPath      string `json:"new_path"`
+		OldPath      string `json:"old_path"`
+		NewLine      int    `json:"new_line"`
+	} `json:"position"`
+}
+
+func TestCreatePullRequestReview_Comment_PositionedDiscussion(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	var discussions []capturedDiscussion
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var d capturedDiscussion
+		readJSONBody(t, r, &d)
+		discussions = append(discussions, d)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "Review body", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1, "review body stays a general note; the finding must not fall back to notes")
+	assert.Equal(t, "Review body", notes[0])
+	require.Len(t, discussions, 1)
+	assert.Equal(t, "Fix this", discussions[0].Body)
+	assert.Equal(t, "text", discussions[0].Position.PositionType)
+	assert.Equal(t, "main.go", discussions[0].Position.NewPath)
+	assert.Equal(t, "main.go", discussions[0].Position.OldPath)
+	assert.Equal(t, 10, discussions[0].Position.NewLine)
+	assert.Equal(t, "base-sha", discussions[0].Position.BaseSHA)
+	assert.Equal(t, "start-sha", discussions[0].Position.StartSHA)
+	assert.Equal(t, "sha123", discussions[0].Position.HeadSHA)
+}
+
+func TestCreatePullRequestReview_Comment_EmptyCommitSHAStillPositions(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "current-head")
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("line-level comment must not fall back to notes when diff_refs are complete and commitSHA is empty")
+	})
+
+	var discussions []capturedDiscussion
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		var d capturedDiscussion
+		readJSONBody(t, r, &d)
+		discussions = append(discussions, d)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, discussions, 1)
+	assert.Equal(t, "current-head", discussions[0].Position.HeadSHA)
+}
+
+func TestCreatePullRequestReview_Comment_SHACaseInsensitive(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "ABC123def")
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("matching SHAs that differ only by case must still position")
+	})
+
+	var discussions int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		discussions++
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "abc123DEF", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, discussions)
+}
+
+func TestCreatePullRequestReview_Comment_StaleHeadFallsBackToNote(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "newer-head")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("stale head_sha must not create a positioned discussion")
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "reviewed-sha", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`main.go:10`")
+	assert.Contains(t, notes[0], "Fix this")
+}
+
+func TestCreatePullRequestReview_Comment_DiffRefsDecodeErrorFallsBackToNote(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{not-json"))
+	})
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`main.go:10`")
+}
+
+func TestCreatePullRequestReview_Comment_IncompleteDiffRefsFallsBackToNote(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefsFull(t, mux, "base-sha", "", "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("incomplete diff_refs must not create a positioned discussion")
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`main.go:10`")
+}
+
+func TestCreatePullRequestReview_Comment_DiscussionErrorFallsBackToNote(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "line is not a valid diff position",
+		})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`main.go:10`")
+	assert.Contains(t, notes[0], "Fix this")
+}
+
+// TestCreatePullRequestReview_Comment_ServerErrorFallsBackToNoteAndLogs
+// verifies that a 5xx from the Discussions API still falls back to the
+// note path (same as a 4xx rejection), but — unlike a 4xx — is logged,
+// since it may indicate a systemic Discussions API outage rather than
+// an expected diff-position rejection.
+func TestCreatePullRequestReview_Comment_ServerErrorFallsBackToNoteAndLogs(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{
+			"message": "internal error",
+		})
+	})
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`main.go:10`")
+	assert.Contains(t, logBuf.String(), "falling back to note")
+	assert.Contains(t, logBuf.String(), "main.go:10")
+}
+
+func TestCreatePullRequestReview_Comment_MixedPositionedAndFileLevel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	var discussions []capturedDiscussion
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		var d capturedDiscussion
+		readJSONBody(t, r, &d)
+		discussions = append(discussions, d)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "line-level"},
+		{Path: "readme.md", Line: 0, Body: "file-level"},
+	})
+	require.NoError(t, err)
+	require.Len(t, discussions, 1)
+	assert.Equal(t, "line-level", discussions[0].Body)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "`readme.md`")
+	assert.Contains(t, notes[0], "file-level")
+	assert.NotContains(t, notes[0], "readme.md:0")
+}
+
+func TestCreatePullRequestReview_Comment_FileLevelDoesNotFetchDiffRefs(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("file-level comments must not fetch diff_refs")
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("file-level comments must not create discussions")
+	})
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "readme.md", Line: 0, Body: "File-level comment"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+}
+
+func TestCreatePullRequestReview_Comment_NoteFallbackFailure(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{"message": "invalid position"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "COMMENT", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "Fix this"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post inline comment")
+}
+
+func TestCreatePullRequestReview_RequestChanges_PositionedDiscussion(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mockMRDiffRefs(t, mux, "sha123")
+
+	var notes []string
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	var discussions []capturedDiscussion
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		var d capturedDiscussion
+		readJSONBody(t, r, &d)
+		discussions = append(discussions, d)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "REQUEST_CHANGES", "Please fix", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 4, Body: "off-by-one"},
+	})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], requestChangesMarker)
+	assert.Contains(t, notes[0], "Please fix")
+	require.Len(t, discussions, 1)
+	assert.Equal(t, "off-by-one", discussions[0].Body)
+	assert.Equal(t, 4, discussions[0].Position.NewLine)
+}
+
+func TestMRDiffRefsUsable(t *testing.T) {
+	complete := &mrDiffRefs{BaseSHA: "b", StartSHA: "s", HeadSHA: "h"}
+	assert.True(t, complete.usable(""))
+	assert.True(t, complete.usable("h"))
+	assert.True(t, complete.usable("H"))
+	assert.False(t, complete.usable("other"))
+	assert.False(t, (*mrDiffRefs)(nil).usable("h"))
+	assert.False(t, (&mrDiffRefs{BaseSHA: "b", HeadSHA: "h"}).usable("h"))
+	assert.False(t, (&mrDiffRefs{StartSHA: "s", HeadSHA: "h"}).usable("h"))
+	assert.False(t, (&mrDiffRefs{BaseSHA: "b", StartSHA: "s"}).usable(""))
+}
+
+func TestCreatePullRequestReview_Approve_PositionedDiscussion(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": "review-bot"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               30,
+			"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/30",
+			"sha":               "sha123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 1, "username": "human-author"},
+			"source_project_id": 100,
+			"target_project_id": 100,
+			"diff_refs": map[string]string{
+				"base_sha":  "base-sha",
+				"start_sha": "start-sha",
+				"head_sha":  "sha123",
+			},
+		})
+	})
+
+	approved := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approved = true
+		writeJSON(t, w, http.StatusOK, map[string]any{"iid": 30})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("line-level finding on APPROVE must be a discussion, not a note")
+	})
+
+	var discussions []capturedDiscussion
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/discussions", func(w http.ResponseWriter, r *http.Request) {
+		var d capturedDiscussion
+		readJSONBody(t, r, &d)
+		discussions = append(discussions, d)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": "abc"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "nit"},
+	})
+	require.NoError(t, err)
+	assert.True(t, approved)
+	require.Len(t, discussions, 1)
+	assert.Equal(t, "nit", discussions[0].Body)
 }
 
 func TestCreatePullRequestReview_InvalidEvent(t *testing.T) {
@@ -1219,6 +1713,35 @@ func TestDeletePipelineSchedule(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestUpdatePipelineSchedule(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/123", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["active"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 123, "active": true})
+	})
+
+	err := client.UpdatePipelineSchedule(ctx, "myorg", "myrepo", 123, true)
+	require.NoError(t, err)
+}
+
+func TestUpdatePipelineSchedule_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/123", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	err := client.UpdatePipelineSchedule(ctx, "myorg", "myrepo", 123, true)
+	require.Error(t, err)
+}
+
 func TestListPipelineSchedules(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1264,6 +1787,10 @@ func TestIsProtectedBranch_True(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		writeJSON(t, w, http.StatusOK, map[string]string{"name": "main"})
@@ -1281,6 +1808,10 @@ func TestIsProtectedBranch_False(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/feature", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
 
 	protected, err := client.IsProtectedBranch(ctx, "myorg", "myrepo", "feature")
 	require.NoError(t, err)
@@ -1297,6 +1828,455 @@ func TestIsProtectedBranch_UnexpectedStatus(t *testing.T) {
 
 	_, err := client.IsProtectedBranch(ctx, "myorg", "myrepo", "main")
 	require.Error(t, err)
+}
+
+func TestGetProtectedBranch_AccessLevels(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	userID := 42
+	groupID := 7
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/release%2Fv1", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "release/v1",
+			"push_access_levels": []map[string]any{
+				{"access_level": 0, "user_id": nil, "group_id": nil},
+			},
+			"merge_access_levels": []map[string]any{
+				{"access_level": 40, "user_id": nil, "group_id": nil},
+				{"access_level": 30, "user_id": userID, "group_id": nil},
+				{"access_level": 30, "user_id": nil, "group_id": groupID},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "release/v1")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, "release/v1", rule.Name)
+	require.Len(t, rule.PushAccessLevels, 1)
+	assert.Equal(t, 0, rule.PushAccessLevels[0].AccessLevel)
+	require.Len(t, rule.MergeAccessLevels, 3)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	assert.Equal(t, 0, rule.MergeAccessLevels[0].UserID)
+	assert.Equal(t, userID, rule.MergeAccessLevels[1].UserID)
+	assert.Equal(t, groupID, rule.MergeAccessLevels[2].GroupID)
+}
+
+func TestGetProtectedBranch_NotProtected(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/dev", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "dev")
+	require.NoError(t, err)
+	assert.Nil(t, rule)
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestGetProtectedBranch_WildcardMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule, "a Maintainer-only wildcard rule matching the default branch must be reported as protected")
+	assert.Equal(t, "main*", rule.Name)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestGetProtectedBranch_WildcardStarMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule, "a bare '*' wildcard rule must be reported as protecting the default branch")
+	assert.Equal(t, "*", rule.Name)
+}
+
+// TestGetProtectedBranch_UnionAcrossExactAndWildcard covers a project with
+// both a Maintainer-only exact-name rule for "main" and a Developer-allowed
+// "*" wildcard rule. GitLab's actual CreatePipeline access is the union of
+// every matching rule, so a Developer-level poller can create pipelines
+// here even though the exact-name rule alone would forbid it. Only
+// checking the exact-name rule (or only the first matching rule) would
+// wrongly report this as unprotectable by a Developer, causing a false
+// "repos status" drift or an unnecessary/incorrect grant attempt.
+func TestGetProtectedBranch_UnionAcrossExactAndWildcard(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"access_level": 40},
+			},
+			"push_access_levels": []map[string]any{
+				{"access_level": 40},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, "main", rule.Name, "the exact-name rule is present, so the PATCH target must remain the branch itself")
+	require.Len(t, rule.MergeAccessLevels, 2, "must include both the exact rule's and the wildcard rule's access levels")
+	require.Len(t, rule.PushAccessLevels, 2, "must include both the exact rule's and the wildcard rule's access levels")
+	hasDeveloperMerge := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.AccessLevel == 30 {
+			hasDeveloperMerge = true
+		}
+	}
+	assert.True(t, hasDeveloperMerge, "the Developer-allowed wildcard rule's access must survive the union despite the stricter exact rule")
+}
+
+// TestGetProtectedBranch_UnionAcrossMultipleWildcards covers a project with
+// no exact-name rule for "main" but two overlapping wildcard rules: a
+// Maintainer-only "*" and a Developer-allowed "main*". Only returning the
+// first matching wildcard from the list response (rather than every match)
+// can pick "*" and miss "main*"'s more permissive grant, depending on list
+// ordering.
+func TestGetProtectedBranch_UnionAcrossMultipleWildcards(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not PATCH the wildcard rule \"*\"; it covers branches beyond the default branch")
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not PATCH the wildcard rule \"main*\"; it covers branches beyond the default branch")
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	require.Len(t, rule.MergeAccessLevels, 2, "both overlapping wildcard rules must contribute to the union, not just the first one returned")
+	hasDeveloperMerge := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.AccessLevel == 30 {
+			hasDeveloperMerge = true
+		}
+	}
+	assert.True(t, hasDeveloperMerge, "the Developer-allowed \"main*\" rule must be found even when a stricter \"*\" rule is listed first")
+
+	// A Developer-level poller can already create pipelines via the
+	// union, so granting merge access is unnecessary — confirm
+	// GrantProtectedBranchMergeUser still fails closed rather than
+	// PATCHing either wildcard if a grant were attempted anyway.
+	err = client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only protected via wildcard rule")
+}
+
+func TestGetProtectedBranch_UnexpectedStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get protected branch")
+}
+
+func TestGetProtectedBranch_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode protected branch")
+}
+
+func TestGrantProtectedBranchMergeUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	patched := false
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"name": "main",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			})
+		case http.MethodPatch:
+			patched = true
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			allowed, ok := body["allowed_to_merge"].([]any)
+			require.True(t, ok)
+			require.Len(t, allowed, 1)
+			entry := allowed[0].(map[string]any)
+			assert.Equal(t, float64(99), entry["user_id"])
+			writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+	assert.True(t, patched)
+}
+
+func TestGrantProtectedBranchMergeUser_Idempotent(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"user_id": 99},
+			},
+		})
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+}
+
+func TestGrantProtectedBranchMergeUser_IdempotentPushUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"push_access_levels": []map[string]any{
+				{"user_id": 99},
+			},
+		})
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+}
+
+func TestGrantProtectedBranchMergeUser_NotProtected(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not protected")
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+// TestGrantProtectedBranchMergeUser_WildcardMatch covers a project whose
+// default branch is protected only through a wildcard rule (e.g. a
+// "main*" or "*" Maintainer-only rule) rather than an exact-name record.
+// PATCHing that wildcard rule would grant the poller merge access on every
+// branch the wildcard covers, not just the default branch, so this must
+// fail closed instead of PATCHing anything.
+func TestGrantProtectedBranchMergeUser_WildcardMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("must not PATCH the wildcard rule %q; it covers branches beyond the default branch", "main*")
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only protected via wildcard rule")
+	assert.Contains(t, err.Error(), "main*")
+}
+
+func TestGrantProtectedBranchMergeUser_InvalidUser(t *testing.T) {
+	client, _ := setupTest(t)
+	err := client.GrantProtectedBranchMergeUser(context.Background(), "myorg", "myrepo", "main", 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid user ID")
+}
+
+func TestGrantProtectedBranchMergeUser_GetError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	err := client.GrantProtectedBranchMergeUser(context.Background(), "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grant protected branch merge")
+}
+
+func TestGrantProtectedBranchMergeUser_PatchError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"name": "main",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grant protected branch merge")
 }
 
 func TestGetOrgPlan_WithPlan(t *testing.T) {
@@ -2175,6 +3155,11 @@ func TestDismissPullRequestReview_WithoutMessage(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRequestChangesMarkerMatchesSharedConstant(t *testing.T) {
+	assert.Equal(t, forge.ChangesRequestedMarker, requestChangesMarker)
+	assert.Equal(t, "<!-- fullsend:changes-requested -->", requestChangesMarker)
+}
+
 func TestCreatePullRequestReview_RequestChanges(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -2192,6 +3177,7 @@ func TestCreatePullRequestReview_RequestChanges(t *testing.T) {
 	require.Len(t, notes, 1)
 	assert.Contains(t, notes[0], "Please fix")
 	assert.Contains(t, notes[0], requestChangesMarker)
+	assert.Equal(t, forge.ChangesRequestedMarker, requestChangesMarker)
 }
 
 func TestCreatePullRequestReview_RequestChangesEmptyBody(t *testing.T) {
@@ -2327,6 +3313,420 @@ func TestCreatePullRequestReview_Approve_409AlreadyMerged(t *testing.T) {
 	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "409 Conflict")
+}
+
+// mockApproverIdentity mocks the /user and MR-info endpoints that
+// isAuthenticatedUserMRAuthor uses to check the authenticated bot
+// identity against the MR author, both as CreatePullRequestReview's
+// pre-call check (skip the approve call outright on a match) and as its
+// post-401 safety net.
+func mockApproverIdentity(t *testing.T, mux *http.ServeMux, botUsername, mrAuthorUsername string) {
+	t.Helper()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": botUsername})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               30,
+			"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/30",
+			"sha":               "sha123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 1, "username": mrAuthorUsername},
+			"source_project_id": 100,
+			"target_project_id": 100,
+		})
+	})
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatches(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesWithBody(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1, "fallback should combine body into a single note")
+	assert.Contains(t, notes[0], "LGTM!")
+	assert.Contains(t, notes[0], approvalFallbackNote)
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesWithInline(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", []forge.ReviewComment{
+		{Path: "main.go", Line: 10, Body: "nit: rename"},
+	})
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 2)
+	assert.Contains(t, notes[0], "LGTM!")
+	assert.Contains(t, notes[0], approvalFallbackNote)
+	assert.Contains(t, notes[1], "`main.go:10`")
+	assert.Contains(t, notes[1], "nit: rename")
+}
+
+// TestCreatePullRequestReview_Approve_401SafetyNetAfterPreCheckError covers
+// the safety net: if the pre-call identity check itself fails (here, a
+// transient error on the first /user call), CreatePullRequestReview falls
+// through to the normal approve call instead of guessing, and the
+// existing 401 handling still recovers via a second identity check.
+func TestCreatePullRequestReview_Approve_401SafetyNetAfterPreCheckError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	userCalls := 0
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		userCalls++
+		if userCalls == 1 {
+			// A non-retryable status (unlike 5xx/429, the client does not
+			// retry this internally) so the first identity check surfaces
+			// a real error to CreatePullRequestReview's pre-call check.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": "review-bot"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               30,
+			"web_url":           "https://gitlab.com/myorg/myrepo/-/merge_requests/30",
+			"sha":               "sha123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 1, "username": "review-bot"},
+			"source_project_id": 100,
+			"target_project_id": 100,
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.True(t, approveCalled, "a pre-check error must fall through to the normal approve call rather than guess")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_401CredentialFailure(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized: invalid token",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid token")
+	assert.False(t, noteCalled, "credential 401 must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesEmptyBody(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var notes []string
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		notes = append(notes, body["body"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": len(notes)})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.NoError(t, err)
+	assert.False(t, approveCalled, "the approve call must be skipped outright when the bot is the MR author, not attempted and recovered from")
+	require.Len(t, notes, 1)
+	assert.Equal(t, approvalFallbackNote, notes[0])
+}
+
+func TestCreatePullRequestReview_Approve_401NonAuthorMR(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err, "a 401 on an MR the bot doesn't author is a real ineligibility, not self-approval")
+	assert.Contains(t, err.Error(), "401")
+	assert.False(t, noteCalled, "a 401 on an MR the bot doesn't author must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_401EmptyBodyNonAuthorMR(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.Error(t, err, "GitLab's real generic (empty-body) 401 must still fail closed when the bot isn't the author")
+	assert.False(t, noteCalled, "an empty-body 401 on an MR the bot doesn't author must not fall back to a note")
+}
+
+func TestCreatePullRequestReview_Approve_401IdentityCheckFailsClosed(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify self-approval")
+	assert.False(t, noteCalled, "an identity-check failure must fail closed, not fall back to a note")
+}
+
+func TestIsAuthenticatedUserMRAuthor(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.NoError(t, err)
+	assert.True(t, isAuthor)
+}
+
+func TestIsAuthenticatedUserMRAuthor_Mismatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "someone-else")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.NoError(t, err)
+	assert.False(t, isAuthor)
+}
+
+func TestIsAuthenticatedUserMRAuthor_PullRequestInfoError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]string{"username": "review-bot"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	_, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get merge request !30 author")
+}
+
+func TestIsAuthenticatedUserMRAuthor_EmptyAuthUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	// An empty authenticated username (never expected from a real 200
+	// response) must fail closed rather than compare equal to an equally
+	// empty MR author username.
+	mockApproverIdentity(t, mux, "", "")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.False(t, isAuthor)
+	assert.Contains(t, err.Error(), "empty username")
+}
+
+func TestIsAuthenticatedUserMRAuthor_EmptyMRAuthor(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	mockApproverIdentity(t, mux, "review-bot", "")
+
+	isAuthor, err := client.isAuthenticatedUserMRAuthor(ctx, "myorg", "myrepo", 30)
+	require.Error(t, err)
+	assert.False(t, isAuthor)
+	assert.Contains(t, err.Error(), "empty author username")
+}
+
+func TestCreatePullRequestReview_Approve_403NoFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	noteCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{
+			"message": "403 Forbidden",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		noteCalled = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+	})
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "LGTM!", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+	assert.False(t, noteCalled, "non-401 approve failures must not fall back to a note")
+}
+
+// TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesNoteFailure
+// covers the pre-call skip path (matching bot/author identity, so the
+// approve call is never attempted) when the fallback note itself fails to
+// post. The /approve handler below is registered only to assert it is
+// never reached; the 401 it would return is irrelevant here because the
+// pre-call identity check short-circuits before any approve call is made.
+func TestCreatePullRequestReview_Approve_SkipsCallWhenAuthorMatchesNoteFailure(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	approveCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/approve", func(w http.ResponseWriter, r *http.Request) {
+		approveCalled = true
+		writeJSON(t, w, http.StatusUnauthorized, map[string]string{
+			"message": "401 Unauthorized",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/30/notes", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{
+			"message": "boom",
+		})
+	})
+	mockApproverIdentity(t, mux, "review-bot", "review-bot")
+
+	err := client.CreatePullRequestReview(ctx, "myorg", "myrepo", 30, "APPROVE", "", "sha123", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post approval fallback comment")
+	assert.False(t, approveCalled, "matching identity must skip the approve call outright, not reach it and recover from a 401")
+}
+
+func TestIsCredentialFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{name: "empty", msg: "", want: false},
+		{name: "generic 401", msg: "401 Unauthorized", want: false},
+		{name: "unauthorized only", msg: "Unauthorized", want: false},
+		{name: "padded case", msg: "  401 UNAUTHORIZED  ", want: false},
+		{name: "cannot approve own", msg: "You cannot approve your own merge request", want: false},
+		{name: "author cannot approve", msg: "Author cannot approve this merge request", want: false},
+		{name: "invalid token", msg: "401 Unauthorized: invalid token", want: true},
+		{name: "bad credentials", msg: "Bad credentials", want: true},
+		{name: "access token expired", msg: "access token expired", want: true},
+		{name: "token revoked", msg: "Token is invalid or revoked", want: true},
+		{name: "insufficient scope", msg: "insufficient_scope", want: true},
+		{name: "not authenticated", msg: "not authenticated", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isCredentialFailure(tt.msg))
+		})
+	}
 }
 
 func TestCreateRepoSecret_MaskedFallback(t *testing.T) {
@@ -2690,6 +4090,35 @@ func TestDeleteRef_UnsupportedPrefix(t *testing.T) {
 	err := client.DeleteRef(ctx, "myorg", "myrepo", "pull/123/head")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported ref path format")
+}
+
+func TestDeleteBranch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	called := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/repository/branches/fullsend%2Fscaffold-install", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteBranch(ctx, "myorg", "myrepo", "fullsend/scaffold-install")
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+func TestDeleteBranch_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/repository/branches/gone", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	err := client.DeleteBranch(ctx, "myorg", "myrepo", "gone")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
 }
 
 // ---------------------------------------------------------------------------

@@ -59,12 +59,7 @@ func CrossCompile(opts CrossCompileOpts) error {
 		return fmt.Errorf("not in a Go module — run from the fullsend source tree or use a released version: %w", err)
 	}
 
-	versionLD := opts.Version + opts.VersionStamp
-	buildCmd := exec.Command(goPath, "build",
-		"-ldflags", fmt.Sprintf("-X github.com/fullsend-ai/fullsend/internal/cli.version=%s", versionLD),
-		"-o", opts.DestPath,
-		"./cmd/fullsend/",
-	)
+	buildCmd := exec.Command(goPath, crossCompileArgs(opts.Version+opts.VersionStamp, opts.DestPath)...)
 	buildCmd.Dir = modRoot
 	buildCmd.Env = append(os.Environ(), "GOTOOLCHAIN=auto", "GOOS=linux", "GOARCH="+opts.Arch, "CGO_ENABLED=0")
 	buildCmd.Stderr = os.Stderr
@@ -72,4 +67,15 @@ func CrossCompile(opts CrossCompileOpts) error {
 		return fmt.Errorf("cross-compiling for linux/%s: %w", opts.Arch, err)
 	}
 	return nil
+}
+
+// crossCompileArgs returns the go build arguments for a vendored binary.
+// -s -w strip the symbol table and DWARF, as .goreleaser.yml does, so the
+// vendored binary stays under GitHub's blob API size limit (#7581).
+func crossCompileArgs(versionLD, destPath string) []string {
+	return []string{"build",
+		"-ldflags", fmt.Sprintf("-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=%s", versionLD),
+		"-o", destPath,
+		"./cmd/fullsend/",
+	}
 }

@@ -10,7 +10,14 @@ case "$1" in
     esac
     ;;
   settings)
-    exit 0
+    # OpenShell is dropping providers_v2_enabled once v2 is the sole
+    # mode. Emit that unknown-key error so runAgent tests cover the
+    # recover in EnableProvidersV2 rather than the still-supported
+    # settings-set success path.
+    echo "Error:   × unknown setting key 'providers_v2_enabled'. Allowed keys:" >&2
+    echo "  │ ocsf_json_enabled, ocsf_schema_version, agent_policy_proposals_enabled," >&2
+    echo "  │ proposal_approval_mode" >&2
+    exit 1
     ;;
   provider)
     # Track imported profile ids so list-profiles can satisfy

@@ -106,6 +106,69 @@ Accepted
 > `fullsend-dispatch.yml`, and "MR review latency is unaffected" under
 > Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
 > by the poller; use `/fs-review`.
+>
+> **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
+> model" below) means GitLab's own `merge_requests_author_approval=false`
+> default always rejects `POST .../approve` with 401 whenever the
+> authenticated bot identity is also the MR author — which is always true
+> for fullsend-authored MRs on GitLab, since code and review share one
+> identity. That outcome is a certainty, not a possible failure to
+> recover from after the fact, so `CreatePullRequestReview` (APPROVE)
+> checks the authenticated identity against the MR author via
+> `GetAuthenticatedUser` / `GetPullRequestInfo` *before* calling
+> `/approve`, and only when they affirmatively match, skips the call
+> outright and posts an MR note recording the approve verdict instead. A
+> post-hoc check using the same identity comparison remains as a safety
+> net for a 401 that arrives despite the pre-call check (e.g., the
+> identity lookup itself errored, or a future per-role PAT is not the
+> author but project settings still block the approval). In both the
+> pre-call and post-hoc paths, a 401 whose body matches known
+> credential-failure phrasing (`isCredentialFailure` — invalid, expired,
+> or revoked token) is always a hard error, never a note, and any error
+> while performing the identity check itself (including an empty
+> username from either lookup) also fails closed as a hard error rather
+> than falling back. This is a documented trade-off of the single-shared-PAT
+> credential model's interaction with the "no self-approval"
+> defense-in-depth control in [Threat 2 of the security threat
+> model](../problems/security-threat-model.md#threat-2-insider-threat--compromised-credentials):
+> GitHub keeps that separation via distinct bot identities; GitLab's
+> single-PAT model (chosen here for operational simplicity) does not, and
+> this fallback is an accepted consequence of that tradeoff rather than a
+> per-role-token gap to close.
+>
+> **Update (2026-09, #7322):** Native `merge_request_event` dispatch is
+> removed. After #7293 moved MR-open review to the poller, the only
+> remaining native path was best-effort `closed` → retro (a
+> push-then-close race that generated no-op child pipelines for every
+> other MR event). All GitLab events now route through the cron poller,
+> including closed-unmerged MRs (`closed_at` > watermark and `merged_at`
+> empty → `transition.kind: closed` → retro). This is Option 4 (pure
+> cron-polling), originally rejected for sub-second MR review latency
+> that #7293 already gave up. `fullsend-dispatch.yml` is retained as a
+> version-marker carrier and is no longer included by the pipeline
+> wrapper. Superseded sections: the two-path Decision, the native-CI
+> architecture-diagram line, and the #5556 auto_cancel note's "MR
+> pipelines / MR dispatch jobs are fast (<30s)" claim above — no MR
+> pipelines or dispatch jobs exist anymore. ("MR review latency is
+> unaffected" under Consequences was already superseded by the #7293
+> note above.)
+>
+> **Transitional risk on already-enrolled repos:** the root
+> `.gitlab-ci.yml` is user-owned and, prior to this note, was only
+> touched by the install merge path (fresh installs) and the uninstall
+> unmerge path (teardown) — neither runs during `repos upgrade`/`repos
+> install` convergence. Without a migration, an already-enrolled repo
+> that converges after #7322 would keep the obsolete
+> `merge_request_event` workflow rule while the newly-synced pipeline
+> wrapper defines no job matching that source, so GitLab would create
+> an empty/config-error pipeline on every MR event. Converge now
+> strips this specific obsolete rule from the root file in place
+> (`StripObsoleteGitLabWorkflowRules`, `internal/repos/gitlabci.go`),
+> leaving fullsend's current rules and all user configuration
+> untouched. See risk item 6 under Consequences. #7337 subsequently
+> dropped the leftover empty `dispatch` stage from the required stage
+> list and strips it from already-enrolled root files on converge
+> (`StripObsoleteGitLabStages`).
 
 ## Context
 
@@ -233,6 +296,16 @@ Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
+> **See also (#7497, #7498):** The registered-role credential contract
+> (built-in Poller/Analyst/Coder plus administrator-registered custom
+> roles) is specified in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` can provision those credentials additively without
+> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499) selects the
+> registered role credential when the migration gate is `migrating` or
+> `enforced`; this ADR's single-bot identity remains the default while
+> the gate is unset, `disabled`, or `rollback`.
+
 ### Credential model
 
 A Maintainer-role project access token with `api` scope, created during
@@ -240,6 +313,79 @@ A Maintainer-role project access token with `api` scope, created during
 updates CI/CD variables (watermark and label state persistence) via the
 API, which requires Maintainer-level access. The bot PAT is stored as a
 protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
+
+> **Update (2026-09, #7343 / #7362 / #7381):** Poll-state persistence
+> (watermarks, dispatched/failed-key dedup, label state) moved off
+> CI/CD variables onto two per-mode, HMAC-signed `state.json`
+> documents on dedicated unprotected branches:
+>
+> | Branch | Written by | Fields |
+> |---|---|---|
+> | `fullsend-poll-state-slash` | slash poll (`*/5`) | `last_poll_at_fast`, `dispatched_keys_fast`, `failed_keys_fast`, `hmac` |
+> | `fullsend-poll-state-events` | event poll (`2,17,32,47`) | `last_poll_at_full`, `dispatched_keys_full`, `failed_keys_full`, `label_state`, `hmac` |
+>
+> Two branches keep concurrent slash+events runs from clobbering each
+> other (each mode has its own `resource_group`, but the two modes can
+> overlap) and let force-re-root pruning drop only that mode's prior
+> commit. Two files on one branch would lose the sibling file on every
+> force-re-root.
+>
+> **Force-re-root pruning.** Every save is a single
+> `ForceCommitFileToBranch` (`POST /projects/:id/repository/commits`
+> with `force: true` and `start_sha` = the repository's root commit).
+> The branch is always root + 1 commit; prior state commits become
+> unreachable. The commit message is suffixed `[skip ci]`. Force +
+> start point also creates the branch on first write.
+>
+> **HMAC.** Each document is HMAC-SHA256-signed with
+> `FULLSEND_DISPATCH_SECRET` (already provisioned for dispatch
+> signing). The MAC covers a per-branch, per-project domain prefix
+> (`fullsend-poll-state-slash/1\n` or `fullsend-poll-state-events/1\n`,
+> then `{owner/repo}\n`) plus the canonical JSON with the `hmac` field
+> cleared, so a signed file cannot be substituted across branches or
+> projects.
+>
+> **Fail-closed vs self-heal.** Secret unset → refuse to load or write
+> (fail closed). Present but missing/invalid signature, or unreadable
+> JSON → discard the branch (`DeleteRef`) and fail that cycle; the
+> next cycle recreates a fresh signed baseline. Missing branch or
+> `state.json` is *not* tampering: load a fresh baseline (watermark
+> defaults to ~1 hour ago) and the next save recreates the branch.
+> Losing a state branch therefore causes a one-time re-scan and
+> at-least-once re-dispatch of recent items, not a stall.
+>
+> **Lifecycle.** `repos install` / `repos converge` create both
+> branches with an initial signed document (seeded from legacy
+> CI/CD-variable state when present). The poller self-heals a deleted
+> branch within one cycle. `repos uninstall` deletes both branches.
+>
+> Phase 3c (#7381) dropped the created bot PAT from Maintainer (40)
+> to Developer (30); Developer can force-write and delete an
+> unprotected branch. The historical Maintainer-role description
+> above is superseded for the CI/CD-variable rationale only. It is
+> not superseded for the #5556 "New permission requirement" above:
+> `internal/poll/dispatch.go` still calls `CreatePipeline` on the
+> protected default branch, which requires merge or push access.
+> Under GitLab's default "Protected" branch preset (Developers and
+> Maintainers can merge), Developer (30) still satisfies that
+> requirement, but a repo whose branch protection restricts both merge
+> and push to Maintainers will get a 403 on pipeline creation and
+> dispatch will silently stop working. This change does not verify or
+> grant that access; operators using a stricter branch-protection
+> configuration must grant Developers merge (or push) access to the
+> default branch, or keep the bot PAT at Maintainer (40), for dispatch
+> to keep working.
+>
+> **Update (#7665):** `repos install` now grants the poller
+> project-access-token user merge access (not push) on the protected
+> default branch when Developer-class merge/push is absent, and fails
+> closed if that grant is not possible. `repos status` reports
+> `protected-ref-pipeline` drift if the access is later removed.
+>
+> **Update (#7667):** a failed `CreatePipeline` (including that 403) now
+> fails the poll cycle after persisting retry state. The permission gap
+> is unchanged; the poll job no longer reports success when no agent
+> pipeline was created.
 
 Key properties:
 
@@ -294,6 +440,12 @@ exits as a no-op, wasting one pipeline invocation's CI minutes.
 This is an accepted tradeoff — the alternative (sharing a
 processed-note-IDs set or cross-reading watermarks between modes)
 adds state coupling that complicates the independent-schedule design.
+
+> **Update (2026-09, #7343):** The two watermarks named above are now
+> `last_poll_at_fast` / `last_poll_at_full` fields in the HMAC-signed
+> `state.json` on `fullsend-poll-state-slash` and
+> `fullsend-poll-state-events` respectively, not CI/CD variables. See
+> "Credential model".
 
 > **Update (2026-08, #5959):** ~~The dual-schedule architecture above was replaced
 > by a single `*/5 * * * *` schedule with automatic full-poll promotion. The
@@ -358,6 +510,7 @@ configuration.
 | ~~MR opened/updated/reopened~~ | ~~Native CI (`merge_request_event`)~~ | ~~review~~ Moved to cron poll in [#7293](https://github.com/fullsend-ai/fullsend/issues/7293) — protected CI/CD variables are not exposed on unprotected MR refs |
 | MR opened | Cron poll (MR `created_at` > watermark) | review |
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
+| MR closed (unmerged) | Cron poll (MR `closed_at` > watermark, `merged_at` empty) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
 
 Bot-authored comments are skipped to prevent re-triggering loops (exception:
@@ -369,9 +522,9 @@ Slash commands (`/fs-*`) are the only latency-sensitive operation. Mitigations:
 
 - **Labels as primary triggers.** Applying `ready-for-review` or
   `ready-to-code` labels is discoverable and visible. Labels on issues are
-  detected via cron-poll (5–60 minute latency); labels on MRs can also be
-  detected via native CI `merge_request_event` when applied alongside an
-  MR update.
+  detected via cron-poll (5–60 minute latency). Labels on MRs are also
+  detected via cron-poll; native CI `merge_request_event` label
+  detection was removed in #7322.
 - **Multi-frequency polling** keeps slash command latency to 5 minutes on
   Premium/Ultimate.
 - **Manual pipeline trigger** via the GitLab UI as a power-user escape hatch.
@@ -475,6 +628,18 @@ injection > insider > drift > supply chain):
 | GitLab database compromise | PAT stored in GitLab as protected CI/CD variable |
 | Audit trail | GitLab audit logs (Premium+) |
 
+> **Update (2026-09, #7343):** The table above describes the original
+> CI/CD-variable / Maintainer model. Poll state is now an HMAC-signed
+> `state.json` on Developer-writable branches, so the relevant threat
+> rows are:
+>
+> | Threat vector | Mitigation |
+> |---|---|
+> | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
+> | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
+> | Unbounded history on state branches | Force-re-root every save on the repository's root commit (`force: true` + `start_sha`); branch stays at base + 1 commit. |
+> | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
+
 ### Forge abstraction
 
 [ADR 0005](0005-forge-abstraction-layer.md) requires new forges to implement
@@ -482,9 +647,17 @@ injection > insider > drift > supply chain):
 
 - `IsProtectedBranch` — maps to GitHub branch protection API and GitLab
   protected branches API
-- `CreatePipelineSchedule` / `DeletePipelineSchedule` — GitLab-native; GitHub
+- `CreatePipelineSchedule` / `DeletePipelineSchedule` / `UpdatePipelineSchedule` — GitLab-native; GitHub
   returns `ErrNotSupported`
 - `UpdateCIVariable` — for poll watermark management
+  > **Update (2026-09, #7343):** Poll watermarks are no longer CI/CD
+  > variables. Persistence uses `GetFileContentAtRef` /
+  > `ForceCommitFileToBranch` / `DeleteRef` on the two poll-state
+  > branches. Credential and secret writes (`FULLSEND_FORGE_TOKEN`,
+  > `FULLSEND_DISPATCH_SECRET`) use `CreateRepoSecret`, not
+  > `UpdateCIVariable`. `UpdateCIVariable` has no production callers;
+  > it remains on `forge.Client` only for non-credential CI/CD-variable
+  > operations, should any be added.
 
 A new `ErrNotSupported` sentinel (complementing the existing forge
 sentinel errors) allows forge
@@ -552,12 +725,38 @@ methods rather than adding forge-conditional logic.
 3. **Watermark tampering.** A Maintainer could skip or replay events by
    modifying the watermark variables. Mitigated by protected variable status
    and event deduplication.
+   > **Update (2026-09, #7343):** Poll state now lives on unprotected,
+   > Developer-writable `state.json` branches (see "Credential model"
+   > above) rather than protected CI/CD variables, so tampering is
+   > mitigated by an HMAC-SHA256 signature (`FULLSEND_DISPATCH_SECRET`,
+   > per-branch and per-project domain separation) instead: a Developer
+   > without the secret cannot forge state. Fail-closed: secret unset
+   > refuses load/write; a missing or invalid signature discards the
+   > branch and fails that cycle. A missing branch or file is not
+   > tampering — the poller starts from a fresh baseline and the next
+   > save recreates the branch.
 4. **Schedule modification.** A Maintainer could retarget the schedule to a
    non-protected branch. Mitigated by protected variable status (bot PAT
    not exposed on non-protected branches).
 5. **Missed events from API quirks.** The Notes API lacks `created_after`; the
    Events API `after` parameter is date-only. Mitigated by 30-second watermark
    overlap and dual-frequency polling as reconciliation.
+6. **Stale root-file workflow rules surviving convergence (#7322).** The root
+   `.gitlab-ci.yml` is user-owned and historically was only migrated on
+   fresh install or full uninstall, not on `repos upgrade`/`repos install`
+   convergence. An obsolete rule (e.g. `merge_request_event`, removed in
+   #7322) could otherwise survive indefinitely on already-enrolled repos,
+   producing an empty/config-error pipeline on every matching event.
+   Mitigated by a converge-time migration step that strips only the
+   specific obsolete rule(s), leaving current fullsend rules and user
+   configuration untouched. The migration only fires when fullsend can
+   prove it owns the `workflow:` block (the fullsend-generated
+   `workflow.name`, set on fresh installs). Repos enrolled by merging
+   fullsend rules into a pre-existing `workflow:` block carry no such
+   marker, so `merge_request_event` cannot be safely distinguished from
+   a user's own MR gate there and is left in place — those repos need
+   manual removal (same as the uninstall path). This deliberately errs
+   toward preserving user configuration over full auto-migration.
 
 **Comparison with GitHub:**
 
@@ -568,6 +767,12 @@ methods rather than adding forge-conditional logic.
 | Issue/comment dispatch | Native events (sub-second) | Cron polling (5 min) |
 | External infrastructure | Mint Cloud Function | None for event dispatch |
 | Credential types | App key + installation token | Single bot PAT |
+
+> **Update (2026-09, #7343):** The GitLab primary credential is still
+> a single bot PAT stored as a protected CI/CD variable; it is now
+> created at Developer (30). Poller *state* is not a CI/CD variable
+> — it lives on the HMAC-signed poll-state branches described under
+> "Credential model".
 
 Implementation covers poller pseudocode, forge interface changes, CI/CD
 template scaffolding, and install flow.

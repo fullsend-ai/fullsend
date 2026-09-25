@@ -1140,10 +1140,10 @@ func isTreeLockField(field string) bool {
 // dependency (see isTreeLockField) from its recorded URL. Direct URL entries
 // use forge tree URLs whose deepest path segment is the directory name.
 // Base-composed entries (see fetchBaseSkill/fetchBasePlugin in
-// internal/harness/compose.go) record raw.githubusercontent.com URLs pointing
-// at the marker file (SKILL.md or plugin.json); only those two names are
-// treated as markers and stripped — any other raw URL keeps its last segment
-// as the directory name.
+// internal/harness/compose.go) record raw.githubusercontent.com URLs. Skills
+// point at the SKILL.md marker; current plugins point at their directory.
+// Legacy pre-#6754 plugin locks point at plugin.json, so both marker names are
+// stripped. Any other raw URL keeps its last segment as the directory name.
 func lockTreeDirName(field, lockURL string) (string, error) {
 	if forgeInfo, err := forge.ParseForgeURL(lockURL); err == nil {
 		if forgeInfo.Path == "" {

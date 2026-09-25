@@ -242,6 +242,60 @@ func TestMergeSkills(t *testing.T) {
 	}
 }
 
+func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+privilege_levels:
+  default: write
+  runtime: write
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+privilege_levels:
+  runtime: read
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{
+		"default": "write",
+		"runtime": "read",
+	}, h.PrivilegeLevels)
+	assert.Equal(t, "read", h.PrivilegeLevelForStage(PrivilegeStageRuntime))
+	assert.Equal(t, "write", h.PrivilegeLevelForStage(PrivilegeStagePreScript))
+}
+
+func TestMergeBaseIntoChild_PrivilegeLevelsChildWins(t *testing.T) {
+	base := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageDefault: "write",
+		PrivilegeStageRuntime: "write",
+	}}
+	child := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageRuntime: "read",
+	}}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "write", child.PrivilegeLevels[PrivilegeStageDefault])
+	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
+}
+
+func TestMergeBaseIntoChild_PrivilegeLevelsInheritedWhenChildNil(t *testing.T) {
+	base := &Harness{PrivilegeLevels: map[string]string{
+		PrivilegeStageRuntime: "read",
+	}}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
+}
+
 func TestLoadWithBase_LocalBase_RunnerEnvMerge(t *testing.T) {
 	dir := t.TempDir()
 
@@ -327,10 +381,129 @@ validation_loop:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	// ValidationLoop: child replaces entirely
+	// Child non-zero fields override; unspecified fields inherit from base.
 	require.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "child-script.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopFieldLevelMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+  preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  schema: child-schema.json
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script, "script should be inherited from base")
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations, "max_iterations should be inherited from base")
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode, "feedback_mode should be inherited from base")
+	assert.Equal(t, "child-schema.json", h.ValidationLoop.Schema, "schema should be overridden by child")
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck, "preflight_check should be inherited from base")
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopChildScriptOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  script: child-validate.sh
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "child-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "base-schema.json", h.ValidationLoop.Schema)
+}
+
+func TestLoadWithBase_ForgePartialValidationLoopInherits(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    validation_loop:
+      schema: child-schema.json
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "child-schema.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopEmptyInheritsAll(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "base-schema.json", h.ValidationLoop.Schema)
 }
 
 func TestLoadWithBase_LocalBase_ValidationLoopInherit(t *testing.T) {
@@ -516,6 +689,7 @@ base: ../../../etc/passwd
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes workspace root")
+	assert.NotContains(t, err.Error(), "via symlink")
 }
 
 func TestLoadWithBase_LocalBase_PathTraversal_NoWorkspaceRoot(t *testing.T) {
@@ -535,6 +709,178 @@ base: ../outside.yaml
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_MissingSiblingWithinWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	harnessDir := filepath.Join(workspace, "harness")
+	path := writeTestHarness(t, harnessDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: ../sibling-dir/missing.yaml
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving base path symlinks")
+	assert.NotContains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_MissingSiblingWithMixedWorkspaceAlias(t *testing.T) {
+	realWorkspace := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realWorkspace, workspaceAlias))
+
+	path := writeTestHarness(t, filepath.Join(workspaceAlias, "harness"), "child.yaml", `
+agent: agents/child.md
+role: test
+base: ../sibling-dir/missing.yaml
+`)
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	require.NoError(t, err)
+
+	_, _, err = LoadWithBase(context.Background(), resolvedPath, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving base path symlinks")
+	assert.NotContains(t, err.Error(), "escapes workspace root")
+}
+
+func TestLoadWithBase_LocalBase_WorkspaceRootSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	writeTestHarness(t, realDir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.NoError(t, err)
+}
+
+func TestLoadWithBase_LocalBase_MissingBaseWithWorkspaceSymlinkAlias(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+
+	path := writeTestHarness(t, realDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: missing.yaml
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading base harness")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	linkedDir := filepath.Join(dir, "linked")
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_SymlinkEscapeWithWorkspaceAliasRejected(t *testing.T) {
+	realDir := t.TempDir()
+	aliasParent := t.TempDir()
+	workspaceAlias := filepath.Join(aliasParent, "workspace")
+	outside := t.TempDir()
+	linkedDir := filepath.Join(realDir, "linked")
+	require.NoError(t, os.Symlink(realDir, workspaceAlias))
+	require.NoError(t, os.Symlink(outside, linkedDir))
+	writeTestHarness(t, outside, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+	path := writeTestHarness(t, realDir, "child.yaml", `
+base: linked/base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspaceAlias})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes workspace root via symlink")
+}
+
+func TestLoadWithBase_LocalBase_AbsoluteSymlinkTraversalRejected(t *testing.T) {
+	workspace := t.TempDir()
+	outsideParent := t.TempDir()
+	outsideDir := filepath.Join(outsideParent, "target")
+	require.NoError(t, os.Mkdir(outsideDir, 0755))
+	linkedDir := filepath.Join(workspace, "linked")
+	require.NoError(t, os.Symlink(outsideDir, linkedDir))
+	writeTestHarness(t, outsideParent, "outside.yaml", `
+agent: agents/outside.md
+role: test
+`)
+
+	absoluteBase := linkedDir + string(filepath.Separator) + ".." + string(filepath.Separator) + "outside.yaml"
+	path := writeTestHarness(t, workspace, "child.yaml", fmt.Sprintf(`
+base: %s
+agent: agents/child.md
+role: test
+`, absoluteBase))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.Error(t, err)
+}
+
+func TestLoadWithBase_LocalBase_SymlinkKeepsReferencingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	harnessDir := filepath.Join(workspace, "harness")
+	sharedDir := filepath.Join(workspace, "shared")
+
+	writeTestHarness(t, harnessDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: harness
+`)
+	writeTestHarness(t, sharedDir, "defaults.yaml", `
+agent: agents/defaults.md
+role: test
+runner_env:
+  BASE_DIRECTORY: shared
+`)
+	template := writeTestHarness(t, sharedDir, "template.yaml", `
+agent: agents/base.md
+role: test
+base: defaults.yaml
+`)
+	require.NoError(t, os.Symlink(template, filepath.Join(harnessDir, "base.yaml")))
+	path := writeTestHarness(t, harnessDir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: workspace})
+	require.NoError(t, err)
+	assert.Equal(t, "harness", h.RunnerEnv["BASE_DIRECTORY"])
 }
 
 func TestLoadWithBase_DepthExceeded(t *testing.T) {
@@ -1604,6 +1950,111 @@ func TestMergeForgeConfigInto_ValidationLoop(t *testing.T) {
 	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
 }
 
+func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
+	base := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:         "base-validate.sh",
+			Schema:         "base-schema.json",
+			MaxIterations:  5,
+			FeedbackMode:   "append",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+		},
+	}
+	child := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Schema: "child-schema.json",
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, "child-schema.json", child.ValidationLoop.Schema)
+	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck)
+}
+
+func TestMergeValidationLoop(t *testing.T) {
+	base := &ValidationLoop{
+		Script:         "base.sh",
+		Schema:         "base.json",
+		MaxIterations:  5,
+		FeedbackMode:   "append",
+		PreflightCheck: "which jq",
+	}
+	childSchema := &ValidationLoop{Schema: "child.json"}
+	childAll := &ValidationLoop{
+		Script:         "child.sh",
+		Schema:         "child.json",
+		MaxIterations:  2,
+		FeedbackMode:   "none",
+		PreflightCheck: "which python3",
+	}
+	empty := &ValidationLoop{}
+
+	tests := []struct {
+		name    string
+		base    *ValidationLoop
+		child   *ValidationLoop
+		want    *ValidationLoop
+		wantNil bool
+	}{
+		{name: "both nil", wantNil: true},
+		{name: "child nil inherits base", base: base, want: base},
+		{name: "base nil keeps child", child: childSchema, want: childSchema},
+		{
+			name:  "child schema only inherits rest",
+			base:  base,
+			child: childSchema,
+			want: &ValidationLoop{
+				Script:         "base.sh",
+				Schema:         "child.json",
+				MaxIterations:  5,
+				FeedbackMode:   "append",
+				PreflightCheck: "which jq",
+			},
+		},
+		{name: "child sets all fields", base: base, child: childAll, want: childAll},
+		{
+			name:  "empty child inherits all",
+			base:  base,
+			child: empty,
+			want:  base,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeValidationLoop(tt.base, tt.child)
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestMergeValidationLoop_DoesNotMutateInputs(t *testing.T) {
+	base := &ValidationLoop{Script: "base.sh", Schema: "base.json", MaxIterations: 5}
+	child := &ValidationLoop{Schema: "child.json"}
+
+	got := mergeValidationLoop(base, child)
+
+	assert.Equal(t, "base.sh", base.Script)
+	assert.Equal(t, "base.json", base.Schema)
+	assert.Equal(t, "", child.Script)
+	assert.Equal(t, "child.json", child.Schema)
+	require.NotNil(t, got)
+	assert.Equal(t, "base.sh", got.Script)
+	assert.Equal(t, "child.json", got.Schema)
+	got.Script = "mutated.sh"
+	assert.Equal(t, "base.sh", base.Script)
+	assert.Equal(t, "", child.Script)
+}
+
 func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
 	// When a child ForgeConfig overrides validation_loop without setting
 	// preflight_check, the base's preflight_check should be carried forward.
@@ -1995,6 +2446,70 @@ model: opus
 
 	assert.Equal(t, 30, h.TimeoutMinutes)
 	assert.Equal(t, 600, h.SandboxTimeoutSeconds)
+}
+
+func TestLoadWithBase_TriggerInheritance(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
+}
+
+func TestLoadWithBase_TriggerChildWins(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+trigger: 'event.entity.kind == "change_proposal"'
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "change_proposal"`, h.Trigger)
+}
+
+func TestLoadWithBase_TriggerChainedInheritance(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "c.yaml", `
+agent: agents/c.md
+role: test
+trigger: 'event.entity.kind == "work_item"'
+`)
+
+	writeTestHarness(t, dir, "b.yaml", `
+base: c.yaml
+model: opus
+`)
+
+	path := writeTestHarness(t, dir, "a.yaml", `
+base: b.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
 }
 
 func TestLoadWithBase_RunnerEnvNilBase(t *testing.T) {
@@ -5314,6 +5829,33 @@ func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
 	mergeBaseIntoChild(base, child)
 
 	assert.Equal(t, "max", child.Effort)
+}
+
+func TestMergeBaseIntoChild_TriggerInherited(t *testing.T) {
+	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
+	child := &Harness{}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_TriggerChildWins(t *testing.T) {
+	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
+	child := &Harness{Trigger: `event.entity.kind == "change_proposal"`}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "change_proposal"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
+	base := &Harness{}
+	child := &Harness{Trigger: `event.entity.kind == "work_item"`}
+
+	mergeBaseIntoChild(base, child)
+
+	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {

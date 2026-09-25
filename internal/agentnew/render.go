@@ -121,8 +121,16 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 				"CLOUD_ML_REGION":                "${CLOUD_ML_REGION}",
 				"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/.gcp-credentials.json",
 				"ISSUE_URL":                      "${GITHUB_ISSUE_URL}",
-				"GH_TOKEN":                       "${GH_TOKEN}",
-				"FULLSEND_FORGE":                 "github",
+				// ISSUE_NUMBER / REPO_FULL_NAME are the fetch arguments the
+				// generated prompt uses. A github.com URL in a `gh` command is
+				// blocked by the SSRF PreToolUse hook: the sandbox cannot
+				// resolve github.com, and github-ro allowlists api.github.com
+				// only. gh itself talks to the API; the HTML URL is only an
+				// argument it never fetches. #7563.
+				"ISSUE_NUMBER":   "${ISSUE_NUMBER}",
+				"REPO_FULL_NAME": "${REPO_FULL_NAME}",
+				"GH_TOKEN":       "${GH_TOKEN}",
+				"FULLSEND_FORGE": "github",
 			},
 		},
 	}

@@ -239,6 +239,36 @@ func TestRunDispatch_GHAEventMissingEventPath(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRunDispatch_UnresolvableHarnessReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(nil, "fullsend-ai/demo")
+	cfg.SetAgents([]config.AgentEntry{{Name: "code", Source: "code.yaml"}})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	eventJSON := []byte(`{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 42, "url": "https://github.com/fullsend-ai/demo/issues/42"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-ping", "action": "added"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": ["ready-for-ping"]},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "labeled"}
+}`)
+	require.NoError(t, os.WriteFile(eventPath, eventJSON, 0o644))
+
+	err = runDispatch(context.Background(), dispatchOpts{
+		inputDriver:  "json",
+		outputDriver: "gha-matrix",
+		inputFile:    eventPath,
+		configDir:    dir,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "code")
+}
+
 func TestRunDispatch_DisabledAgentExcluded(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := filepath.Join(dir, "harness")

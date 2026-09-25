@@ -172,6 +172,36 @@ func TestDeleteRef(t *testing.T) {
 	})
 }
 
+func TestDeleteBranch(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/refs/heads/fullsend/scaffold-install", r.URL.Path)
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteBranch(context.Background(), "owner", "repo", "fullsend/scaffold-install")
+		require.NoError(t, err)
+		assert.True(t, called)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteBranch(context.Background(), "owner", "repo", "gone")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+}
+
 func TestFindExistingFork(t *testing.T) {
 	t.Run("returns fork owner when fork exists", func(t *testing.T) {
 		callNum := 0
@@ -1134,7 +1164,7 @@ func TestListRepoPullRequests(t *testing.T) {
 				"html_url": "https://github.com/owner/repo/pull/1",
 				"title":    "PR 1",
 				"number":   1,
-				"head":     map[string]any{"ref": "feature-branch"},
+				"head":     map[string]any{"ref": "feature-branch", "repo": map[string]any{"full_name": "owner/repo"}},
 				"base":     map[string]any{"ref": "main"},
 				"user":     map[string]any{"login": "alice"},
 			},
@@ -1142,7 +1172,7 @@ func TestListRepoPullRequests(t *testing.T) {
 				"html_url": "https://github.com/owner/repo/pull/2",
 				"title":    "PR 2",
 				"number":   2,
-				"head":     map[string]any{"ref": "fix-branch"},
+				"head":     map[string]any{"ref": "fix-branch", "repo": map[string]any{"full_name": "contributor/repo"}},
 				"base":     map[string]any{"ref": "main"},
 				"user":     map[string]any{"login": "bob"},
 			},
@@ -1156,10 +1186,12 @@ func TestListRepoPullRequests(t *testing.T) {
 	require.Len(t, prs, 2)
 	assert.Equal(t, "PR 1", prs[0].Title)
 	assert.Equal(t, "feature-branch", prs[0].Head)
+	assert.Equal(t, "owner/repo", prs[0].HeadRepo)
 	assert.Equal(t, "main", prs[0].Base)
 	assert.Equal(t, "alice", prs[0].Author)
 	assert.Equal(t, 2, prs[1].Number)
 	assert.Equal(t, "fix-branch", prs[1].Head)
+	assert.Equal(t, "contributor/repo", prs[1].HeadRepo)
 	assert.Equal(t, "bob", prs[1].Author)
 }
 
@@ -4211,6 +4243,45 @@ func TestGetCollaboratorPermission(t *testing.T) {
 	})
 }
 
+func TestAddCollaborator(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPut, r.Method)
+			assert.Equal(t, "/repos/o/r/collaborators/alice", r.URL.Path)
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "push", body["permission"])
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		require.NoError(t, client.AddCollaborator(context.Background(), "o", "r", "alice", "push"))
+	})
+
+	t.Run("invitation pending", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.AddCollaborator(context.Background(), "o", "r", "alice", "push")
+		require.ErrorContains(t, err, "invitation pending")
+	})
+
+	t.Run("forbidden", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.AddCollaborator(context.Background(), "o", "r", "alice", "push")
+		require.ErrorContains(t, err, "add collaborator alice")
+	})
+}
+
 func TestIsProtectedBranch(t *testing.T) {
 	t.Run("protected", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4413,6 +4484,14 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("GetProtectedBranch", func(t *testing.T) {
+		_, err := client.GetProtectedBranch(ctx, "o", "r", "main")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GrantProtectedBranchMergeUser", func(t *testing.T) {
+		err := client.GrantProtectedBranchMergeUser(ctx, "o", "r", "main", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipeline", func(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -4429,12 +4508,20 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.ListPipelineSchedules(ctx, "o", "r")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("UpdatePipelineSchedule", func(t *testing.T) {
+		err := client.UpdatePipelineSchedule(ctx, "o", "r", 1, true)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("UpdateCIVariable", func(t *testing.T) {
 		err := client.UpdateCIVariable(ctx, "o", "r", "KEY", "val", false)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 	t.Run("CreateProtectedCIVariable", func(t *testing.T) {
 		err := client.CreateProtectedCIVariable(ctx, "o", "r", "KEY", "val")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ForceCommitFileToBranch", func(t *testing.T) {
+		err := client.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }

@@ -1832,6 +1832,12 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	return nil
 }
 
+// DeleteBranch deletes a git branch. Returns forge.ErrNotFound (wrapped)
+// if the branch does not exist.
+func (c *LiveClient) DeleteBranch(ctx context.Context, owner, repo, branchName string) error {
+	return c.DeleteRef(ctx, owner, repo, "heads/"+branchName)
+}
+
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
@@ -1978,7 +1984,10 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
 			Head    struct {
-				Ref string `json:"ref"`
+				Ref  string `json:"ref"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
 				Ref string `json:"ref"`
@@ -1993,12 +2002,13 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 
 		for _, pr := range prs {
 			result = append(result, forge.ChangeProposal{
-				URL:    pr.HTMLURL,
-				Title:  pr.Title,
-				Number: pr.Number,
-				Head:   pr.Head.Ref,
-				Base:   pr.Base.Ref,
-				Author: pr.User.Login,
+				URL:      pr.HTMLURL,
+				Title:    pr.Title,
+				Number:   pr.Number,
+				Head:     pr.Head.Ref,
+				HeadRepo: pr.Head.Repo.FullName,
+				Base:     pr.Base.Ref,
+				Author:   pr.User.Login,
 			})
 		}
 
@@ -3667,6 +3677,21 @@ func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo,
 	return perm.RoleName, nil
 }
 
+func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.put(ctx, path, map[string]string{"permission": permission})
+	if err != nil {
+		return fmt.Errorf("add collaborator %s: %w", username, err)
+	}
+	resp.Body.Close()
+	// 201 means GitHub sent an invitation; access starts only once it is accepted.
+	if resp.StatusCode == http.StatusCreated {
+		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+	}
+	return nil
+}
+
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption
@@ -3993,6 +4018,18 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	return true, nil
 }
 
+// GetProtectedBranch is not supported on GitHub. GitHub Actions does not
+// gate workflow dispatch on protected-branch merge/push access the way
+// GitLab gates CreatePipeline.
+func (c *LiveClient) GetProtectedBranch(_ context.Context, _, _, _ string) (*forge.ProtectedBranchRule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// GrantProtectedBranchMergeUser is not supported on GitHub.
+func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ string, _ int) error {
+	return forge.ErrNotSupported
+}
+
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
@@ -4013,6 +4050,11 @@ func (c *LiveClient) ListPipelineSchedules(_ context.Context, owner, repo string
 	return nil, forge.ErrNotSupported
 }
 
+// UpdatePipelineSchedule is not supported on GitHub.
+func (c *LiveClient) UpdatePipelineSchedule(_ context.Context, _, _ string, _ int64, _ bool) error {
+	return forge.ErrNotSupported
+}
+
 // UpdateCIVariable is not supported on GitHub.
 func (c *LiveClient) UpdateCIVariable(_ context.Context, _, _, _, _ string, _ bool) error {
 	return forge.ErrNotSupported
@@ -4020,6 +4062,11 @@ func (c *LiveClient) UpdateCIVariable(_ context.Context, _, _, _, _ string, _ bo
 
 // CreateProtectedCIVariable is not supported on GitHub.
 func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ string) error {
+	return forge.ErrNotSupported
+}
+
+// ForceCommitFileToBranch is not supported on GitHub.
+func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
 	return forge.ErrNotSupported
 }
 

@@ -18,11 +18,20 @@ mkdir -p "${MOCK_BIN}"
 PR_JSON="${TMPDIR}/pr.json"
 EVENTS_JSON="${TMPDIR}/events.json"
 COLLAB_ROLE="${TMPDIR}/collab_role"
+ROLES_DIR="${TMPDIR}/roles"
 GH_LOG="${TMPDIR}/gh.log"
 GH_FAIL="false"
 
 # Default: no collaborator role configured (API returns failure)
 echo "" >"${COLLAB_ROLE}"
+
+# Per-login role; overrides COLLAB_ROLE so a case can give the PR author and
+# the labeler different permissions.
+mkdir -p "${ROLES_DIR}"
+set_role() {
+  echo "$2" >"${ROLES_DIR}/$1"
+}
+set_role "labeler" "write"
 
 write_pr() {
   local assoc="$1"
@@ -34,7 +43,9 @@ write_pr() {
 
 write_events() {
   local events_json="$1"
-  echo "${events_json}" >"${EVENTS_JSON}"
+  # Labeled events without an explicit actor default to "labeler" (write role).
+  jq 'map(if .event == "labeled" and (has("actor") | not) then .actor = {login: "labeler"} else . end)' \
+    <<<"${events_json}" >"${EVENTS_JSON}"
 }
 
 cat >"${MOCK_BIN}/gh" <<EOF
@@ -48,9 +59,24 @@ if [[ "\${GH_FAIL}" == "events" && "\$*" == *"/issues/"*"/events"* ]]; then
   echo "simulated events API failure" >&2
   exit 1
 fi
+if [[ "\${GH_FAIL}" == "delete" && "\$*" == *DELETE* ]]; then
+  echo "simulated label DELETE failure" >&2
+  exit 1
+fi
+if [[ "\${GH_FAIL}" == "permission" && "\$*" == *"/collaborators/"* ]]; then
+  echo "simulated permission API failure" >&2
+  exit 1
+fi
 case "\$*" in
   *"/collaborators/"*"/permission"*)
-    role=\$(cat "${COLLAB_ROLE}")
+    login="\$*"
+    login="\${login#*/collaborators/}"
+    login="\${login%%/permission*}"
+    if [[ -f "${ROLES_DIR}/\${login}" ]]; then
+      role=\$(cat "${ROLES_DIR}/\${login}")
+    else
+      role=\$(cat "${COLLAB_ROLE}")
+    fi
     if [[ -z "\${role}" ]]; then
       echo "not a collaborator" >&2
       exit 1
@@ -78,7 +104,7 @@ export PATH="${MOCK_BIN}:${PATH}"
 export GH_TOKEN="test-token"
 export CHECK_E2E_AUTH_DRY_RUN="true"
 export GH_FAIL="false"
-unset EVENT_ACTION PR_UPDATED_AT PR_AUTHOR_LOGIN
+unset EVENT_ACTION PR_UPDATED_AT PR_AUTHOR_LOGIN LABEL_ACTOR_LOGIN
 
 run_case() {
   local name="$1"
@@ -193,14 +219,86 @@ run_case "untrusted author without label" "false" "unauthorized" "false"
 
 export EVENT_ACTION="labeled"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+run_case "labeled ok-to-test verifies labeler permission" "true" "ok_to_test" "false"
+if grep -q '/issues/42/events' "${GH_LOG}"; then
+  echo "PASS: labeled path checks events API"
+else
+  echo "FAIL: labeled path should check events API"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Triage-role users can apply labels but must not authorize a run.
+set_role "triager" "triage"
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
+run_case "ok-to-test labeler without write permission denied" "false" "untrusted_labeler" "true"
+
+# The latest ok-to-test labeler decides, not an earlier one.
+write_events '[
+  {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T09:00:00Z"},
+  {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}
+]'
+run_case "latest ok-to-test labeler without write permission denied" "false" "untrusted_labeler" "true"
+
+# Other labels applied later by anyone do not change who applied ok-to-test.
+write_events '[
+  {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"},
+  {"event":"labeled","label":{"name":"component/cli"},"created_at":"2026-06-01T11:30:00Z","actor":{"login":"triager"}}
+]'
+run_case "later non-ok-to-test label by another user is ignored" "true" "ok_to_test" "false"
+
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":null}]'
+run_case "ok-to-test label event without actor denied" "false" "untrusted_labeler" "true"
+
+# On labeled events the frozen sender is the labeler: a later re-label by a
+# write user must not authorize the run the triage-role user started.
+export LABEL_ACTOR_LOGIN="triager"
+write_events '[
+  {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}},
+  {"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:05:00Z"}
+]'
+run_case "frozen untrusted sender denied, newer label kept" "false" "untrusted_labeler" "false"
+
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
+run_case "frozen untrusted sender denied, own label removed" "false" "untrusted_labeler" "true"
+
+export LABEL_ACTOR_LOGIN="labeler"
 write_events '[]'
-run_case "labeled ok-to-test authorizes without events lookup" "true" "ok_to_test" "false"
+run_case "frozen trusted sender authorizes without events lookup" "true" "ok_to_test" "false"
 if grep -q '/events' "${GH_LOG}"; then
-  echo "FAIL: labeled path should not call events API"
+  echo "FAIL: frozen sender path should not call events API"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: labeled path skips events API"
+  echo "PASS: frozen sender path skips events API"
 fi
+
+# The sender of a non-labeled event (e.g. the pusher) is not the labeler.
+export EVENT_ACTION="synchronize"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
+run_case "sender ignored outside labeled events" "false" "untrusted_labeler" "true"
+unset LABEL_ACTOR_LOGIN PR_UPDATED_AT
+export EVENT_ACTION="labeled"
+
+# A failed labeler lookup is an API error, not a denial.
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+export GH_FAIL="permission"
+run_case "labeler permission API failure returns error" "false" "error" "false"
+export GH_FAIL="false"
+
+unset CHECK_E2E_AUTH_DRY_RUN
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
+run_case "untrusted labeler removes label" "false" "untrusted_labeler" "true"
+if ! grep -q DELETE "${GH_LOG}"; then
+  echo "FAIL: untrusted labeler removes label (expected gh DELETE call)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: untrusted labeler removes label (DELETE exercised)"
+fi
+export GH_FAIL="delete"
+run_case "label removal failure returns error" "false" "error" "false"
+export GH_FAIL="false"
+export CHECK_E2E_AUTH_DRY_RUN="true"
 
 export EVENT_ACTION="synchronize"
 unset PR_UPDATED_AT
@@ -259,7 +357,8 @@ write_pr "NONE" '[]'
 : >"${GH_LOG}"
 run_case "collaborator API read permission denied" "false" "unauthorized" "false"
 
-# Collaborator API fails — should fall through to ok-to-test label path
+# Collaborator API fails for the PR author — falls through to the ok-to-test
+# path, where the labeler's own permission is checked.
 echo "" >"${COLLAB_ROLE}"
 export EVENT_ACTION="synchronize"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"

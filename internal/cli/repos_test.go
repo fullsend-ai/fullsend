@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -793,6 +795,12 @@ func writeTestManifest(t *testing.T, content string) string {
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Set a bot identity and write permissions so commitScaffoldViaPR
+	// takes the direct-push path. Without this, an empty
+	// AuthenticatedUser causes the fork path, where CreateFork returns
+	// "" as the owner and waitForFork hangs for the full timeout (#6501).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -800,6 +808,7 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 	}
 	return fc
 }
@@ -1999,6 +2008,78 @@ gitlab:
 		"GitLab uninstall commit message must include [skip ci] to skip CI on the scaffold branch")
 }
 
+type recordingUninstallTokens struct {
+	listed  []repos.ProjectAccessToken
+	revoked []int
+}
+
+func (r *recordingUninstallTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (r *recordingUninstallTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return r.listed, nil
+}
+
+func (r *recordingUninstallTokens) RevokeProjectAccessToken(_ context.Context, _, _ string, tokenID int) error {
+	r.revoked = append(r.revoked, tokenID)
+	return nil
+}
+
+func TestRunReposUninstall_GitLabIdentityCleanup(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		fc.FileContents["group/project/"+p] = []byte("content")
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
+	for _, name := range []string{
+		forge.SecretForgeToken,
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fc.Secrets["group/project/"+name] = true
+	}
+
+	tokens := &recordingUninstallTokens{listed: []repos.ProjectAccessToken{
+		{ID: 1, Name: "fullsend-poller", Active: true},
+		{ID: 2, Name: "fullsend-bot", Active: true},
+		{ID: 3, Name: "unrelated", Active: true},
+	}}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:         manifestPath,
+		yes:              true,
+		direct:           true,
+		concurrency:      4,
+		testClient:       fc,
+		testGitLabTokens: tokens,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []int{1, 2}, tokens.revoked)
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
 	gitlabManifest := `version: 1
 gitlab:
@@ -2041,6 +2122,158 @@ gitlab:
 	require.NotEmpty(t, fc.CreatedProposals, "expected a scaffold PR to be created")
 	assert.Contains(t, fc.CreatedProposals[0].Title, "[skip ci]",
 		"GitLab scaffold MR title must include [skip ci] to suppress dispatch")
+}
+
+func gitlabInstallOpts(manifestPath string, fc *forge.FakeClient) *reposInstallConfig {
+	return &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	}
+}
+
+func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	require.NotEmpty(t, fc.CreatedProposals, "expected an initialization MR")
+	for _, p := range fc.CreatedProposals {
+		assert.Equal(t, repos.DefaultScaffoldBranch, p.Head,
+			"expected initialization branch, got %s (title %q)", p.Head, p.Title)
+		assert.NotContains(t, p.Head, repos.ScaffoldBumpBranchPrefix,
+			"upgrade bump branch must not be created while init MR is open")
+	}
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected files committed to the init branch")
+	paths := make(map[string]bool)
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch,
+			"scaffold files must land on %s, got %s", repos.DefaultScaffoldBranch, rec.Branch)
+		for _, f := range rec.Files {
+			paths[f.Path] = true
+		}
+	}
+	for _, expected := range []string{
+		".gitlab/ci/fullsend-pipeline.yml",
+		".gitlab/ci/fullsend-agent.yml",
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".fullsend/config.yaml",
+		".gitlab-ci.yml",
+	} {
+		assert.True(t, paths[expected], "init MR branch missing %s", expected)
+	}
+}
+
+// captureStdout runs f with os.Stdout redirected to a pipe and returns
+// everything written to it. Used to observe printer.StepStart/StepWarn
+// output from code paths (like runReposInstall) that write directly to
+// os.Stdout rather than an injectable writer.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		defer close(done)
+		_, _ = buf.ReadFrom(r)
+	}()
+
+	f()
+
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	<-done
+	return buf.String()
+}
+
+// TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR reproduces
+// #7417: two consecutive installs without merging between them must keep
+// a single complete initialization MR instead of opening a bump MR.
+func TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+
+	firstOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// First run: nothing existed before it, so GitLab post-install (bot
+	// token + pipeline schedule setup) must be attempted.
+	assert.Contains(t, firstOutput, "GitLab post-install setup",
+		"first install should attempt GitLab post-install setup")
+
+	firstCommitCount := len(fc.CommittedFilesToBranch)
+
+	// FakeClient.CommitFilesToBranch also writes FileContents (the
+	// default-branch store). Strip those files so the second probe sees
+	// the unmerged-MR state: variables/secrets exist, workflow does not.
+	for path := range fc.FileContents {
+		delete(fc.FileContents, path)
+	}
+
+	// The first run's post-install step type-asserts fc.Client to
+	// *gl.LiveClient to perform the actual bot-token/schedule setup;
+	// FakeClient fails that assertion, so it never writes the resulting
+	// secret/schedules here. Seed them directly to simulate a real
+	// GitLab client completing post-install successfully on the first
+	// run, so the second run's NeedsGitLabPostInstall gate (which keys
+	// on those specific artifacts, not just "any component exists") is
+	// exercised against a realistic prior state.
+	fc.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["group/project"] = []forge.PipelineSchedule{
+		{Description: "fullsend slash poll"},
+		{Description: "fullsend event poll"},
+	}
+
+	secondOutput := captureStdout(t, func() {
+		_ = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+	assertGitLabInitMRComplete(t, fc)
+	// Second run: variables/secrets/bot token already exist from the
+	// first run even though the workflow (and thus Installed) still
+	// reads as a fresh install. Re-running post-install would revoke and
+	// recreate the live fullsend-bot PAT and pipeline schedules — it
+	// must be skipped this time (#7417 follow-up: credential rotation on
+	// every re-run while the init MR is open).
+	assert.NotContains(t, secondOutput, "GitLab post-install setup",
+		"second install must not re-run GitLab post-install setup while the init MR is still open")
+
+	// FakeClient.CreateChangeProposal always records a new proposal, so
+	// the assertion is on branch identity: both runs must target the
+	// initialization branch, never a version bump branch.
+	for _, rec := range fc.CommittedFilesToBranch {
+		assert.Equal(t, repos.DefaultScaffoldBranch, rec.Branch)
+		assert.NotContains(t, rec.Branch, repos.ScaffoldBumpBranchPrefix)
+	}
+	if len(fc.CommittedFilesToBranch) < firstCommitCount {
+		t.Fatalf("second install dropped commits: first=%d second=%d", firstCommitCount, len(fc.CommittedFilesToBranch))
+	}
 }
 
 func TestRunReposInstall_VendorFlagPersistsOnNewRepo(t *testing.T) {
@@ -2351,4 +2584,291 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantError)
 		})
 	}
+}
+
+const mixedForgeManifestYAML = `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/api
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+// filterForgeFactory returns a distinct client or error per forge name so
+// tests can prove unselected forges are never requested.
+type filterForgeFactory struct {
+	mu      sync.Mutex
+	clients map[string]forge.Client
+	errs    map[string]error
+	seen    []string
+}
+
+func (f *filterForgeFactory) ConfigFor(forgeName string) (repos.ForgeConfig, error) {
+	if forgeName == "" {
+		forgeName = repos.ForgeGitHub
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, forgeName)
+	if err := f.errs[forgeName]; err != nil {
+		return repos.ForgeConfig{}, err
+	}
+	client := f.clients[forgeName]
+	if client == nil {
+		return repos.ForgeConfig{}, fmt.Errorf("no test client for forge %q", forgeName)
+	}
+	cfg := repos.ForgeConfigFor(forgeName)
+	cfg.Client = client
+	return cfg, nil
+}
+
+func (f *filterForgeFactory) requested(forgeName string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, name := range f.seen {
+		if name == forgeName {
+			return true
+		}
+	}
+	return false
+}
+
+func TestForgeListIncludesGitHub(t *testing.T) {
+	assert.False(t, forgeListIncludesGitHub(nil))
+	assert.False(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitHub}))
+	assert.True(t, forgeListIncludesGitHub([]string{""}))
+	assert.True(t, forgeListIncludesGitHub([]string{repos.ForgeGitLab, repos.ForgeGitHub}))
+}
+
+func TestCheckAllForgeScopes_SkipsUnselectedGitHub(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitLab})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_RequestsGitHubWhenSelected(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub, repos.ForgeGitLab})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestCheckAllForgeScopes_EmptyForges(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, nil)
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestCheckAllForgeScopes_GitHubClientSucceeds(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{InstallationToken: true},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.NoError(t, err)
+}
+
+func TestCheckAllForgeScopes_MissingScopes(t *testing.T) {
+	printer := ui.New(&discardWriter{})
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: &forge.FakeClient{TokenScopes: []string{"repo"}},
+		},
+	}
+
+	err := checkAllForgeScopes(context.Background(), factory, printer, []string{repos.ForgeGitHub})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow")
+}
+
+func TestRunReposInstall_GitLabFilterSucceedsWithoutGitHubCreds(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"group/project"},
+		roles:                  []string{"triage"},
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	require.NoError(t, err, "GitLab-only filter must not fail when GitHub credentials are missing")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+// globForgeManifestYAML pairs a GitHub glob entry with a concrete GitLab
+// entry. A GitLab-only filtered install must not expand the GitHub glob
+// (which lists org repos via the GitHub API), since that would require
+// GH_TOKEN even though no GitHub repo is targeted.
+const globForgeManifestYAML = `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: acme/*
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v1.0.0
+  repos:
+    - name: group/project
+`
+
+func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
+	manifestPath := writeTestManifest(t, globForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"group/project"},
+		roles:                  []string{"triage"},
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	// Without threading the repo filter into glob expansion, Converge
+	// would call ExpandGlobs unconditionally, which resolves the GitHub
+	// "acme/*" entry via clients.ConfigFor(ForgeGitHub) — hard-failing the
+	// whole install on the injected error even though no GitHub repo is
+	// targeted. (A separate, best-effort GitHub lookup for ref resolution
+	// also calls ConfigFor(GitHub) and tolerates its own error, so this
+	// test does not assert that GitHub is never requested at all — only
+	// that a GitHub credential failure must not block a GitLab-only
+	// install.)
+	require.NoError(t, err, "GitLab-only filter must not fail when the manifest's GitHub entry is a glob and GH_TOKEN is unavailable")
+	assert.True(t, factory.requested(repos.ForgeGitLab))
+}
+
+func TestRunReposInstall_GitHubFilterDoesNotRequestGitLab(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitHub: newInstalledFakeClientCLI("acme/api"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitLab: errors.New("gitlab client should not be requested"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            1,
+		repoFilter:             []string{"acme/api"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testFactory:            factory,
+	})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitLab))
+	assert.True(t, factory.requested(repos.ForgeGitHub))
+}
+
+func TestRunReposInstall_UnfilteredMixedManifestRequestsGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("no GitHub token found"),
+		},
+	}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 1,
+		dryRun:      true,
+		testFactory: factory,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
+}
+
+func TestRunReposUninstall_GitLabFilterDoesNotRequestGitHub(t *testing.T) {
+	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
+	gl := forge.NewFakeClient()
+	gl.InstallationToken = true
+	gl.AuthenticatedUser = "fullsend-app[bot]"
+	gl.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	gl.Repos = []forge.Repository{{
+		FullName: "group/project", Name: "project", DefaultBranch: "main",
+	}}
+	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
+		gl.FileContents["group/project/"+p] = []byte("content")
+	}
+	factory := &filterForgeFactory{
+		clients: map[string]forge.Client{
+			repos.ForgeGitLab: gl,
+		},
+		errs: map[string]error{
+			repos.ForgeGitHub: errors.New("github client should not be requested"),
+		},
+	}
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		dryRun:      true,
+		concurrency: 1,
+		testFactory: factory,
+	}, []string{"group/project"})
+	require.NoError(t, err)
+	assert.False(t, factory.requested(repos.ForgeGitHub))
 }

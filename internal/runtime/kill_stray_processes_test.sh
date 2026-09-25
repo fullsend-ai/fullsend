@@ -9,7 +9,8 @@
 # never run against the real process table here: a fake `ps` on PATH
 # delegates to the real one and keeps only this test's own subtree, and the
 # test refuses to run the snippet unless that fake is what `ps` resolves to.
-# kill/sleep/awk/id are the real tools.
+# kill/sleep/id are the real tools. awk is the real tool except in the
+# awk-failure case, which shadows it with a failing stub.
 #
 # Run from repo root: bash internal/runtime/kill_stray_processes_test.sh
 
@@ -18,6 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNIPPET="${SCRIPT_DIR}/testdata/kill_stray_processes.sh"
 REAL_PS="$(command -v ps)"
+REAL_AWK="$(command -v awk)"
 FAILURES=0
 
 TMP="$(mktemp -d)"
@@ -57,7 +59,7 @@ make_fake_ps() {
 case " \$* " in
   *" -p "*) ${probe} ;;
 esac
-'${REAL_PS}' "\$@" | awk -v root="\${STRAY_TEST_ROOT}" '
+'${REAL_PS}' "\$@" | '${REAL_AWK}' -v root="\${STRAY_TEST_ROOT}" '
   { line[NR] = \$0; pid[NR] = \$1; parent[\$1] = \$2 }
   END {
     keep[root] = 1
@@ -83,6 +85,12 @@ make_fake_ps "${TMP}/probebin" 'exit 1'
 mkdir -p "${TMP}/badbin"
 printf '#!/bin/sh\nexit 1\n' > "${TMP}/badbin/ps"
 chmod +x "${TMP}/badbin/ps"
+
+# An awk that always fails, for the exit-3 path. The fake ps above calls
+# REAL_AWK by absolute path so shadowing awk on PATH only affects the snippet.
+mkdir -p "${TMP}/badawk"
+printf '#!/bin/sh\nexit 1\n' > "${TMP}/badawk/awk"
+chmod +x "${TMP}/badawk/awk"
 
 # Safety gate: the golden is a live kill script. Refuse to run it unless
 # `ps` under the test PATH is one of the scoped fakes.
@@ -203,6 +211,32 @@ if [ "${RC3}" -eq 3 ] && [ -z "${OUT3}" ] && grep -q 'stray processes: ps failed
 else
   fail "ps failure: rc=${RC3} stdout='${OUT3}' stderr='$(cat "${TMP}/stderr3")'"
 fi
+
+# A failed awk is distinct from "nothing to kill": exit 3, message on
+# stderr, nothing on stdout. A stray is running so a silent zero would
+# have left it unreported (the listing itself still succeeds; only awk is
+# broken).
+sleep 300 &
+AWK_STRAY=$!
+STRAY_PIDS+=("${AWK_STRAY}")
+sleep 0.2
+kill -0 "${AWK_STRAY}" || fail "fixture: awk-case stray did not start"
+
+set +e
+OUT5="$(STRAY_TEST_ROOT=$$ PATH="${TMP}/badawk:${FAKE_PATH}" sh "${SNIPPET}" 2>"${TMP}/stderr5")"
+RC5=$?
+set -e
+if [ "${RC5}" -eq 3 ] && [ -z "${OUT5}" ] && grep -q 'stray processes: awk failed' "${TMP}/stderr5"; then
+  pass "awk failure exits 3 with a stderr message and no count"
+else
+  fail "awk failure: rc=${RC5} stdout='${OUT5}' stderr='$(cat "${TMP}/stderr5")'"
+fi
+if kill -0 "${AWK_STRAY}" 2>/dev/null; then
+  pass "awk-case stray survives the failed listing"
+else
+  fail "awk-case stray was killed despite awk failure"
+fi
+kill -9 "${AWK_STRAY}" 2>/dev/null || true
 
 # --- A failed liveness probe must not read as "everything is dead" ----------
 # `ps -p` failing prints nothing and exits 1, exactly like "none of these

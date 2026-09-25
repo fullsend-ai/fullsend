@@ -74,7 +74,8 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		}
 	case "mr_event":
 		authorID = event.NoteAuthorID
-		if event.Action == "opened" {
+		switch event.Action {
+		case "opened", "closed":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
@@ -83,7 +84,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 				authorID = event.MRAuthorID
 			}
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
-		} else {
+		default:
 			actorLogin = event.MergedByLogin
 			isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
 		}
@@ -136,10 +137,14 @@ func translateEventType(event RoutableEvent) string {
 	case "mr_note":
 		return "comment_added"
 	case "mr_event":
-		if event.Action == "opened" {
+		switch event.Action {
+		case "opened":
 			return "opened"
+		case "closed":
+			return "closed"
+		default:
+			return "merged"
 		}
-		return "merged"
 	default:
 		return event.Type
 	}
@@ -238,10 +243,14 @@ func mapRawAction(event RoutableEvent) string {
 	case "issue_note", "mr_note":
 		return "commented"
 	case "mr_event":
-		if event.Action == "opened" {
+		switch event.Action {
+		case "opened":
 			return "opened"
+		case "closed":
+			return "closed"
+		default:
+			return "merged"
 		}
-		return "merged"
 	default:
 		return ""
 	}

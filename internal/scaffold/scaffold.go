@@ -44,13 +44,16 @@ func FileMode(path string) string {
 // layeredDirs contain upstream defaults provided at runtime via reusable
 // workflow workspace preparation. The scaffold does not install these;
 // customization uses base: harness composition instead. See ADR 0064.
+//
+// policies/ is absent: the scaffold ships no policy, and workspace
+// preparation's [[ -d ]] guard skips an entry with no embedded files (#6834).
+// See TestLayeredDirsShipContent.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
 	"schemas/",
 	"harness/",
 	"plugins/",
-	"policies/",
 	"profiles/",
 	"providers/",
 	"scripts/",

@@ -7,8 +7,23 @@ fullsend agent jobs.
 ## Architecture
 
 Each runner VM runs:
-- **gitlab-runner** (custom executor) — receives CI jobs from GitLab
-- **Podman** (rootless) — creates per-job containers
+- **gitlab-runner** (custom executor) — receives CI jobs from GitLab.
+  The runner is a systemd *system* service running as the VM user, so it
+  does not go through `pam_systemd` and does not inherit a login session.
+  `setup.sh` enables lingering for that user and writes `XDG_RUNTIME_DIR`
+  / `DBUS_SESSION_BUS_ADDRESS` into the gitlab-runner drop-in with the
+  runner user's numeric UID (resolved at setup time — systemd `%U` on a
+  system-scope unit expands to 0, not `User=`). `systemctl --user`
+  (OpenShell gateway start/stop) can then reach the user bus.
+  `executor/gateway.sh` also pins those variables itself, so a job still
+  works if the unit environment is missing (#7453, #7696).
+- **Podman** (rootless) — creates per-job containers. A user systemd
+  timer (`fullsend-podman-prune.timer`) plus a prepare/cleanup hook
+  reclaim unused images and stopped leftovers so the ~30 GiB root disk
+  cannot fill with superseded job layers (#7663). In-flight `runner-*` /
+  `openshell-*` containers are never stopped; the warm-cache runner and
+  supervisor images listed in `~/.config/fullsend-gitlab-runner/keep-images`
+  are never removed.
 - **OpenShell gateway** — started per job in `prepare.sh`, torn down in
   `cleanup.sh`. The VM does **not** keep a long-lived `systemd --user`
   gateway: that accumulated a stale profile registry, a baked-in OpenShell
@@ -20,7 +35,12 @@ Each runner VM runs:
 
 Job containers use `--network=host` to reach the gateway. An OCI
 `createRuntime` hook injects the host CA trust bundle into every container
-(Debian and RHEL-family layouts) so jobs can verify internal TLS endpoints.
+(Debian and RHEL-family layouts) so the OpenShell supervisor and sandboxed
+processes can verify internal TLS endpoints. That hook is the **sandbox-host**
+half of private-CA support; GitLab job containers separately consume
+`CI_SERVER_TLS_CA_FILE` (see [Private CA (self-hosted GitLab)](../../docs/guides/getting-started/operations.md#private-ca-self-hosted-gitlab)).
+The Kubernetes executor does not run this hook — do not treat a job-local
+`CI_SERVER_TLS_CA_FILE` path as available on a remote sandbox host.
 Gateway mTLS credentials are mounted read-only from the runner user's
 OpenShell config. `prepare.sh` reaps leftover `openshell-*` / `openshell.managed`
 containers from an abruptly-killed prior job before starting the new gateway.
@@ -183,14 +203,76 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `delete-openshift-vm.sh` — drain in-flight jobs, then OpenShift VM teardown + runner deregistration
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
-- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257).
+- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
 - `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip)
+- `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
+- `podman-prune_test.sh` — unit tests for the prune script and timer install
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
-- `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)
+- `executor/job_id.sh` — shared helper resolving the trusted job ID
+- `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, prunes unused images, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
 - `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
 - `executor/gateway.sh` — shared per-job gateway helpers sourced by prepare/cleanup
+
+## Executor script layout
+
+`install_executor` in [`setup.sh`](setup.sh) does not glob `executor/*.sh`;
+it copies an explicit five-file allowlist — `job_id.sh`, `prepare.sh`,
+`run.sh`, `cleanup.sh`, `gateway.sh` — into a flat `EXECUTOR_DIR`
+(`~/gitlab-runner-executor`) when the VM is provisioned. `create-gcp-vm.sh`
+and `create-openshift-vm.sh` independently hard-code the same five-file list
+to stage and `chmod +x` the scripts on the VM. A script under `executor/`
+that is not on all three lists (e.g. `gateway_test.sh`,
+`prepare_validation_test.sh`) is never installed at all, regardless of what
+paths it references — a new script must be added to all three lists first.
+
+Once a script is on those lists, parent directories from the source tree are
+**not** preserved when it lands in `EXECUTOR_DIR`, except those explicitly
+seeded by `install_executor`. Today that exception is only
+`.github/scripts/openshell-version.sh`. Any such script that needs a file
+outside its own directory must either:
+
+1. Reference only same-directory siblings (the path still works after
+   flattening), or
+2. Have `install_executor` explicitly copy the needed file into
+   `EXECUTOR_DIR`, mirroring the `openshell-version.sh` precedent.
+
+Guessing a `BASH_SOURCE`-relative path across the flattening boundary
+silently fails at per-job runtime: `prepare.sh`/`cleanup.sh` source the
+flattened copy, not the source-tree file. [`gateway.sh`](executor/gateway.sh)
+is the current example of (2); `job_id.sh`, `prepare.sh`, `run.sh`, and
+`cleanup.sh` only reference same-directory siblings.
+
+`podman-prune.sh` is **not** an executor script. `setup.sh` installs it
+to `~/.local/lib/fullsend/podman-prune.sh` and `prepare.sh`/`cleanup.sh`
+invoke that path via `prune_unused_podman_storage` in `gateway.sh`. Do
+not add it to the five-file executor allowlist.
+
+## Disk / image prune
+
+These VMs are long-lived. Without periodic reclaim, unused Podman images
+accumulate until `podman pull` fails with `no space left on device`.
+`setup.sh` therefore:
+
+1. Writes `~/.config/fullsend-gitlab-runner/keep-images` with the
+   pre-pulled `RUNNER_IMAGE` and OpenShell supervisor tag.
+2. Installs `~/.local/lib/fullsend/podman-prune.sh` and a user systemd
+   timer (`fullsend-podman-prune.timer`, hourly, Nice=19) that skips
+   the run when a `runner-*` or `openshell-*` container is in-flight.
+3. Invokes the same helper from `prepare.sh` (before the job image pull)
+   and `cleanup.sh` (after the job container is gone) so a busy runner
+   still reclaims space between jobs.
+
+To apply this to an already-provisioned VM, copy the updated
+`hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh` with
+the same `GITLAB_URL` / `RUNNER_IMAGE` used at provision time. The
+install is idempotent. For an immediate reclaim without waiting for the
+first timer tick:
+
+```bash
+systemctl --user start fullsend-podman-prune.service
+```
 
 ## Security notes
 

@@ -191,7 +191,18 @@ func TestProbeComponents_SecretCheckError(t *testing.T) {
 
 func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "enforced"
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
+	if err != nil {
+		t.Fatalf("GitLabPerRepoFile() error = %v", err)
+	}
+	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
+	roleScript, err := scaffold.GitLabPerRepoFile(gitlabRoleTokenScriptPath)
+	if err != nil {
+		t.Fatalf("GitLabPerRepoFile() error = %v", err)
+	}
+	fc.FileContents["acme/api/"+gitlabRoleTokenScriptPath] = roleScript
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -216,6 +227,9 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 		if c.Name == "thin-caller:"+scaffold.PerRepoThinCallerPaths()[0] {
 			t.Error("GitLab should not check thin callers")
 		}
+		if c.Name == "secret:"+forge.SecretForgeToken {
+			t.Error("enforced GitLab role migration must not require the shared credential")
+		}
 	}
 
 	if !AllMatch(components) {
@@ -225,6 +239,44 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestProbeComponents_GitLab_MissingTrustScript(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	for _, c := range components {
+		if c.Name == "scaffold:"+gitlabTrustScriptPath {
+			if c.Present || c.Match {
+				t.Fatalf("missing trust script component = %+v", c)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing trust script component not found: %+v", components)
+}
+
+func TestProbeComponents_GitLab_MissingRoleTokenScript(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	for _, c := range components {
+		if c.Name == "scaffold:"+gitlabRoleTokenScriptPath {
+			if c.Present || c.Match {
+				t.Fatalf("missing role-token script component = %+v", c)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing role-token script component not found: %+v", components)
 }
 
 func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {
@@ -276,6 +328,48 @@ func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {
 	}
 	if !eventFound {
 		t.Error("schedule:event-poll component not found in probe results")
+	}
+}
+
+func TestProbeComponents_GitLab_InactiveSchedule(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: false},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	if AllMatch(components) {
+		t.Error("expected AllMatch=false when a required schedule is inactive")
+	}
+
+	for _, c := range components {
+		switch c.Name {
+		case "schedule:slash-poll":
+			if !c.Present {
+				t.Error("inactive slash poll should still be present")
+			}
+			if c.Match {
+				t.Error("inactive slash poll should not match")
+			}
+			if c.Expected != "active" || c.Actual != "inactive" {
+				t.Errorf("slash poll Expected/Actual = %q/%q, want active/inactive", c.Expected, c.Actual)
+			}
+		case "schedule:event-poll":
+			if !c.Present || !c.Match {
+				t.Errorf("active event poll = %+v, want present+match", c)
+			}
+			if c.Actual != "active" {
+				t.Errorf("event poll Actual = %q, want active", c.Actual)
+			}
+		}
 	}
 }
 
