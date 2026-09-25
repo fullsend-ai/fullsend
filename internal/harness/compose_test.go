@@ -5638,16 +5638,37 @@ func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	// With no TreeFetcher set, the default gitfetch.FetchTree is used.
-	// It will fail because there's no real repo, but the error proves
-	// the default fetcher was invoked.
+	// Swap the production default so a nil TreeFetcher still exercises
+	// the default-assignment path without a live git fetch (#7723).
+	orig := defaultTreeFetcher
+	t.Cleanup(func() { defaultTreeFetcher = orig })
+
+	var (
+		called   bool
+		cloneURL string
+		subpath  string
+		ref      string
+		token    string
+	)
+	defaultTreeFetcher = func(_ context.Context, c, p, r, tok string) (map[string][]byte, error) {
+		called = true
+		cloneURL, subpath, ref, token = c, p, r, tok
+		return nil, fmt.Errorf("injected default fetcher")
+	}
+
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 		})
 	require.Error(t, err)
+	assert.True(t, called, "default TreeFetcher should be invoked when ComposeOpts.TreeFetcher is nil")
 	assert.Contains(t, err.Error(), "fetching skill directory")
+	assert.Contains(t, err.Error(), "injected default fetcher")
+	assert.Equal(t, "https://github.com/org/repo.git", cloneURL)
+	assert.Equal(t, "skills/common", subpath)
+	assert.Equal(t, "ref", ref)
+	assert.Empty(t, token)
 }
 
 func TestFetchBaseSkill_TreeFetchError(t *testing.T) {

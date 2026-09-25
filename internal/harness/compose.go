@@ -93,6 +93,17 @@ type ComposeOpts struct {
 	allowSelfAllowlist bool
 }
 
+// defaultTreeFetcher is used when ComposeOpts.TreeFetcher is nil.
+// Tests replace it so the nil-TreeFetcher path stays hermetic (see #7723).
+var defaultTreeFetcher gitfetch.TreeFetchFunc = gitfetch.FetchTree
+
+func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
+	if opts.TreeFetcher != nil {
+		return opts.TreeFetcher
+	}
+	return defaultTreeFetcher
+}
+
 // LoadWithBase loads a harness with base composition and conditional
 // configuration resolution (forge blocks and CEL-guarded overlays).
 // If the harness has a `base` field, the base chain is recursively loaded
@@ -1749,10 +1760,7 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
 	}
 
-	fetcher := opts.TreeFetcher
-	if fetcher == nil {
-		fetcher = gitfetch.FetchTree
-	}
+	fetcher := resolveTreeFetcher(opts)
 
 	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
 	if err != nil {
@@ -1902,10 +1910,7 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
 
-	fetcher := opts.TreeFetcher
-	if fetcher == nil {
-		fetcher = gitfetch.FetchTree
-	}
+	fetcher := resolveTreeFetcher(opts)
 
 	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
 	if err != nil {
@@ -2096,10 +2101,7 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for %s directory fetch: %w", field, kind.label, err)
 	}
 
-	fetcher := opts.TreeFetcher
-	if fetcher == nil {
-		fetcher = gitfetch.FetchTree
-	}
+	fetcher := resolveTreeFetcher(opts)
 
 	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
 	if err != nil {
