@@ -291,27 +291,77 @@ To create it, add a GitLab-specific provider to the same
 [Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration).
 The GitHub recipe there does not carry over as-is: it points the issuer
 at GitHub, maps `assertion.repository*` claims that GitLab tokens don't
-have, and omits `--allowed-audiences`, so a naively adapted provider
-rejects the `aud: "fullsend"` token agent jobs present. Use GitLab's
-issuer, id-token claims, and an explicit allowed audience instead.
+have, omits `--allowed-audiences`, and maps
+`google.subject=assertion.sub`. A naively adapted provider therefore
+rejects the `aud: "fullsend"` token agent jobs present, and GitLab's
+structured `sub` claim (project path plus ref) can exceed Google
+Workload Identity Federation's 127-byte `google.subject` limit even
+when the audience is correct. Use GitLab's issuer, id-token claims,
+numeric `project_id` as `google.subject`, and an explicit allowed
+audience instead.
 
 This guide is single-repo, so the default recipe below scopes trust to
-the exact project being installed, using the `project_path` claim:
+the exact project being installed. Map `google.subject` to GitLab's
+numeric `project_id` — not `assertion.sub` — and bind both that
+immutable ID and the readable `project_path` in the provider condition.
+`project_id` is unique within a GitLab instance, and the provider's
+fixed issuer isolates identities from other instances. Keeping the path
+condition preserves readable configuration and prevents a deleted
+project path being reused by a different project.
+
+Find the numeric project ID on the project's **Settings → General**
+page (labeled Project ID).
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
 export PROJECT_PATH="<group/project>"    # the exact project path being installed
+export GITLAB_PROJECT_ID="<numeric-id>"  # Settings → General → Project ID
 
 gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --location=global \
   --workload-identity-pool=fullsend-inference \
   --issuer-uri="$GITLAB_URL" \
   --allowed-audiences="fullsend" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
-  --attribute-condition="assertion.project_path == '$PROJECT_PATH'" \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --attribute-condition="assertion.project_id == '$GITLAB_PROJECT_ID' && assertion.project_path == '$PROJECT_PATH'" \
   --project="$GCP_PROJECT"
 ```
+
+If `gitlab-oidc` already exists with `google.subject=assertion.sub`,
+update just the mapping. This applies no matter which recipe set the
+provider's `--attribute-condition` — this page's default single-project
+condition, [multiple specific projects](#authorizing-multiple-specific-projects-alternative),
+or [a group or group tree](#authorizing-a-group-or-group-tree-alternative):
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --project="$GCP_PROJECT"
+```
+
+Omitting `--attribute-condition` leaves your existing condition — set
+by whichever recipe you used — untouched. Changing only the condition
+instead of the mapping leaves the oversize `sub` mapping in place, and
+STS will still reject the exchange.
+
+If you're on the default single-project recipe and want the added
+project-ID protection against a deleted path being reused (see above),
+also update the condition to bind both claims:
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-condition="assertion.project_id == '$GITLAB_PROJECT_ID' && assertion.project_path == '$PROJECT_PATH'" \
+  --project="$GCP_PROJECT"
+```
+
+The multiple-projects and namespace-wide conditions don't reference
+`project_id`, so no condition change is required there after migrating
+the mapping.
 
 The provider's `--issuer-uri` is a trust-boundary setting: it must exactly
 match the GitLab instance that signs the `id_tokens` used by this repository.
@@ -319,12 +369,13 @@ Do not leave the `https://gitlab.com` value when installing against a
 self-hosted instance, and do not point a self-hosted provider at a different
 instance.
 
-The project-path condition scopes trust to this project, but any job in that
-project that can request an OIDC token with audience `fullsend` can satisfy
-it. If every polling and agent job runs on protected refs, operators may
-further restrict the condition with `&& assertion.ref_protected == 'true'`;
-otherwise keep the project-level condition and treat all token-issuing jobs
-in the project as trusted.
+The combined project-id and project-path condition scopes trust to this
+project, but any job in that project that can request an OIDC token with
+audience `fullsend` can satisfy it. If every polling and agent job runs
+on protected refs, operators may further restrict the condition with
+`&& assertion.ref_protected == 'true'`; otherwise keep the
+project-level condition and treat all token-issuing jobs in the project
+as trusted.
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -335,6 +386,13 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="$WIF_PRINCIPAL" \
   --condition=None
 ```
+
+The documented IAM bindings use
+`principalSet://.../attribute.project_path/...` (and
+`attribute.namespace_path` in the group-wide alternative). Those do not
+change. If you bound a direct `principal://.../subject/<value>` IAM
+member instead, the subject value must be the GitLab numeric project
+ID, not the OIDC `sub` claim.
 
 Create the `fullsend-inference` pool first if it doesn't already exist
 (see the Advanced setup steps linked above). Agent jobs obtain a GitLab
@@ -350,11 +408,14 @@ Per-repo teardown](operations.md#per-repo-teardown), step 6.
 
 The `gitlab-oidc` provider is shared across every GitLab repo on the same
 GCP project, but its default `--attribute-condition` above pins trust to a
-single `PROJECT_PATH`. Installing a second repo against the same GCP
+single project. Installing a second repo against the same GCP
 project does not require widening trust to an entire namespace — keep
-exact `project_path` matches for just the repos you're installing by
-OR-ing their paths in the condition and binding one principalSet per
-project:
+the same dual `project_id`-and-`project_path` bind from the create
+recipe for each project you're installing, OR-ing the per-project pairs
+in the condition and binding one principalSet per project. Leave the
+`google.subject=assertion.project_id` mapping from the create recipe
+unchanged; look up each project's numeric ID (Settings → General →
+Project ID) before running the update below:
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
@@ -363,7 +424,7 @@ export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
 gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
   --location=global \
   --workload-identity-pool=fullsend-inference \
-  --attribute-condition="assertion.project_path == 'group/project-a' || assertion.project_path == 'group/project-b'" \
+  --attribute-condition="(assertion.project_id == '<id-a>' && assertion.project_path == 'group/project-a') || (assertion.project_id == '<id-b>' && assertion.project_path == 'group/project-b')" \
   --project="$GCP_PROJECT"
 
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -376,11 +437,15 @@ for PROJECT_PATH in "group/project-a" "group/project-b"; do
 done
 ```
 
-Repeat the `--attribute-condition` update (adding another `||` clause) and
-the IAM binding loop each time you install another repo. This keeps trust
-scoped to exactly the repos you've installed, unlike the namespace-wide
-option below. Prefer the namespace-wide alternative only when the repo set
-isn't enumerable in advance.
+Repeat the `--attribute-condition` update (adding another
+`project_id`-and-`project_path` clause) and the IAM binding loop each
+time you install another repo. Keeping the `project_id` conjunct for
+each project preserves the same protection against a deleted path
+being reused that the default recipe adds; dropping to path-only ORs
+would silently undo it for every project added this way. This keeps
+trust scoped to exactly the repos you've installed, unlike the
+namespace-wide option below. Prefer the namespace-wide alternative only
+when the repo set isn't enumerable in advance.
 
 ### Authorizing a group or group tree (alternative)
 
@@ -392,7 +457,10 @@ isn't enumerable in advance.
 > same namespace.
 
 To authorize every project under one immediate parent namespace
-instead of a single project, use the `namespace_path` claim. GitLab's
+instead of a single project, use the `namespace_path` claim for
+authorization. `google.subject` still maps `assertion.project_id` —
+the required Google subject — while the provider condition and
+principalSet stay on `namespace_path`. GitLab's
 `namespace_path` ID-token claim is the project's immediate parent
 namespace path (for example, a project at `my-group/subgroup/project`
 has `namespace_path=my-group/subgroup`) — it is not any ancestor
@@ -409,7 +477,7 @@ gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --workload-identity-pool=fullsend-inference \
   --issuer-uri="$GITLAB_URL" \
   --allowed-audiences="fullsend" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
   --attribute-condition="assertion.namespace_path == '$GROUP_PATH'" \
   --project="$GCP_PROJECT"
 
