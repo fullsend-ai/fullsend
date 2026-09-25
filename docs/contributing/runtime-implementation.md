@@ -1012,7 +1012,7 @@ re-checked on a `CODEX_VERSION` bump. The decisions are
 [ADR 0099](../ADRs/0099-codex-agent-runtime.md) (credential delivery) and [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)
 (sandbox hooks).
 
-Everything below was read at tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`. Two of the findings are the reason the hook
+Everything below was read at tag `rust-v0.152.1`; the rows of [Re-check on a `CODEX_VERSION` bump](#re-check-on-a-codex_version-bump) were re-verified at `rust-v0.157.0`. Two of the findings are the reason the hook
 adapter exists at all, because forwarding the scripts' own convention would fail **open**.
 
 One iteration, end to end:

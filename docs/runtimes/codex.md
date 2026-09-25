@@ -218,7 +218,6 @@ probes on the way up and the policy refuses what the run does not need:
 | `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7, up to three times. The first allowed `POST` follows about 100 ms later. |
 | `chatgpt.com:443` | A sign-in/account probe the agent run has no use for; denied at L4. |
 | `api.github.com:443` | Denied at L4 from codex itself — the agent reaches GitHub through the `gh` CLI and its own provider, not from the model client. |
-| `POST github.com/openai/plugins.git/git-upload-pack`, `codeload.github.com:443` | Codex syncing its plugin marketplace. The GitHub profiles are read-only and do not list `codeload`, so the fetch fails and no plugin is installed. |
 
 None of these stop the run. What *would* is a denial on `POST /v1/responses`, which means the
 profile or the policy is wrong.
