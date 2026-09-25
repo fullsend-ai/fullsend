@@ -117,7 +117,7 @@ Then pick a GPT model when you run:
 
 ```bash
 fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
-  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
 
 Codex takes the same key and the same harness requirements — swap `--runtime pi` for
@@ -164,6 +164,10 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Note**: local runs must pass `--forge github` (or `--forge gitlab`). Auto-detection
+only reads CI environment variables — see [`--forge`](#remote-resource-flags) in the
+option table below.
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -189,7 +193,8 @@ fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env
+  --env-file fullsend-triage.env \
+  --forge github
 ```
 
 ### Review agent
@@ -211,7 +216,8 @@ fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-review.env
+  --env-file fullsend-review.env \
+  --forge github
 ```
 
 ### Code agent
@@ -238,7 +244,8 @@ fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-code.env
+  --env-file fullsend-code.env \
+  --forge github
 ```
 
 ### Choosing the runtime
@@ -255,6 +262,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
 
@@ -329,6 +337,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --status-repo myorg/myrepo \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
@@ -368,7 +377,8 @@ podman run --rm -it --network=host \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
     --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
+    --env-file fullsend-triage.env \
+    --forge github
 ```
 
 The image's working directory is `/work`, so relative paths in `--env-file`
@@ -479,6 +489,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --output-dir /tmp/my-debug-output
 ```
 
@@ -535,6 +546,7 @@ or gateway routing issues).
      --target-repo /tmp/target-repo/ \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
+     --forge github \
      --keep-sandbox \
      --no-post-script
    ```
