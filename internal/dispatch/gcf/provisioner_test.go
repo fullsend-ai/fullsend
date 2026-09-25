@@ -4500,9 +4500,31 @@ func TestEnsureTrafficOnLatestRevision_AlreadyMatching(t *testing.T) {
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "GetServiceRevisionInfo")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_DoesNotPinAheadOfReadyTemplateRevision(t *testing.T) {
+	// Pins down intended behavior for a not-yet-ready newly created
+	// revision: TemplateMatchesTraffic is derived from LatestReadyRevisionShort
+	// (see GetServiceRevisionInfo), so when traffic and latestReady both
+	// still point at the old revision — even though the template's revision
+	// name (TemplateRevision) is already ahead, pointing at a newer revision
+	// that has not become Ready — ensureTrafficOnLatestRevision must not
+	// pin traffic onto that unready revision.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00114-fm9",
+		TemplateRevision:         "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   true,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 }
 
@@ -4515,7 +4537,7 @@ func TestEnsureTrafficOnLatestRevision_PinsWhenDiverged(t *testing.T) {
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "PinServiceTraffic")
 	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
@@ -4530,16 +4552,18 @@ func TestEnsureTrafficOnLatestRevision_FallsBackToTemplateRevision(t *testing.T)
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.Equal(t, "fullsend-mint-00116-abc", fake.lastPinnedRevision)
 }
 
 func TestEnsureTrafficOnLatestRevision_PinsWhenTrafficUnknownButLatestKnown(t *testing.T) {
-	// Even when the traffic-serving revision isn't reported yet (initial
-	// create still reconciling), a known latest-ready revision should be
-	// pinned explicitly rather than silently trusted to waitForReady, which
-	// only checks HTTP 200 and not which revision served it.
+	// On an existing service, an unreported traffic-serving revision is the
+	// same "traffic env unknown" condition TrafficEnvVarsUnreliable guards
+	// below: GetServiceRevisionInfo leaves TrafficRevisionShort empty in
+	// exactly the situation where it can't resolve/read the traffic
+	// revision, so refuse to pin without verifying currently-served
+	// registration data instead of moving traffic onto latest-ready blind.
 	fake := newFakeGCFClient()
 	fake.revisionInfo = &ServiceRevisionInfo{
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
@@ -4547,7 +4571,27 @@ func TestEnsureTrafficOnLatestRevision_PinsWhenTrafficUnknownButLatestKnown(t *t
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not yet reported on an existing service")
+	assert.Contains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_FirstDeployPinsWhenTrafficUnknownButLatestKnown(t *testing.T) {
+	// On a genuine first deploy there is no prior traffic-serving revision
+	// to reconcile registration data against, so a known latest-ready
+	// revision should be pinned explicitly rather than silently trusted to
+	// waitForReady, which only checks HTTP 200 and not which revision
+	// served it.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), true)
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "PinServiceTraffic")
 	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
@@ -4560,7 +4604,7 @@ func TestEnsureTrafficOnLatestRevision_BothTrafficAndLatestUnknownReturnsError(t
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "latest revision is unknown")
 	assert.Contains(t, err.Error(), "--to-latest")
@@ -4577,7 +4621,7 @@ func TestEnsureTrafficOnLatestRevision_PinErrorIncludesGcloudCommand(t *testing.
 	fake.errs["PinServiceTraffic"] = fmt.Errorf("permission denied")
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permission denied")
 	assert.Contains(t, err.Error(), "currently serving fullsend-mint-00114-fm9")
@@ -4589,7 +4633,7 @@ func TestEnsureTrafficOnLatestRevision_LookupErrorIncludesGcloudCommand(t *testi
 	fake.errs["GetServiceRevisionInfo"] = fmt.Errorf("not found")
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 	assert.Contains(t, err.Error(), "--to-latest")
@@ -4603,10 +4647,69 @@ func TestEnsureTrafficOnLatestRevision_UnknownLatestIncludesGcloudCommand(t *tes
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "latest revision is unknown")
 	assert.Contains(t, err.Error(), "--to-latest")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileFailureRecoversAgainstNewRevision(t *testing.T) {
+	// UpdateServiceEnvVars can fail after already creating a new revision
+	// with the reconciled env (template PATCH succeeded, traffic PATCH
+	// failed). The recovery command must target that newly created
+	// revision — the one that actually carries the reconciled registration
+	// data — not the stale pre-reconciliation target. Recovering against
+	// the stale target would re-pin the unreconciled revision and drop the
+	// org/role/repo data reconciliation exists to preserve.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00116-new"
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "traffic routing failed")
+	assert.Contains(t, err.Error(),
+		"gcloud run services update-traffic fullsend-mint --project=my-project --region=us-central1 --to-revisions fullsend-mint-00116-new=100")
+	assert.NotContains(t, err.Error(), "fullsend-mint-00115-qp5=100")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileFailureFallsBackToTargetWhenNoRevisionCreated(t *testing.T) {
+	// When UpdateServiceEnvVars fails before creating any revision (e.g. the
+	// initial GET/PATCH of the template itself fails), there is no new
+	// revision to recover against, so the recovery command must fall back
+	// to the original pin target.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("getting Cloud Run service: transport error")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transport error")
+	assert.Contains(t, err.Error(),
+		"gcloud run services update-traffic fullsend-mint --project=my-project --region=us-central1 --to-revisions fullsend-mint-00115-qp5=100")
 }
 
 func TestEnsureTrafficOnLatestRevision_ReconcilesMissingOrgBeforePin(t *testing.T) {
@@ -4627,7 +4730,7 @@ func TestEnsureTrafficOnLatestRevision_ReconcilesMissingOrgBeforePin(t *testing.
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -4651,7 +4754,7 @@ func TestEnsureTrafficOnLatestRevision_ReconcilesMissingRoleAppIDBeforePin(t *te
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	require.NotNil(t, fake.lastUpdateServiceEnvVars)
@@ -4676,7 +4779,7 @@ func TestEnsureTrafficOnLatestRevision_NoReconciliationWhenTargetAlreadyMatchesT
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "PinServiceTraffic")
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
@@ -4702,7 +4805,7 @@ func TestEnsureTrafficOnLatestRevision_RevokedOrgDoesNotSurvivePin(t *testing.T)
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
@@ -4731,7 +4834,7 @@ func TestEnsureTrafficOnLatestRevision_RevokedRoleDoesNotSurvivePin(t *testing.T
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	require.NotNil(t, fake.lastUpdateServiceEnvVars)
@@ -4758,7 +4861,7 @@ func TestEnsureTrafficOnLatestRevision_ReconcilesWorkflowHostRepos(t *testing.T)
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	require.NotNil(t, fake.lastUpdateServiceEnvVars)
@@ -4787,7 +4890,7 @@ func TestEnsureTrafficOnLatestRevision_RefusesPinWhenTrafficEnvUnreliable(t *tes
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not be read reliably")
 	assert.Contains(t, err.Error(), "gcloud run services update-traffic")
@@ -4810,7 +4913,7 @@ func TestEnsureTrafficOnLatestRevision_ReconcileErrorOnInvalidRoleAppIDsJSON(t *
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
-	err := p.ensureTrafficOnLatestRevision(context.Background())
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reconciling registration data")
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")

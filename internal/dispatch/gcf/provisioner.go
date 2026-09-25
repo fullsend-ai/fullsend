@@ -864,7 +864,8 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 				}
 				// A matching source hash can still leave traffic pinned to an
 				// older revision from a previous deploy. Re-pin before reuse.
-				if err := p.ensureTrafficOnLatestRevision(ctx); err != nil {
+				// existing is non-nil here, so this is never a first deploy.
+				if err := p.ensureTrafficOnLatestRevision(ctx, false); err != nil {
 					return nil, err
 				}
 				p.cfg.MintURL = existing.URI
@@ -923,6 +924,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// Step 6b: Code deployment — only when source hash changes.
 	sourceZip := earlySourceZip
 	sourceHash := sha256Hex(sourceZip)
+
+	// Captured before the branch below reassigns existing via GetFunction,
+	// so ensureTrafficOnLatestRevision can tell a genuine first deploy
+	// (no prior revision to reconcile registration data against) apart
+	// from an update deploy.
+	isFirstDeploy := existing == nil
 
 	if existing == nil && p.cfg.DeployMode != DeploySkip {
 		// First deploy: CreateFunction with full env vars including org registration.
@@ -1064,7 +1071,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// Cloud Functions source deploys create a new revision but leave traffic
 	// on a previously pinned revision. Pin before the health check so /health
 	// observes the revision that will actually serve public traffic.
-	if err := p.ensureTrafficOnLatestRevision(ctx); err != nil {
+	if err := p.ensureTrafficOnLatestRevision(ctx, isFirstDeploy); err != nil {
 		return nil, err
 	}
 
@@ -1893,6 +1900,12 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 // unless it is explicitly re-pinned. If the pin fails, the error includes
 // the gcloud command to recover manually.
 //
+// isFirstDeploy must be true only when this is the initial creation of the
+// service (called right after CreateFunction, with no prior revision to
+// reconcile against) and false otherwise, including on an update deploy or
+// a hash-skip re-pin. It is used solely to decide whether an unreported
+// traffic-serving revision is safe to pin over (see below).
+//
 // Before moving traffic, it reconciles registration data (ALLOWED_ORGS,
 // ROLE_APP_IDS, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) against the
 // currently serving revision, which is treated as the source of truth: those
@@ -1906,7 +1919,7 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 // traffic but still lingers in a stale template. If the traffic-serving
 // env can't be read reliably, the pin is refused rather than proceeding on
 // unverified data.
-func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
+func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirstDeploy bool) error {
 	info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("checking Cloud Run traffic after deploy: %w; recover with: %s",
@@ -1922,18 +1935,26 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	}
 
 	if info.TrafficRevisionShort == "" {
-		// Observed traffic not reported yet (initial create still
-		// reconciling, or the API returned no trafficStatuses). Previously
-		// this silently returned success and relied on waitForReady, but
-		// that only checks HTTP 200 on the mint URL and does not verify
-		// which revision served it — a real gap when the target revision is
-		// known. Pin to it explicitly instead of trusting an unreported
-		// traffic state to resolve itself.
 		if target == "" {
 			return fmt.Errorf("Cloud Run traffic revision not yet reported and the latest revision is unknown; recover with: %s",
 				trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
 		}
-		log.Printf("Cloud Run traffic revision not yet reported; pinning 100%% to latest ready %s", target)
+		// Observed traffic not reported yet (initial create still
+		// reconciling, or the API returned no trafficStatuses). On an
+		// existing service, GetServiceRevisionInfo leaves this empty in the
+		// same situation it also sets TrafficEnvVarsUnreliable for — an
+		// unresolvable traffic-serving revision — so treat it identically
+		// to that flag and refuse to pin without a verified read of what is
+		// currently serving: pinning blind could restore an org, role, or
+		// per-repo WIF entry that the unreported revision had already
+		// dropped. On a first deploy there is no prior revision to
+		// reconcile against, so pinning straight to the known latest-ready
+		// revision is safe.
+		if !isFirstDeploy {
+			return fmt.Errorf("Cloud Run traffic revision not yet reported on an existing service; refusing to pin to %s without verifying currently-served registration data; recover with: %s",
+				target, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+		log.Printf("Cloud Run traffic revision not yet reported (first deploy); pinning 100%% to latest ready %s", target)
 		if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
 			return fmt.Errorf("pinning Cloud Run traffic to %s: %w; recover with: %s",
 				target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
@@ -1957,9 +1978,21 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	if reconciled != nil {
 		log.Printf("Cloud Run traffic is on %s, not latest ready %s; latest ready is missing registration data present on %s, reconciling before pinning",
 			info.TrafficRevisionShort, target, info.TrafficRevisionShort)
-		if _, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, reconciled); err != nil {
+		rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, reconciled)
+		if err != nil {
+			// UpdateServiceEnvVars can fail after already creating a new
+			// revision with the reconciled env (template PATCH succeeded,
+			// traffic PATCH failed). When that happens, rev is the newly
+			// created revision — the one that actually carries the
+			// reconciled registration data — not the stale target. Recover
+			// against rev so the operator doesn't re-pin the unreconciled
+			// revision this function exists to avoid.
+			recoveryTarget := target
+			if rev != "" {
+				recoveryTarget = shortRevisionName(rev)
+			}
 			return fmt.Errorf("reconciling registration data and pinning traffic away from %s: %w; recover with: %s",
-				info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+				info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, recoveryTarget))
 		}
 		return nil
 	}

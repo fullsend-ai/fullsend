@@ -1916,54 +1916,56 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 		info.TemplateMatchesTraffic = info.TrafficRevisionShort == info.LatestReadyRevisionShort
 	}
 
-	// 2. List recent revisions.
+	// 2. List recent revisions. Non-fatal: on transport error, skip this
+	// step (RecentRevisions stays empty) but fall through to step 3 below —
+	// returning early here previously skipped the traffic-revision env var
+	// read entirely, leaving TrafficEnvVarsUnreliable false even though
+	// TrafficEnvVars was never actually read from the traffic revision.
 	revisionsURL := fmt.Sprintf("%s/revisions?pageSize=5", serviceURL)
-	revListResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionsURL, "")
-	if err != nil {
-		// Non-fatal: we can still return partial info.
-		return info, nil
-	}
-	defer revListResp.Body.Close()
+	revListResp, revListErr := c.Client.DoRequest(ctx, http.MethodGet, revisionsURL, "")
+	if revListErr == nil {
+		defer revListResp.Body.Close()
 
-	if revListResp.StatusCode == http.StatusOK {
-		var revList struct {
-			Revisions []struct {
-				Name       string `json:"name"`
-				CreateTime string `json:"createTime"`
-				Conditions []struct {
-					Type   string `json:"type"`
-					State  string `json:"state"`
-					Status string `json:"status"`
-				} `json:"conditions"`
-			} `json:"revisions"`
-		}
-		revBody, _ := io.ReadAll(io.LimitReader(revListResp.Body, 10<<20))
-		if err := json.Unmarshal(revBody, &revList); err == nil {
-			for _, rev := range revList.Revisions {
-				parts := strings.Split(rev.Name, "/")
-				shortName := parts[len(parts)-1]
-				// Validate revision short name to prevent terminal injection from
-				// malformed API responses. Skip entries that don't match the expected
-				// Cloud Run revision name format.
-				if !revisionShortNamePattern.MatchString(shortName) {
-					continue
-				}
-				active := false
-				for _, cond := range rev.Conditions {
-					if cond.Type == "Ready" && (cond.State == "CONDITION_SUCCEEDED" || cond.Status == "True") {
-						active = true
-						break
+		if revListResp.StatusCode == http.StatusOK {
+			var revList struct {
+				Revisions []struct {
+					Name       string `json:"name"`
+					CreateTime string `json:"createTime"`
+					Conditions []struct {
+						Type   string `json:"type"`
+						State  string `json:"state"`
+						Status string `json:"status"`
+					} `json:"conditions"`
+				} `json:"revisions"`
+			}
+			revBody, _ := io.ReadAll(io.LimitReader(revListResp.Body, 10<<20))
+			if err := json.Unmarshal(revBody, &revList); err == nil {
+				for _, rev := range revList.Revisions {
+					parts := strings.Split(rev.Name, "/")
+					shortName := parts[len(parts)-1]
+					// Validate revision short name to prevent terminal injection from
+					// malformed API responses. Skip entries that don't match the expected
+					// Cloud Run revision name format.
+					if !revisionShortNamePattern.MatchString(shortName) {
+						continue
 					}
+					active := false
+					for _, cond := range rev.Conditions {
+						if cond.Type == "Ready" && (cond.State == "CONDITION_SUCCEEDED" || cond.Status == "True") {
+							active = true
+							break
+						}
+					}
+					// Mark the traffic-serving revision as active regardless.
+					if shortName == info.TrafficRevisionShort {
+						active = true
+					}
+					info.RecentRevisions = append(info.RecentRevisions, RevisionSummary{
+						Name:       shortName,
+						CreateTime: rev.CreateTime,
+						Active:     active,
+					})
 				}
-				// Mark the traffic-serving revision as active regardless.
-				if shortName == info.TrafficRevisionShort {
-					active = true
-				}
-				info.RecentRevisions = append(info.RecentRevisions, RevisionSummary{
-					Name:       shortName,
-					CreateTime: rev.CreateTime,
-					Active:     active,
-				})
 			}
 		}
 	}
