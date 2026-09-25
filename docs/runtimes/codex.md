@@ -110,7 +110,7 @@ bare — and `metrics.json` records the same (`runtime`, `runtime_source`, `requ
 ...
 runtime: selected "codex" from --runtime flag
 ...
-→ Agent: gpt-5.6-luna (v0.152.1)
+→ Agent: gpt-5.6-luna (v0.157.0)
   ✓ Agent exited with code 0
 ```
 
@@ -126,7 +126,7 @@ What a local codex run needs, beyond the guide:
 - **fullsend from the release that carries `CODEX_VERSION`** — the first one cut after the codex
   runtime lands. The release download and the container image both work as-is.
 - **A sandbox image that includes codex** — `ghcr.io/fullsend-ai/fullsend-sandbox` built with
-  `CODEX_VERSION` (0.152.1 today). A stale image fails Bootstrap's preflight before the agent
+  `CODEX_VERSION` (0.157.0 today). A stale image fails Bootstrap's preflight before the agent
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
@@ -215,9 +215,10 @@ probes on the way up and the policy refuses what the run does not need:
 
 | Denied | Why it appears |
 |---|---|
-| `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7 — once, plus an immediate retry. The first allowed `POST` follows about 100 ms later. |
+| `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7, up to three times. The first allowed `POST` follows about 100 ms later. |
 | `chatgpt.com:443` | A sign-in/account probe the agent run has no use for; denied at L4. |
 | `api.github.com:443` | Denied at L4 from codex itself — the agent reaches GitHub through the `gh` CLI and its own provider, not from the model client. |
+| `POST github.com/openai/plugins.git/git-upload-pack`, `codeload.github.com:443` | Codex syncing its plugin marketplace. The GitHub profiles are read-only and do not list `codeload`, so the fetch fails and no plugin is installed. |
 
 None of these stop the run. What *would* is a denial on `POST /v1/responses`, which means the
 profile or the policy is wrong.
