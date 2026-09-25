@@ -120,6 +120,21 @@ Vertex project, so Grok can be pointed at a project where it is actually enabled
 `xai-vertex` is fixed to the **global** endpoint — Vertex serves Grok only there, and regional
 endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately ignored for it.
 
+### Prompt caching
+
+Claude on Vertex gets cache reads. **Grok 4.6 on Vertex does not.** It is a preview offering there;
+Google Cloud support confirmed caching is unsupported (2026-09-14), and the vendored
+[`pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) provider documents the same
+limitation. Occasional non-zero `cached_tokens` on a response are incidental — they cannot be
+requested or relied on. Affinity keys that steer cache hits on xAI's own API (`x-grok-conv-id`,
+`prompt_cache_key`) have no effect on Vertex.
+
+Budget every turn at full input price. Grok can still look cost-effective on short, low-turn
+tasks; on long, iterative, multi-file coding it is typically much more expensive than a
+cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
+([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M tokens with
+`cache_creation_input_tokens: 0` throughout.
+
 ## At a glance
 
 | | |
@@ -131,7 +146,7 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
 | Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
-| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers |
+| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
 
 ## Running it locally
 
@@ -371,8 +386,10 @@ different vendor, or a newer generation — without touching the skill.
 
 #### Set it
 
-A repo where Grok is the cost-effective coder, Gemini Flash handles document checks, Opus is
-kept for detail work, and Sonnet is enough to orchestrate:
+A repo where Grok is the cost-effective coder on short, low-turn tasks (see
+[Prompt caching](#prompt-caching) before using it on long, iterative work), Gemini
+Flash handles document checks, Opus is kept for detail work, and Sonnet is enough
+to orchestrate:
 
 ```bash
 fullsend agent set review --fullsend-dir .fullsend --model sonnet \
