@@ -74,6 +74,7 @@ print(json.dumps({
     "base_url": cfg["model_providers"]["fullsend-openai"]["base_url"],
     "auth_command": cfg["model_providers"]["fullsend-openai"]["auth"]["command"],
     "top_level": sorted(cfg),
+    "plugins": cfg["features"]["plugins"],
 }))
 `
 	out, err := exec.Command(python, "-c", script, path).CombinedOutput()
@@ -85,6 +86,7 @@ print(json.dumps({
 		BaseURL      string   `json:"base_url"`
 		AuthCommand  string   `json:"auth_command"`
 		TopLevel     []string `json:"top_level"`
+		Plugins      *bool    `json:"plugins"`
 	}
 	require.NoError(t, json.Unmarshal(out, &got))
 
@@ -95,6 +97,8 @@ print(json.dumps({
 	assert.Equal(t, sandbox.SandboxCodexConfig+"/"+codexAuthScriptFile, got.AuthCommand)
 	assert.NotContains(t, got.TopLevel, "projects",
 		"no [projects] entry: the target repo must stay untrusted so its own .codex/ never loads")
+	require.NotNil(t, got.Plugins)
+	assert.False(t, *got.Plugins, "the curated plugin marketplace must not sync at startup")
 }
 
 func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
