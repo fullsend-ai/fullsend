@@ -6,8 +6,6 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-Six steps, in order. Each links to the detailed section below — scan this list first, then jump to what you need.
-
 1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
 2. **Grant it two project roles** in the target Jira project:
    - **Developers** — so the poller can operate on issues and write the entity properties it uses for lock and checkpoint coordination.
