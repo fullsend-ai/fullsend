@@ -226,12 +226,25 @@ probes on the way up and the policy refuses what the run does not need:
 None of these stop the run. What *would* is a denial on `POST /v1/responses`, which means the
 profile or the policy is wrong.
 
+**`OPENAI_API_KEY in the sandbox is not a gateway placeholder`.** The harness does not declare the
+OpenAI provider, so no credential was attached to the sandbox. Each iteration stops before codex
+starts, and the run ends with `validation failed after 2 iteration(s)`:
+
+```
+fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex
+→ Result: ERROR (incomplete)
+```
+
+Add `- openai` under `providers:` in the harness you run. The fleet harnesses do not declare it: add
+it to your agents clone's harness, or on a
+[child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) in a
+`.fullsend` repo.
+
 **``provider auth command `...` ...``** — codex's own wording, one of `exited with status N`,
 `failed to start`, `timed out after N ms`, `produced an empty token`, or `wrote non-UTF-8 data to
 stdout`. Codex could not read the credential: the runner-owned token file is missing, or it does not
-hold a gateway placeholder. Check that the harness declares `providers: [openai]` (the fleet
-agents do not; add it to your clone's harness or on a child harness) and that `OPENAI_API_KEY`
-reached the **runner**, not the sandbox.
+hold a gateway placeholder. Check that the harness declares `providers: [openai]` and that
+`OPENAI_API_KEY` reached the **runner**, not the sandbox.
 
 **The run stops before the agent starts, naming `api.openai.com`.** The effective sandbox policy
 admits `api.openai.com:443` without protocol inspection, so the gateway refuses to carry the
