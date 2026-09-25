@@ -86,9 +86,7 @@ the value stays `0`. Token counts are recorded normally.
 Complete [Running agents locally](../guides/user/running-agents-locally.md) first — the CLI,
 OpenShell, credentials and the fleet clone are the same. Add `OPENAI_API_KEY` to an env file as that
 guide's [OpenAI section](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex)
-describes. The fleet harnesses do not declare the OpenAI provider, so add `- openai` under
-`providers:` in the harness you run (here `/tmp/fullsend-agents/harness/triage.yaml`), then add
-`--runtime codex` to any example on it:
+describes, then add `--runtime codex` to any example on it:
 
 ```bash
 fullsend run triage \
@@ -132,15 +130,13 @@ What a local codex run needs, beyond the guide:
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
-  `policy: policies/base.yaml`. The fleet's agents already carry the policy; they do not declare
-  the OpenAI provider. `fullsend run` materializes that credential only when the harness lists it,
-  so switching a fleet agent to `runtime: codex` needs `providers: [openai]` added: locally, in the
-  harness in your agents clone; in a `.fullsend` repo, on a
+  `policy: policies/base.yaml`. The fleet's agents carry both from the first fullsend release after
+  v0.43.0; up to v0.43.0 they carry only the policy. `fullsend run` materializes the credential only
+  when the harness lists the provider, so on those releases add it on a
   [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) (a
-  child's providers are appended to its base's). Runs that do not call OpenAI skip the provider, so
-  declaring it is harmless on other runtimes. A custom harness also needs the
-  policy, because the sandbox image's default policy leaves an uninspected route to
-  `api.openai.com`, which the gateway refuses to carry the credential over.
+  child's providers are appended to its base's). Runs that do not call OpenAI skip the provider. A
+  custom harness also needs the policy, because the sandbox image's default policy leaves an
+  uninspected route to `api.openai.com`, which the gateway refuses to carry the credential over.
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `codex-debug.log` inside the run directory, next to the transcripts, not in the runner's output.
 
@@ -189,8 +185,8 @@ What a local codex run needs, beyond the guide:
 ## Not yet exercised
 
 **Start on a disposable repo,** with `triage` or `prioritize` before `code` or `fix`. Codex has been
-run end to end by hand — the fleet's own `triage` and `review` harnesses with `providers: [openai]`
-added, on `openai/gpt-5.6-luna`, on macOS — but not yet through a full fleet lifecycle, and not yet on the CI credential path: the
+run end to end by hand — the fleet's own `triage` and `review` harnesses, on `openai/gpt-5.6-luna`,
+on macOS — but not yet through a full fleet lifecycle, and not yet on the CI credential path: the
 Workload Identity route needs an OpenAI organization mapped to the repositories, which does not
 exist yet, so local runs use `OPENAI_API_KEY` on the runner. Until that mapping exists codex also
 has no default behaviour-test coverage; its scenario is gated. What was run, and on which versions,
@@ -235,10 +231,10 @@ fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai pro
 → Result: ERROR (incomplete)
 ```
 
-Add `- openai` under `providers:` in the harness you run. The fleet harnesses do not declare it: add
-it to your agents clone's harness, or on a
-[child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) in a
-`.fullsend` repo.
+Add `- openai` under `providers:` in the harness you run. The fleet harnesses declare it from the
+first fullsend release after v0.43.0; on an earlier release, or on a custom harness, add it yourself
+(on a [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) in
+a `.fullsend` repo).
 
 **``provider auth command `...` ...``** — codex's own wording, one of `exited with status N`,
 `failed to start`, `timed out after N ms`, `produced an empty token`, or `wrote non-UTF-8 data to
