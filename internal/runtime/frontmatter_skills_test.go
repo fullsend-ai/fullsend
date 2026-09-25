@@ -278,13 +278,18 @@ func TestInjectFrontmatterSkills_FlowStyleEmpty(t *testing.T) {
 	assertValidFrontmatter(t, result)
 }
 
-func TestInjectFrontmatterSkills_FlowStyleRejectsUnsafeExistingName(t *testing.T) {
+func TestInjectFrontmatterSkills_FlowStylePreservesExistingSpecialName(t *testing.T) {
 	t.Parallel()
-	src := "---\nname: test\nskills: [\"safe-skill\", \"unsafe: skill\"]\nmodel: opus\n---\nBody\n"
-	_, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid existing skill name")
-	assert.Contains(t, err.Error(), "unsafe: skill")
+	src := "---\nname: test\nskills: [\"safe-skill\", \"plugin:code-review\"]\nmodel: opus\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{"/path/to/new-skill"})
+	require.NoError(t, err)
+
+	got := string(result)
+	assert.Contains(t, got, "safe-skill")
+	assert.Contains(t, got, "plugin:code-review")
+	assert.Contains(t, got, "  - new-skill")
+	assert.Contains(t, got, "model: opus")
+	assertValidFrontmatter(t, result)
 }
 
 func TestInjectFrontmatterSkills_ExistingQuotedYAMLSpecialWithInjection(t *testing.T) {

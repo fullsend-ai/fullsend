@@ -245,12 +245,12 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
-	// Deduplicate: build a set of existing skill names.
+	// Deduplicate: build a set of existing skill names. Existing names
+	// are not validated — they stay in the original YAML nodes (or are
+	// emitted as !!str ScalarNodes for merge-key inheritance), so yaml.v3
+	// handles quoting automatically regardless of content.
 	existing := make(map[string]bool, len(fm.Skills))
 	for _, s := range fm.Skills {
-		if !isValidSkillName(s) {
-			return nil, fmt.Errorf("invalid existing skill name %q: must match [a-zA-Z0-9._-]+ and not be %q or %q", s, ".", "..")
-		}
 		existing[s] = true
 	}
 
