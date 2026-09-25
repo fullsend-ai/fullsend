@@ -1,5 +1,5 @@
 ---
-title: "123. GitOps-managed tenant configuration for Fullsend"
+title: "123. Tenant configuration from repos.yaml"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -81,7 +81,7 @@ them.
 ## Consequences
 
 - This is the smallest, simplest incremental decision for exploring what an enterprise-managed Fullsend installation could look like. No new API.
-- A custom REST API or Kubernetes-native tenant resource can be explored later if GitOps manifests prove unsuitable as requirements evolve.
+- A custom REST API or Kubernetes-native tenant resource can be explored later if a different management or delivery path becomes necessary.
 - We may find that we have overloaded repos.yaml with too many competing use cases. Watch out for this as we go forwards.
 - For enterprise administrators, git history and review can provide an auditable change and rollback path for each tenant's repository configuration.
 - Follow-up decisions will define other components of a centrally manageable fullsend system.

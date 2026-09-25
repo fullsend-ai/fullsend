@@ -39,7 +39,7 @@ This is the "where do agents physically run" question — whether that's a manag
 
 Forge-native infrastructure platform choice and configuration live in each
 target repository's **`.fullsend/`** directory. Per-repo installation is the
-sole supported forge-native deployment model
+sole supported installation model
 ([ADR 0033](ADRs/0033-per-repo-installation-mode.md)); the dedicated org-level
 `<org>/.fullsend` config repo is deprecated
 ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
@@ -47,10 +47,9 @@ sole supported forge-native deployment model
 **Decided:**
 
 - Tenant configuration for a possible centrally managed service reuses the
-  existing `repos.yaml` v1 format and wraps its validated `repos.Manifest` in
-  an internal `TenantConfig` with platform metadata such as tenant identity.
-  The source of truth and delivery mechanism remain open, as does whether to
-  offer the service ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
+  existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
+  to offer the service, its source of truth, and its delivery mechanism remain
+  open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
@@ -627,36 +626,25 @@ truth and how service components consume it, along with the service's runtime
 and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 
 ```
-  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-  │  Org A               │  │  Org B               │  │  Org C               │
-  │                      │  │                      │  │                      │
-  │  .fullsend repo      │  │  .fullsend repo      │  │  .fullsend repo      │
-  │  ┌────────────────┐  │  │  ┌────────────────┐  │  │  ┌────────────────┐  │
-  │  │ config.yaml    │  │  │  │ config.yaml    │  │  │  │ config.yaml    │  │
-  │  │ agents/        │  │  │  │ agents/        │  │  │  │ agents/        │  │
-  │  │ skills/        │  │  │  │ skills/        │  │  │  │ skills/        │  │
-  │  │ harness/       │  │  │  │ harness/       │  │  │  │ harness/       │  │
-  │  └────────────────┘  │  │  └────────────────┘  │  │  └────────────────┘  │
-  │                      │  │                      │  │                      │
-  │  API keys: own       │  │  API keys: own       │  │  API keys: own       │
-  │  Enrolled repos: ... │  │  Enrolled repos: ... │  │  Enrolled repos: ... │
-  │  fullsend v0.2.0     │  │  fullsend v0.4.1     │  │  fullsend v0.2.0     │
-  │                      │  │                      │  │                      │
-  └──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
-             │                         │                         │
-             │            no relationship between orgs           │
-             │                         │                         │
-             └─────────────────────────┼─────────────────────────┘
+  Org A                                      Org B
+  ┌─────────────────────────────┐            ┌─────────────────────────────┐
+  │ repo-a1                     │            │ repo-b1                     │
+  │ ├── .fullsend/config.yaml    │            │ ├── .fullsend/config.yaml    │
+  │ ├── .fullsend/agents/        │            │ ├── .fullsend/agents/        │
+  │ └── .fullsend/skills/        │            │ └── .fullsend/skills/        │
+  │                             │            │                             │
+  │ repo-a2                     │            │ repo-b2                     │
+  │ └── .fullsend/              │            │ └── .fullsend/              │
+  └─────────────────────────────┘            └─────────────────────────────┘
+                    │                                        │
+                    └──────── independent installations ────┘
                                        │
                             ┌──────────┴───────────┐
                             │  fullsend-ai/fullsend│
-                            │                      │
-                            │  Open source project │
                             │  CLI, base agents,   │
                             │  skills, scaffold    │
-                            │                      │
-                            │  Orgs pull releases  │
-                            │  at their own pace   │
+                            │  Releases are pulled │
+                            │  independently       │
                             └──────────────────────┘
 ```
 
