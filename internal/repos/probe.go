@@ -74,21 +74,21 @@ func DriftFieldName(componentName string) string {
 func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
-	// Workflow file (try forge-appropriate extensions).
-	workflowPresent := false
-	var workflowRef string
-	for _, path := range fc.WorkflowPaths {
-		content, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("checking workflow file: %w", err)
-		}
-		workflowPresent = true
-		workflowRef = extractWorkflowRef(content, fc)
-		break
+	// Workflow presence is the current carrier (WorkflowPaths). GitLab
+	// still reads a leftover dispatch stub for the version ref so repos
+	// enrolled before #7707 keep reporting the installed version until
+	// converge writes the marker onto the pipeline wrapper and deletes
+	// the stub. Presence stays false when only the stub exists, so the
+	// missing wrapper is repaired.
+	content, _, carrierPresent, err := readWorkflowMarker(ctx, client, owner, repo, fc)
+	if err != nil {
+		return nil, fmt.Errorf("checking workflow file: %w", err)
 	}
+	var workflowRef string
+	if content != nil {
+		workflowRef = extractWorkflowRef(content, fc)
+	}
+	workflowPresent := carrierPresent
 	results = append(results, ComponentStatus{
 		Name:    "workflow",
 		Present: workflowPresent,

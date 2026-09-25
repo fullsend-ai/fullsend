@@ -203,7 +203,7 @@ func TestProbeComponents_SecretCheckError(t *testing.T) {
 func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
@@ -245,7 +245,7 @@ func TestProbeComponents_GitLab_SkipsThinCallers(t *testing.T) {
 
 func TestProbeComponents_GitLab_MissingTrustScript(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestProbeComponents_GitLab_MissingTrustScript(t *testing.T) {
 
 func TestProbeComponents_GitLab_MissingRoleTokenScript(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 
 	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
@@ -312,7 +312,7 @@ func TestProbeComponents_GitLab_MissingExtractedJobScripts(t *testing.T) {
 
 func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -364,7 +364,7 @@ func TestProbeComponents_GitLab_MissingSchedules(t *testing.T) {
 
 func TestProbeComponents_GitLab_InactiveSchedule(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
 	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
 	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
@@ -406,7 +406,7 @@ func TestProbeComponents_GitLab_InactiveSchedule(t *testing.T) {
 
 func TestProbeComponents_GitLab_ScheduleCheckError(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -592,5 +592,83 @@ func TestDriftFieldName(t *testing.T) {
 		if got := DriftFieldName(tt.input); got != tt.want {
 			t.Errorf("DriftFieldName(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func workflowRefFromProbe(t *testing.T, components []ComponentStatus) (present bool, ref string) {
+	t.Helper()
+	for _, c := range components {
+		if c.Name == "workflow" {
+			return c.Present, c.Actual
+		}
+	}
+	t.Fatalf("workflow component not found: %+v", components)
+	return false, ""
+}
+
+func TestProbeComponents_GitLab_ReadsPipelineMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	present, ref := workflowRefFromProbe(t, components)
+	if !present {
+		t.Fatal("workflow present = false, want true")
+	}
+	if ref != "v2.5.0" {
+		t.Errorf("workflow ref = %q, want v2.5.0", ref)
+	}
+}
+
+func TestProbeComponents_GitLab_FallsBackToLegacyDispatchMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	present, ref := workflowRefFromProbe(t, components)
+	if !present {
+		t.Fatal("workflow present = false, want true because the pipeline wrapper exists")
+	}
+	if ref != "v2.4.0" {
+		t.Errorf("workflow ref = %q, want v2.4.0 from leftover dispatch stub", ref)
+	}
+}
+
+func TestProbeComponents_GitLab_PrefersPipelineMarkerOverLegacy(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.6.0\n")
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	_, ref := workflowRefFromProbe(t, components)
+	if ref != "v2.6.0" {
+		t.Errorf("workflow ref = %q, want v2.6.0 from pipeline wrapper", ref)
+	}
+}
+
+func TestProbeComponents_GitLab_LegacyDispatchOnly(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
+
+	components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+	if err != nil {
+		t.Fatalf("ProbeComponents() error = %v", err)
+	}
+	present, ref := workflowRefFromProbe(t, components)
+	if present {
+		t.Fatal("workflow present = true, want false so converge repairs the missing pipeline wrapper")
+	}
+	if ref != "v2.4.0" {
+		t.Errorf("workflow ref = %q, want v2.4.0 from leftover dispatch stub", ref)
 	}
 }

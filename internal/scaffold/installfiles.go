@@ -121,7 +121,7 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 //
 // runnerTags specifies GitLab runner tags to inject into CI job definitions.
 // upstreamRef and upstreamTag control the version marker embedded in the
-// dispatch file for upgrade/status drift detection.
+// pipeline wrapper for upgrade/status drift detection.
 func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
 	tagYAML := FormatRunnerTags(runnerTags)
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
@@ -133,10 +133,10 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstream
 		}
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
-		// Embed a version marker in the dispatch file so that
+		// Embed a version marker in the pipeline wrapper so that
 		// extractWorkflowRef (via glWorkflowRefPattern) can detect
 		// the installed version for status and upgrade operations.
-		if path == ".gitlab/ci/fullsend-dispatch.yml" && versionMarker != "" {
+		if path == ".gitlab/ci/fullsend-pipeline.yml" && versionMarker != "" {
 			rendered = InsertAfterDocStart(rendered, versionMarker)
 		}
 		files = append(files, InstallFile{

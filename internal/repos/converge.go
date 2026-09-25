@@ -1735,11 +1735,10 @@ func convergeRefFiles(ctx context.Context,
 	newContent, changed = replaceShimRef(content, newRef, newTag, fc, resolved.Forge)
 
 	var files []forge.TreeFile
-	// GitLab's dispatch file is the version-marker carrier, but
-	// replaceShimRef only rewrites the marker line and would leave a
-	// stale pre-#7322 body in place. The upgrade template collector
-	// writes the current dispatch file (and the other CI templates)
-	// wholesale, so skip the marker-only rewrite here.
+	// GitLab CI templates are rewritten wholesale on ref change
+	// (pipeline wrapper, agent, poll, helper scripts). replaceShimRef
+	// only rewrites the version-marker line, so skip the marker-only
+	// rewrite here.
 	if changed && resolved.Forge != ForgeGitLab {
 		files = append(files, forge.TreeFile{
 			Path:    workflowPath,
@@ -2077,10 +2076,13 @@ func convergeContentDriftFiles(ctx context.Context,
 
 	// Orphan file detection: check for managed scaffold files that
 	// exist on the forge but are no longer produced by the current
-	// template. Orphans are reported but not deleted — removal is a
-	// destructive action that requires explicit user intent (uninstall).
-	// Runs in both dry-run and live modes so that --dry-run previews
-	// the same orphan information as the live path and repos status.
+	// template. Generic orphans are reported but not deleted — removal
+	// is a destructive action that requires explicit user intent
+	// (uninstall). Known-retired GitLab paths (see
+	// gitlabRetiredScaffoldPaths) are deleted as a migration: they are
+	// leftover stubs with no user content. Runs in both dry-run and
+	// live modes so that --dry-run previews the same information as the
+	// live path and repos status.
 	orphanFiles, orphanErr := CheckOrphanFiles(
 		ctx, resolved.ForgeConfig.Client,
 		resolved.Owner, resolved.Repo,
@@ -2097,6 +2099,54 @@ func convergeContentDriftFiles(ctx context.Context,
 	}
 	for _, o := range orphanFiles {
 		if coveredPaths[o.Path] {
+			continue
+		}
+		if slices.Contains(gitlabRetiredScaffoldPaths, o.Path) {
+			if o.Path == fullsendDispatchInclude {
+				stillIncluded, wrapperErr := gitlabPipelineWrapperWillIncludeDispatch(
+					ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo, expectedFiles)
+				if wrapperErr != nil {
+					progress(repoFullName, "warning",
+						fmt.Sprintf("checking pipeline wrapper for dispatch include: %v", wrapperErr))
+				}
+				if stillIncluded {
+					// The wrapper that will remain committed (either
+					// just-repaired this run or already on the forge)
+					// still pulls this file in — e.g. a repo pinned to a
+					// pre-#7322 fullsend_ref. Deleting it now would break
+					// the pipeline on a missing local include, so leave it
+					// as a reported orphan instead.
+					actions = append(actions, ComponentAction{
+						Component: o.Path,
+						Action:    "orphan",
+						Detail:    fmt.Sprintf("orphan file %s exists on forge but the pipeline wrapper still includes it; leaving in place", o.Path),
+					})
+					progress(repoFullName, "warning",
+						fmt.Sprintf("Leaving %s in place: pipeline wrapper still references it", o.Path))
+					continue
+				}
+			}
+			if cfg.DryRun {
+				actions = append(actions, ComponentAction{
+					Component: o.Path,
+					Action:    "update",
+					Detail:    fmt.Sprintf("would remove obsolete %s", o.Path),
+				})
+				progress(repoFullName, "dry-run",
+					fmt.Sprintf("Would remove obsolete %s", o.Path))
+			} else {
+				repairFiles = append(repairFiles, forge.TreeFile{
+					Path:   o.Path,
+					Delete: true,
+				})
+				actions = append(actions, ComponentAction{
+					Component: o.Path,
+					Action:    "update",
+					Detail:    fmt.Sprintf("removed obsolete %s", o.Path),
+				})
+				progress(repoFullName, "repair",
+					fmt.Sprintf("Removing obsolete %s", o.Path))
+			}
 			continue
 		}
 		actions = append(actions, ComponentAction{

@@ -1123,6 +1123,31 @@ func TestUninstallSecretsForForge_GitHub_DeletesOptInOpenAIKey(t *testing.T) {
 	}
 }
 
+func TestUninstall_GitLab_SucceedsWithoutDispatchFile(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	delete(client.FileContents, "acme/api/"+fullsendDispatchInclude)
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if !r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
+	}
+}
+
 func TestUninstallSecretsForForge_GitLab_DoesNotDeleteOpenAIKey(t *testing.T) {
 	// Unlike GitHub's FULLSEND_OPENAI_API_KEY — a dedicated,
 	// FULLSEND_-namespaced secret fullsend can safely delete regardless of
