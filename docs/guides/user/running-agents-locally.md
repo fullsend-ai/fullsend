@@ -163,6 +163,10 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Important**: when running locally, pass `--forge github` (or `--forge gitlab`)
+to tell the harness which tracker overlay to activate. In CI this is auto-detected
+from environment variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -210,6 +214,7 @@ REPO_FULL_NAME="{org}/{repo}"
 fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env
 ```
@@ -237,6 +242,7 @@ GITHUB_WORKSPACE=/tmp/
 fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env
 ```
@@ -253,6 +259,7 @@ this page runs on either by adding one flag to the same command:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --runtime pi
@@ -327,6 +334,7 @@ Example:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --status-repo myorg/myrepo \
@@ -367,6 +375,7 @@ podman run --rm -it --network=host \
   run triage \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
+    --forge github \
     --env-file fullsend-gcp.env \
     --env-file fullsend-triage.env
 ```
@@ -477,6 +486,7 @@ values are resolved to an absolute path so post-script env vars such as
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
   --output-dir /tmp/my-debug-output
@@ -533,6 +543,7 @@ or gateway routing issues).
    fullsend run <agent> \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
+     --forge github \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
      --keep-sandbox \
