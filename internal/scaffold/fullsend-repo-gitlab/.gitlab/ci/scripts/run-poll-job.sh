@@ -77,4 +77,3 @@ fullsend poll \
   --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
   --fullsend-dir .fullsend \
   --mode "${FULLSEND_POLL_MODE:-events}"
-

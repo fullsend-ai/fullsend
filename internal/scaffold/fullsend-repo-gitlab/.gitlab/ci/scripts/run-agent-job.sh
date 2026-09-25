@@ -788,4 +788,3 @@ fi
 fullsend eval-measure "${MEASURE_ARGS[@]}" || true
 
 exit "${RUN_STATUS}"
-

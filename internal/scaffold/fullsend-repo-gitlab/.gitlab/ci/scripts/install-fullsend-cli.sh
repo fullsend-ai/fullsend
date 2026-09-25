@@ -97,4 +97,3 @@ case "${FULLSEND_VERSION}" in
     ;;
 esac
 fullsend --version
-
