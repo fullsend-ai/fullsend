@@ -101,6 +101,11 @@ const codexAuthTimeoutMS = 5000
 // discovered — the same Claude Code parity, and covered by the same host-side
 // and sandbox `scan context` passes over SKILL.md.
 //
+// `[features] plugins = false` stops codex fetching its curated plugin
+// marketplace (github.com/openai/plugins.git) at startup, for the same reason:
+// on roles whose GitHub profile allows git fetches, it would pull content
+// fullsend does not control into the sandbox.
+//
 // `web_search` must be stated: codex's default is "cached", not off.
 // `history.persistence` governs `history.jsonl` (the prompt history) only —
 // session rollouts under sessions/, which are the transcripts, are unaffected.
@@ -126,6 +131,9 @@ persistence = "none"
 
 [skills.bundled]
 enabled = false
+
+[features]
+plugins = false
 
 [model_providers.{{ .ProviderID }}]
 name = "OpenAI via the fullsend run-scoped provider"

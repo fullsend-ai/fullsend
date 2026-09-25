@@ -113,6 +113,8 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 		// codex's own bundled skills (skill-installer, plugin-creator, ...) are
 		// outside the harness's control; verified present without this.
 		"[skills.bundled]",
+		// The curated plugin marketplace is fetched from GitHub at startup.
+		"[features]\nplugins = false",
 		`wire_api = "responses"`,
 		`base_url = "` + codexBaseURL + `"`,
 		`refresh_interval_ms = 30000`,
