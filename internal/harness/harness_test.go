@@ -129,6 +129,7 @@ role: test
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /sandbox/workspace/.gcp-credentials.json
+    optional_for_openai: true
   - src: /etc/ssl/certs/ca-certificates.crt
     dest: /etc/ssl/certs/ca-certificates.crt
   - src: env/gcp-vertex.env
@@ -146,6 +147,7 @@ host_files:
 	assert.Equal(t, "${GOOGLE_APPLICATION_CREDENTIALS}", h.HostFiles[0].Src)
 	assert.Equal(t, "/sandbox/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
 	assert.False(t, h.HostFiles[0].Expand)
+	assert.True(t, h.HostFiles[0].OptionalForOpenAI)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Src)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Dest)
 	assert.False(t, h.HostFiles[1].Expand)
@@ -514,6 +516,16 @@ func TestValidateRunnerEnv_HostFileSrcUnset(t *testing.T) {
 	err := h.ValidateRunnerEnv()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_VAR_XYZ")
+}
+
+func TestValidateRunnerEnv_OpenAIConditionalHostFileDefersMissingVariable(t *testing.T) {
+	h := &Harness{
+		Agent: "test.md",
+		HostFiles: []HostFile{
+			{Src: "${DEFINITELY_NOT_SET_VAR_XYZ}", Dest: "/tmp/dest", OptionalForOpenAI: true},
+		},
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false }))
 }
 
 func TestValidateRunnerEnv_PartialExpansion(t *testing.T) {

@@ -1793,3 +1793,34 @@ func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
 		t.Errorf("GitLab status must report config.base.yaml drift, got %v", result.Repos[0].Drifts)
 	}
 }
+
+func TestStatus_OpenAIRoute_FreshManifestEntry_NoGCPDrift(t *testing.T) {
+	// The manifest says openai but the repo's config.yaml has not reached
+	// the default branch yet (install PR open). Status must judge the
+	// repo by the manifest route like converge does, not report the GCP
+	// pair as missing.
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+	m.Defaults.InferenceProvider = "openai"
+
+	fc.VariableValues["acme-corp/api-server/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.Secrets = map[string]bool{"acme-corp/api-server/FULLSEND_OPENAI_API_KEY": true}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range result.Repos {
+		if s.Owner+"/"+s.Repo != "acme-corp/api-server" {
+			continue
+		}
+		if !s.Installed {
+			t.Fatalf("api-server: expected installed, got %+v", s)
+		}
+		for _, d := range s.Drifts {
+			if d.Field == "FULLSEND_GCP_PROJECT_ID" || d.Field == "FULLSEND_GCP_WIF_PROVIDER" {
+				t.Errorf("GCP secret reported as drift on the openai route: %+v", d)
+			}
+		}
+	}
+}

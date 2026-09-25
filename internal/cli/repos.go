@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
@@ -457,6 +458,7 @@ type reposInstallConfig struct {
 	inferenceWIFProvider   string
 	inferenceProjectNumber string // auto-derived from --inference-project; not a CLI flag
 	inferenceRegion        string
+	inferenceProvider      string
 
 	// GitLab-specific
 	gitlabURL           string
@@ -550,6 +552,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
+	cmd.Flags().StringVar(&opts.inferenceProvider, "inference-provider", "", "inference provider written to the per-repo config for repos added by this command (vertex, openai); openai repos need no --inference-project but must have FULLSEND_OPENAI_API_KEY set (or a complete committed OpenAI WIF trio); repos already in the manifest keep their entry/defaults.inference_provider")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 	cmd.Flags().StringVar(&opts.gitlabRoleMigration, "gitlab-role-migration", "", "GitLab role-credential gate: migrating, enforced, rollback, or disabled (default: provision role credentials and cut over to enforced; passing enforced explicitly assumes in-flight shared-token jobs are drained, the same as ordinary install, and does not require --gitlab-role-cutover-drained; rollback and disabled are emergency recovery only)")
@@ -734,6 +737,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					return fmt.Errorf("--runtime: %w", err)
 				}
 			}
+			if opts.inferenceProvider != "" && !slices.Contains(config.ValidProviders(), opts.inferenceProvider) {
+				return fmt.Errorf("--inference-provider: invalid provider %q: must be one of %s", opts.inferenceProvider, strings.Join(config.ValidProviders(), ", "))
+			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {
@@ -752,6 +758,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				if opts.runtime != "" && opts.runtime != manifest.Defaults.Runtime {
 					entry.Runtime = opts.runtime
+				}
+				if opts.inferenceProvider != "" && opts.inferenceProvider != manifest.Defaults.InferenceProvider {
+					entry.InferenceProvider = opts.inferenceProvider
 				}
 				if opts.vendorChanged {
 					defaultVendor := manifest.Defaults.Vendor != nil && *manifest.Defaults.Vendor

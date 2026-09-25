@@ -671,6 +671,41 @@ func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) 
 	}
 }
 
+func TestBuildScaffoldFiles_PresetOverlayPreservesOpenAIRoute(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Preset = []byte("version: \"1\"\n")
+	cfg.InferenceProvider = "openai"
+	cfg.InferenceOpenAI = config.OpenAIWIFConfig{
+		Audience: "fullsend://acme", IdentityProviderID: "idp_test", ServiceAccountID: "sa_test",
+	}
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overlay, base []byte
+	for _, f := range files {
+		switch f.Path {
+		case ".fullsend/config.yaml":
+			overlay = f.Content
+		case ".fullsend/config.base.yaml":
+			base = f.Content
+		}
+	}
+	if len(overlay) == 0 || len(base) == 0 {
+		t.Fatal("expected both config layers")
+	}
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlay, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := effective.ConfigInferenceProvider(); got != "openai" {
+		t.Errorf("provider = %q, want openai", got)
+	}
+	if got := effective.ConfigInferenceOpenAI(); got != cfg.InferenceOpenAI {
+		t.Errorf("WIF identifiers = %+v, want %+v", got, cfg.InferenceOpenAI)
+	}
+}
+
 func TestBuildScaffoldFiles_InvalidConfig(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Roles = []string{"nonexistent-role"}
@@ -1593,5 +1628,41 @@ func TestInstall_GitLab_RetireErrorFailsInstall(t *testing.T) {
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected install to fail when retiring leftover legacy vars fails")
+	}
+}
+
+func TestBuildScaffoldFiles_InferenceProvider(t *testing.T) {
+	cfg := baseCfg()
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" && strings.Contains(string(f.Content), "provider:") {
+			t.Errorf("an unset InferenceProvider must not be written (vertex stays the code default):\n%s", f.Content)
+		}
+	}
+
+	cfg.InferenceProvider = "openai"
+	files, err = BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	var found bool
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			found = true
+			if !strings.Contains(string(f.Content), "provider: openai") {
+				t.Errorf("config.yaml missing provider: openai:\n%s", f.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected .fullsend/config.yaml in scaffold files")
+	}
+
+	cfg.InferenceProvider = "bogus"
+	if _, err := BuildScaffoldFiles(cfg); err == nil || !strings.Contains(err.Error(), "invalid inference provider") {
+		t.Fatalf("expected invalid inference provider error, got %v", err)
 	}
 }

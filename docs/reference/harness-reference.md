@@ -69,6 +69,9 @@ host_files:
   - src: ${SOME_CREDENTIAL}
     dest: /tmp/.cred.json
     optional: true                   # Skip if missing
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional_for_openai: true        # Skip an empty source only on OpenAI runs
 
 # ── Environment ───────────────────────────────────────────────
 env:
@@ -139,6 +142,8 @@ security:
 ## Field details
 
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
+
+**`host_files[].optional_for_openai`** — Defer a missing source variable to runtime selection. When the resolved runtime uses OpenAI, an empty source is skipped; other runs retain the required-file error. Unlike `optional: true`, this does not skip a missing file path after a non-empty expansion. Use it only for files needed by the Vertex inference route; a file also needed for another service must remain required.
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 

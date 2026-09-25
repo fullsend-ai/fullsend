@@ -1354,6 +1354,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// below has to see it too — reading it here keeps it to one read for
 	// every provider entry.
 	agentDefModel := agentruntime.AgentDefinitionModel(h.Agent)
+	needsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
 	// skippedProviders are harness-declared providers the selected runtime
 	// does not need (an openai entry on a Vertex run, see
 	// runtime.NeedsOpenAIProvider): nothing is created for them and their
@@ -1458,7 +1459,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// the Vertex provider without making every run resolve an
 			// OpenAI credential (#6920); the profile is not imported and
 			// the instance is not created or attached.
-			if !agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases) {
+			if !needsOpenAIProvider {
 				skippedProviders[pd.Name] = struct{}{}
 				// Counts as handled, so the "declared but no definition
 				// found" warning below does not also fire for it.
@@ -1986,7 +1987,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
-	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), needsOpenAIProvider, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -3154,7 +3155,26 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, el
 	return nil
 }
 
-func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
+// resolveHostFileSource skips a route-conditional file only for an OpenAI run.
+// Vertex runs and unannotated host files retain their empty-source error.
+func resolveHostFileSource(hf harness.HostFile, needsOpenAIProvider bool) (string, bool, error) {
+	// safeExpandEnv refuses OIDC credential vars in host_files paths (#5832).
+	hostPath := safeExpandEnv(hf.Src)
+	if hostPath == "" {
+		if hf.Optional || (hf.OptionalForOpenAI && needsOpenAIProvider) {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
+	}
+	if hf.Optional {
+		if _, err := os.Stat(hostPath); err != nil {
+			return "", true, nil
+		}
+	}
+	return hostPath, false, nil
+}
+
+func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, needsOpenAIProvider bool, fetchEnv ...fetchServiceEnv) error {
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
 
@@ -3245,19 +3265,12 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Copy host files into the sandbox.
 	for _, hf := range h.HostFiles {
-		// Use safeExpandEnv instead of os.ExpandEnv to refuse OIDC
-		// credential vars in host_files src path expansion (#5832).
-		hostPath := safeExpandEnv(hf.Src)
-		if hostPath == "" {
-			if hf.Optional {
-				continue
-			}
-			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
+		hostPath, skip, err := resolveHostFileSource(hf, needsOpenAIProvider)
+		if err != nil {
+			return err
 		}
-		if hf.Optional {
-			if _, err := os.Stat(hostPath); err != nil {
-				continue
-			}
+		if skip {
+			continue
 		}
 
 		if hf.Expand {

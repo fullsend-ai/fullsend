@@ -538,7 +538,7 @@ func TestRunGitHubSetupPerRepo_InvalidCLIProviderFails(t *testing.T) {
 		target:            "acme/widget",
 		agents:            strings.Join(config.PerRepoDefaultRoles(), ","),
 		configPreset:      presetPath,
-		inferenceProvider: "openai",
+		inferenceProvider: "bedrock",
 		changedFlags:      map[string]bool{"config": true, "inference-provider": true},
 	})
 	require.Error(t, err)

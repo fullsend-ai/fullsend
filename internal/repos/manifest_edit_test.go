@@ -984,6 +984,22 @@ func TestSetDefault_Runtime(t *testing.T) {
 	assert.NotContains(t, string(data), "runtime:")
 }
 
+func TestSetDefault_InferenceProvider(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+
+	for _, provider := range []string{"openai", "vertex", ""} {
+		require.NoError(t, SetDefault(path, "defaults.inference_provider", provider))
+		m, err := LoadManifest(context.Background(), path)
+		require.NoError(t, err)
+		assert.Equal(t, provider, m.Defaults.InferenceProvider)
+	}
+	err := SetDefault(path, "defaults.inference_provider", "bedrock")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid inference provider")
+}
+
 func TestSetDefault_Vendor(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "repos.yaml")
