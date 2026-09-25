@@ -42,7 +42,7 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)).
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a **dedicated Jira service account**, not a teammate's personal login. See [Credential setup](#credential-setup).
 - The Jira user must have read access to the target project and write access to issue entity properties (used for poll coordination state).
 
 ## Credential setup
@@ -52,9 +52,11 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 
 | Secret / variable | Value |
 |---|---|
-| `JIRA_TOKEN` | Your Jira API token |
-| `JIRA_USER_EMAIL` | Email associated with the token |
+| `JIRA_TOKEN` | API token for a dedicated Jira service account |
+| `JIRA_USER_EMAIL` | Email of that dedicated service account |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
+
+> **Warning:** `JIRA_USER_EMAIL` and `JIRA_TOKEN` must belong to a dedicated Jira service account, not a real person's login. The poller classifies comments and changelog entries from its own authenticated account (`/myself`) as `actor.kind: bot` so that mutations it performs — labels, triage comments, run-status updates — cannot re-trigger dispatch. If those credentials are a teammate's personal account, that person's genuine comments (including `/fs-triage`) and label changes are silently filtered out and never dispatch. There is no error.
 
 ### Sandbox credentials and network access
 
@@ -408,6 +410,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
+| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to a real person's Jira account | The poller classifies its own `/myself` account as `actor.kind: bot` to prevent self-triggered dispatch loops, so that person's genuine comments (including `/fs-triage`) and label changes are silently filtered. Use a dedicated service account — see [Credential setup](#credential-setup) |
 | Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
 | Slash commands silently ignored when using `--jql` | `--jira-project` not provided — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
