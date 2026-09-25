@@ -17,7 +17,7 @@ fi
 
 # CI_DEBUG_TRACE guard
 if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
-  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
   exit 1
 fi
 
@@ -101,7 +101,7 @@ PIPELINE_RESPONSE=""
 if ! PIPELINE_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
   "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}" \
   -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"); then
-  echo "ERROR: Cannot fetch pipeline metadata — aborting (fail-closed)"
+  echo "ERROR: Cannot fetch pipeline metadata — aborting (fail-closed)" >&2
   exit 1
 fi
 PIPELINE_SOURCE=$(printf '%s' "${PIPELINE_RESPONSE}" | jq -r '.source // empty')
@@ -114,16 +114,16 @@ case "${PIPELINE_SOURCE}" in
       BOT_USER_ID=$(printf '%s' "${BOT_RESPONSE}" | jq -r '.id // empty')
     fi
     if [ -z "${BOT_USER_ID}" ]; then
-      echo "ERROR: Cannot verify bot identity — aborting (fail-closed)"
+      echo "ERROR: Cannot verify bot identity — aborting (fail-closed)" >&2
       exit 1
     fi
     PIPELINE_CREATOR_ID=$(printf '%s' "${PIPELINE_RESPONSE}" | jq -r '.user.id // empty')
     if [ -z "${PIPELINE_CREATOR_ID}" ]; then
-      echo "ERROR: Cannot read pipeline creator — aborting (fail-closed)"
+      echo "ERROR: Cannot read pipeline creator — aborting (fail-closed)" >&2
       exit 1
     fi
     if [ "${PIPELINE_CREATOR_ID}" != "${BOT_USER_ID}" ]; then
-      echo "ERROR: Pipeline created by user ${PIPELINE_CREATOR_ID}, expected bot ${BOT_USER_ID} — rejecting forged dispatch"
+      echo "ERROR: Pipeline created by user ${PIPELINE_CREATOR_ID}, expected bot ${BOT_USER_ID} — rejecting forged dispatch" >&2
       exit 1
     fi
     ;;
@@ -131,7 +131,7 @@ case "${PIPELINE_SOURCE}" in
     # MR child pipeline — creator is the MR author, not the bot
     ;;
   *)
-    echo "ERROR: unexpected pipeline source '${PIPELINE_SOURCE:-<empty>}' — aborting (fail-closed)"
+    echo "ERROR: unexpected pipeline source '${PIPELINE_SOURCE:-<empty>}' — aborting (fail-closed)" >&2
     exit 1
     ;;
 esac
@@ -175,18 +175,18 @@ DISPATCH_VERIFIED=false
 if [ "${PIPELINE_SOURCE}" = "api" ]; then
   if [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
     if [ -z "${FULLSEND_DISPATCH_HMAC:-}" ]; then
-      echo "ERROR: FULLSEND_DISPATCH_HMAC missing — dispatch variables not signed (fail-closed)"
+      echo "ERROR: FULLSEND_DISPATCH_HMAC missing — dispatch variables not signed (fail-closed)" >&2
       exit 1
     fi
     HMAC_MESSAGE=$(printf 'ACTOR_ID=%s\nEVENT_PAYLOAD_B64=%s\nEVENT_TYPE=%s\nFULLSEND_POLL_JOB_URL=%s\nIS_FORK=%s\nMR_AUTHOR_ID=%s\nORIGINATING_URL=%s\nREPO_FULL_NAME=%s\nRESOURCE_KEY=%s\nSTAGE=%s\nSTATUS_IID=%s' "${ACTOR_ID:-}" "${EVENT_PAYLOAD_B64:-}" "${EVENT_TYPE:-}" "${FULLSEND_POLL_JOB_URL:-}" "${IS_FORK:-}" "${MR_AUTHOR_ID:-}" "${ORIGINATING_URL:-}" "${REPO_FULL_NAME:-}" "${RESOURCE_KEY:-}" "${STAGE:-}" "${STATUS_IID:-}")
     if printf '%s' "${HMAC_MESSAGE}" | HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}" python3 -c 'import hmac,hashlib,os,sys; expected=hmac.new(os.environ["HMAC_SECRET"].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest(); sys.exit(0 if hmac.compare_digest(sys.argv[1],expected) else 1)' "${FULLSEND_DISPATCH_HMAC}"; then
       DISPATCH_VERIFIED=true
     else
-      echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)"
+      echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)" >&2
       exit 1
     fi
   elif [ "${ROLE_AWARE}" = "true" ]; then
-    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in migrating/enforced mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)"
+    echo "ERROR: FULLSEND_DISPATCH_SECRET is not configured — required in migrating/enforced mode to authenticate STAGE before a role-specific credential can be selected (fail-closed)" >&2
     exit 1
   else
     echo "WARNING: FULLSEND_DISPATCH_SECRET not configured — dispatch variables unsigned (tolerated in disabled/rollback mode, where every role shares one token so an unverified STAGE grants no extra privilege)"
@@ -216,7 +216,7 @@ fi
 # of that later code runs, is the only way to keep an unverified
 # STAGE from ever reaching a role-specific credential.
 if [ "${ROLE_AWARE}" = "true" ] && [ "${DISPATCH_VERIFIED}" != "true" ]; then
-  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue in role-aware mode rather than risk a role-specific credential being used downstream"
+  echo "ERROR: STAGE could not be cryptographically verified — refusing to continue in role-aware mode rather than risk a role-specific credential being used downstream" >&2
   exit 1
 fi
 
@@ -256,7 +256,7 @@ CONFIG_YAML=""
 DEFAULT_BRANCH_SHA=""
 if [ -n "${CI_DEFAULT_BRANCH:-}" ]; then
   if ! git fetch origin "${CI_DEFAULT_BRANCH}" --depth=1; then
-    echo "ERROR: cannot fetch default branch — refusing to run without trusted config"
+    echo "ERROR: cannot fetch default branch — refusing to run without trusted config" >&2
     exit 1
   fi
   DEFAULT_BRANCH_SHA=$(git rev-parse FETCH_HEAD)
@@ -270,7 +270,7 @@ if [ -n "${CONFIG_YAML}" ]; then
     KILL_SWITCH="false"
   fi
   if [ "${KILL_SWITCH}" = "true" ]; then
-    echo "ERROR: Kill switch is active — all agent dispatch halted"
+    echo "ERROR: Kill switch is active — all agent dispatch halted" >&2
     echo "Set kill_switch: false in .fullsend/config.yaml to resume"
     exit 1
   fi
@@ -332,7 +332,7 @@ fi
 # CEL equivalent: !event.state.change_proposal.is_fork
 if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ]; then
   if [ "${IS_FORK:-true}" = "true" ]; then
-    echo "ERROR: Fork MR detected — refusing to run ${STAGE} stage"
+    echo "ERROR: Fork MR detected — refusing to run ${STAGE} stage" >&2
     exit 1
   fi
 fi
@@ -619,7 +619,7 @@ if [ "${STAGE}" = "fix" ]; then
 
   MAX_REVIEW_BYTES=1048576  # 1 MB
   if [ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]; then
-    echo "ERROR: Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
+    echo "ERROR: Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})" >&2
     exit 1
   fi
 
@@ -634,7 +634,7 @@ if [ "${STAGE}" = "fix" ]; then
       | jq -r '.is_bot // false' 2>/dev/null || echo "false")
   fi
   if [ "${_IS_BOT_TRIGGER}" = "true" ] && [ "${BYTE_COUNT}" -le 1 ]; then
-    echo "ERROR: Bot-triggered run but review body is empty — nothing to fix"
+    echo "ERROR: Bot-triggered run but review body is empty — nothing to fix" >&2
     exit 1
   fi
 

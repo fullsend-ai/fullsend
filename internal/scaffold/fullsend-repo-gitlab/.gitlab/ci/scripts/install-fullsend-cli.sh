@@ -14,7 +14,7 @@ set -euo pipefail
 # CI_DEBUG_TRACE guard — must run before any token-bearing
 # commands to prevent secret leakage via debug trace logging.
 if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
-  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
   exit 1
 fi
 # Private-CA trust for self-hosted GitLab. Must run before any
@@ -38,12 +38,12 @@ if [ "${FULLSEND_VERSION}" = "latest" ]; then
   if ! FS_RELEASE_JSON=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
     ${FS_AUTH_HEADER:+-H "${FS_AUTH_HEADER}"} \
     "https://api.github.com/repos/${FULLSEND_REPO}/releases/latest"); then
-    echo "ERROR: Failed to fetch latest release from GitHub API"
+    echo "ERROR: Failed to fetch latest release from GitHub API" >&2
     exit 1
   fi
   FULLSEND_VERSION=$(printf '%s' "${FS_RELEASE_JSON}" | jq -r '.tag_name')
   if [ -z "${FULLSEND_VERSION}" ] || [ "${FULLSEND_VERSION}" = "null" ]; then
-    echo "ERROR: Could not resolve latest fullsend release tag"
+    echo "ERROR: Could not resolve latest fullsend release tag" >&2
     exit 1
   fi
 fi
@@ -56,7 +56,7 @@ case "${FULLSEND_VERSION}" in
     case "${FS_ARCH}" in
       x86_64)  FS_ARCH="amd64" ;;
       aarch64) FS_ARCH="arm64" ;;
-      *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)"; exit 1 ;;
+      *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)" >&2; exit 1 ;;
     esac
     FS_BASE="https://github.com/${FULLSEND_REPO}/releases/download/${FULLSEND_VERSION}"
     curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
@@ -66,7 +66,7 @@ case "${FULLSEND_VERSION}" in
       "${FS_BASE}/checksums.txt" -o /tmp/checksums.txt
     FS_CHECKSUM_LINE=$(grep "fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz$" /tmp/checksums.txt || true)
     if [ -z "${FS_CHECKSUM_LINE}" ]; then
-      echo "ERROR: checksum entry not found for fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz"
+      echo "ERROR: checksum entry not found for fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" >&2
       exit 1
     fi
     echo "${FS_CHECKSUM_LINE}" \
@@ -79,7 +79,7 @@ case "${FULLSEND_VERSION}" in
     # Untagged SHA — clone and build from source (Go toolchain
     # is in the runner base image for this purpose).
     if ! command -v go >/dev/null 2>&1; then
-      echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)"
+      echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)" >&2
       echo "Use a runner image with Go 1.20+ installed or pin to a release version tag"
       exit 1
     fi

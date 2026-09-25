@@ -8,7 +8,7 @@ set -euo pipefail
 
 # CI_DEBUG_TRACE guard — prevents PAT exposure via debug trace logging.
 if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
-  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
   exit 1
 fi
 
@@ -48,7 +48,7 @@ unset _fs_poll_mode _fs_sibling
 case "${FULLSEND_POLL_MODE:-events}" in
   slash|events) ;;
   *)
-    echo "ERROR: FULLSEND_POLL_MODE must be 'slash' or 'events', got '${FULLSEND_POLL_MODE:-}'"
+    echo "ERROR: FULLSEND_POLL_MODE must be 'slash' or 'events', got '${FULLSEND_POLL_MODE:-}'" >&2
     exit 1
     ;;
 esac
