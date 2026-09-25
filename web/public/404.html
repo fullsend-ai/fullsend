@@ -65,11 +65,11 @@ nav{
   letter-spacing:-0.02em;
 }
 .nav-links{display:flex;gap:1.5rem;align-items:center}
-.nav-links a{
+.nav-links a:not(.nav-cta){
   font-size:0.9rem;font-weight:500;
   color:var(--text-dim);text-decoration:none;
 }
-.nav-links a:hover{color:var(--text)}
+.nav-links a:not(.nav-cta):hover{color:var(--text)}
 .nav-cta{
   font-size:0.85rem;font-weight:600;
   padding:0.45rem 1.1rem;border-radius:6px;
