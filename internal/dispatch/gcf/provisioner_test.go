@@ -4535,7 +4535,11 @@ func TestEnsureTrafficOnLatestRevision_FallsBackToTemplateRevision(t *testing.T)
 	assert.Equal(t, "fullsend-mint-00116-abc", fake.lastPinnedRevision)
 }
 
-func TestEnsureTrafficOnLatestRevision_SkipsWhenTrafficUnknown(t *testing.T) {
+func TestEnsureTrafficOnLatestRevision_PinsWhenTrafficUnknownButLatestKnown(t *testing.T) {
+	// Even when the traffic-serving revision isn't reported yet (initial
+	// create still reconciling), a known latest-ready revision should be
+	// pinned explicitly rather than silently trusted to waitForReady, which
+	// only checks HTTP 200 and not which revision served it.
 	fake := newFakeGCFClient()
 	fake.revisionInfo = &ServiceRevisionInfo{
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
@@ -4545,6 +4549,21 @@ func TestEnsureTrafficOnLatestRevision_SkipsWhenTrafficUnknown(t *testing.T) {
 
 	err := p.ensureTrafficOnLatestRevision(context.Background())
 	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_BothTrafficAndLatestUnknownReturnsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TemplateMatchesTraffic: false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "latest revision is unknown")
+	assert.Contains(t, err.Error(), "--to-latest")
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 }
 
@@ -4588,6 +4607,101 @@ func TestEnsureTrafficOnLatestRevision_UnknownLatestIncludesGcloudCommand(t *tes
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "latest revision is unknown")
 	assert.Contains(t, err.Error(), "--to-latest")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcilesMissingOrgBeforePin(t *testing.T) {
+	// The traffic-serving revision has "other-org" registered via a direct
+	// Cloud Run patch (e.g. EnsureOrgInMint) that never reached the Cloud
+	// Functions template used to build the latest-ready revision.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background())
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "other-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcilesMissingRoleAppIDBeforePin(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS": `{"coder":"111","reviewer":"222"}`,
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background())
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var gotIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &gotIDs))
+	assert.Equal(t, map[string]string{"coder": "111", "reviewer": "222"}, gotIDs)
+	assert.Equal(t, "coder,reviewer", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestEnsureTrafficOnLatestRevision_NoReconciliationWhenTargetAlreadyComplete(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,new-org",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileErrorOnInvalidRoleAppIDsJSON(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS": "not-json",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS": "{}",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reconciling registration data")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestProvisioner_Provision_CodeChanged_PinsTrafficWhenDiverged(t *testing.T) {
@@ -4671,4 +4785,114 @@ func TestProvisioner_Provision_SameHash_PinsTrafficWhenDiverged(t *testing.T) {
 	assert.NotContains(t, fake.calls, "UpdateFunction")
 	assert.Contains(t, fake.calls, "PinServiceTraffic")
 	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestProvisioner_Provision_CodeChanged_PreservesOrgOnlyOnTrafficRevision(t *testing.T) {
+	// "legacy-org" was registered on the traffic-serving revision via a
+	// direct Cloud Run patch (e.g. a prior EnsureOrgInMint call) that never
+	// reached the Cloud Functions template. A code deploy seeds its new
+	// revision from that stale template, so the latest-ready revision this
+	// deploy produces is missing "legacy-org" — the pin must not drop it.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "legacy-org,test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Contains(t, fake.calls, "UpdateFunction")
+	// Reconciled through UpdateServiceEnvVars rather than a raw
+	// PinServiceTraffic, since the latest-ready revision was missing
+	// "legacy-org".
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "legacy-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestProvisioner_Provision_SameHash_PreservesOrgOnlyOnTrafficRevision(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		// Same divergence as the code-deploy case above, but here the
+		// hash-skip path re-pins without any code deploy in this run at
+		// all — the pin still must not drop "legacy-org".
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "legacy-org,test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.NotContains(t, fake.calls, "UpdateFunction")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "legacy-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }

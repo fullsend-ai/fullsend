@@ -1892,6 +1892,14 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 // Functions source deploy, traffic stays on a previously pinned revision
 // unless it is explicitly re-pinned. If the pin fails, the error includes
 // the gcloud command to recover manually.
+//
+// Before moving traffic, it reconciles registration data (ALLOWED_ORGS,
+// ROLE_APP_IDS, PER_REPO_WIF_REPOS) that may exist only on the currently
+// serving revision: those env vars can be updated by direct Cloud Run
+// patches (EnsureOrgInMint, AddRoleToMint, RegisterPerRepoWIF) that never
+// write back to the Cloud Functions template used to build the latest-ready
+// revision. Pinning to that revision without reconciling first would
+// silently drop the registration data from what's actually serving traffic.
 func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
@@ -1901,16 +1909,32 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	if info == nil || info.TemplateMatchesTraffic {
 		return nil
 	}
-	// Observed traffic not reported yet (initial create still reconciling).
-	// waitForReady remains the safety net for the function URL.
-	if info.TrafficRevisionShort == "" {
-		log.Printf("Cloud Run traffic revision not yet reported; skipping pin")
-		return nil
-	}
+
 	target := info.LatestReadyRevisionShort
 	if target == "" {
 		target = shortRevisionName(info.TemplateRevision)
 	}
+
+	if info.TrafficRevisionShort == "" {
+		// Observed traffic not reported yet (initial create still
+		// reconciling, or the API returned no trafficStatuses). Previously
+		// this silently returned success and relied on waitForReady, but
+		// that only checks HTTP 200 on the mint URL and does not verify
+		// which revision served it — a real gap when the target revision is
+		// known. Pin to it explicitly instead of trusting an unreported
+		// traffic state to resolve itself.
+		if target == "" {
+			return fmt.Errorf("Cloud Run traffic revision not yet reported and the latest revision is unknown; recover with: %s",
+				trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+		}
+		log.Printf("Cloud Run traffic revision not yet reported; pinning 100%% to latest ready %s", target)
+		if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
+			return fmt.Errorf("pinning Cloud Run traffic to %s: %w; recover with: %s",
+				target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+		return nil
+	}
+
 	if target == "" {
 		return fmt.Errorf("traffic is pinned to %s but the latest revision is unknown; recover with: %s",
 			info.TrafficRevisionShort, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
@@ -1918,6 +1942,22 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 	if target == info.TrafficRevisionShort {
 		return nil
 	}
+
+	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars)
+	if err != nil {
+		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; recover with: %s",
+			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+	}
+	if reconciled != nil {
+		log.Printf("Cloud Run traffic is on %s, not latest ready %s; latest ready is missing registration data present on %s, reconciling before pinning",
+			info.TrafficRevisionShort, target, info.TrafficRevisionShort)
+		if _, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, reconciled); err != nil {
+			return fmt.Errorf("reconciling registration data and pinning traffic away from %s: %w; recover with: %s",
+				info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+		return nil
+	}
+
 	log.Printf("Cloud Run traffic is on %s, not latest ready %s; pinning 100%% to %s",
 		info.TrafficRevisionShort, target, target)
 	if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
@@ -1925,6 +1965,118 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context) error {
 			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
 	}
 	return nil
+}
+
+// accumulativeEnvKeys lists env vars that grow over the lifetime of a mint
+// via direct Cloud Run patches (EnsureOrgInMint, AddRoleToMint,
+// RemoveRoleFromMint, RegisterPerRepoWIF). Those patches update the Cloud
+// Run service directly and never write back to the Cloud Functions template
+// that produces the "latest ready" revision after a code deploy, so the
+// template can be missing data the traffic-serving revision already has.
+var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "ROLE_APP_IDS", "PER_REPO_WIF_REPOS"}
+
+// reconcileTargetEnvVars compares the accumulative registration keys between
+// the currently traffic-serving env vars and the target (template) env vars
+// that a traffic pin would move to. It returns a full env var map with any
+// missing registration data merged back in, or nil if the target already has
+// everything the traffic-serving revision has for those keys.
+//
+// Comparisons are set-based (not string-equality) so that formatting or
+// ordering differences in the target's existing value — which carries no
+// data-loss risk — never trigger an unnecessary reconciliation revision.
+func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string) (map[string]string, error) {
+	if len(trafficEnv) == 0 {
+		return nil, nil
+	}
+
+	changed := false
+	merged := make(map[string]string, len(targetEnv)+len(accumulativeEnvKeys))
+	for k, v := range targetEnv {
+		merged[k] = v
+	}
+
+	if prevOrgs := trafficEnv["ALLOWED_ORGS"]; prevOrgs != "" && !csvContainsAll(merged["ALLOWED_ORGS"], prevOrgs) {
+		merged["ALLOWED_ORGS"] = unionCSV(merged["ALLOWED_ORGS"], prevOrgs)
+		changed = true
+	}
+
+	if prevRoleIDsJSON := trafficEnv["ROLE_APP_IDS"]; prevRoleIDsJSON != "" {
+		var prevRoleIDs map[string]string
+		if err := json.Unmarshal([]byte(prevRoleIDsJSON), &prevRoleIDs); err != nil {
+			return nil, fmt.Errorf("parsing traffic-serving ROLE_APP_IDS: %w", err)
+		}
+		var currentRoleIDs map[string]string
+		if cur := merged["ROLE_APP_IDS"]; cur != "" {
+			if err := json.Unmarshal([]byte(cur), &currentRoleIDs); err != nil {
+				return nil, fmt.Errorf("parsing target ROLE_APP_IDS: %w", err)
+			}
+		}
+		if !mapHasAllKeys(currentRoleIDs, prevRoleIDs) {
+			mergedRoleIDsJSON, err := mergeRoleAppIDsJSON(merged["ROLE_APP_IDS"], prevRoleIDs)
+			if err != nil {
+				return nil, fmt.Errorf("merging ROLE_APP_IDS: %w", err)
+			}
+			merged["ROLE_APP_IDS"] = mergedRoleIDsJSON
+			merged["ALLOWED_ROLES"] = deriveAllowedRoles(mergedRoleIDsJSON)
+			changed = true
+		}
+	}
+
+	if prevRepos := trafficEnv["PER_REPO_WIF_REPOS"]; prevRepos != "" && !csvContainsAll(merged["PER_REPO_WIF_REPOS"], prevRepos) {
+		merged["PER_REPO_WIF_REPOS"] = unionCSV(merged["PER_REPO_WIF_REPOS"], prevRepos)
+		changed = true
+	}
+
+	if !changed {
+		return nil, nil
+	}
+	return merged, nil
+}
+
+// csvContainsAll reports whether every entry in needle (a comma-separated
+// list) is already present in haystack (also comma-separated).
+func csvContainsAll(haystack, needle string) bool {
+	have := make(map[string]bool)
+	for _, entry := range strings.Split(haystack, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			have[entry] = true
+		}
+	}
+	for _, entry := range strings.Split(needle, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" && !have[entry] {
+			return false
+		}
+	}
+	return true
+}
+
+// mapHasAllKeys reports whether every key in subset is present in m
+// (regardless of value).
+func mapHasAllKeys(m, subset map[string]string) bool {
+	for k := range subset {
+		if _, ok := m[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// unionCSV merges two comma-separated lists, deduplicating, trimming
+// whitespace, and sorting for a deterministic result.
+func unionCSV(a, b string) string {
+	seen := make(map[string]bool)
+	var merged []string
+	for _, list := range []string{a, b} {
+		for _, entry := range strings.Split(list, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry != "" && !seen[entry] {
+				seen[entry] = true
+				merged = append(merged, entry)
+			}
+		}
+	}
+	sort.Strings(merged)
+	return strings.Join(merged, ",")
 }
 
 // trafficShiftCommand returns the gcloud invocation that moves 100% of

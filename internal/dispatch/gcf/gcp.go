@@ -79,6 +79,14 @@ type ServiceRevisionInfo struct {
 	RecentRevisions []RevisionSummary
 	// TrafficEnvVars holds the env vars from the traffic-serving revision.
 	TrafficEnvVars map[string]string
+	// TemplateEnvVars holds the env vars from the service template — i.e.
+	// what the latest-ready revision was (or will be) created with. This can
+	// diverge from TrafficEnvVars when the template was built from a stale
+	// snapshot (e.g. a Cloud Functions code deploy seeded from the Cloud
+	// Functions API's cached env vars) while direct Cloud Run patches
+	// (org/role/per-repo-WIF registration) advanced the traffic-serving
+	// revision's env independently.
+	TemplateEnvVars map[string]string
 }
 
 // RevisionSummary is a brief snapshot of a Cloud Run revision.
@@ -1858,6 +1866,16 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 
 	info := &ServiceRevisionInfo{
 		TemplateRevision: service.Template.Revision,
+	}
+
+	// The template's env vars reflect what the latest-ready revision was (or
+	// will be) built from — read here since we already have the service body.
+	if len(service.Template.Containers) > 0 {
+		templateEnvVars := make(map[string]string, len(service.Template.Containers[0].Env))
+		for _, e := range service.Template.Containers[0].Env {
+			templateEnvVars[e.Name] = e.Value
+		}
+		info.TemplateEnvVars = templateEnvVars
 	}
 
 	// Find the revision currently serving the most traffic. Uses
