@@ -1893,10 +1893,10 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 	full := owner + "/" + repo
 	fc.FileContents[full+"/.gitlab/ci/fullsend-dispatch.yml"] = []byte("  ref: v2.5.0\n")
-	trustScript, _ := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
-	fc.FileContents[full+"/"+gitlabTrustScriptPath] = trustScript
-	roleScript, _ := scaffold.GitLabPerRepoFile(gitlabRoleTokenScriptPath)
-	fc.FileContents[full+"/"+gitlabRoleTokenScriptPath] = roleScript
+	for _, path := range gitlabAuxiliaryScriptPaths() {
+		content, _ := scaffold.GitLabPerRepoFile(path)
+		fc.FileContents[full+"/"+path] = content
+	}
 	fc.Secrets[full+"/"+forge.SecretGCPProjectID] = true
 	fc.Secrets[full+"/"+forge.SecretGCPWIFProvider] = true
 	fc.Secrets[full+"/"+forge.SecretForgeToken] = true
@@ -2321,6 +2321,38 @@ func TestConverge_GitLab_RepairsMissingRoleTokenScript(t *testing.T) {
 	t.Fatalf("convergence did not repair %s; files: %+v", gitlabRoleTokenScriptPath, sc.files)
 }
 
+func TestConverge_GitLab_RepairsMissingExtractedJobScripts(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	populateGitLabInstalled(fc, "acme", "api")
+	delete(fc.FileContents, "acme/api/"+gitlabInstallCLIScriptPath)
+	delete(fc.FileContents, "acme/api/"+gitlabPollJobScriptPath)
+	delete(fc.FileContents, "acme/api/"+gitlabAgentJobScriptPath)
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	found := map[string]bool{}
+	for _, f := range sc.files {
+		found[f.Path] = true
+	}
+	for _, path := range []string{
+		gitlabInstallCLIScriptPath,
+		gitlabPollJobScriptPath,
+		gitlabAgentJobScriptPath,
+	} {
+		if !found[path] {
+			t.Errorf("convergence did not repair %s; files: %+v", path, sc.files)
+		}
+	}
+}
+
 func TestConverge_GitLab_RepairsStalePollTokenUsage(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
@@ -2350,8 +2382,8 @@ func TestConverge_GitLab_RepairsStalePollTokenUsage(t *testing.T) {
 			continue
 		}
 		body := string(f.Content)
-		if !strings.Contains(body, "select-gitlab-role-token.sh") {
-			t.Fatalf("repaired poll template missing role-token helper:\n%s", body)
+		if !strings.Contains(body, gitlabPollJobScriptPath) {
+			t.Fatalf("repaired poll template missing extracted job script:\n%s", body)
 		}
 		if strings.Contains(body, "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}") {
 			t.Fatalf("repaired poll template still uses FULLSEND_FORGE_TOKEN:\n%s", body)
@@ -4615,6 +4647,9 @@ func gitlabRequiredScaffoldPaths() []string {
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/install-fullsend-cli.sh",
+		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-agent-job.sh",
 		".fullsend/config.yaml",
 		".gitlab-ci.yml",
 	}

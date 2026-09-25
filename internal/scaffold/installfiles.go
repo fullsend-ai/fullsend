@@ -198,8 +198,8 @@ func FormatRunnerTags(tags []string) string {
 }
 
 // ResolveFullsendVersion returns the version string for the
-// __FULLSEND_VERSION__ placeholder in GitLab CI templates. The templates'
-// before_script uses this to install the fullsend CLI at runtime: version
+// __FULLSEND_VERSION__ placeholder in GitLab CI templates. The shared
+// install-fullsend-cli.sh script uses this to install the CLI at runtime: version
 // tags (v0.42.0) trigger a pre-built binary download from GitHub Releases;
 // commit SHAs trigger a clone-and-build from source. Dev builds (both
 // inputs empty) return "latest" so the before_script resolves the newest

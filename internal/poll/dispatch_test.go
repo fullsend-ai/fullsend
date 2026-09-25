@@ -819,9 +819,9 @@ func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 }
 
 func TestSignedDispatchKeys_MatchShellTemplate(t *testing.T) {
-	content, err := scaffold.GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	content, err := scaffold.GitLabPerRepoFile(".gitlab/ci/scripts/run-agent-job.sh")
 	if err != nil {
-		t.Fatalf("read agent template: %v", err)
+		t.Fatalf("read agent job script: %v", err)
 	}
 	s := string(content)
 

@@ -22,6 +22,9 @@ var scaffoldGitLabPaths = []struct {
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/trust-ci-server-ca.sh", ".gitlab/ci/scripts/trust-ci-server-ca.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/select-gitlab-role-token.sh", ".gitlab/ci/scripts/select-gitlab-role-token.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/install-fullsend-cli.sh", ".gitlab/ci/scripts/install-fullsend-cli.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-poll-job.sh", ".gitlab/ci/scripts/run-poll-job.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-agent-job.sh", ".gitlab/ci/scripts/run-agent-job.sh"},
 }
 
 // FetchRemoteScaffold fetches scaffold templates from fullsend-ai/fullsend

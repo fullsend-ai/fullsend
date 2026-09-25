@@ -68,12 +68,34 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/fullsend-poll.yml",
 	".gitlab/ci/scripts/trust-ci-server-ca.sh",
 	".gitlab/ci/scripts/select-gitlab-role-token.sh",
+	".gitlab/ci/scripts/install-fullsend-cli.sh",
+	".gitlab/ci/scripts/run-poll-job.sh",
+	".gitlab/ci/scripts/run-agent-job.sh",
 	".fullsend/config.yaml",
 }
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"
 
 const gitlabRoleTokenScriptPath = ".gitlab/ci/scripts/select-gitlab-role-token.sh"
+
+const gitlabInstallCLIScriptPath = ".gitlab/ci/scripts/install-fullsend-cli.sh"
+
+const gitlabPollJobScriptPath = ".gitlab/ci/scripts/run-poll-job.sh"
+
+const gitlabAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
+
+// gitlabAuxiliaryScriptPaths are CI helper scripts sourced by the generated
+// poll and agent jobs. Probe and converge treat each as its own scaffold
+// component so a missing script is detected and repaired.
+func gitlabAuxiliaryScriptPaths() []string {
+	return []string{
+		gitlabTrustScriptPath,
+		gitlabRoleTokenScriptPath,
+		gitlabInstallCLIScriptPath,
+		gitlabPollJobScriptPath,
+		gitlabAgentJobScriptPath,
+	}
+}
 
 // UninstallVarsForForge returns the CI/CD variable names to delete for
 // the given forge during uninstall.
