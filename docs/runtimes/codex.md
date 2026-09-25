@@ -95,6 +95,7 @@ fullsend run triage \
   --env-file fullsend-gcp.env \
   --env-file fullsend-openai.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime codex \
   --model openai/gpt-5.6-luna
 ```

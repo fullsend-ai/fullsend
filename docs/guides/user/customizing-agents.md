@@ -76,7 +76,7 @@ To re-pin the `base:` URL to a new upstream commit (and recompute the integrity 
 
 Test it locally first:
 ```bash
-fullsend run code --fullsend-dir .fullsend --target-repo ./my-repo --env-file .env.local
+fullsend run code --fullsend-dir .fullsend --target-repo ./my-repo --env-file .env.local --forge github
 ```
 
 See [Running agents locally](running-agents-locally.md) for prerequisites and troubleshooting.
