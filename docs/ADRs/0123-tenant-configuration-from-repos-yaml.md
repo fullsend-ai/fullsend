@@ -53,21 +53,14 @@ re-use the repos manifest as the method for end users to define their tenant.
 We anticipate that enterprise administrators manage those files in git,
 although this is not strictly required.
 
-Future central service components may load and validate them from configured HTTPS
-sources, or alternatively from a mounted kubernetes ConfigMap.
+Central service components should read and validate the manifests from the
+filesystem. For Kubernetes deployments, mounted ConfigMaps are the typical
+delivery path. This ADR leaves the source of truth, how manifests are divided
+among ConfigMaps, and how ConfigMaps are generated and applied open.
 
 The human-managed format remains `repos.yaml`
 
-Central service components should use a new internal `TenantConfig` model built
-from the validated manifest, rather than rely directly on `repos.Manifest`,
-where we can store extra metadata as needed.
-
-```
-type TenantConfig struct {
-    TenantID      string
-    Manifest      *repos.Manifest
-}
-```
+Central service components should use the existing `repos.Manifest` directly.
 
 Self-managed per-repository installations remain first-class and keep their
 existing manifest and CLI behavior.
