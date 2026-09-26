@@ -35,6 +35,11 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 ```
 
 - `status` — one of `ok`, `findings`, `error`.
+  - `ok` — nothing to report; the post-script exits 0 without commenting.
+  - `findings` — post the comment and exit 0.
+  - `error` — the agent could not do the job (unreachable forge, missing
+    credentials, blocked network). The post-script still posts the comment,
+    then exits 1 so the CI job is red.
 - `summary` — one line, at most 200 characters. Used as the comment heading.
 - `comment` — Markdown body posted on the work item, at most 16384 characters.
 

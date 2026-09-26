@@ -43,6 +43,11 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 ```
 
 - `status` — one of `ok`, `findings`, `error`.
+  - `ok` — nothing to report; the post-script exits 0 without commenting.
+  - `findings` — post the comment and exit 0.
+  - `error` — the agent could not do the job (unreachable forge, missing
+    credentials, blocked network). The post-script still posts the comment,
+    then exits 1 so the CI job is red.
 - `summary` — one line, at most 200 characters. Used as the comment heading.
 - `comment` — Markdown body posted on the work item, at most 16384 characters.
 
@@ -181,6 +186,7 @@ trigger: |
 # Treat the result file as untrusted: it is model output. Only the three
 # fields below are ever read, each is required to be a string, and the
 # comment body is piped on stdin rather than interpolated into a command.
+# status=error still posts the comment, then exits 1 so the CI job is red.
 
 set -euo pipefail
 
@@ -266,6 +272,15 @@ if [[ "${status}" == "ok" ]]; then
   exit 0
 fi
 
+# status=error means the agent could not do the job (unreachable forge,
+# missing credentials, blocked network). Post the comment so the work item
+# records the failure, then exit non-zero so the CI job is red rather than
+# a structurally-valid-but-empty green check (#6621).
+error_exit=0
+if [[ "${status}" == "error" ]]; then
+  error_exit=1
+fi
+
 # Derive the repo and number from the work item URL rather than trusting extra
 # environment. The pattern also rejects anything that is not a github.com URL.
 url_re='^https://github[.]com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(issues|pull)/([0-9]+)$'
@@ -279,6 +294,10 @@ NUMBER="${BASH_REMATCH[3]}"
 if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
   printf '**%s**\n\n%s\n' "${summary}" "${comment}"
   echo "post-lint-docs: dry run, not posting" >&2
+  if [[ "${error_exit}" -eq 1 ]]; then
+    echo "post-lint-docs: status=error, exiting non-zero" >&2
+    exit 1
+  fi
   exit 0
 fi
 
@@ -292,5 +311,10 @@ printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
       --number "${NUMBER}" \
       --marker "${MARKER}" \
       --result -
+
+if [[ "${error_exit}" -eq 1 ]]; then
+  echo "post-lint-docs: status=error, exiting non-zero" >&2
+  exit 1
+fi
 === scripts/validate-output-schema.sh mode=755 (shared, written only when absent)
 <copied verbatim from the embedded scaffold>
