@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/cucumber/godog v0.14.1
+	github.com/cucumber/godog v0.16.0
 	github.com/cucumber/messages/go/v21 v21.0.1
 	github.com/google/cel-go v0.29.2
 	github.com/google/uuid v1.6.0
@@ -30,13 +30,14 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cucumber/gherkin/go/v26 v26.2.0 // indirect
+	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
+	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/gomlx/compute v0.1.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
-	github.com/hashicorp/go-memdb v1.3.4 // indirect
+	github.com/hashicorp/go-memdb v1.3.5 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
