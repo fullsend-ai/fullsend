@@ -264,9 +264,9 @@ func newReposStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Compare manifest against actual repo state",
-		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml.",
+		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReposStatus(cmd, manifest, jsonOutput, repoFilter, concurrency)
+			return runReposStatus(cmd, manifest, jsonOutput, repoFilter, concurrency, nil)
 		},
 	}
 
@@ -278,7 +278,7 @@ func newReposStatusCmd() *cobra.Command {
 	return cmd
 }
 
-func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, repoFilter []string, concurrency int) error {
+func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, repoFilter []string, concurrency int, testClient forge.Client) error {
 	ctx := cmd.Context()
 
 	m, err := repos.LoadManifest(ctx, manifestPath)
@@ -289,7 +289,12 @@ func runReposStatus(cmd *cobra.Command, manifestPath string, jsonOutput bool, re
 		return fmt.Errorf("manifest validation failed: %w", err)
 	}
 
-	clients := newForgeClientFactory(getGitLabToken(cmd), m)
+	var clients repos.ForgeClientFactory
+	if testClient != nil {
+		clients = newSingleClientFactory(testClient)
+	} else {
+		clients = newForgeClientFactory(getGitLabToken(cmd), m)
+	}
 
 	result, err := repos.Status(ctx, m, clients, concurrency, repoFilter)
 	if err != nil {
@@ -509,8 +514,9 @@ re-runs while an initialization PR/MR is still open. For repos whose workflow
 is already on the default branch, reconciles variable drift, disabled GitLab
 pipeline schedules (reported as drift; reactivated only when
 --reactivate-schedules is passed), declared configuration-preset drift
-against .fullsend/config.base.yaml, and upgrades scaffold refs to match
-the manifest.
+against .fullsend/config.base.yaml, managed .fullsend/config.yaml drift
+for opted-in repositories, and upgrades scaffold refs to match the
+manifest.
 
 When repos are specified as positional arguments, only those repos are
 processed. Glob patterns (e.g. "acme/*") are matched against manifest

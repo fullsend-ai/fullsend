@@ -53,7 +53,10 @@ preset is declared. See
 
 Fleet manifests may also declare managed configuration via
 `defaults.config` and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
-Those blocks use this same schema and the per-field merge rules below.
+Those blocks are not `config_base` presets: `config` is a sparse overlay
+written to `.fullsend/config.yaml`, while `config_base` copies a preset
+byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
+same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
 shorthands and are rejected inside `config`. Managed configuration is
 opt-in: `defaults.config` opts every repository in; a repository `config`
