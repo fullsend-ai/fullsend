@@ -17,8 +17,13 @@ import (
 )
 
 // fakeClock implements clock with channels that resolve immediately,
-// eliminating wall-clock delays in poll/retry loops.
+// eliminating wall-clock delays in poll/retry loops. Now() returns the
+// real wall clock so enrollment waits that only use After stay fast.
 type fakeClock struct{}
+
+func (fakeClock) Now() time.Time {
+	return time.Now()
+}
 
 func (fakeClock) After(time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
