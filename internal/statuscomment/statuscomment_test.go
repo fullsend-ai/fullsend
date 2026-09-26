@@ -672,6 +672,186 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
 }
 
+func TestReconcileOrphaned_DeletesStartWhenTerminalSiblingExists(t *testing.T) {
+	// PostCompletionWithDetail posts a separate completion comment when other
+	// activity pushed past the start comment. The leftover start comment is
+	// still non-terminal; reconcile-status must not rewrite it as Terminated.
+	tests := []struct {
+		name          string
+		terminalBody  string
+		wantDeletedID int
+	}{
+		{
+			name: "success completion",
+			terminalBody: "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n" +
+				"🤖 Finished Code · ✅ Success · Started 10:00 AM UTC · Completed 10:11 AM UTC",
+			wantDeletedID: 10,
+		},
+		{
+			name: "failure completion",
+			terminalBody: "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n" +
+				"🤖 Finished Code · ❌ Failure · Started 10:00 AM UTC · Completed 10:11 AM UTC",
+			wantDeletedID: 10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.IssueComments = map[string][]forge.IssueComment{
+				"org/repo/7": {
+					{
+						ID: 10,
+						Body: "<!-- fullsend:agent-status:run-99 -->\n" +
+							"🤖 Code · Started 10:00 AM UTC",
+						Author: "fullsend-bot[bot]",
+					},
+					{
+						ID:     11,
+						Body:   "A human comment",
+						Author: "some-human",
+					},
+					{
+						ID:     12,
+						Body:   tt.terminalBody,
+						Author: "fullsend-bot[bot]",
+					},
+				},
+			}
+
+			tc := tracker.NewForgeClient(fc)
+			err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "")
+			require.NoError(t, err)
+
+			assert.Empty(t, fc.UpdatedComments, "must not rewrite the start comment as Terminated")
+			require.Equal(t, []int{tt.wantDeletedID}, fc.DeletedComments)
+
+			comments := fc.IssueComments["org/repo/7"]
+			require.Len(t, comments, 2)
+			assert.Equal(t, 11, comments[0].ID)
+			assert.Equal(t, 12, comments[1].ID)
+			assert.Contains(t, comments[1].Body, "<!-- fullsend:status:terminal -->")
+			for _, c := range comments {
+				assert.NotContains(t, c.Body, "Terminated")
+			}
+		})
+	}
+}
+
+func TestReconcileOrphaned_AfterSeparateCompletionComment(t *testing.T) {
+	// End-to-end: PostCompletion posts a new comment (intervening human
+	// activity), then the post-job reconciler runs against the same issue.
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Code"))
+	require.Equal(t, "1", n.startCommentID)
+
+	fc.IssueComments["org/repo/7"] = append(fc.IssueComments["org/repo/7"], forge.IssueComment{
+		ID:     9999,
+		Body:   "A human comment",
+		Author: "some-human",
+	})
+
+	n.now = func() time.Time { return fixedTime().Add(7 * time.Minute) }
+	require.NoError(t, n.PostCompletion(context.Background(), "Code", "success"))
+	assert.Empty(t, fc.UpdatedComments, "completion should be a new comment, not an in-place edit")
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-42", "https://ci/run/42", "a1b2c3d4e5f6789", ReasonTerminated, "", "success", false, "Code")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.UpdatedComments, "reconciler must not rewrite the start comment as Terminated")
+	require.Equal(t, []int{1}, fc.DeletedComments)
+
+	for _, c := range fc.IssueComments["org/repo/7"] {
+		assert.NotContains(t, c.Body, "Terminated")
+	}
+}
+
+func TestReconcileOrphaned_DeleteLeftoverStartError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {
+			{
+				ID:     10,
+				Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 10:00 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+			{
+				ID: 12,
+				Body: "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n" +
+					"🤖 Finished Code · ✅ Success · Started 10:00 AM UTC · Completed 10:11 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+		},
+	}
+	fc.Errors = map[string]error{"DeleteIssueComment": fmt.Errorf("api rate limited")}
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting leftover start comment")
+	assert.Empty(t, fc.UpdatedComments, "must not fall back to marking the start comment Terminated")
+}
+
+func TestReconcileOrphaned_DeleteLeftoverStartNotFoundIsSwallowed(t *testing.T) {
+	// A prior cleanup pass (a retried or concurrent reconcile-status run)
+	// may have already deleted the leftover start comment. That must not
+	// fail the overall reconcile.
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {
+			{
+				ID:     10,
+				Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 10:00 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+			{
+				ID: 12,
+				Body: "<!-- fullsend:agent-status:run-99 -->\n<!-- fullsend:status:terminal -->\n" +
+					"🤖 Finished Code · ✅ Success · Started 10:00 AM UTC · Completed 10:11 AM UTC",
+				Author: "fullsend-bot[bot]",
+			},
+		},
+	}
+	fc.Errors = map[string]error{"DeleteIssueComment": fmt.Errorf("%w: comment 10", forge.ErrNotFound)}
+
+	tc := tracker.NewForgeClient(fc)
+	err := ReconcileOrphaned(context.Background(), tc, "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.UpdatedComments, "must not fall back to marking the start comment Terminated")
+}
+
+func TestReconcileOrphaned_JiraDeletesLeftoverWhenTerminalSiblingExists(t *testing.T) {
+	jiraClient, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	marker := mustBuildMarker("run-99")
+	start, err := jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Code · Started 10:00 AM UTC", marker, false)
+	require.NoError(t, err)
+	completion, err := jiraClient.CreateStatusComment(ctx, "PROJ", 42, "🤖 Finished Code · ✅ Success · Completed 10:11 AM UTC", marker, true)
+	require.NoError(t, err)
+
+	err = ReconcileOrphaned(ctx, jiraClient, "PROJ", 42, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "", "success", false, "Code")
+	require.NoError(t, err)
+
+	assert.Empty(t, fake.UpdatedBody, "must not rewrite the Jira start comment as Terminated")
+
+	comments, listErr := jiraClient.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, listErr)
+	require.Len(t, comments, 1, "leftover start comment must be deleted, leaving only the terminal completion comment")
+	assert.Equal(t, completion.ID, comments[0].ID)
+	for _, c := range comments {
+		assert.NotEqual(t, start.ID, c.ID, "leftover start comment must not remain")
+		assert.NotContains(t, string(c.Body), "Terminated")
+	}
+}
+
 func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)

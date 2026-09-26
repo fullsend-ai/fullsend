@@ -180,11 +180,82 @@ func (c *JiraClient) UpdateStatusComment(ctx context.Context, project string, nu
 
 // FindStatusComment implements StatusCommentClient. Property lookup is the
 // primary path; visible-body scanning keeps pre-property comments compatible.
+// When more than one comment matches the marker, a terminal comment is
+// preferred so leftover start comments are not treated as orphans.
 func (c *JiraClient) FindStatusComment(ctx context.Context, project string, number int, marker string) (*Comment, bool, error) {
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
 	if err != nil {
 		return nil, false, wrapNotFound(err)
+	}
+	var firstNonTerminal Comment
+	hasNonTerminal := false
+	for i := range comments {
+		for _, prop := range comments[i].Properties {
+			if prop.Key != statusPropertyKey {
+				continue
+			}
+			var stored statusCommentProperty
+			if json.Unmarshal(prop.Value, &stored) != nil || stored.Marker != marker {
+				continue
+			}
+			result := fromJiraComment(comments[i])
+			if stored.Terminal {
+				return &result, true, nil
+			}
+			if !hasNonTerminal {
+				firstNonTerminal = result
+				hasNonTerminal = true
+			}
+		}
+	}
+	if hasNonTerminal {
+		return &firstNonTerminal, false, nil
+	}
+	for i := range comments {
+		body := jira.ADFToMarkdown(comments[i].Body)
+		if !strings.Contains(body, marker) {
+			continue
+		}
+		result := fromJiraComment(comments[i])
+		if strings.Contains(body, "fullsend:status:terminal") {
+			return &result, true, nil
+		}
+		if !hasNonTerminal {
+			firstNonTerminal = result
+			hasNonTerminal = true
+		}
+	}
+	if hasNonTerminal {
+		return &firstNonTerminal, false, nil
+	}
+	return nil, false, nil
+}
+
+// DeleteNonTerminalStatusComments implements StatusCommentClient. Both the
+// property scan and the legacy body scan run unconditionally and their
+// non-terminal matches are combined (deduped by comment ID): a
+// property-backed comment's visible body has the marker/terminal tag
+// stripped by visibleStatusBody, so the body scan alone would miss it, but
+// a pre-property (legacy) comment has no property to match, so the
+// property scan alone would miss it too. Gating one scan on the other
+// finding a match — as FindStatusComment does for its single best match —
+// would risk leaving a legacy leftover undeleted whenever a property-backed
+// sibling for the same marker also exists.
+func (c *JiraClient) DeleteNonTerminalStatusComments(ctx context.Context, project string, number int, marker string) error {
+	key := issueKey(project, number)
+	comments, err := c.jira.ListComments(ctx, key)
+	if err != nil {
+		return wrapNotFound(err)
+	}
+
+	var toDelete []string
+	seen := make(map[string]bool)
+	addToDelete := func(id string) {
+		if !seen[id] {
+			seen[id] = true
+			toDelete = append(toDelete, id)
+		}
 	}
 	for i := range comments {
 		for _, prop := range comments[i].Properties {
@@ -192,20 +263,34 @@ func (c *JiraClient) FindStatusComment(ctx context.Context, project string, numb
 				continue
 			}
 			var stored statusCommentProperty
-			if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
-				result := fromJiraComment(comments[i])
-				return &result, stored.Terminal, nil
+			if json.Unmarshal(prop.Value, &stored) != nil || stored.Marker != marker {
+				continue
+			}
+			if !stored.Terminal {
+				addToDelete(comments[i].ID)
 			}
 		}
 	}
 	for i := range comments {
 		body := jira.ADFToMarkdown(comments[i].Body)
-		if strings.Contains(body, marker) {
-			result := fromJiraComment(comments[i])
-			return &result, strings.Contains(body, "fullsend:status:terminal"), nil
+		if !strings.Contains(body, marker) {
+			continue
+		}
+		if !strings.Contains(body, "fullsend:status:terminal") {
+			addToDelete(comments[i].ID)
 		}
 	}
-	return nil, false, nil
+
+	for _, id := range toDelete {
+		if delErr := c.jira.DeleteComment(ctx, key, id); delErr != nil {
+			wrapped := wrapNotFound(delErr)
+			if IsNotFound(wrapped) {
+				continue
+			}
+			return fmt.Errorf("deleting leftover status comment %s of %s: %w", id, key, wrapped)
+		}
+	}
+	return nil
 }
 
 // IsStatusComment implements StatusCommentClient. The legacy body check keeps
