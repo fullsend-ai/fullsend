@@ -155,7 +155,7 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Entry Point
 
-The single deterministic component that receives forge events and decides which agent combination to run. On GitHub, events arrive via webhooks; on GitLab, via cron-polled scheduled pipelines (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)). Previously called **wrapper** — the rename was adopted to avoid confusion with the sandbox/wrapping layer (see [#101](https://github.com/fullsend-ai/fullsend/issues/101) for the terminology evolution). The entry point is non-AI: it is a conventional program (currently Go) that parses events, enforces ACLs on slash commands, validates label transitions, and dispatches to agent runtimes. It does not make LLM calls.
+The single deterministic component that receives forge events and decides which agent combination to run. On GitHub, events arrive via webhooks; on GitLab, via a native webhook fast-path with cron-poller reconciliation (see [ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md), [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)). Previously called **wrapper** — the rename was adopted to avoid confusion with the sandbox/wrapping layer (see [#101](https://github.com/fullsend-ai/fullsend/issues/101) for the terminology evolution). The entry point is non-AI: it is a conventional program (currently Go) that parses events, enforces ACLs on slash commands, validates label transitions, and dispatches to agent runtimes. It does not make LLM calls.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 1 and [#101](https://github.com/fullsend-ai/fullsend/issues/101).
 
 ### Escalation
@@ -329,7 +329,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 2.
 
 ### Trigger
 
-What initiates an agent run. Could be a forge event (issue filed, label applied, comment posted, PR/MR opened, check completed), a [slash command](#slash-command), or a scheduled action. The term is used loosely in discussions — sometimes meaning the raw forge event (GitHub webhook or GitLab cron-polled change), sometimes meaning the processed signal that actually starts an agent after debouncing and validation. In fullsend's architecture, triggers flow through the [entry point](#entry-point), which normalizes and dispatches them.
+What initiates an agent run. Could be a forge event (issue filed, label applied, comment posted, PR/MR opened, check completed), a [slash command](#slash-command), or a scheduled action. The term is used loosely in discussions — sometimes meaning the raw forge event (GitHub webhook or GitLab webhook / cron-polled change), sometimes meaning the processed signal that actually starts an agent after debouncing and validation. In fullsend's architecture, triggers flow through the [entry point](#entry-point), which normalizes and dispatches them.
 See [architecture.md](architecture.md) (building block 1).
 
 ### Triage

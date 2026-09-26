@@ -1,10 +1,15 @@
 # GitLab Support Implementation Details
 
-> **Note:** The webhook-based dispatch approach described in this document is
-> superseded by [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
-> (cron-polling event dispatch), which eliminates webhooks entirely.
-> The sections below on CI/CD pipeline mapping, PAT-based auth, and forge
-> interface evolution remain valid reference material.
+> **Note:** The external webhook-bridge dispatch approach described in this
+> document is superseded. [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
+> adopted cron-polling and removed that bridge.
+> [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) then
+> adopted a hybrid: GitLab-native webhook fast-path (no translation
+> bridge; `:ref` pinned to the protected default branch) with the
+> ADR 0067 cron-poller as reconciliation backstop. The sections below on
+> CI/CD pipeline mapping, PAT-based auth, and forge interface evolution
+> remain valid reference material; the "Webhook-to-trigger API
+> incompatibility" analysis is historical.
 
 This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md) (status: Deprecated — CI/CD pipeline mapping, PAT-based auth, and webhook bridging sections remain valid reference material; harness-level forge abstraction is now covered by [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)).
 
@@ -42,7 +47,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 2. **GitLab serverless functions**: Use GitLab's serverless integration to deploy a function that receives webhooks and translates to trigger API calls. Maintains compute-platform agnosticism (runs within GitLab infrastructure) but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Deploy a lightweight translation service (e.g., Cloud Run, Lambda) that receives webhooks and POSTs to the trigger API. This reintroduces the "hosted webhook receiver" concern from ADR-0009 but may be acceptable given GitLab's lack of a direct webhook-to-pipeline primitive.
 
-**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.
+**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** ~~[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.~~ [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) refutes the translation-bridge requirement: GitLab's native "use a webhook" trigger pins `:ref` to the protected default branch. The ADR 0067 cron-poller remains the reconciliation backstop.
 
 **Security requirements for webhook translation intermediary**:
 
@@ -607,14 +612,14 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 
 ### Webhook-to-Trigger Translation Architecture
 
-**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.
+~~**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.~~ Decided in [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md): GitLab's native "use a webhook" trigger pins `:ref` in the URL, so no translation bridge is required. The ADR 0067 cron-poller remains the reconciliation backstop.
 
-**Options**:
+**Options** (historical):
 1. **GitLab CI/CD webhook integration**: Runs in enrolled repo, but cannot enforce protected-branch-only execution without blocking MR reactions entirely. Reintroduces security concern.
 2. **GitLab serverless functions**: Keeps compute within GitLab infrastructure, but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Works on GitLab Free tier, but reintroduces hosted webhook receiver concern from ADR-0009.
 
-**Status**: For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment. See ADR-0028 (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)) "Open Questions" section for full analysis of trade-offs.
+**Status**: ~~For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment.~~ Resolved by [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md). See ADR-0028 (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)) "Open Questions" section for the historical trade-off analysis.
 
 ### Forge Interface Design Details
 

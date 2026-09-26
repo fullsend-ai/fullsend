@@ -33,6 +33,9 @@ Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
 with a scoped authorization path for Fullsend-originated entity discovery that
 has no prompting event actor; event-backed dispatch authorization is unchanged.
 
+On GitLab, the low-latency webhook candidate path and poller backstop are
+[ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

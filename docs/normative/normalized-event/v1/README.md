@@ -26,14 +26,16 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 ## Scope (v1)
 
 v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
-input, and **Jira poll** input:
+and native-webhook input, and **Jira poll** input:
 
 - `source.system` is `github`, `gitlab`, `jira`, `manual`, or `schedule`.
 - `repo` is the target Fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
-  is the production GitLab adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
+  is the production GitLab poll adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
+  `gitlab-webhook` is the planned GitLab native-webhook adapter
+  ([ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md));
   `jira-poll` is the production Jira poll adapter; `json` supports tests and
   replay.
 - `entity.kind: conversation` covers GitHub Discussions and future chat
@@ -70,6 +72,7 @@ Input drivers map native forge events into this struct:
 |--------|--------|-----------|
 | `gha-event` | `GITHUB_EVENT_PATH` + `gh` snapshot for labels and change-proposal metadata | Production; Discussions → `entity.kind: conversation` planned ([ADR 0086](../../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
 | `gitlab-poll` | GitLab CI event payload (cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) | Production (poll) |
+| `gitlab-webhook` | GitLab `$TRIGGER_PAYLOAD` from a native "use a webhook" pipeline trigger pinned to the protected default branch ([ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) | Planned (webhook fast-path) |
 | `jira-poll` | Jira issue search + changelog/comments since `lastCheck` ([jira-poll-adapter.md](jira-poll-adapter.md), [ADR 0063](../../../ADRs/0063-polling-based-work-discovery.md)) | Production (poll) |
 | `json` | stdin or `--input-file` | Tests, replay |
 
@@ -303,7 +306,7 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 
 | Concern | Mapping |
 |---------|---------|
-| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| Input driver | `gitlab-poll` (production, cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) and `gitlab-webhook` (planned fast-path from `$TRIGGER_PAYLOAD`; [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
 | MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
