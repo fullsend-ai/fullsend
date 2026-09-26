@@ -363,6 +363,14 @@ pin_supervisor_image() {
   fi
 }
 
+# Run before any OpenShell install: install.sh (re)starts the gateway unit,
+# and 0.1 refuses a v1 gateway.toml and cannot use 0.0.x state. Tear the
+# old gateway down with the still-installed CLI and write the v2 config.
+prepare_openshell_upgrade() {
+  teardown_openshell_gateway
+  pin_supervisor_image "$1"
+}
+
 # Install the OpenShell version the job pins, but only when that version is
 # the Renovate-tracked pin (OPENSHELL_VERSION/OPENSHELL_SHA, sourced above
 # from .github/scripts/openshell-version.sh) — callers must verify that match
@@ -387,9 +395,8 @@ install_openshell_at_version() {
   url="$(openshell_install_script_url "${sha}")"
   local max_attempts=3 attempt=1 delay=5
   while true; do
-    # install.sh refuses a pre-0.1 -> 0.1 upgrade without the ack. The
-    # incompatible pre-0.1 gateway store is discarded by the caller's
-    # start_fresh_openshell_gateway (wipe_openshell_gateway_store).
+    # install.sh refuses a pre-0.1 -> 0.1 upgrade without the ack; the
+    # caller's prepare_openshell_upgrade has already migrated the host.
     if curl -LsSf --retry 3 --retry-delay 5 "${url}" \
       | OPENSHELL_ACK_BREAKING_UPGRADE=1 OPENSHELL_VERSION="v${ver}" sh; then
       break
@@ -435,8 +442,8 @@ ensure_job_openshell_gateway() {
       return 1
     fi
     echo "OpenShell host ${host_ver:-none} != job image ${job_ver}; installing the pinned version"
+    prepare_openshell_upgrade "${job_ver}"
     install_openshell_at_version "${job_ver}" "${OPENSHELL_SHA:-}" || return 1
-    pin_supervisor_image "${job_ver}"
     podman pull -- "$(openshell_supervisor_image "${job_ver}")" || return 1
   elif [ -n "${job_ver}" ]; then
     echo "OpenShell ${job_ver} already matches the job image"

@@ -495,10 +495,20 @@ OS
 chmod +x "${SHIM_DIR}/openshell"
 
 # curl | sh: emit a stub installer that records the env install.sh sees.
+# Like the real 0.1 installer, which starts the gateway, it fails unless the
+# config is already schema v2 and the pre-0.1 store is gone.
 INSTALL_ENV_LOG="${SHIM_DIR}/install-env.log"
 cat > "${SHIM_DIR}/install.sh" <<INSTALL
 #!/bin/sh
 echo "ack=\${OPENSHELL_ACK_BREAKING_UPGRADE:-} version=\${OPENSHELL_VERSION:-}" >> "${INSTALL_ENV_LOG}"
+if ! grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*2[[:space:]]*(#.*)?\$' "${HOME}/.config/openshell/gateway.toml" 2>/dev/null; then
+  echo "stub install.sh: gateway config preflight failed: ${HOME}/.config/openshell/gateway.toml missing or not schema v2" >&2
+  exit 1
+fi
+if [ -e "${HOME}/.local/state/openshell/gateway" ] || [ -e "${HOME}/.local/state/openshell/tls" ]; then
+  echo "stub install.sh: gateway start failed: pre-0.1 state still in ${HOME}/.local/state/openshell" >&2
+  exit 1
+fi
 INSTALL
 cat > "${SHIM_DIR}/curl" <<CURL
 #!/bin/sh
@@ -508,8 +518,10 @@ exit 0
 CURL
 chmod +x "${SHIM_DIR}/curl"
 
-# Pre-0.1 host: a schema-v1 gateway.toml and a 0.0.x gateway store.
-mkdir -p "${HOME}/.config/openshell" "${HOME}/.local/state/openshell/gateway"
+# Pre-0.1 host: a schema-v1 gateway.toml and a 0.0.x gateway store and TLS.
+mkdir -p "${HOME}/.config/openshell" "${HOME}/.local/state/openshell/gateway" \
+  "${HOME}/.local/state/openshell/tls"
+echo cert > "${HOME}/.local/state/openshell/tls/server.crt"
 V1_TOML='[openshell]
 version = 1
 

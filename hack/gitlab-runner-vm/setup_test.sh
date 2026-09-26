@@ -30,7 +30,9 @@ run_setup() {
   local test_cache_dir="${CACHE_DIR}"
   local test_executor_dir="${EXECUTOR_DIR}"
   local test_override_dir="${GITLAB_RUNNER_OVERRIDE_DIR}"
-  RUN_SETUP_RC=0
+  # Not an && / || list: bash ignores errexit inside one, so a failing
+  # command in setup.sh (e.g. the installer) would not stop the function.
+  set +e
   RUN_SETUP_OUT=$(
     export PATH="${SHIM_DIR}:${PATH}"
     export HOME="${FAKE_HOME}"
@@ -43,7 +45,9 @@ run_setup() {
     GITLAB_RUNNER_OVERRIDE_DIR="${test_override_dir}"
     export RUNNER_USER="testuser"
     "${fn}"
-  ) && RUN_SETUP_RC=0 || RUN_SETUP_RC=$?
+  )
+  RUN_SETUP_RC=$?
+  set -e
 }
 
 FAKE_HOME=$(mktemp -d)
@@ -482,9 +486,19 @@ echo "== install_openshell: breaking-upgrade ack and stale state =="
 write_systemctl_stub seeded
 INSTALL_ENV_LOG="${SHIM_DIR}/install-env.log"
 : > "${INSTALL_ENV_LOG}"
+# Like the real 0.1 installer, which starts the gateway: fail unless the
+# config is already schema v2 and the pre-0.1 store is gone.
 cat > "${WORK_DIR}/install.sh" <<INSTALL
 #!/bin/sh
 echo "ack=\${OPENSHELL_ACK_BREAKING_UPGRADE:-}" >> "${INSTALL_ENV_LOG}"
+if ! grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*2[[:space:]]*(#.*)?\$' "${GW_TOML}" 2>/dev/null; then
+  echo "stub install.sh: gateway config preflight failed: ${GW_TOML} missing or not schema v2" >&2
+  exit 1
+fi
+if [ -e "${FAKE_HOME}/.local/state/openshell/gateway" ] || [ -e "${FAKE_HOME}/.local/state/openshell/tls" ]; then
+  echo "stub install.sh: gateway start failed: pre-0.1 state still in ${FAKE_HOME}/.local/state/openshell" >&2
+  exit 1
+fi
 INSTALL
 cat > "${SHIM_DIR}/curl" <<CURL
 #!/bin/sh
@@ -528,14 +542,61 @@ OS
 chmod +x "${SHIM_DIR}/openshell"
 mkdir -p "${FAKE_HOME}/.local/state/openshell/gateway"
 echo db > "${FAKE_HOME}/.local/state/openshell/gateway/state.db"
+cp "${GW_TOML}" "${WORK_DIR}/gw.pinned" 2>/dev/null || : > "${WORK_DIR}/gw.pinned"
 run_setup install_openshell
 if [ "${RUN_SETUP_RC}" -eq 0 ] && [ ! -s "${INSTALL_ENV_LOG}" ] \
-  && [ -e "${FAKE_HOME}/.local/state/openshell/gateway/state.db" ]; then
-  pass "install_openshell on the pinned version skips the install and keeps state"
+  && [ -e "${FAKE_HOME}/.local/state/openshell/gateway/state.db" ] \
+  && cmp -s "${WORK_DIR}/gw.pinned" "${GW_TOML}" && [ ! -e "${GW_TOML}.pre-0.1" ]; then
+  pass "install_openshell on the pinned version skips the install and keeps state and config"
 else
   fail "install_openshell re-ran on the pinned version (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
 fi
-rm -rf "${FAKE_HOME}/.local/state/openshell"
+rm -rf "${FAKE_HOME}/.local/state/openshell" "${FAKE_HOME}/.config/openshell"
+
+echo "== install_openshell -> configure_gateway: in-place 0.0.x -> 0.1 upgrade =="
+# main's order on a VM provisioned with 0.0.x: v1 config, 0.0.x store and TLS.
+upgrade_sequence() {
+  install_openshell
+  configure_gateway
+}
+write_systemctl_stub seeded
+: > "${INSTALL_ENV_LOG}"
+cat > "${SHIM_DIR}/openshell" <<OS
+#!/bin/sh
+echo "\$@" >> "${OPENSHELL_LOG}"
+case "\$1" in --version) echo "openshell 0.0.116";; esac
+exit 0
+OS
+chmod +x "${SHIM_DIR}/openshell"
+mkdir -p "${FAKE_HOME}/.config/openshell" \
+  "${FAKE_HOME}/.local/state/openshell/gateway" "${FAKE_HOME}/.local/state/openshell/tls"
+cp "${WORK_DIR}/v1.toml" "${GW_TOML}"
+echo db > "${FAKE_HOME}/.local/state/openshell/gateway/state.db"
+echo cert > "${FAKE_HOME}/.local/state/openshell/tls/server.crt"
+run_setup upgrade_sequence
+podman_section=$(awk -v key="supervisor_image = \"${PIN_IMAGE}\"" '/^\[/ { s = $0 } $0 == key { print s }' "${GW_TOML}")
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "0.0.x -> 0.1 upgrade should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif ! grep -qx 'ack=1' "${INSTALL_ENV_LOG}"; then
+  fail "upgrade ran install.sh without the ack: $(tr '\n' '|' < "${INSTALL_ENV_LOG}")"
+elif ! cmp -s "${WORK_DIR}/v1.toml" "${GW_TOML}.pre-0.1"; then
+  fail "upgrade did not move the v1 gateway.toml aside intact"
+elif ! grep -qx 'version = 2' "${GW_TOML}" || [ "${podman_section}" != "[openshell.drivers.podman]" ]; then
+  fail "upgrade left gateway.toml without a v2 ${PIN_IMAGE} pin: $(tr '\n' '|' < "${GW_TOML}")"
+elif [ -e "${FAKE_HOME}/.local/state/openshell/gateway" ] || [ -e "${FAKE_HOME}/.local/state/openshell/tls" ]; then
+  fail "upgrade kept the pre-0.1 gateway store"
+else
+  pass "upgrade writes v2 config and drops pre-0.1 state before the installer starts the gateway"
+fi
+cp "${GW_TOML}" "${WORK_DIR}/v2.before"
+run_setup configure_gateway
+if [ "${RUN_SETUP_RC}" -eq 0 ] && cmp -s "${WORK_DIR}/v2.before" "${GW_TOML}" \
+  && cmp -s "${WORK_DIR}/v1.toml" "${GW_TOML}.pre-0.1"; then
+  pass "configure_gateway after the upgrade is a no-op"
+else
+  fail "configure_gateway after the upgrade changed files (rc=${RUN_SETUP_RC}): $(tr '\n' '|' < "${GW_TOML}")"
+fi
+rm -rf "${FAKE_HOME}/.local/state/openshell" "${FAKE_HOME}/.config/openshell"
 printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${OPENSHELL_LOG}" > "${SHIM_DIR}/openshell"
 rm -f "${SHIM_DIR}/curl" "${SHIM_DIR}/podman"
 

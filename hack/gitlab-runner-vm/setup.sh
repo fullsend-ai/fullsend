@@ -402,12 +402,14 @@ install_openshell() {
   if [ ! -f "${install_sh}" ]; then
     install_sh="${SCRIPT_DIR}/../../.github/scripts/install-openshell.sh"
   fi
-  if [ -f "${install_sh}" ]; then
-    # install.sh refuses a pre-0.1 -> 0.1 upgrade on a persistent VM without the ack.
-    OPENSHELL_ACK_BREAKING_UPGRADE=1 bash "${install_sh}"
-  else
+  if [ ! -f "${install_sh}" ]; then
     fail "install-openshell.sh not found — run from the VM layout or repo checkout"
   fi
+  # The installer starts the new gateway: stop the old one, drop its state
+  # and write the v2 config first (gateway.sh).
+  prepare_openshell_upgrade "${OPENSHELL_VERSION}"
+  # install.sh refuses a pre-0.1 -> 0.1 upgrade on a persistent VM without the ack.
+  OPENSHELL_ACK_BREAKING_UPGRADE=1 bash "${install_sh}"
 
   if ! command -v openshell &>/dev/null; then
     fail "openshell binary not found after install"
@@ -415,10 +417,6 @@ install_openshell() {
   if ! user_systemctl cat openshell-gateway.service &>/dev/null; then
     fail "openshell-gateway.service not found after RPM install"
   fi
-
-  # Gateway state from another version (pre-0.1 is incompatible) must not be
-  # reused: stop the unit, reap its sandboxes, wipe the store and CLI entry.
-  teardown_openshell_gateway
 
   openshell --version
   ok "OpenShell ${OPENSHELL_VERSION} installed"
@@ -451,10 +449,9 @@ configure_gateway() {
   fi
 
   # Pin supervisor_image to the Renovate-tracked version in a schema-v2
-  # gateway.toml (matching action.yml). This runs before the first start, and
-  # the RPM unit only seeds its default when no config exists, so
-  # pin_supervisor_image (gateway.sh) seeds from the packaged default itself
-  # and moves a pre-0.1 (v1) file aside.
+  # gateway.toml (matching action.yml). install_openshell writes it before
+  # any install; this covers its already-installed return and is otherwise
+  # a no-op.
   pin_supervisor_image "${OPENSHELL_VERSION}"
   ok "supervisor_image pinned to $(openshell_supervisor_image "${OPENSHELL_VERSION}")"
 }
