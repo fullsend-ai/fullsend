@@ -734,16 +734,32 @@ sys.exit(1)`)
 }
 
 // TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild pins the fail-closed
-// contract across CPython builds that disagree on a closed fd 2. Closing fd 2
-// after the interpreter has started forces a live TextIOWrapper around a
-// closed fd — the pyenv case that turns an unguarded block() into exit 120 —
-// so CI does not depend on how python3 was provisioned. The None and writable
-// cases are the already-passing paths that must not regress.
+// contract across CPython builds that disagree on a closed fd 2, and pins
+// codex's actual consumer semantics, not just the exit code: codex's
+// `parse_completed` only treats exit 2 as a block when stderr is non-empty
+// (`events/pre_tool_use.rs`), so a case that exits 2 with nothing on the real
+// fd 2 would still fail open in production even though the subprocess exit
+// code looks right. "Closing fd 2 after the interpreter has started" forces
+// a live TextIOWrapper around a closed fd — the pyenv case that turns an
+// unguarded block() into exit 120 — so CI does not depend on how python3 was
+// provisioned.
+//
+// "sys.stderr is None" and "TextIOWrapper around a closed fd" both leave the
+// real fd 2 itself untouched — only the Python-level stream object is
+// broken — so block()'s raw os.write(2, ...) fallback recovers the reason
+// and this asserts it actually lands on the real fd, not just that the
+// process exits 2. "fd 2 closed after interpreter start" tears down the real
+// fd itself: no process-local write, buffered or raw, can put bytes on the
+// other end of a closed fd, so that case is asserted to still exit 2 (a
+// block attempt beats a crash) but to NOT carry the reason — codex sees this
+// one as `Failed`, not a block, and no in-process fix changes that (see
+// block()'s docstring).
 func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 	cases := []struct {
-		name  string
-		setup string
-		want  string
+		name       string
+		setup      string
+		want       string
+		wantAbsent string
 	}{
 		{
 			name: "writable stderr",
@@ -752,10 +768,12 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 		{
 			name:  "homebrew-style sys.stderr is None",
 			setup: "sys.stderr = None",
+			want:  "forced-stderr",
 		},
 		{
-			name:  "fd 2 closed after interpreter start",
-			setup: "os.close(2)",
+			name:       "fd 2 closed after interpreter start",
+			setup:      "os.close(2)",
+			wantAbsent: "forced-stderr",
 		},
 		{
 			name: "live TextIOWrapper around a closed fd",
@@ -764,6 +782,7 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 				"sys.stderr = io.TextIOWrapper(io.BufferedWriter(io.FileIO(fd, \"w\")), " +
 				"line_buffering=False, write_through=False)\n" +
 				"os.close(fd)",
+			want: "forced-stderr",
 		},
 	}
 	for _, tc := range cases {
@@ -779,7 +798,10 @@ func TestCodexAdapter_BlockExitTwoIndependentOfStderrBuild(t *testing.T) {
 			require.Error(t, err, "output: %s", out)
 			assert.Equal(t, 2, exitCodeOf(t, err), "output: %s", out)
 			if tc.want != "" {
-				assert.Contains(t, string(out), tc.want)
+				assert.Contains(t, string(out), tc.want, "codex only treats exit 2 as a block when stderr is non-empty")
+			}
+			if tc.wantAbsent != "" {
+				assert.NotContains(t, string(out), tc.wantAbsent, "a genuinely closed fd 2 cannot carry the reason from this process")
 			}
 		})
 	}

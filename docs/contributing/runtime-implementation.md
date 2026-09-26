@@ -1147,9 +1147,17 @@ Three codex behaviours are load-bearing, and the adapter exists because of the f
    block.** The shared scripts block with `exit 1` plus `{"decision":"block","reason"}`, so
    forwarding them verbatim would make every PreToolUse hook advisory. The adapter translates a
    block to **exit 2 with the reason on stderr**. An exit 2 whose stderr is empty is *also* `Failed`,
-   so the reason is never allowed to be empty. The process must still exit 2 when stderr is
-   unwritable: CPython 3.6+ overrides the status with 120 if a shutdown flush of stderr fails, and
-   120 is `Failed` (fail open).
+   so `block()` does not just try `sys.stderr` once and give up: if that write does not visibly
+   succeed (`sys.stderr` is `None`, or wraps an fd that is not really the process's stderr), it
+   falls back to a raw `os.write(2, ...)`, which recovers the reason whenever fd 2 itself is still
+   a live pipe. The process must still exit 2 when stderr is unwritable: CPython 3.6+ overrides the
+   status with 120 if a shutdown flush of stderr fails, and 120 is `Failed` (fail open); `block()`
+   closes and drops the stream object after writing so that shutdown flush cannot fire. None of
+   this reaches the one case that is not recoverable: if fd 2 itself has been closed at the OS
+   level (the transport torn down, not just the Python object), no write from this process can put
+   bytes on the other end of it, so codex sees exit 2 with empty stderr and records `Failed` rather
+   than a block. That residual gap is inherent to a pipe whose write end is gone, not a bug in the
+   adapter — see `block()`'s docstring in `fullsend-codex-hook.py` for the full breakdown.
 2. **Only a synchronous handler can apply control effects.** A handler with `"async": true` still
    runs and still reports, but its block decision is discarded — so the rendered `hooks.json` never
    carries an `async` key at all, and `TestCodexHooksJSON_NeverAsync` asserts its absence.
