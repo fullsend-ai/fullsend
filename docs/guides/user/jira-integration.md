@@ -4,6 +4,19 @@
 
 Connect fullsend to a Jira project so that Jira issue activity — comments, label changes — triggers the same agents that run on GitHub and GitLab.
 
+## Setup overview
+
+1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
+2. **Grant it two project roles** in the target Jira project:
+   - **Developers** — so the poller can operate on issues and write the entity properties it uses for lock and checkpoint coordination.
+   - **Administrators** — so the poller can inspect other users' project-role membership when authorizing slash commands.
+
+   Giving one account both sets of access is more power than we want long-term and needs a follow-up design. See [Actor role resolution](#actor-role-resolution).
+3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
+4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
+5. **Set the Jira project key** (replace `PROJ`) and, if you want a narrower candidate set, a custom `--jql` expression in that workflow. See [Custom JQL](#custom-jql).
+6. **Add a `trigger` expression** on each agent that should handle Jira events. `trigger` is a harness field, not a `config.yaml` field — add it to a harness YAML file registered via `config.yaml`'s `agents[].source` (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)). Built-in harnesses currently have none, so the poller produces zero dispatches until you add them. See [CEL Triggers Reference](cel-triggers-reference.md). This step is temporary: it goes away once the default agent suite ships native Jira triggers ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)).
+
 ## How it works
 
 A scheduled GitHub Actions workflow runs `fullsend poll --input-driver jira-poll` on a cron. Each cycle:
@@ -42,8 +55,7 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)).
-- The Jira user must have read access to the target project and write access to issue entity properties (used for poll coordination state).
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a dedicated service account in the **Developers** and **Administrators** project roles. See [Setup overview](#setup-overview) for why both roles are required today.
 
 ## Credential setup
 
@@ -67,9 +79,9 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 ## Repo configuration
 
-No special harness or config changes are needed to *receive* Jira-sourced dispatches: the Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing and triggers work unchanged. Built-in agent output is currently written to GitHub only, while run-status notifications route to Jira for Jira-triggered runs. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
+The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. Built-in agent output is currently written to GitHub only, while run-status notifications route to Jira for Jira-triggered runs. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
 
-If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, you are ready to go.
+If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
 
 ## Scheduled workflow
 
