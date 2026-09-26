@@ -37,6 +37,15 @@ write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+If a GitHub review run is cancelled, its status comment identifies that
+cancelled commit and directs maintainers to review the current HEAD or retry
+with `/fs-review` before merging.
+
+GitHub review submissions whose state is `commented` and whose body is empty
+are ignored. These are containers for inline replies and carry no
+dispatch-relevant review message; non-empty comments and other review states
+continue through normal routing.
+
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
 (up to one poll interval of delay). Native `merge_request_event` dispatch was removed; all GitLab events route
 through the poller. Push-to-open-MR (GitHub `synchronize`) is not auto-detected;

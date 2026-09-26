@@ -2859,15 +2859,16 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// oidcDenyKeys lists credential env vars that must not leak into
 // user-controlled or sandbox-visible contexts. The parent harness process
-// retains these for mintAgentToken and OIDC token refresh; stripping them
-// from child scripts, expanders, and sandbox injection prevents user code
-// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+// retains OIDC credentials for mintAgentToken and token refresh; stripping
+// them and GITHUB_TOKEN from child scripts, expanders, and sandbox injection
+// prevents user code and LLM sessions from minting additional tokens. See
+// #5832, ADR 0073.
 //
-// MAINTENANCE: when new OIDC-related credential env vars are introduced
-// (e.g. by mint infrastructure changes), add them here. By convention the
-// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// MAINTENANCE: when a credential env var must not reach a harness-controlled
+// context, add it here. OIDC vars conventionally use ACTIONS_ID_TOKEN_ or
+// FULLSEND_GCP_OIDC_ prefixes. Every expansion site in this file consults
 // expansion site in this file consults harnessExpansionDenied, which
 // includes this map, so a single addition propagates to all deny checks.
 // Keys that provider credentials must still expand belong in
@@ -2888,6 +2889,9 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+	// The workflow token may have status-write permission but must never be
+	// available through harness-controlled expansion or child scripts.
+	"GITHUB_TOKEN": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -4271,7 +4275,7 @@ func stripControlChars(s string) string {
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
 //
-// OIDC credential vars and provider-only keys are stripped so user-authored
+// Credential vars and provider-only keys are stripped so user-authored
 // pre/post scripts and validation/preflight commands cannot mint their own
 // tokens or read the preserved workflow token. The parent harness process
 // retains them for mintAgentToken and provider credential expansion.

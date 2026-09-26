@@ -2341,6 +2341,7 @@ func TestStripOIDCEnv(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
 		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
 		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
+		"GITHUB_TOKEN=workflow-token",
 		"SAFE_VAR=value",
 	}
 
@@ -2367,6 +2368,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
 		// The static key of a local run must not be expandable under any name.
 		"OPENAI_API_KEY",
+		// The workflow token must never reach harness-controlled expansions.
+		"GITHUB_TOKEN",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
