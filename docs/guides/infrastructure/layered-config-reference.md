@@ -46,20 +46,25 @@ default source in `defaults.config_base.source` (optional
 `defaults.config_base.sha256`) or override it per repository with
 `config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
 `config.base.yaml`; this preset-application step never edits the overlay
-itself (see below for managed-overlay convergence, which does rewrite the
+itself (see below for managed-configuration convergence, which does rewrite the
 overlay on drift). `repos status` reports base-file drift only when a
 preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
-Fleet manifests may also declare a managed overlay via `defaults.config`
-and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
+Fleet manifests may also declare a managed configuration overlay via
+`defaults.config` and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
 Those blocks use this same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
-shorthands and are rejected inside `config`. Overlay management is
+shorthands and are rejected inside `config`. Managed configuration is
 opt-in: `defaults.config` opts every repository in; a repository `config`
-opts in only that repository. `repos install` writes the canonical sparse
-overlay for opted-in repositories, `repos status` reports whole-file
-overlay drift, and convergence rewrites a drifted overlay; unmanaged
+opts in only that repository. Every managed file carries an ownership
+marker; a pre-existing `config.yaml` that lacks the marker requires
+adoption — `repos status` reports "managed configuration (adoption
+required)" instead of ordinary drift, and install/convergence leave that
+file untouched until it is adopted. Once a file carries the marker,
+`repos install` writes the canonical sparse configuration for opted-in
+repositories, `repos status` reports whole-file managed-configuration
+drift, and convergence rewrites a drifted file; unmanaged
 repositories are left untouched. See
 [Repo Management — Configuration overlays](../getting-started/repo-management.md#configuration-overlays).
 

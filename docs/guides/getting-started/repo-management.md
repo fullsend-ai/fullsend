@@ -214,23 +214,30 @@ github:
     - name: acme/unmanaged        # would be unmanaged without defaults.config
 ```
 
-`defaults.config` opts every repository into overlay management. A
+`defaults.config` opts every repository into managed configuration. A
 repository `config` block (including `config: {}`) opts in only that
-repository. A repository with neither declaration is not overlay-managed.
+repository. A repository with neither declaration is not config-managed.
 Resolution is code defaults, then `config_base`, then `defaults.config`,
 then the repository `config`; more specific values win and unspecified
-keys inherit. The managed overlay contains only explicitly supplied
+keys inherit. The managed configuration contains only explicitly supplied
 values (plus the `runtime` / `allowed_remote_resources` shorthands) —
 code defaults and `config.base.yaml` are not baked into the file.
 Unknown fields and the forbidden shorthand keys fail manifest validation
 with field-specific errors.
 
-For an overlay-managed repository, `repos install` writes the canonical
-sparse `.fullsend/config.yaml`, `repos status` reports any whole-file
-difference (including a single-key change) as drift, and convergence
-rewrites the file deterministically. Repositories with neither
-declaration keep their existing overlay and are excluded from overlay
-drift checks. `.fullsend/config.base.yaml` handling stays independent.
+Every managed `.fullsend/config.yaml` begins with a stable ownership
+marker. If a config-managed repository already has an existing
+`.fullsend/config.yaml` without that marker, `repos status` reports it as
+`managed configuration (adoption required)` rather than ordinary drift,
+and `repos install`/convergence leave the file untouched until it is
+manually adopted (edited to carry the marker, or replaced with the
+rendered managed body). Once a file carries the marker, `repos install`
+writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+reports any whole-file difference (including a single-key change) as
+drift, and convergence rewrites the file deterministically.
+Repositories with neither declaration keep their existing configuration
+and are excluded from managed-configuration drift checks.
+`.fullsend/config.base.yaml` handling stays independent.
 
 ### Manifest paths and URLs
 
@@ -371,9 +378,11 @@ and scaffold workflow refs against the manifest. Missing or drifted
 components are repaired automatically (disabled pipeline schedules are the
 exception — see above); a changed preset replaces only
 `.fullsend/config.base.yaml` and leaves the managed configuration intact. A
-drifted managed configuration file is rewritten wholesale; unmanaged files
-are left intact. Ref updates are committed as PRs (or direct pushes with
-`--direct`).
+drifted managed configuration file is rewritten wholesale, unless the
+existing file predates managed-configuration adoption (missing the
+ownership marker) — that case is reported as adoption required and left
+untouched instead of rewritten; unmanaged files are left intact. Ref
+updates are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied). For
 GitLab repos, status also reports `protected-ref-pipeline` drift when the

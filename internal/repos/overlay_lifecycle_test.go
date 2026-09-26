@@ -54,6 +54,17 @@ func TestDesiredManagedConfig_NilWriterStillManaged(t *testing.T) {
 	require.NotNil(t, body)
 }
 
+func TestDesiredManagedConfig_PrefixesOwnershipMarker(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	cfg, ok := m.ResolveConfig("acme", "api")
+	require.True(t, ok)
+	body, managed, err := desiredManagedConfig(cfg)
+	require.NoError(t, err)
+	require.True(t, managed)
+	assert.True(t, hasManagedConfigMarker(body), "desiredManagedConfig bytes must be prefixed with the ADR-0122 ownership marker")
+}
+
 func TestMarshalManagedConfig_InvalidMintURL(t *testing.T) {
 	_, err := marshalManagedConfig(mustOverlayConfig(t, "mint_url: http://insecure.example.com\n").Writer())
 	require.Error(t, err)

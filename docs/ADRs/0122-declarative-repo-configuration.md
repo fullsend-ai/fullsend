@@ -20,20 +20,21 @@ Accepted
 
 **Implementation note (#7632):** The install/converge/status integration in
 PR #7638 ships the ownership marker and the first-adoption gate described
-below on every write path this PR touches — the already-installed
-converge/status path (`convergeOverlayFiles`/`checkOverlayDrift`) and the
-fresh-install path (`Install`/`BuildScaffoldFiles`, gated via
-`InstallConfig.ManagedOverlayAdoptionRequired`): an existing markerless
+above on every write path this PR touches — the already-installed
+converge/status path (`convergeManagedConfigFiles`/`checkManagedConfigDrift`)
+and the fresh-install path (`Install`/`BuildScaffoldFiles`, gated via
+`InstallConfig.ManagedConfigAdoptionRequired`): an existing markerless
 `.fullsend/config.yaml` is never silently rewritten; status reports it as
-requiring adoption and install/converge leave it untouched. The pre-write
-safety-gate comparison against the current effective configuration through
-the full runtime accessor chain (`IsKillSwitchActive()`, `AllowedResources()`,
-`ConfigRoles()`, agent `enabled: false` suppressions,
-`IssueCreationConfig()`/`create_issues.allow_targets`) described in the
-Decision section is not yet implemented; a manifest edit that drops or
-narrows a previously managed restriction is currently applied as ordinary
-drift once a file is already adopted (marked). Track closing this gap in a
-follow-up to #7632.
+requiring adoption and install/converge leave it untouched. That is this
+Decision's full shipped scope: the pre-write safety-gate comparison against
+the current effective configuration through the full runtime accessor chain
+(`IsKillSwitchActive()`, `AllowedResources()`, `ConfigRoles()`, agent
+`enabled: false` suppressions,
+`IssueCreationConfig()`/`create_issues.allow_targets`) discussed as future
+hardening in the Decision section is deferred future work, not part of this
+Decision's shipped scope; a manifest edit that drops or narrows a previously
+managed restriction is currently applied as ordinary drift once a file is
+already adopted (marked). Track that hardening in a follow-up to #7632.
 
 ## Context
 
@@ -123,24 +124,31 @@ drift, including a change to a single key. Convergence rewrites the file with
 the generated desired content; manual edits are therefore reported as drift
 rather than preserved as an unmanaged patch.
 
-Before any write of a managed file—first creation, first adoption, or
-subsequent convergence—the operation must compare the candidate effective
-configuration with the current effective configuration through the full
-runtime accessor chain. The comparison covers `IsKillSwitchActive()`,
-`AllowedResources()`, `ConfigRoles()`, agent keyed entries including
-`enabled: false` suppressions, and `IssueCreationConfig()` including
-`create_issues.allow_targets`.
+This Decision's shipped scope is the ownership marker and the first-adoption
+handoff described above: a markerless existing file is never silently
+rewritten, and status/install/converge report it as requiring adoption
+instead. A further pre-write safety gate — comparing the candidate effective
+configuration against the current effective configuration through the full
+runtime accessor chain (`IsKillSwitchActive()`, `AllowedResources()`,
+`ConfigRoles()`, agent keyed entries including `enabled: false`
+suppressions, and `IssueCreationConfig()` including
+`create_issues.allow_targets`) and rejecting a less-restrictive candidate
+unless the manifest explicitly declares that relaxation — is valuable
+future hardening once a file is already adopted, but is deferred future
+work rather than part of this Decision's shipped scope; see the
+Implementation note in Status.
 
-Generated omission is evaluated as fallthrough through the parent chain, not
-ignored because the sparse file lacks the key. The operation must reject a
-less-restrictive candidate unless the manifest explicitly declares that
-relaxation. This includes dropping `kill_switch: true`, `roles: []`, an
-explicit `allowed_remote_resources: []` deny-all value, an agent suppression,
-or widening a previously narrowed effective
-`create_issues.allow_targets` list. An explicit empty `allowed_remote_resources`
-remains deny-all and must not be treated as
-equivalent to an omitted value. A blanket adoption acknowledgement is not
-sufficient, and status/adoption output must identify the affected keys.
+If that gate is implemented later, generated omission should be evaluated as
+fallthrough through the parent chain, not ignored because the sparse file
+lacks the key. The gate should reject a less-restrictive candidate unless
+the manifest explicitly declares that relaxation — including dropping
+`kill_switch: true`, `roles: []`, an explicit `allowed_remote_resources: []`
+deny-all value, an agent suppression, or widening a previously narrowed
+effective `create_issues.allow_targets` list. An explicit empty
+`allowed_remote_resources` remains deny-all and must not be treated as
+equivalent to an omitted value. A blanket adoption acknowledgement would not
+be sufficient on its own, and status/adoption output should identify the
+affected keys.
 
 Manifest configuration must be decoded strictly and validated against the
 typed `config.yaml` schema. Unknown or misspelled fields fail with a clear
@@ -166,8 +174,10 @@ defaults. This ADR does not define or manage those parent layers.
   the stable ownership marker, which is required for adoption detection.
 - Existing repositories require an explicit ownership handoff before a
   markerless `config.yaml` can be replaced, preventing first adoption from
-  silently discarding locally maintained restrictions. Subsequent convergence
-  also rejects less-restrictive generated security values unless the manifest
-  explicitly declares them.
+  silently discarding locally maintained restrictions. A pre-write safety
+  gate that also rejects less-restrictive generated security values on an
+  already-adopted file is deferred future work (see Status), so a manifest
+  edit that narrows a previously managed restriction on an adopted file is
+  currently applied as ordinary drift.
 - Installation and status flows need to expose validation errors and drift
   clearly so a fleet operator can correct the manifest before converging.

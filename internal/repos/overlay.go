@@ -16,7 +16,7 @@ import (
 // prefixes to its canonical bytes, verbatim as specified in ADR-0122's
 // "Decision" section. Its presence is what distinguishes a file this
 // package owns from a hand-authored one: convergeManagedConfigFiles and
-// checkManagedConfigDrift in managed_config_lifecycle.go refuse to treat
+// checkManagedConfigDrift in overlay_lifecycle.go refuse to treat
 // an existing markerless file as ordinary drift, since the manifest may
 // not restate every restriction (kill_switch, roles,
 // allowed_remote_resources, ...) the hand-authored file set, and silently
@@ -73,7 +73,7 @@ func overlayAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 // body only. desiredManagedConfig is the install-path renderer (#7632)
 // that prefixes the marker and is compared against the installed file by
 // convergeManagedConfigFiles / checkManagedConfigDrift in
-// managed_config_lifecycle.go, which also implement the adoption gate for
+// overlay_lifecycle.go, which also implement the adoption gate for
 // an existing markerless file.
 func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, err error) {
 	if !overlayManaged(m.Defaults.Config, entry.Config) {
