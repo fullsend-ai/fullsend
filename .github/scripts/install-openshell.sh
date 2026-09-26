@@ -21,10 +21,13 @@ case "${installed}" in
   0.0.*)
     echo "Replacing OpenShell ${installed}: stopping its gateway and moving its state aside"
     systemctl --user stop openshell-gateway 2>/dev/null || true
-    state_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/openshell/gateway"
-    if [[ -d "${state_dir}" ]]; then
-      mv "${state_dir}" "${state_dir}.pre-0.1.$(date +%s)"
-    fi
+    state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/openshell"
+    stamp="$(date +%s)"
+    for d in gateway tls; do
+      if [[ -d "${state_root}/${d}" ]]; then
+        mv "${state_root}/${d}" "${state_root}/${d}.pre-0.1.${stamp}"
+      fi
+    done
     ;;
 esac
 export OPENSHELL_ACK_BREAKING_UPGRADE=1

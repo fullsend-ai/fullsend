@@ -79,8 +79,9 @@ Restart the gateway after editing it (`brew services restart openshell` on macOS
 list` answering `No sandboxes found.` means the CLI reaches it.
 
 **Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config.
-Delete your sandboxes first (`openshell sandbox delete --all`), move `~/.config/openshell/gateway.toml`
-and the gateway state directory (`~/.local/state/openshell/gateway`) aside, then run the installer
+Delete your sandboxes first (`openshell sandbox delete --all`), move `~/.config/openshell/gateway.toml`,
+the gateway state directory (`~/.local/state/openshell/gateway`) and, on Linux packages, its TLS
+directory (`~/.local/state/openshell/tls`) aside, then run the installer
 with `OPENSHELL_ACK_BREAKING_UPGRADE=1` and write the config above. fullsend recreates its providers and
 profiles on the next run.
 
