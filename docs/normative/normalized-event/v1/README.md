@@ -62,6 +62,12 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
 
+Normalized-event and entity-context-snapshot v1 carry independently versioned
+copies of the actor-role vocabulary. The entity-context-snapshot `bot` marker
+is a non-authority kind marker, not a normalized-event repository permission,
+and must not be projected into `event.actor.role`; adapters validate each
+document against its own schema.
+
 ## Adapters
 
 Input drivers map native forge events into this struct:

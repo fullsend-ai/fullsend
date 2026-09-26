@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/thread-state.schema.json",
+  "title": "ThreadState",
+  "type": "object",
+  "required": ["threads"],
+  "properties": {
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "thread_key", "resolved", "outdated"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
+          "thread_key": { "$ref": "common.schema.json#/$defs/record_key" },
+          "resolved": { "type": "boolean" },
+          "resolved_by_actor_id": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/structural_id" },
+              { "type": "null" }
+            ]
+          },
+          "outdated": { "type": "boolean" },
+          "minimized": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "resolved": { "const": true } }, "required": ["resolved"] },
+            "then": { "required": ["resolved_by_actor_id"] },
+            "else": { "not": { "required": ["resolved_by_actor_id"] } }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

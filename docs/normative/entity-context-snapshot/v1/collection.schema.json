@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/collection.schema.json",
+  "title": "EntityContextSnapshotCollection",
+  "type": "object",
+  "required": ["entity_kind", "included_sources", "record_selection", "check_log_selection", "bounds"],
+  "properties": {
+    "entity_kind": {
+      "enum": ["work_item", "change_proposal"],
+      "description": "The forge entity kind being collected; source selection is constrained by this value."
+    },
+    "included_sources": {
+      "type": "array",
+      "items": { "enum": ["entity", "comments", "reviews", "checks", "check_logs", "agent_runs"] },
+      "contains": { "const": "entity" },
+      "uniqueItems": true,
+      "description": "Source kinds sorted by ASCII byte order; entity is always present."
+    },
+    "record_selection": {
+      "enum": ["oldest", "newest"],
+      "description": "Which end of canonical source order is retained when a record-count bound applies."
+    },
+    "check_log_selection": {
+      "enum": ["none", "failed", "all"],
+      "description": "Which selected checks have logs collected."
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["max_records_per_source", "max_source_bytes", "max_record_bytes", "max_log_bytes", "max_metadata_string_bytes", "max_labels"],
+      "properties": {
+        "max_records_per_source": { "type": "integer", "minimum": 1 },
+        "max_source_bytes": { "type": "integer", "minimum": 1 },
+        "max_record_bytes": { "type": "integer", "minimum": 1 },
+        "max_log_bytes": { "type": "integer", "minimum": 1 },
+        "max_metadata_string_bytes": { "type": "integer", "minimum": 1 },
+        "max_labels": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "entity_kind": { "const": "work_item" } }, "required": ["entity_kind"] },
+      "then": {
+        "properties": {
+          "included_sources": {
+            "items": { "enum": ["entity", "comments", "agent_runs"] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "included_sources": { "contains": { "const": "check_logs" } } }, "required": ["included_sources"] },
+      "then": {
+        "properties": {
+          "included_sources": { "contains": { "const": "checks" } },
+          "check_log_selection": { "enum": ["failed", "all"] }
+        }
+      },
+      "else": { "properties": { "check_log_selection": { "const": "none" } } }
+    }
+  ],
+  "additionalProperties": false
+}
