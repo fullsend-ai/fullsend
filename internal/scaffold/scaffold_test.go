@@ -170,7 +170,8 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
-	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
+	assert.Contains(t, s, "per-role groups (fullsend-{stage}-...) live in reusable-dispatch.yml")
+	assert.Contains(t, s, "A newer event never cancels the run in flight")
 
 	// Permissions assertions (YAML-parsed, not string-contains) — #5785
 	var pr struct {
