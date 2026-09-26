@@ -632,3 +632,84 @@ check that validation fires on the run path — not only in `Validate()`.
 Flag a missing run-path validation call as a **medium-severity** finding.
 The fix is to add inline validation in `runAgent()` and a corresponding
 integration test.
+
+## Last-writer-wins AgentEntries resolution
+
+`perRepoConfig.AgentEntries()` can return **duplicate same-name entries**.
+When the parent agent list is empty, the local `agents:` slice is
+returned unchanged, so duplicate names in it pass through as-is. When
+the parent list is non-empty, entries are keyed-merged by
+`DerivedName()`: parent agents whose name matches a local entry are
+merged (later-listed local entries for that name win per field), and
+only the local entries that did not match any parent agent are
+appended afterward — so duplicates can still arise there when the same
+unmatched name appears more than once. Local YAML may legally list the
+same name twice — the disable-then-enable pattern that replaces a
+default agent with a custom one:
+
+```yaml
+agents:
+  - name: retro
+    enabled: false
+  - name: retro
+    source: harness/custom-retro.yaml
+    enabled: true
+```
+
+This section documents `AgentEntries()`'s keyed merge by `DerivedName()`
+from the caller side — how code that reads composed entries afterward
+must interpret duplicates. The implementation side of that same merge
+(what to update when adding or modifying an `AgentEntry` field) is
+covered by [Checklist for `AgentEntry` field
+changes](harness-composition.md#checklist-for-agententry-field-changes)
+in `docs/contributing/harness-composition.md`.
+
+The established resolution convention is **last-writer-wins**: the last
+matching entry is the effective one. That convention is implemented
+centrally in `config.IsAgentExplicitlyDisabled`
+(`internal/config/agents.go`), which iterates in reverse and returns
+whether the last entry matching the name has `Enabled` explicitly set
+to false. `config.AgentSettingsFor` (`internal/config/config.go`) is
+the equivalent last-matching lookup for reading settings
+(runtime/model/effort) rather than enabled state.
+
+Any new code that compares, diffs, or otherwise interprets agent-entry
+state **must reuse those helpers** (or equivalent last-matching-entry
+logic: iterate reverse, stop at the first name match) rather than
+scanning `AgentEntries()` from the front or treating every same-name
+entry as independent. A first-match scan, or a loop that emits one
+result per raw entry, misclassifies disable-then-enable pairs.
+
+Grep for the current call sites before adding a new one:
+
+- `internal/cli/poll.go` (`buildRouter`)
+- `internal/cli/run.go` (`resolveAgentSource`)
+- `internal/cli/lock.go`
+- `internal/config/managed_safety.go` (`CheckManagedSafetyGate`)
+
+This reuse rule is specific to `AgentEntries()` (and `AgentSettingsFor`
+for settings lookups). Other layered-config accessors have their own,
+different merge semantics — for example `ConfigRoles()` is nil-inherit /
+non-nil-replace, and `AllowedResources()` is nil-inherit / empty-as-is /
+non-empty-union-with-parent. Neither returns `[]AgentEntry`, and there
+is no exported last-writer-wins helper for either, so
+`IsAgentExplicitlyDisabled` does not apply to them. New comparison logic
+over those getters should follow their own documented merge rules
+rather than being routed through the `AgentEntries()` helpers.
+
+### Why this matters
+
+PR [#7755](https://github.com/fullsend-ai/fullsend/pull/7755) added
+`CheckManagedSafetyGate` with an ad-hoc scan of `AgentEntries()` that
+treated each raw entry independently. Duplicate same-name entries were
+evaluated twice, and last-writer-wins was not applied, so a
+disable-then-enable pair was reported as still disabled. Routing
+through `IsAgentExplicitlyDisabled` was the fix.
+
+### When reviewing PRs
+
+When reviewing a PR that compares or diffs `AgentEntries()`,
+flag a first-match scan or per-raw-entry loop as a **high-severity**
+logic error if it does not reuse `IsAgentExplicitlyDisabled` /
+`AgentSettingsFor` or equivalent last-matching-entry logic. The fix is
+to call the existing helper rather than reimplement the scan.
