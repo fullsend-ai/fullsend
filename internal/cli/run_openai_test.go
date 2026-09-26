@@ -1534,3 +1534,20 @@ func TestDropSkippedProviders(t *testing.T) {
 	}))
 	assert.Equal(t, names, dropSkippedProviders(names, map[string]struct{}{"not-declared": {}}))
 }
+
+func TestEnsureOpenAIProvider_CreateFailureStopsBeforeTheExpiry(t *testing.T) {
+	argsLog, _ := fakeOpenshellRecorder(t, "provider create")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `ensuring provider "openai-feedface"`)
+	for _, l := range readArgLines(t, argsLog) {
+		assert.NotContains(t, l, "provider update", "nothing is updated after a failed create")
+	}
+	assert.Contains(t, buf.String(), "Failed to create run-scoped provider openai-feedface")
+}
