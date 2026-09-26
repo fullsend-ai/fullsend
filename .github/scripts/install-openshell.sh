@@ -26,6 +26,8 @@ while true; do
      | OPENSHELL_VERSION="v${OPENSHELL_VERSION}" sh; then
     break
   fi
+  # The installer starts the gateway service; show why it did not come up.
+  journalctl --user -u openshell-gateway --no-pager -n 40 2>/dev/null || true
   if (( attempt >= max_attempts )); then
     echo "::error::OpenShell install failed after ${max_attempts} attempts" >&2
     exit 1
