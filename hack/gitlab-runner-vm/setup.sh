@@ -57,7 +57,8 @@ if [ -f "${_openshell_version_sh}" ]; then
   # shellcheck source=../../.github/scripts/openshell-version.sh
   source "${_openshell_version_sh}"
 fi
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
+# Fallback only when the pin file is absent; keep in step with openshell-version.sh.
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.1}"
 
 # Source the executor's gateway helpers (wait_for_openshell_gateway,
 # user_systemctl) so configure_per_job_gateway can wait for the seed start
@@ -401,11 +402,14 @@ install_openshell() {
   if [ ! -f "${install_sh}" ]; then
     install_sh="${SCRIPT_DIR}/../../.github/scripts/install-openshell.sh"
   fi
-  if [ -f "${install_sh}" ]; then
-    bash "${install_sh}"
-  else
+  if [ ! -f "${install_sh}" ]; then
     fail "install-openshell.sh not found — run from the VM layout or repo checkout"
   fi
+  # The installer starts the new gateway: stop the old one, drop its state
+  # and write the v2 config first (gateway.sh).
+  prepare_openshell_upgrade "${OPENSHELL_VERSION}"
+  # install.sh refuses a pre-0.1 -> 0.1 upgrade on a persistent VM without the ack.
+  OPENSHELL_ACK_BREAKING_UPGRADE=1 bash "${install_sh}"
 
   if ! command -v openshell &>/dev/null; then
     fail "openshell binary not found after install"
@@ -444,41 +448,12 @@ configure_gateway() {
     ok "gateway binding set to 0.0.0.0"
   fi
 
-  # Pin supervisor_image to the Renovate-tracked version (matching action.yml).
-  local gateway_toml="${HOME}/.config/openshell/gateway.toml"
-  local supervisor_image="ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
-  if [ -f "${gateway_toml}" ] && grep -qF "supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"; then
-    ok "supervisor_image already pinned to ${supervisor_image}"
-  elif [ -f "${gateway_toml}" ] && grep -q "supervisor_image" "${gateway_toml}"; then
-    sed -i "s|supervisor_image = .*|supervisor_image = \"${supervisor_image}\"|" "${gateway_toml}"
-    ok "supervisor_image updated to ${supervisor_image}"
-  else
-    mkdir -p "$(dirname "${gateway_toml}")"
-    if [ -f "${gateway_toml}" ] && grep -q '^\[openshell\.gateway\]' "${gateway_toml}"; then
-      sed -i "/^\[openshell\.gateway\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
-    elif [ -f "${gateway_toml}" ]; then
-      printf '\n[openshell]\nversion = 1\n\n[openshell.gateway]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
-    else
-      # The RPM's user unit only seeds gateway.toml.default when no config
-      # exists, and this function runs before the first start — so writing a
-      # bare stub here would permanently drop the packaged defaults (without
-      # compute_drivers the gateway auto-detects Kubernetes before Podman).
-      # Seed from the packaged default so the values track the installed RPM;
-      # the literal fallback mirrors the packaged gateway.toml.default.
-      local packaged_default=/usr/share/openshell-gateway/gateway.toml.default
-      if [ -f "${packaged_default}" ]; then
-        install -m 0644 "${packaged_default}" "${gateway_toml}"
-        if grep -q '^\[openshell\.gateway\]' "${gateway_toml}"; then
-          sed -i "/^\[openshell\.gateway\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
-        else
-          printf '\n[openshell.gateway]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
-        fi
-      else
-        printf '[openshell]\nversion = 1\n\n[openshell.gateway]\nbind_address = "0.0.0.0:17670"\ncompute_drivers = ["podman"]\nsupervisor_image = "%s"\n' "${supervisor_image}" > "${gateway_toml}"
-      fi
-    fi
-    ok "supervisor_image pinned to ${supervisor_image}"
-  fi
+  # Pin supervisor_image to the Renovate-tracked version in a schema-v2
+  # gateway.toml (matching action.yml). install_openshell writes it before
+  # any install; this covers its already-installed return and is otherwise
+  # a no-op.
+  pin_supervisor_image "${OPENSHELL_VERSION}"
+  ok "supervisor_image pinned to $(openshell_supervisor_image "${OPENSHELL_VERSION}")"
 }
 
 # --------------------------------------------------------------------------

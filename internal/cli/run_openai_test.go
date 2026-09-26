@@ -231,15 +231,15 @@ func TestEnsureOpenAIProvider_WIF(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 2, "empty create, then value and expiry together: %q", lines)
-	assert.Equal(t, "provider create --name openai-0123456789ab --type fullsend-openai --credential OPENAI_API_KEY=", lines[0], "the instance is created without a credential")
+	require.Len(t, lines, 2, "create with the value, then the expiry: %q", lines)
+	assert.Equal(t, "provider create --name openai-0123456789ab --type fullsend-openai --credential OPENAI_API_KEY", lines[0], "bare-key form: the value is in the child environment only")
 	assert.Equal(t, "provider update openai-0123456789ab --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY=2026-08-27T20:00:00Z", lines[1], "bare-key form with the expiry in the same call")
 
 	env, err := os.ReadFile(envLog)
 	require.NoError(t, err)
 	envLines := strings.Split(strings.TrimSpace(string(env)), "\n")
-	assert.NotEqual(t, "tok-$literal$-value-9f8e7d", envLines[0], "the token is not handed to the create call")
-	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[1], "the value reaches the update child verbatim, `$` intact")
+	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[0], "the value reaches the create child verbatim, `$` intact")
+	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[1], "and the update child")
 
 	res := security.NewSecretRedactor().Scan("log line with tok-$literal$-value-9f8e7d inside")
 	assert.False(t, res.Safe)
@@ -266,8 +266,8 @@ func TestEnsureOpenAIProvider_StaticGetsBoundedExpiry(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 2, "empty create, then the key with a bounded expiry: %q", lines)
-	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY=", lines[0])
+	require.Len(t, lines, 2, "create with the key, then its bounded expiry: %q", lines)
+	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY", lines[0])
 	require.Regexp(t, `^provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`, lines[1])
 	stamp := strings.TrimPrefix(strings.Fields(lines[1])[6], "OPENAI_API_KEY=")
 	at, err := time.Parse(time.RFC3339, stamp)
@@ -291,12 +291,30 @@ func TestEnsureOpenAIProvider_StoreFailureDeletesProvider(t *testing.T) {
 	args, readErr := os.ReadFile(argsLog)
 	require.NoError(t, readErr)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 3, "empty create, failed store, delete: %q", lines)
+	require.Len(t, lines, 3, "create, failed expiry store, delete: %q", lines)
 	assert.True(t, strings.HasPrefix(lines[1], "provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at"))
 	assert.Equal(t, "provider delete openai-feedface", lines[2], "a provider whose credential could not be stored with its expiry is not left behind")
 }
 
-func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T) {
+func TestEnsureOpenAIProvider_StoreAndDeleteFailureExpiresCredential(t *testing.T) {
+	// Only the store (value + expiry) and the delete fail; the expiry-only
+	// update succeeds.
+	argsLog, _ := fakeOpenshellRecorder(t, "--credential OPENAI_API_KEY --credential-expires-at", "provider delete")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	lines := readArgLines(t, argsLog)
+	require.Len(t, lines, 4, "create, failed store, failed delete, expire: %q", lines)
+	assert.True(t, strings.HasPrefix(lines[3], "provider update openai-feedface --credential-expires-at OPENAI_API_KEY="), "the credential is expired when the delete fails too: %q", lines[3])
+	assert.Contains(t, buf.String(), "its credential was expired")
+}
+
+func TestEnsureOpenAIProvider_StoreDeleteAndExpireFailureWarns(t *testing.T) {
 	argsLog, _ := fakeOpenshellRecorder(t, "--credential-expires-at", "provider delete")
 	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
 		t.Setenv(k, "")
@@ -307,9 +325,10 @@ func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T
 	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
 	require.Error(t, err)
 	lines := readArgLines(t, argsLog)
-	require.Len(t, lines, 4, "empty create, failed store, failed delete, blank: %q", lines)
-	assert.Equal(t, "provider update openai-feedface --credential OPENAI_API_KEY=", lines[3], "the credential is blanked when the delete fails too")
-	assert.Contains(t, buf.String(), "blanked")
+	for _, l := range lines {
+		assert.NotRegexp(t, `--credential OPENAI_API_KEY=$`, l, "an empty value is never sent: OpenShell refuses it")
+	}
+	assert.Contains(t, buf.String(), "remove it with `openshell provider delete openai-feedface`")
 }
 
 func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
@@ -575,8 +594,8 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 			}
 			require.NotEmpty(t, profileLine, "the runner imports the fullsend-openai profile from its embedded scaffold: %q", lines)
 			require.NotEmpty(t, createLine, "provider created: %q", lines)
-			assert.Regexp(t, `^provider create --name openai-[0-9a-f]{12} --type fullsend-openai --credential OPENAI_API_KEY=$`, createLine,
-				"run-scoped name, created without a credential")
+			assert.Regexp(t, `^provider create --name openai-[0-9a-f]{12} --type fullsend-openai --credential OPENAI_API_KEY$`, createLine,
+				"run-scoped name, value by bare key")
 			assert.NotContains(t, strings.Join(lines, "\n"), "sk-local-static-key-for-test", "the value never reaches a command line")
 			scoped := strings.Fields(createLine)[3]
 
@@ -917,28 +936,6 @@ func TestOpenAIKeyIsNotExpandable(t *testing.T) {
 	assert.True(t, reservedSandboxKeys["OPENAI_API_KEY"], "merged by init()")
 	assert.NotContains(t, safeExpandEnv("prefix-${OPENAI_API_KEY}-suffix"), "sk-local-static-key", "a harness ${OPENAI_API_KEY} expansion must not yield the key")
 	assert.NotContains(t, shellSafeExpandEnv("prefix-${OPENAI_API_KEY}-suffix"), "sk-local-static-key")
-}
-
-func TestEnsureOpenAIProvider_FallsBackWhenEmptyCreateIsRefused(t *testing.T) {
-	argsLog, envLog := fakeOpenshellRecorder(t, "--type fullsend-openai --credential OPENAI_API_KEY=")
-	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
-		t.Setenv(k, "")
-	}
-	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
-	t.Setenv("GITHUB_ACTIONS", "")
-	var buf strings.Builder
-	h, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
-	require.NoError(t, err)
-	assert.Equal(t, "openai-feedface", h.name)
-	lines := readArgLines(t, argsLog)
-	// The refused empty create is not retried (non-transient); the fallback
-	// creates with the value and the expiry follows immediately.
-	require.GreaterOrEqual(t, len(lines), 3, "%q", lines)
-	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY", lines[len(lines)-2], "fallback create carries the value by bare key")
-	assert.True(t, strings.HasPrefix(lines[len(lines)-1], "provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY="))
-	env := readArgLines(t, envLog)
-	assert.Equal(t, "sk-local-static-key", env[len(env)-2], "the value reaches the fallback create child")
-	assert.Contains(t, buf.String(), "refused an empty credential on create")
 }
 
 func TestEnsureOpenAIProvider_IgnoresExtraCredentialKeys(t *testing.T) {
@@ -1536,4 +1533,21 @@ func TestDropSkippedProviders(t *testing.T) {
 		"vertex-ai": {}, "openai": {}, "github-ro": {},
 	}))
 	assert.Equal(t, names, dropSkippedProviders(names, map[string]struct{}{"not-declared": {}}))
+}
+
+func TestEnsureOpenAIProvider_CreateFailureStopsBeforeTheExpiry(t *testing.T) {
+	argsLog, _ := fakeOpenshellRecorder(t, "provider create")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `ensuring provider "openai-feedface"`)
+	for _, l := range readArgLines(t, argsLog) {
+		assert.NotContains(t, l, "provider update", "nothing is updated after a failed create")
+	}
+	assert.Contains(t, buf.String(), "Failed to create run-scoped provider openai-feedface")
 }

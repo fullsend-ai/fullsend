@@ -31,7 +31,7 @@ fi
 # those helpers must succeed against these no-op binaries.
 printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/podman"
 printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/systemctl"
-printf '#!/bin/sh\ncase "$1" in --version) echo "openshell 0.0.116";; gateway) echo "  * openshell";; esac\nexit 0\n' > "${SHIM_DIR}/openshell"
+printf '#!/bin/sh\ncase "$1" in --version) echo "openshell 0.1.1";; gateway) echo "  * openshell";; esac\nexit 0\n' > "${SHIM_DIR}/openshell"
 chmod +x "${SHIM_DIR}/podman" "${SHIM_DIR}/systemctl" "${SHIM_DIR}/openshell"
 
 FAKE_HOME=$(mktemp -d)

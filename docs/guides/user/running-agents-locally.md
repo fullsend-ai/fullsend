@@ -53,10 +53,37 @@ fullsend is pinned to — the source of truth is
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.0.116  # check the pin file for the current version
+export OPENSHELL_VERSION=0.1.1  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
+
+The gateway reads a schema v2 config. With podman, pin the compute driver and the supervisor image
+that matches the CLI:
+
+```toml
+# ~/.config/openshell/gateway.toml (Homebrew on macOS: /opt/homebrew/var/openshell/gateway.toml
+# is used when this file does not exist)
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+
+[openshell.drivers.podman]
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.1"  # match your openshell --version
+health_check_interval_secs = 10
+```
+
+Restart the gateway after editing it (`brew services restart openshell` on macOS). `openshell sandbox
+list` answering `No sandboxes found.` means the CLI reaches it.
+
+**Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config.
+Delete your sandboxes first (`openshell sandbox delete --all`), move `~/.config/openshell/gateway.toml`,
+the gateway state directory (`~/.local/state/openshell/gateway`) and, on Linux packages, its TLS
+directory (`~/.local/state/openshell/tls`) aside, then run the installer
+with `OPENSHELL_ACK_BREAKING_UPGRADE=1` and write the config above. fullsend recreates its providers and
+profiles on the next run.
 
 ## Get Google Cloud Platform credentials
 

@@ -168,9 +168,10 @@ timeout_minutes: 15
 ```yaml
 name: vertex-ai
 type: fullsend-vertex-ai
-credentials:
-  _NOOP_VERTEX_AI: ""
 ```
+
+A provider that carries a token lists it under `credentials:` (for example `GH_TOKEN: "${GH_TOKEN}"`),
+and its profile must declare that key; OpenShell refuses a credential the profile does not declare.
 
 **`profiles/fullsend-vertex-ai.yaml`** — profile definition (tells OpenShell what endpoints the `fullsend-vertex-ai` type grants access to). `agent new` writes this; by hand, copy it from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), which holds the fleet's copy:
 ```yaml

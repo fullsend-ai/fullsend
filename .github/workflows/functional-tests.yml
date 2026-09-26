@@ -166,24 +166,6 @@ jobs:
         if: steps.changes.outputs.relevant != 'false'
         run: echo "${{ github.workspace }}/bin" >> "$GITHUB_PATH"
 
-      - name: Configure OpenShell gateway
-        if: steps.changes.outputs.relevant != 'false'
-        run: |
-          source .github/scripts/openshell-version.sh
-          mkdir -p "$HOME/.config/openshell"
-          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
-          cat > "$HOME/.config/openshell/gateway.toml" << EOF
-          [openshell]
-          version = 1
-
-          [openshell.gateway]
-          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
-          EOF
-
-      - name: Install OpenShell CLI
-        if: steps.changes.outputs.relevant != 'false'
-        run: .github/scripts/install-openshell.sh
-
       - name: Install Podman
         if: steps.changes.outputs.relevant != 'false'
         run: .github/scripts/install-podman.sh
@@ -208,6 +190,30 @@ jobs:
             done
             [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
           fi
+
+      # After Podman: the gateway pins compute_driver = "podman" and does not
+      # start without the Podman API socket.
+      - name: Configure OpenShell gateway
+        if: steps.changes.outputs.relevant != 'false'
+        run: |
+          source .github/scripts/openshell-version.sh
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 2
+
+          [openshell.gateway]
+          compute_driver = "podman"
+
+          [openshell.drivers.podman]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          health_check_interval_secs = 10
+          EOF
+
+      - name: Install OpenShell CLI
+        if: steps.changes.outputs.relevant != 'false'
+        run: .github/scripts/install-openshell.sh
 
       - name: Install validation dependencies
         if: steps.changes.outputs.relevant != 'false'

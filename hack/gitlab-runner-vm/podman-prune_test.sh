@@ -74,7 +74,7 @@ reset_prune_fixtures() {
   cat > "${KEEP_FILE}" <<'KEEP'
 # warm cache
 ghcr.io/fullsend-ai/fullsend-runner:v1
-ghcr.io/nvidia/openshell/supervisor:0.0.116
+ghcr.io/nvidia/openshell/supervisor:0.1.1
 KEEP
 }
 
@@ -202,6 +202,7 @@ cat > "${IMAGES_FILE}" <<'IMAGES'
 ghcr.io/fullsend-ai/fullsend-runner:v1
 ghcr.io/fullsend-ai/fullsend-runner:old
 <none>:<none>
+ghcr.io/nvidia/openshell/supervisor:0.1.1
 ghcr.io/nvidia/openshell/supervisor:0.0.116
 IMAGES
 run_prune
@@ -213,8 +214,10 @@ elif ! logged 'image prune -f'; then
   fail "idle prune did not prune dangling images: $(tr '\n' '|' < "${PODMAN_LOG}")"
 elif ! logged 'rmi -- ghcr.io/fullsend-ai/fullsend-runner:old'; then
   fail "idle prune did not rmi superseded tagged image: $(tr '\n' '|' < "${PODMAN_LOG}")"
+elif ! logged 'rmi -- ghcr.io/nvidia/openshell/supervisor:0.0.116'; then
+  fail "idle prune did not rmi the pre-0.1 supervisor: $(tr '\n' '|' < "${PODMAN_LOG}")"
 elif logged 'rmi -- ghcr.io/fullsend-ai/fullsend-runner:v1' \
-  || logged 'rmi -- ghcr.io/nvidia/openshell/supervisor:0.0.116'; then
+  || logged 'rmi -- ghcr.io/nvidia/openshell/supervisor:0.1.1'; then
   fail "idle prune removed a keep-list image: $(tr '\n' '|' < "${PODMAN_LOG}")"
 elif logged 'rmi -- <none>:<none>' || logged 'rmi -- sha256:ccc'; then
   fail "idle prune rmi'd a dangling image (image prune should handle those)"
@@ -250,7 +253,7 @@ reset_prune_fixtures
 cat > "${IMAGES_FILE}" <<'IMAGES'
 ghcr.io/fullsend-ai/fullsend-runner:v1
 registry.example.com/job:latest
-ghcr.io/nvidia/openshell/supervisor:0.0.116
+ghcr.io/nvidia/openshell/supervisor:0.1.1
 IMAGES
 RUN_PRUNE_RC=0
 RUN_PRUNE_OUT=$(

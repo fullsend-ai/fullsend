@@ -16,6 +16,25 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+# assert_v2_gateway_toml <file> <image> <label>: schema v2, compute_driver
+# kept, exactly one supervisor_image, and it sits in [openshell.drivers.podman].
+assert_v2_gateway_toml() {
+  local toml="$1" image="$2" label="$3" section keys tables
+  section=$(awk -v key="supervisor_image = \"${image}\"" '/^\[/ { s = $0 } $0 == key { print s }' "${toml}")
+  # || true: a zero count must reach fail(), not trip set -e/pipefail.
+  keys=$({ grep -o 'supervisor_image' "${toml}" || true; } | wc -l | tr -d ' ')
+  tables=$({ grep -o '^\[openshell\.drivers\.podman\]' "${toml}" || true; } | wc -l | tr -d ' ')
+  if grep -qx 'version = 2' "${toml}" \
+    && ! grep -Eq '^version[[:space:]]*=[[:space:]]*1' "${toml}" \
+    && grep -qx 'compute_driver = "podman"' "${toml}" \
+    && [ "${section}" = "[openshell.drivers.podman]" ] \
+    && [ "${keys}" = "1" ] && [ "${tables}" = "1" ]; then
+    pass "${label}: v2 gateway.toml pins ${image} under [openshell.drivers.podman]"
+  else
+    fail "${label}: gateway.toml is not the expected v2 layout: $(tr '\n' '|' < "${toml}")"
+  fi
+}
+
 FAKE_HOME=$(mktemp -d)
 SHIM_DIR=$(mktemp -d)
 trap 'rm -rf "${FAKE_HOME}" "${SHIM_DIR}"' EXIT
@@ -126,6 +145,11 @@ if [ "$(parse_openshell_version 'openshell 0.0.116 (commit abc)')" = "0.0.116" ]
 else
   fail "parse_openshell_version did not extract 0.0.116"
 fi
+if [ "$(parse_openshell_version 'openshell 0.1.1')" = "0.1.1" ]; then
+  pass "parse_openshell_version extracts a 0.1.x semver"
+else
+  fail "parse_openshell_version did not extract 0.1.1"
+fi
 if [ -z "$(parse_openshell_version 'not a version')" ]; then
   pass "parse_openshell_version empty on garbage"
 else
@@ -135,6 +159,11 @@ if openshell_versions_differ "0.0.116" "0.0.83"; then
   pass "versions_differ true on mismatch"
 else
   fail "versions_differ should be true for 0.0.116 vs 0.0.83"
+fi
+if openshell_versions_differ "0.1.1" "0.0.116"; then
+  pass "versions_differ true across the 0.0.x -> 0.1.x break"
+else
+  fail "versions_differ should be true for 0.1.1 vs 0.0.116"
 fi
 if openshell_versions_differ "0.0.116" "0.0.116"; then
   fail "versions_differ should be false when equal"
@@ -335,6 +364,95 @@ else
   fail "teardown did not stop+wipe"
 fi
 
+echo "== pin_supervisor_image writes a schema-v2 gateway.toml =="
+GW_TOML="${HOME}/.config/openshell/gateway.toml"
+IMG_NEW="ghcr.io/nvidia/openshell/supervisor:0.1.1"
+reset_gateway_toml() { rm -rf "${HOME}/.config/openshell"; }
+
+# No config, no packaged default: literal v2 fallback.
+reset_gateway_toml
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${SHIM_DIR}/no-packaged-default"
+pin_supervisor_image 0.1.1 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "${IMG_NEW}" "fresh, literal fallback"
+if grep -qx 'health_check_interval_secs = 10' "${GW_TOML}"; then
+  pass "literal fallback keeps the packaged health_check_interval_secs"
+else
+  fail "literal fallback dropped health_check_interval_secs: $(tr '\n' '|' < "${GW_TOML}")"
+fi
+
+# Idempotent: a second run is byte-identical.
+cp "${GW_TOML}" "${SHIM_DIR}/gw.before"
+pin_supervisor_image 0.1.1 >/dev/null
+if cmp -s "${SHIM_DIR}/gw.before" "${GW_TOML}" && [ ! -e "${GW_TOML}.pre-0.1" ]; then
+  pass "re-run of pin_supervisor_image is a no-op"
+else
+  fail "re-run changed gateway.toml: $(tr '\n' '|' < "${GW_TOML}")"
+fi
+
+# Version bump on a v2 file rewrites the key in place.
+pin_supervisor_image 0.1.2 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "ghcr.io/nvidia/openshell/supervisor:0.1.2" "v2 version bump"
+
+# Packaged v2 default (upstream deploy/rpm/gateway.toml.default at v0.1.1).
+reset_gateway_toml
+cat > "${SHIM_DIR}/packaged-default.toml" <<'TOML'
+# Default gateway configuration for RPM installs.
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+
+[openshell.drivers.podman]
+health_check_interval_secs = 10
+TOML
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${SHIM_DIR}/packaged-default.toml"
+pin_supervisor_image 0.1.1 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "${IMG_NEW}" "seeded from packaged default"
+if grep -q '^# Default gateway configuration for RPM installs.' "${GW_TOML}"; then
+  pass "packaged default is the seed, not the literal fallback"
+else
+  fail "packaged default was not used as the seed"
+fi
+
+# A pre-0.1 packaged default (v1) is never used as a seed.
+reset_gateway_toml
+printf '[openshell]\nversion = 1\n\n[openshell.gateway]\ncompute_drivers = ["podman"]\n' \
+  > "${SHIM_DIR}/packaged-v1.toml"
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${SHIM_DIR}/packaged-v1.toml"
+pin_supervisor_image 0.1.1 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "${IMG_NEW}" "v1 packaged default ignored"
+
+# A version-less file (older pin_supervisor_image output) is pre-0.1 too.
+reset_gateway_toml
+mkdir -p "${HOME}/.config/openshell"
+printf '[openshell.gateway]\nsupervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.116"\n' > "${GW_TOML}"
+cp "${GW_TOML}" "${SHIM_DIR}/versionless.toml"
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${SHIM_DIR}/no-packaged-default"
+pin_supervisor_image 0.1.1 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "${IMG_NEW}" "version-less file replaced"
+if cmp -s "${SHIM_DIR}/versionless.toml" "${GW_TOML}.pre-0.1"; then
+  pass "version-less gateway.toml moved aside to gateway.toml.pre-0.1"
+else
+  fail "version-less gateway.toml was not moved aside intact"
+fi
+# The backup is not rewritten by a later run.
+cp "${GW_TOML}.pre-0.1" "${SHIM_DIR}/pre01.before" 2>/dev/null || : > "${SHIM_DIR}/pre01.before"
+pin_supervisor_image 0.1.1 >/dev/null
+if cmp -s "${SHIM_DIR}/pre01.before" "${GW_TOML}.pre-0.1"; then
+  pass "gateway.toml.pre-0.1 is left alone on re-run"
+else
+  fail "re-run rewrote gateway.toml.pre-0.1"
+fi
+
+# A v2 file without [openshell.drivers.podman] gets the table appended.
+reset_gateway_toml
+mkdir -p "${HOME}/.config/openshell"
+printf '[openshell]\nversion = 2\n\n[openshell.gateway]\ncompute_driver = "podman"\n' > "${GW_TOML}"
+pin_supervisor_image 0.1.1 >/dev/null
+assert_v2_gateway_toml "${GW_TOML}" "${IMG_NEW}" "v2 without drivers table"
+reset_gateway_toml
+
 echo "== install_openshell_at_version rejects junk =="
 if install_openshell_at_version "../evil" 2>/dev/null; then
   fail "install_openshell_at_version accepted a non-semver version"
@@ -376,18 +494,44 @@ exit 0
 OS
 chmod +x "${SHIM_DIR}/openshell"
 
-# curl | sh: emit a no-op script so the pipe succeeds without a real install.
+# curl | sh: emit a stub installer that records the env install.sh sees.
+# Like the real 0.1 installer, which starts the gateway, it fails unless the
+# config is already schema v2 and the pre-0.1 store is gone.
+INSTALL_ENV_LOG="${SHIM_DIR}/install-env.log"
+cat > "${SHIM_DIR}/install.sh" <<INSTALL
+#!/bin/sh
+echo "ack=\${OPENSHELL_ACK_BREAKING_UPGRADE:-} version=\${OPENSHELL_VERSION:-}" >> "${INSTALL_ENV_LOG}"
+if ! grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*2[[:space:]]*(#.*)?\$' "${HOME}/.config/openshell/gateway.toml" 2>/dev/null; then
+  echo "stub install.sh: gateway config preflight failed: ${HOME}/.config/openshell/gateway.toml missing or not schema v2" >&2
+  exit 1
+fi
+if [ -e "${HOME}/.local/state/openshell/gateway" ] || [ -e "${HOME}/.local/state/openshell/tls" ]; then
+  echo "stub install.sh: gateway start failed: pre-0.1 state still in ${HOME}/.local/state/openshell" >&2
+  exit 1
+fi
+INSTALL
 cat > "${SHIM_DIR}/curl" <<CURL
 #!/bin/sh
 echo "\$@" >> "${CURL_LOG}"
-printf '#!/bin/sh\\necho stub-install\\n'
+cat "${SHIM_DIR}/install.sh"
 exit 0
 CURL
 chmod +x "${SHIM_DIR}/curl"
 
-mkdir -p "${HOME}/.config/openshell"
-printf '[openshell.gateway]\nsupervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.1"\n' \
-  > "${HOME}/.config/openshell/gateway.toml"
+# Pre-0.1 host: a schema-v1 gateway.toml and a 0.0.x gateway store and TLS.
+mkdir -p "${HOME}/.config/openshell" "${HOME}/.local/state/openshell/gateway" \
+  "${HOME}/.local/state/openshell/tls"
+echo cert > "${HOME}/.local/state/openshell/tls/server.crt"
+V1_TOML='[openshell]
+version = 1
+
+[openshell.gateway]
+compute_drivers = ["podman"]
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.1"'
+printf '%s\n' "${V1_TOML}" > "${HOME}/.config/openshell/gateway.toml"
+rm -f "${HOME}/.config/openshell/gateway.toml.pre-0.1"
+echo db > "${HOME}/.local/state/openshell/gateway/state.db"
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${SHIM_DIR}/no-packaged-default"
 
 if ensure_job_openshell_gateway "registry.example.com/runner:dev"; then
   if grep -q "NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh" "${CURL_LOG}"; then
@@ -400,10 +544,22 @@ if ensure_job_openshell_gateway "registry.example.com/runner:dev"; then
   else
     fail "podman log missing hardening flags: $(tr '\n' '|' < "${PODMAN_LOG}")"
   fi
-  if grep -q "supervisor:${OPENSHELL_VERSION}" "${HOME}/.config/openshell/gateway.toml"; then
-    pass "supervisor_image pinned to the matched version"
+  if grep -qx "ack=1 version=v${OPENSHELL_VERSION}" "${INSTALL_ENV_LOG}"; then
+    pass "install.sh runs with OPENSHELL_ACK_BREAKING_UPGRADE=1"
   else
-    fail "supervisor_image not updated: $(cat "${HOME}/.config/openshell/gateway.toml")"
+    fail "install.sh env missing the breaking-upgrade ack: $(tr '\n' '|' < "${INSTALL_ENV_LOG}")"
+  fi
+  assert_v2_gateway_toml "${HOME}/.config/openshell/gateway.toml" \
+    "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}" "mismatch install"
+  if [ "$(cat "${HOME}/.config/openshell/gateway.toml.pre-0.1")" = "${V1_TOML}" ]; then
+    pass "schema-v1 gateway.toml moved aside unchanged to gateway.toml.pre-0.1"
+  else
+    fail "gateway.toml.pre-0.1 missing or altered: $(cat "${HOME}/.config/openshell/gateway.toml.pre-0.1" 2>&1)"
+  fi
+  if [ ! -e "${HOME}/.local/state/openshell/gateway/state.db" ]; then
+    pass "pre-0.1 gateway store is wiped, not reused"
+  else
+    fail "pre-0.1 gateway store survived the upgrade"
   fi
 else
   fail "ensure_job_openshell_gateway returned non-zero on mismatch"
@@ -456,7 +612,7 @@ cat > "${SHIM_DIR}/openshell" <<OS
 #!/bin/sh
 echo "\$@" >> "${OPENSHELL_LOG}"
 case "\$1" in
-  --version) echo "openshell 0.0.116";;
+  --version) echo "openshell 0.1.1";;
   gateway) echo "  * openshell";;
 esac
 exit 0
@@ -466,7 +622,7 @@ cat > "${SHIM_DIR}/podman" <<PODMAN
 #!/bin/sh
 echo "\$@" >> "${PODMAN_LOG}"
 if [ "\$1" = "run" ]; then
-  echo "openshell 0.0.116"
+  echo "openshell 0.1.1"
   exit 0
 fi
 exit 0
