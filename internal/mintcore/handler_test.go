@@ -577,16 +577,104 @@ func TestHandler_RoleAllowed(t *testing.T) {
 func TestHandler_RoleNotAllowed(t *testing.T) {
 	t.Setenv("ALLOWED_ROLES", "triage,coder")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
-	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
 
-	body := `{"role":"deploy"}`
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+	token := env.signToken(t, nil)
+
+	body := `{"role":"haiku","repos":["test-repo"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
-	h.ServeHTTP(rec, req)
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp mintErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding error body: %v", err)
+	}
+	if resp.Role != "haiku" {
+		t.Fatalf("expected role %q, got %q", "haiku", resp.Role)
+	}
+	if resp.Repository != "test-org/test-repo" {
+		t.Fatalf("expected repository %q, got %q", "test-org/test-repo", resp.Repository)
+	}
+	if !strings.Contains(resp.Error, `role "haiku" is not registered`) {
+		t.Fatalf("expected error to name the rejected role, got %q", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "test-org/test-repo") {
+		t.Fatalf("expected error to name the requesting repository, got %q", resp.Error)
+	}
+	if !strings.Contains(resp.Hint, "fullsend mint add-role haiku") {
+		t.Fatalf("expected hint to include add-role guidance, got %q", resp.Hint)
+	}
+	if !strings.Contains(resp.Hint, "Registered roles: triage, coder") {
+		t.Fatalf("expected hint to list registered roles, got %q", resp.Hint)
+	}
+}
+
+func TestHandler_RoleNotAllowed_Unauthenticated(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "triage,coder")
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{err: fmt.Errorf("bad token")})
+
+	body := `{"role":"haiku","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer not-a-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "haiku") {
+		t.Fatalf("unauthenticated response should not name the rejected role: %s", rec.Body.String())
+	}
+}
+
+func TestRoleNotAllowedBody(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "triage,coder")
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	got := h.roleNotAllowedBody("haiku", "acme/widgets")
+	if got.Error != `role "haiku" is not registered with this mint (requested by acme/widgets)` {
+		t.Fatalf("unexpected error: %q", got.Error)
+	}
+	if got.Role != "haiku" || got.Repository != "acme/widgets" {
+		t.Fatalf("unexpected fields: role=%q repository=%q", got.Role, got.Repository)
+	}
+	if !strings.Contains(got.Hint, "fullsend mint add-role haiku") {
+		t.Fatalf("hint missing add-role guidance: %q", got.Hint)
+	}
+	if !strings.Contains(got.Hint, "Registered roles: triage, coder") {
+		t.Fatalf("hint missing registered roles: %q", got.Hint)
+	}
+	if !strings.Contains(got.Hint, "https://fullsend.sh/docs/guides/user/custom-agent-identity") {
+		t.Fatalf("hint missing docs URL with /docs/ base path: %q", got.Hint)
+	}
+
+	emptyRepo := h.roleNotAllowedBody("haiku", "")
+	if strings.Contains(emptyRepo.Error, "requested by") {
+		t.Fatalf("empty repository should be omitted from error: %q", emptyRepo.Error)
+	}
+	if emptyRepo.Repository != "" {
+		t.Fatalf("empty repository should be omitted from body, got %q", emptyRepo.Repository)
+	}
+}
+
+func TestRoleNotAllowedBody_NoRegisteredRoles(t *testing.T) {
+	t.Setenv("ALLOWED_ROLES", "")
+	t.Setenv("ROLE_APP_IDS", "")
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	got := h.roleNotAllowedBody("haiku", "acme/widgets")
+	if strings.Contains(got.Hint, "Registered roles:") {
+		t.Fatalf("hint should omit registered roles when none are configured: %q", got.Hint)
+	}
+	if !strings.Contains(got.Hint, "fullsend mint add-role haiku") {
+		t.Fatalf("hint missing add-role guidance: %q", got.Hint)
 	}
 }
 

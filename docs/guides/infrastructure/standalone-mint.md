@@ -311,7 +311,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 
-When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are rejected with a `403 Forbidden` response.
+When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are rejected with a `403 Forbidden` response whose JSON body names the rejected role, the requesting repository, and how to register it (`fullsend mint add-role`).
 
 ## Verifying the setup
 

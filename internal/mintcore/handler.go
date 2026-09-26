@@ -258,11 +258,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.checkAllowedRole(req.Role) {
-		writeError(w, http.StatusForbidden, "role not allowed")
-		return
-	}
-
 	// Default level to write when omitted — temporary compatibility default
 	// so existing HTTP clients that do not send a level field keep receiving
 	// write-level tokens. A future PR will migrate the default to read once
@@ -306,6 +301,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if oidcErr != nil {
 		log.Printf("authentication failed: %v", oidcErr)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
+		return
+	}
+
+	// Reject unregistered roles after authentication so the response can
+	// name the requesting repository without letting unauthenticated
+	// callers probe which roles exist (same defense-in-depth as the
+	// level check below).
+	if !h.checkAllowedRole(req.Role) {
+		log.Printf("role not allowed: role=%s repo=%s", req.Role, claims.Repository)
+		h.writeRoleNotAllowed(w, req.Role, claims.Repository)
 		return
 	}
 
@@ -840,8 +845,44 @@ type mintError struct {
 func (e *mintError) Error() string { return e.msg }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
+	writeErrorBody(w, status, mintErrorBody{Error: msg})
+}
+
+// mintErrorBody is the JSON object returned on mint HTTP errors.
+// Role, Repository, and Hint are set for role-not-found responses so
+// callers (the mint-token action, mintclient) can surface a diagnostic
+// instead of a bare HTTP status.
+type mintErrorBody struct {
+	Error      string `json:"error"`
+	Role       string `json:"role,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Hint       string `json:"hint,omitempty"`
+}
+
+func writeErrorBody(w http.ResponseWriter, status int, body mintErrorBody) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	json.NewEncoder(w).Encode(body)
+}
+
+func (h *Handler) writeRoleNotAllowed(w http.ResponseWriter, role, repository string) {
+	writeErrorBody(w, http.StatusForbidden, h.roleNotAllowedBody(role, repository))
+}
+
+func (h *Handler) roleNotAllowedBody(role, repository string) mintErrorBody {
+	msg := fmt.Sprintf("role %q is not registered with this mint", role)
+	if repository != "" {
+		msg += fmt.Sprintf(" (requested by %s)", repository)
+	}
+	hint := fmt.Sprintf("If you operate this mint, register the role with `fullsend mint add-role %s`. If you use the hosted mint, use a built-in role or set FULLSEND_MINT_URL to a mint that serves this role. See https://fullsend.sh/docs/guides/user/custom-agent-identity", role)
+	if len(h.allowedRoles) > 0 {
+		hint = fmt.Sprintf("Registered roles: %s. %s", strings.Join(h.allowedRoles, ", "), hint)
+	}
+	return mintErrorBody{
+		Error:      msg,
+		Role:       role,
+		Repository: repository,
+		Hint:       hint,
+	}
 }
