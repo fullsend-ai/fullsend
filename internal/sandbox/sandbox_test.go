@@ -2230,3 +2230,84 @@ func TestResolvedBasename(t *testing.T) {
 		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
 	})
 }
+
+// writePhaseCLI installs a fake openshell that logs every call and reports
+// phase for `sandbox get`; verbExit is the exit code of the stop/start call.
+func writePhaseCLI(t *testing.T, phase string, verbExit int) (logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "calls.log")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+if [ "$2" = "get" ]; then
+  echo "Phase: %s"
+  exit 0
+fi
+if [ "$2" = "stop" ] || [ "$2" = "start" ]; then
+  echo "cli said no" >&2
+  exit %d
+fi
+exit 0
+`, logPath, phase, verbExit)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+	return logPath
+}
+
+func TestStop_WaitsForStopped(t *testing.T) {
+	logPath := writePhaseCLI(t, "Stopped", 0)
+	require.NoError(t, Stop(context.Background(), "sbx", 5*time.Second))
+	calls, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	require.GreaterOrEqual(t, len(lines), 2)
+	assert.Equal(t, "sandbox stop sbx", lines[0], "stop comes first")
+	assert.Equal(t, "sandbox get sbx", lines[1], "then the phase is polled")
+}
+
+func TestStart_WaitsForReady(t *testing.T) {
+	logPath := writePhaseCLI(t, "Ready", 0)
+	require.NoError(t, Start(context.Background(), "sbx", 5*time.Second))
+	calls, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(calls), "sandbox start sbx\n"))
+}
+
+func TestStop_CLIFailureIsReturned(t *testing.T) {
+	writePhaseCLI(t, "Ready", 1)
+	err := Stop(context.Background(), "sbx", 5*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox stop")
+	assert.Contains(t, err.Error(), "cli said no")
+}
+
+func TestStart_TerminalPhaseFailsFast(t *testing.T) {
+	writePhaseCLI(t, "Error", 0)
+	begin := time.Now()
+	err := Start(context.Background(), "sbx", 10*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `terminal phase "Error"`)
+	assert.Less(t, time.Since(begin), 5*time.Second, "a terminal phase must not burn the budget")
+}
+
+func TestStop_TimesOutWhenPhaseNeverChanges(t *testing.T) {
+	writePhaseCLI(t, "Ready", 0)
+	// Long enough that the fake stop command always completes under load, so
+	// only the phase poll can time out.
+	err := Stop(context.Background(), "sbx", 3*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `phase is "Ready", not "Stopped"`)
+}
+
+func TestStopStartTimeoutsCoverThePinnedDriver(t *testing.T) {
+	// 0.0.116's podman stop always takes its 45 s grace; start measured 0.2 s.
+	assert.GreaterOrEqual(t, StopTimeout, 90*time.Second)
+	assert.GreaterOrEqual(t, StartTimeout, 30*time.Second)
+}
+
+func TestPhase_ReadsTheAnchoredField(t *testing.T) {
+	writePhaseCLI(t, "Stopped", 0)
+	phase, err := Phase(context.Background(), "sbx")
+	require.NoError(t, err)
+	assert.Equal(t, "Stopped", phase)
+}
