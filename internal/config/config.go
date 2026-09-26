@@ -640,6 +640,11 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 	return nil
 }
 
+// ValidateAgentEntries validates a complete, self-contained agent list —
+// a per-repo config with its full parent chain resolved — enforcing both
+// the allowlist check and the compiled-in-name requirement.
+// See validateAgentEntries for the relaxed checks used during repos.yaml
+// config overlay validation (ADR 0122).
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	return validateAgentEntries(agents, allowlist, true, true)
 }
@@ -658,8 +663,8 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 //     is applied).
 //
 // Both are true for ValidateAgentEntries, which validates a complete,
-// self-contained agent list (org config, or a per-repo config with its
-// full parent chain resolved).
+// self-contained agent list (a per-repo config with its full parent
+// chain resolved).
 func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
@@ -1204,9 +1209,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay
 	// omits models:. Currently the parent chain never actually carries a
-	// resolved config.base.yaml at any Validate call site (overlay
-	// install/converge is follow-on work, ADR 0122 #7632/#7633), so this
-	// only ever sees this layer's own aliases — but it is safe to run
+	// resolved config.base.yaml at any Validate call site (the overlay
+	// file is validated via ValidateMergedOverlay before it is written),
+	// so this only ever sees this layer's own aliases — but it is safe to run
 	// unconditionally: with no parent contribution there is nothing it
 	// could wrongly reject.
 	return ValidateModelAliases(c.ConfigModelAliases())
@@ -1243,7 +1248,8 @@ func ValidateOverlayLayer(w PerRepoConfigWriter) error {
 // URL-sourced agent entry is checked against it; an override-only entry
 // is still not required to name a compiled-in agent, since
 // config.base.yaml — which may register the agent it tunes — is not
-// layered on until install/converge time (#7632, #7633).
+// layered on until the overlay is written and later read through
+// LayeredConfig.
 func ValidateMergedOverlay(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {

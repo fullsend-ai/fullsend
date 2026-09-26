@@ -22,8 +22,8 @@ const validManifest = `
 version: 1
 defaults:
   allowed_remote_resources:
-    - resource-a
-    - resource-b
+    - https://resource-a.example.com/
+    - https://resource-b.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: main
@@ -41,7 +41,7 @@ func TestParseSimpleManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, "https://mint.example.com", m.GitHub.MintURL)
 	assert.Equal(t, "main", m.GitHub.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, m.Defaults.AllowedRemoteResources)
+	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, m.Defaults.AllowedRemoteResources)
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.Equal(t, "acme/repo-one", m.GitHub.Repos[0].Name)
 	assert.Equal(t, "acme/repo-two", m.GitHub.Repos[1].Name)
@@ -663,7 +663,7 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	assert.Equal(t, "main", cfg.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, cfg.AllowedRemoteResources)
 }
 
 func TestResolveConfig_PlatformFields(t *testing.T) {

@@ -334,6 +334,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkManagedConfigDrift(ctx, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {

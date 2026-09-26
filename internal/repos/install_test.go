@@ -671,6 +671,58 @@ func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) 
 	}
 }
 
+func TestBuildScaffoldFiles_ManagedConfig(t *testing.T) {
+	cfg := baseCfg()
+	managed := []byte("kill_switch: true\n")
+	cfg.ManagedConfig = managed
+	cfg.Roles = []string{"triage", "review"}
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var managedFile []byte
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			managedFile = f.Content
+		}
+	}
+	if managedFile == nil {
+		t.Fatal("expected .fullsend/config.yaml managed configuration")
+	}
+	if string(managedFile) != string(managed) {
+		t.Errorf("config.yaml = %q, want managed bytes %q", managedFile, managed)
+	}
+	if strings.Contains(string(managedFile), "roles:") {
+		t.Errorf("managed configuration must not be replaced by installer roles: %s", managedFile)
+	}
+}
+
+// TestBuildScaffoldFiles_ManagedConfigAdoptionRequired is the ADR-0122
+// adoption gate on the fresh-install path: when the caller (convergeRepo)
+// found an existing .fullsend/config.yaml without the ownership marker, it
+// sets ManagedConfigAdoptionRequired so BuildScaffoldFiles must not emit
+// a config.yaml tree entry at all — writing anything here, managed or
+// generated, would still overwrite the existing file the caller decided
+// requires a deliberate adoption handoff first.
+func TestBuildScaffoldFiles_ManagedConfigAdoptionRequired(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ManagedConfig = []byte(managedConfigMarker + "kill_switch: true\n")
+	cfg.ManagedConfigAdoptionRequired = true
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			t.Errorf("adoption-required install must not write config.yaml, got content %q", f.Content)
+		}
+	}
+}
+
 func TestBuildScaffoldFiles_InvalidConfig(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Roles = []string{"nonexistent-role"}

@@ -135,7 +135,7 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 		node = node.Content[0]
 	}
 	if node == nil || node.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("must be a YAML mapping")
+		return nil, errors.New("must be a YAML mapping")
 	}
 
 	known := knownOverlayKeys()
@@ -209,6 +209,12 @@ func decodeKnownFields(n *yaml.Node, out any) error {
 func MergeOverlays(parent, child PerRepoConfigWriter) PerRepoConfigWriter {
 	p := asPerRepo(parent)
 	c := asPerRepo(child)
+	if p == nil && c == nil {
+		// Return an untyped nil interface, not cloneOverlay(nil) boxed as
+		// a typed-nil *perRepoConfig — a caller comparing the result to
+		// nil would otherwise get false for a typed-nil interface value.
+		return nil
+	}
 	if c == nil {
 		return cloneOverlay(p)
 	}

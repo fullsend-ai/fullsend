@@ -45,8 +45,10 @@ preset file.
 default source in `defaults.config_base.source` (optional
 `defaults.config_base.sha256`) or override it per repository with
 `config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
-`config.base.yaml` and never edits the overlay; `repos status` reports
-base-file drift only when a preset is declared. See
+`config.base.yaml`; this preset-application step never edits the overlay
+itself (see below for managed-overlay convergence, which does rewrite the
+overlay on drift). `repos status` reports base-file drift only when a
+preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
 Fleet manifests may also declare a managed overlay via `defaults.config`
@@ -55,7 +57,10 @@ Those blocks use this same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
 shorthands and are rejected inside `config`. Overlay management is
 opt-in: `defaults.config` opts every repository in; a repository `config`
-opts in only that repository. See
+opts in only that repository. `repos install` writes the canonical sparse
+overlay for opted-in repositories, `repos status` reports whole-file
+overlay drift, and convergence rewrites a drifted overlay; unmanaged
+repositories are left untouched. See
 [Repo Management — Configuration overlays](../getting-started/repo-management.md#configuration-overlays).
 
 ### Marshal behavior

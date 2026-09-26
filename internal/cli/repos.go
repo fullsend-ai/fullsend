@@ -734,6 +734,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					return fmt.Errorf("--runtime: %w", err)
 				}
 			}
+			if len(opts.allowedRemoteResources) > 0 {
+				if err := repos.ValidateAllowedRemoteResourcesFormat("--allowed-remote-resources", opts.allowedRemoteResources); err != nil {
+					return err
+				}
+			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {

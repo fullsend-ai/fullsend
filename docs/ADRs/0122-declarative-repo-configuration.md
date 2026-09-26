@@ -18,6 +18,23 @@ Date: 2026-09-18
 
 Accepted
 
+**Implementation note (#7632):** The install/converge/status integration in
+PR #7638 ships the ownership marker and the first-adoption gate described
+below on every write path this PR touches — the already-installed
+converge/status path (`convergeOverlayFiles`/`checkOverlayDrift`) and the
+fresh-install path (`Install`/`BuildScaffoldFiles`, gated via
+`InstallConfig.ManagedOverlayAdoptionRequired`): an existing markerless
+`.fullsend/config.yaml` is never silently rewritten; status reports it as
+requiring adoption and install/converge leave it untouched. The pre-write
+safety-gate comparison against the current effective configuration through
+the full runtime accessor chain (`IsKillSwitchActive()`, `AllowedResources()`,
+`ConfigRoles()`, agent `enabled: false` suppressions,
+`IssueCreationConfig()`/`create_issues.allow_targets`) described in the
+Decision section is not yet implemented; a manifest edit that drops or
+narrows a previously managed restriction is currently applied as ordinary
+drift once a file is already adopted (marked). Track closing this gap in a
+follow-up to #7632.
+
 ## Context
 
 The `fullsend repos` manifest manages installations across many repositories,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -659,18 +660,60 @@ func TestSetDefault_AllowedRemoteResources_ValidatesURLs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-URL value")
 	}
-	if !strings.Contains(err.Error(), "must be a valid HTTPS URL") {
+	if !strings.Contains(err.Error(), "not a valid HTTPS URL") {
 		t.Errorf("expected URL validation error, got: %v", err)
 	}
 
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "http://insecure.example.com")
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "http://insecure.example.com/")
 	if err == nil {
 		t.Fatal("expected error for non-HTTPS URL")
 	}
 
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com,https://b.example.com")
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com")
+	if err == nil {
+		t.Fatal("expected error for HTTPS URL missing a trailing slash")
+	}
+	if !strings.Contains(err.Error(), "must end with /") {
+		t.Errorf("expected trailing-slash validation error, got: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/%252e%252e/")
+	if err == nil {
+		t.Fatal("expected error for double-encoded sequence")
+	}
+	if !strings.Contains(err.Error(), "double-encoded sequence") {
+		t.Errorf("expected double-encoding validation error, got: %v", err)
+	}
+
+	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/,https://b.example.com/")
 	if err != nil {
 		t.Fatalf("expected no error for valid HTTPS URLs, got: %v", err)
+	}
+}
+
+func TestSetDefault_AllowedRemoteResources_DropsEmptyTokens(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/, ,")
+	if err != nil {
+		t.Fatalf("expected no error for a trailing-comma value, got: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	var m Manifest
+	if err := parseManifestBytes(data, &m); err != nil {
+		t.Fatalf("parsing manifest: %v", err)
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected persisted manifest to validate, got: %v", err)
+	}
+	want := []string{"https://a.example.com/"}
+	if !slices.Equal(m.Defaults.AllowedRemoteResources, want) {
+		t.Errorf("expected empty tokens dropped, got %#v, want %#v", m.Defaults.AllowedRemoteResources, want)
 	}
 }
 
@@ -805,7 +848,7 @@ func TestSetDefault_RemoveAllowedRemoteResources(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 
-	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com")
+	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/")
 	if err != nil {
 		t.Fatalf("SetDefault() set error: %v", err)
 	}

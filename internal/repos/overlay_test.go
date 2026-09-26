@@ -185,9 +185,8 @@ github:
 
 // An override-only agents entry (no source) may tune a custom agent
 // registered in config.base.yaml. That base layer isn't known at
-// manifest-validate time (overlay install/converge is follow-on work,
-// #7632/#7633), so validation must not reject the entry just because its
-// name isn't one of the compiled-in built-in agents.
+// manifest-validate time, so validation must not reject the entry just
+// because its name isn't one of the compiled-in built-in agents.
 func TestValidate_ConfigOverlayOverrideOnlyCustomAgentDefersToBaseLayer(t *testing.T) {
 	input := `
 version: 1
@@ -284,6 +283,48 @@ github:
 	err := m.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wif_provider")
+}
+
+func TestValidate_AllowedRemoteResourcesFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{
+			name:    "non-HTTPS prefix",
+			value:   "http://resource.example.com/",
+			wantErr: "is not a valid HTTPS URL",
+		},
+		{
+			name:    "missing trailing slash",
+			value:   "https://resource.example.com",
+			wantErr: "must end with /",
+		},
+		{
+			name:    "double-encoded sequence",
+			value:   "https://resource.example.com/%252e%252e/",
+			wantErr: "double-encoded sequence",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := `
+version: 1
+defaults:
+  allowed_remote_resources:
+    - "` + tt.value + `"
+github:
+  repos:
+    - name: acme/app
+`
+			var m Manifest
+			require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+			err := m.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestResolveConfig_OverlayOptInAndPrecedence(t *testing.T) {
