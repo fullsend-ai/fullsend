@@ -277,9 +277,9 @@ const DefaultSteerPollInterval = 30 * time.Second
 const maxSteerPollInterval = 10 * time.Minute
 
 // DefaultSteerEnabled is whether steering runs when the harness says nothing
-// about it. Off while the surfaces steering depends on land; a harness opts in
-// with enabled: true.
-const DefaultSteerEnabled = false
+// about it. On since the release that carries it; a harness opts out with
+// enabled: false.
+const DefaultSteerEnabled = true
 
 // SteerEnabled reports whether steering is configured on.
 func (h *Harness) SteerEnabled() bool {
@@ -290,9 +290,8 @@ func (h *Harness) SteerEnabled() bool {
 }
 
 // SteerExplicitlyEnabled reports whether the harness asked for steering by
-// name, as opposed to getting it from the default. It lets a caller tell an
-// unmet request apart from an absent one: the runner announces why it
-// declined steering to a harness that asked for it by name.
+// name, as opposed to getting it from the default. The runner uses it to
+// decide whether a declined watch is worth telling the operator about.
 func (h *Harness) SteerExplicitlyEnabled() bool {
 	return h.Steer != nil && h.Steer.Enabled != nil && *h.Steer.Enabled
 }
@@ -473,7 +472,7 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
-	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // steering (ADR 0113); steer: {enabled: true} opts in
+	Steer                  *SteerConfig            `yaml:"steer,omitempty"`    // steering (ADR 0113/0121); on by default, steer: {enabled: false} opts out
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
