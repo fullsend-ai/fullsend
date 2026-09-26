@@ -37,14 +37,19 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration live in each target
-repository's **`.fullsend/`** directory. Per-repo installation is the sole
-supported deployment model ([ADR 0033](ADRs/0033-per-repo-installation-mode.md));
-the dedicated org-level `<org>/.fullsend` config repo is deprecated
+Forge-native infrastructure platform choice and configuration live in each
+target repository's **`.fullsend/`** directory. Per-repo installation is the
+sole supported installation model
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)); the dedicated org-level
+`<org>/.fullsend` config repo is deprecated
 ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 
 **Decided:**
 
+- Tenant configuration for a possible centrally managed service reuses the
+  existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
+  to offer the service, its source of truth, and its delivery mechanism remain
+  open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
@@ -63,7 +68,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 
 **Open questions:**
 
-- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? (See [agent-infrastructure.md](problems/agent-infrastructure.md) for the three directions.)
+- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The tenant manifest format is decided, while the source of truth, service, infrastructure, and poller/dispatch/runner boundary remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md); see [agent-infrastructure.md](problems/agent-infrastructure.md)).
 - Can different agent types (short-lived review vs. long-running code) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
 - Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway).)
@@ -632,43 +637,40 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 ## Multi-org deployment model
 
-Each organization that adopts fullsend operates independently. There is no shared control plane, no central service, and no relationship between orgs. Each org brings its own inference API keys and runs its own version of fullsend.
+In the self-managed per-repository deployment model, each installation
+operates independently, with no shared control plane between installations.
+If Fullsend offers a centrally managed service, each tenant's repository
+configuration will use the existing `repos.yaml` v1 manifest. The source of
+truth and how service components consume it, along with the service's runtime
+and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
 
 ```
-  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-  │  Org A               │  │  Org B               │  │  Org C               │
-  │                      │  │                      │  │                      │
-  │  .fullsend repo      │  │  .fullsend repo      │  │  .fullsend repo      │
-  │  ┌────────────────┐  │  │  ┌────────────────┐  │  │  ┌────────────────┐  │
-  │  │ config.yaml    │  │  │  │ config.yaml    │  │  │  │ config.yaml    │  │
-  │  │ agents/        │  │  │  │ agents/        │  │  │  │ agents/        │  │
-  │  │ skills/        │  │  │  │ skills/        │  │  │  │ skills/        │  │
-  │  │ harness/       │  │  │  │ harness/       │  │  │  │ harness/       │  │
-  │  └────────────────┘  │  │  └────────────────┘  │  │  └────────────────┘  │
-  │                      │  │                      │  │                      │
-  │  API keys: own       │  │  API keys: own       │  │  API keys: own       │
-  │  Enrolled repos: ... │  │  Enrolled repos: ... │  │  Enrolled repos: ... │
-  │  fullsend v0.2.0     │  │  fullsend v0.4.1     │  │  fullsend v0.2.0     │
-  │                      │  │                      │  │                      │
-  └──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
-             │                         │                         │
-             │            no relationship between orgs           │
-             │                         │                         │
-             └─────────────────────────┼─────────────────────────┘
+  Org A                                      Org B
+  ┌─────────────────────────────┐            ┌─────────────────────────────┐
+  │ repo-a1                     │            │ repo-b1                     │
+  │ ├── .fullsend/config.yaml    │            │ ├── .fullsend/config.yaml    │
+  │ ├── .fullsend/agents/        │            │ ├── .fullsend/agents/        │
+  │ └── .fullsend/skills/        │            │ └── .fullsend/skills/        │
+  │                             │            │                             │
+  │ repo-a2                     │            │ repo-b2                     │
+  │ └── .fullsend/              │            │ └── .fullsend/              │
+  └─────────────────────────────┘            └─────────────────────────────┘
+                    │                                        │
+                    └──────── independent installations ────┘
                                        │
                             ┌──────────┴───────────┐
                             │  fullsend-ai/fullsend│
-                            │                      │
-                            │  Open source project │
                             │  CLI, base agents,   │
                             │  skills, scaffold    │
-                            │                      │
-                            │  Orgs pull releases  │
-                            │  at their own pace   │
+                            │  Releases are pulled │
+                            │  independently       │
                             └──────────────────────┘
 ```
 
-Each org is a fully independent instance. They choose when to upgrade. They configure their own agents, skills, plugins, and policies. They use their own model providers and API keys. The only shared element is the upstream fullsend project they all pull from.
+Each self-managed org is a fully independent instance. They choose when to
+upgrade. They configure their own agents, skills, plugins, and policies. They
+use their own model providers and API keys. The only shared element is the
+upstream fullsend project they all pull from.
 
 ## Downstream/upstream federation
 
