@@ -730,24 +730,27 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	// OpenShell requires a declared credential's value on create and takes
 	// an expiry only on update, so the value is stored first and its expiry
 	// in the very next call.
-	empty := make(map[string]string, len(keys))
-	for _, k := range keys {
-		empty[k] = ""
-	}
 	if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, creds); err != nil {
 		printer.StepFail("Failed to create run-scoped provider " + name)
 		return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
 	}
 	if err := sandbox.UpdateProviderLiteralWithExpiry(ctx, name, creds, cred.expiresAt); err != nil {
 		// The caller only registers the deferred delete once this function
-		// succeeds, so remove the instance here; if that fails too, blank
-		// the credential so nothing usable can be left behind.
+		// succeeds, so remove the instance here; if that fails too, expire
+		// the credential now (OpenShell refuses an empty value for a declared
+		// credential, so it cannot be blanked).
 		printer.StepFail("Failed to store the credential on " + name)
 		if delErr := sandbox.DeleteProvider(name); delErr != nil && !errors.Is(delErr, sandbox.ErrProviderNotFound) {
-			if blankErr := sandbox.UpdateProviderLiteral(ctx, name, empty); blankErr != nil {
-				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could be neither deleted (%v) nor blanked (%v); remove it with `openshell provider delete %s`", name, delErr, blankErr, name))
+			var expireErr error
+			for _, k := range keys {
+				if expireErr = sandbox.SetProviderCredentialExpiry(ctx, name, k, time.Now()); expireErr != nil {
+					break
+				}
+			}
+			if expireErr != nil {
+				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could be neither deleted (%v) nor expired (%v); remove it with `openshell provider delete %s`", name, delErr, expireErr, name))
 			} else {
-				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could not be deleted (%v); its credential was blanked", name, delErr))
+				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could not be deleted (%v); its credential was expired", name, delErr))
 			}
 		}
 		return openAIProviderHandle{}, fmt.Errorf("storing credential on provider %q: %w", name, err)

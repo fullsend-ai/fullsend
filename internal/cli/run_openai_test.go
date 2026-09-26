@@ -296,7 +296,25 @@ func TestEnsureOpenAIProvider_StoreFailureDeletesProvider(t *testing.T) {
 	assert.Equal(t, "provider delete openai-feedface", lines[2], "a provider whose credential could not be stored with its expiry is not left behind")
 }
 
-func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T) {
+func TestEnsureOpenAIProvider_StoreAndDeleteFailureExpiresCredential(t *testing.T) {
+	// Only the store (value + expiry) and the delete fail; the expiry-only
+	// update succeeds.
+	argsLog, _ := fakeOpenshellRecorder(t, "--credential OPENAI_API_KEY --credential-expires-at", "provider delete")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	lines := readArgLines(t, argsLog)
+	require.Len(t, lines, 4, "create, failed store, failed delete, expire: %q", lines)
+	assert.True(t, strings.HasPrefix(lines[3], "provider update openai-feedface --credential-expires-at OPENAI_API_KEY="), "the credential is expired when the delete fails too: %q", lines[3])
+	assert.Contains(t, buf.String(), "its credential was expired")
+}
+
+func TestEnsureOpenAIProvider_StoreDeleteAndExpireFailureWarns(t *testing.T) {
 	argsLog, _ := fakeOpenshellRecorder(t, "--credential-expires-at", "provider delete")
 	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
 		t.Setenv(k, "")
@@ -307,9 +325,10 @@ func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T
 	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
 	require.Error(t, err)
 	lines := readArgLines(t, argsLog)
-	require.Len(t, lines, 4, "empty create, failed store, failed delete, blank: %q", lines)
-	assert.Equal(t, "provider update openai-feedface --credential OPENAI_API_KEY=", lines[3], "the credential is blanked when the delete fails too")
-	assert.Contains(t, buf.String(), "blanked")
+	for _, l := range lines {
+		assert.NotRegexp(t, `--credential OPENAI_API_KEY=$`, l, "an empty value is never sent: OpenShell refuses it")
+	}
+	assert.Contains(t, buf.String(), "remove it with `openshell provider delete openai-feedface`")
 }
 
 func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
