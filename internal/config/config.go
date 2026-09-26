@@ -641,6 +641,26 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 }
 
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
+	return validateAgentEntries(agents, allowlist, true, true)
+}
+
+// validateAgentEntries is ValidateAgentEntries with two checks made
+// conditional for repos.yaml config overlay validation (ADR 0122), where
+// the resolved allowlist or the parent's registered agents may not be
+// known yet:
+//
+//   - enforceAllowlist: when false, a URL-sourced entry's prefix is not
+//     checked against allowlist (used before repos.yaml's
+//     allowed_remote_resources shorthand has been applied to the layer).
+//   - requireBuiltinName: when false, an override-only entry (no source)
+//     is not required to name a compiled-in agent (it may tune a custom
+//     agent registered in config.base.yaml, unresolved until that layer
+//     is applied).
+//
+// Both are true for ValidateAgentEntries, which validates a complete,
+// self-contained agent list (org config, or a per-repo config with its
+// full parent chain resolved).
+func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
 	// disable-then-enable or enable-then-disable pair is accepted while
@@ -694,7 +714,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 				return fmt.Errorf("agents[%d] (%s): name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-]", i, entry.Name)
 			}
 			lowerName := strings.ToLower(entry.Name)
-			if !slices.Contains(ValidAgentNames(), lowerName) {
+			if requireBuiltinName && !slices.Contains(ValidAgentNames(), lowerName) {
 				hint := ""
 				if suggestion, ok := roleAliasHints[lowerName]; ok {
 					hint = fmt.Sprintf(" (did you mean %q?)", suggestion)
@@ -737,7 +757,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			if !hasHash {
 				return fmt.Errorf("agents[%d] (%s): URL source must include a valid #sha256=<64-hex-char> integrity fragment", i, name)
 			}
-			if urlutil.MatchingAllowedPrefixInList(cleanURL, allowlist) == "" {
+			if enforceAllowlist && urlutil.MatchingAllowedPrefixInList(cleanURL, allowlist) == "" {
 				return fmt.Errorf("agents[%d] (%s): URL %q is not covered by allowed_remote_resources", i, name, cleanURL)
 			}
 		} else if strings.HasPrefix(strings.ToLower(entry.Source), "http://") {
@@ -1062,7 +1082,7 @@ type perRepoConfigMarshal struct {
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
-	Authorization          []AuthorizationProvider   `yaml:"authorization,omitempty"`
+	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
@@ -1070,10 +1090,11 @@ type perRepoConfigMarshal struct {
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
-// distinction for Roles and AllowedRemoteResources through YAML
-// roundtrips. nil (unset) is omitted so the field inherits from
-// parent; an explicit empty slice is marshaled as an empty YAML
-// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
+// distinction for Roles, AllowedRemoteResources, and Authorization
+// through YAML roundtrips. nil (unset) is omitted so the field
+// inherits from parent; an explicit empty slice is marshaled as an
+// empty YAML sequence (e.g. `roles: []`, `allowed_remote_resources: []`,
+// `authorization: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:             c.Version,
@@ -1084,7 +1105,6 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
-		Authorization:       c.Authorization,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
@@ -1101,6 +1121,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	if c.AllowedRemoteResources != nil {
 		h.AllowedRemoteResources = &c.AllowedRemoteResources
 	}
+	if c.Authorization != nil {
+		h.Authorization = &c.Authorization
+	}
 	return &h, nil
 }
 
@@ -1109,6 +1132,27 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 // AllowedResources) are used where validation requires the full
 // effective config.
 func (c *perRepoConfig) Validate() error {
+	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	// Agents are validated against the resolved allowlist (including
+	// parent resources) so that URL agents covered by a parent or
+	// default prefix pass validation.
+	// The merged set is validated so an overlay entry that only tunes an
+	// agent registered in the base layer sees that agent's source.
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+}
+
+// validateLocalFields checks the fields that do not need a resolved
+// parent chain: version, roles, create_issues, runtime,
+// status_notifications, inference provider, authorization providers,
+// and model aliases. It is split out of Validate so a repos.yaml config
+// overlay layer (ADR 0122) can be checked without pulling in the
+// agent-allowlist / override-only-custom-agent checks below, which need
+// information (repos.yaml shorthands, config.base.yaml) that isn't
+// resolved yet at every point an overlay is validated — see
+// ValidateOverlayLayer and ValidateMergedOverlay.
+func (c *perRepoConfig) validateLocalFields() error {
 	// Version: empty means "inherit from parent"; non-empty must be "1".
 	if c.Version != "" && c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
@@ -1127,14 +1171,6 @@ func (c *perRepoConfig) Validate() error {
 			}
 			seen[role] = true
 		}
-	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
-	// The merged set is validated so an overlay entry that only tunes an
-	// agent registered in the base layer sees that agent's source.
-	if err := ValidateAgentEntries(c.AgentEntries(), c.AllowedResources()); err != nil {
-		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
 		return err
@@ -1167,11 +1203,56 @@ func (c *perRepoConfig) Validate() error {
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay
-	// omits models:.
-	if err := ValidateModelAliases(c.ConfigModelAliases()); err != nil {
+	// omits models:. Currently the parent chain never actually carries a
+	// resolved config.base.yaml at any Validate call site (overlay
+	// install/converge is follow-on work, ADR 0122 #7632/#7633), so this
+	// only ever sees this layer's own aliases — but it is safe to run
+	// unconditionally: with no parent contribution there is nothing it
+	// could wrongly reject.
+	return ValidateModelAliases(c.ConfigModelAliases())
+}
+
+// ValidateOverlayLayer validates a single repos.yaml config overlay layer
+// (defaults.config or one repository's config block, ADR 0122) in
+// isolation: before defaults.config and the repository config are merged,
+// and before the repos.yaml runtime / allowed_remote_resources shorthands
+// are applied. It runs the same locally-set field checks as Validate,
+// plus structural checks on this layer's own agent entries (name format,
+// duplicate names, URL scheme and integrity hash) — but it does not
+// check a URL agent against an allowlist (the allowed_remote_resources
+// shorthand isn't applied to this layer yet) and does not require an
+// override-only entry (no source) to name a compiled-in agent (it may
+// tune a custom agent registered in config.base.yaml, which this layer
+// cannot see). Those two checks run in ValidateMergedOverlay once the
+// shorthand is applied.
+func ValidateOverlayLayer(w PerRepoConfigWriter) error {
+	c := asPerRepo(w)
+	if c == nil {
+		return nil
+	}
+	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return nil
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), false, false)
+}
+
+// ValidateMergedOverlay validates a repos.yaml config overlay (ADR 0122)
+// after defaults.config and the repository config have been merged and
+// the repos.yaml runtime / allowed_remote_resources shorthands applied
+// (managedOverlay). The resolved allowlist is now correct, so a
+// URL-sourced agent entry is checked against it; an override-only entry
+// is still not required to name a compiled-in agent, since
+// config.base.yaml — which may register the agent it tunes — is not
+// layered on until install/converge time (#7632, #7633).
+func ValidateMergedOverlay(w PerRepoConfigWriter) error {
+	c := asPerRepo(w)
+	if c == nil {
+		return nil
+	}
+	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of

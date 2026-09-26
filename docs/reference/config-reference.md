@@ -3,6 +3,9 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+Fleet manifests can declare the same overlay schema as `defaults.config` /
+per-repository `config` in `repos.yaml`; see
+[Repo Management — Configuration overlays](../guides/getting-started/repo-management.md#configuration-overlays).
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md) or
 [Configuring GitLab](../guides/getting-started/configuring-gitlab.md).
