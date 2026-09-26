@@ -321,18 +321,45 @@ start_fresh_openshell_gateway() {
   echo "OpenShell gateway is running with an empty profile registry"
 }
 
+# Packaged schema-v2 default (OpenShell >= 0.1 RPM). Overridable for tests.
+OPENSHELL_PACKAGED_GATEWAY_TOML="${OPENSHELL_PACKAGED_GATEWAY_TOML:-/usr/share/openshell-gateway/gateway.toml.default}"
+
+gateway_toml_is_v2() {
+  grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*2[[:space:]]*(#.*)?$' "$1"
+}
+
+# Pin supervisor_image under [openshell.drivers.podman] in a schema-v2
+# gateway.toml. OpenShell 0.1 rejects v1 and version-less files at startup,
+# so such a file (written for 0.0.x) is moved aside to gateway.toml.pre-0.1.
+# A missing file is seeded from the packaged default so compute_driver is
+# kept (without it the gateway auto-detects Kubernetes before Podman); the
+# literal fallback mirrors that default and action.yml.
 pin_supervisor_image() {
   local ver="$1"
   local gateway_toml="${HOME}/.config/openshell/gateway.toml"
   local supervisor_image
   supervisor_image="$(openshell_supervisor_image "${ver}")"
   mkdir -p "${HOME}/.config/openshell"
-  if [ -f "${gateway_toml}" ] && grep -q "supervisor_image" "${gateway_toml}"; then
-    sed -i "s|supervisor_image = .*|supervisor_image = \"${supervisor_image}\"|" "${gateway_toml}"
-  elif [ -f "${gateway_toml}" ] && grep -q '^\[openshell\.gateway\]' "${gateway_toml}"; then
-    sed -i "/^\[openshell\.gateway\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
-  elif [ -f "${gateway_toml}" ]; then
-    printf '\n[openshell.gateway]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
+
+  if [ -f "${gateway_toml}" ] && ! gateway_toml_is_v2 "${gateway_toml}"; then
+    echo "Moving pre-0.1 OpenShell gateway config aside to ${gateway_toml}.pre-0.1"
+    mv -f "${gateway_toml}" "${gateway_toml}.pre-0.1"
+  fi
+
+  if [ ! -f "${gateway_toml}" ]; then
+    if [ -f "${OPENSHELL_PACKAGED_GATEWAY_TOML}" ] && gateway_toml_is_v2 "${OPENSHELL_PACKAGED_GATEWAY_TOML}"; then
+      install -m 0644 "${OPENSHELL_PACKAGED_GATEWAY_TOML}" "${gateway_toml}"
+    else
+      printf '[openshell]\nversion = 2\n\n[openshell.gateway]\ncompute_driver = "podman"\n\n[openshell.drivers.podman]\nhealth_check_interval_secs = 10\n' > "${gateway_toml}"
+    fi
+  fi
+
+  if grep -q '^[[:space:]]*supervisor_image[[:space:]]*=' "${gateway_toml}"; then
+    sed -i "s|^[[:space:]]*supervisor_image[[:space:]]*=.*|supervisor_image = \"${supervisor_image}\"|" "${gateway_toml}"
+  elif grep -q '^\[openshell\.drivers\.podman\]' "${gateway_toml}"; then
+    sed -i "/^\[openshell\.drivers\.podman\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
+  else
+    printf '\n[openshell.drivers.podman]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
   fi
 }
 
@@ -360,8 +387,11 @@ install_openshell_at_version() {
   url="$(openshell_install_script_url "${sha}")"
   local max_attempts=3 attempt=1 delay=5
   while true; do
+    # install.sh refuses a pre-0.1 -> 0.1 upgrade without the ack. The
+    # incompatible pre-0.1 gateway store is discarded by the caller's
+    # start_fresh_openshell_gateway (wipe_openshell_gateway_store).
     if curl -LsSf --retry 3 --retry-delay 5 "${url}" \
-      | OPENSHELL_VERSION="v${ver}" sh; then
+      | OPENSHELL_ACK_BREAKING_UPGRADE=1 OPENSHELL_VERSION="v${ver}" sh; then
       break
     fi
     if [ "${attempt}" -ge "${max_attempts}" ]; then

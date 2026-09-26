@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup,
-# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in).
+# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in)
+# and the OpenShell 0.1 upgrade path (configure_gateway, install_openshell).
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/setup_test.sh
@@ -59,6 +60,13 @@ SYSTEMCTL_LOG="${SHIM_DIR}/systemctl.log"
 OPENSHELL_LOG="${SHIM_DIR}/openshell.log"
 SUDO_LOG="${SHIM_DIR}/sudo.log"
 FAKE_UID=1000
+# The Renovate-tracked pin setup.sh sources (GITHUB_ENV unset: no CI side effect).
+PIN_VERSION=$(env -u GITHUB_ENV bash -c 'source "$1"; printf "%s" "${OPENSHELL_VERSION}"' \
+  _ "${SCRIPT_DIR}/../../.github/scripts/openshell-version.sh")
+PIN_IMAGE="ghcr.io/nvidia/openshell/supervisor:${PIN_VERSION}"
+GW_TOML="${FAKE_HOME}/.config/openshell/gateway.toml"
+# No packaged default: configure_gateway takes the literal v2 fallback.
+export OPENSHELL_PACKAGED_GATEWAY_TOML="${WORK_DIR}/no-packaged-default"
 
 # sudo is a no-op (patch_config chown/chmod the config dir).
 printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SUDO_LOG}" > "${SHIM_DIR}/sudo"
@@ -431,6 +439,105 @@ elif grep -Fq "Environment=XDG_RUNTIME_DIR=/run/user/${FAKE_UID}" "${override_fi
 else
   fail "setup_runner_user UID-0 rewrite produced: $(tr '\n' '|' < "${override_file}")"
 fi
+
+echo "== configure_gateway: pre-0.1 (schema v1) host =="
+rm -rf "${FAKE_HOME}/.config/openshell"
+mkdir -p "${FAKE_HOME}/.config/openshell"
+# The v1 file an 0.0.x setup.sh wrote.
+printf '[openshell]\nversion = 1\n\n[openshell.gateway]\nbind_address = "0.0.0.0:17670"\ncompute_drivers = ["podman"]\nsupervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.116"\n' > "${GW_TOML}"
+cp "${GW_TOML}" "${WORK_DIR}/v1.toml"
+run_setup configure_gateway
+podman_section=$(awk -v key="supervisor_image = \"${PIN_IMAGE}\"" '/^\[/ { s = $0 } $0 == key { print s }' "${GW_TOML}")
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "configure_gateway should succeed on a v1 host (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif ! cmp -s "${WORK_DIR}/v1.toml" "${GW_TOML}.pre-0.1"; then
+  fail "v1 gateway.toml was not moved aside intact to gateway.toml.pre-0.1"
+elif ! grep -qx 'version = 2' "${GW_TOML}" || grep -q 'version = 1' "${GW_TOML}"; then
+  fail "gateway.toml is not schema v2: $(tr '\n' '|' < "${GW_TOML}")"
+elif ! grep -qx 'compute_driver = "podman"' "${GW_TOML}"; then
+  fail "gateway.toml dropped compute_driver: $(tr '\n' '|' < "${GW_TOML}")"
+elif [ "${podman_section}" != "[openshell.drivers.podman]" ]; then
+  fail "supervisor_image not under [openshell.drivers.podman]: $(tr '\n' '|' < "${GW_TOML}")"
+elif ! grep -qx 'OPENSHELL_BIND_ADDRESS=0.0.0.0' "${FAKE_HOME}/.config/openshell/gateway.env"; then
+  fail "gateway.env bind address not set"
+else
+  pass "configure_gateway moves a v1 gateway.toml aside and writes v2 with ${PIN_IMAGE} under [openshell.drivers.podman]"
+fi
+
+cp "${GW_TOML}" "${WORK_DIR}/v2.before"
+cp "${GW_TOML}.pre-0.1" "${WORK_DIR}/pre01.before" 2>/dev/null || : > "${WORK_DIR}/pre01.before"
+run_setup configure_gateway
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "configure_gateway re-run should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif cmp -s "${WORK_DIR}/v2.before" "${GW_TOML}" \
+  && cmp -s "${WORK_DIR}/pre01.before" "${GW_TOML}.pre-0.1" \
+  && [ "$(grep -o 'supervisor_image' "${GW_TOML}" | wc -l | tr -d ' ')" = "1" ]; then
+  pass "configure_gateway re-run is a no-op"
+else
+  fail "configure_gateway re-run changed files: $(tr '\n' '|' < "${GW_TOML}")"
+fi
+rm -rf "${FAKE_HOME}/.config/openshell"
+
+echo "== install_openshell: breaking-upgrade ack and stale state =="
+write_systemctl_stub seeded
+INSTALL_ENV_LOG="${SHIM_DIR}/install-env.log"
+: > "${INSTALL_ENV_LOG}"
+cat > "${WORK_DIR}/install.sh" <<INSTALL
+#!/bin/sh
+echo "ack=\${OPENSHELL_ACK_BREAKING_UPGRADE:-}" >> "${INSTALL_ENV_LOG}"
+INSTALL
+cat > "${SHIM_DIR}/curl" <<CURL
+#!/bin/sh
+cat "${WORK_DIR}/install.sh"
+CURL
+printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/podman"
+# Host still on 0.0.x.
+cat > "${SHIM_DIR}/openshell" <<OS
+#!/bin/sh
+echo "\$@" >> "${OPENSHELL_LOG}"
+case "\$1" in --version) echo "openshell 0.0.116";; esac
+exit 0
+OS
+chmod +x "${SHIM_DIR}/curl" "${SHIM_DIR}/podman" "${SHIM_DIR}/openshell"
+mkdir -p "${FAKE_HOME}/.local/state/openshell/gateway" "${FAKE_HOME}/.local/state/openshell/tls"
+echo db > "${FAKE_HOME}/.local/state/openshell/gateway/state.db"
+run_setup install_openshell
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "install_openshell should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif ! grep -qx 'ack=1' "${INSTALL_ENV_LOG}"; then
+  fail "install.sh ran without OPENSHELL_ACK_BREAKING_UPGRADE=1: $(tr '\n' '|' < "${INSTALL_ENV_LOG}")"
+elif [ -e "${FAKE_HOME}/.local/state/openshell/gateway" ] || [ -e "${FAKE_HOME}/.local/state/openshell/tls" ]; then
+  fail "pre-0.1 gateway store survived install_openshell"
+elif ! grep -q 'stop openshell-gateway.service' "${SYSTEMCTL_LOG}"; then
+  fail "install_openshell did not stop the gateway before wiping: $(tr '\n' '|' < "${SYSTEMCTL_LOG}")"
+elif ! grep -q 'gateway remove openshell' "${OPENSHELL_LOG}"; then
+  fail "install_openshell did not drop the stale CLI gateway registration"
+else
+  pass "install_openshell acks the breaking upgrade and discards pre-0.1 gateway state"
+fi
+
+# Already on the pin: no install, state untouched.
+write_systemctl_stub seeded
+: > "${INSTALL_ENV_LOG}"
+cat > "${SHIM_DIR}/openshell" <<OS
+#!/bin/sh
+echo "\$@" >> "${OPENSHELL_LOG}"
+case "\$1" in --version) echo "openshell ${PIN_VERSION}";; esac
+exit 0
+OS
+chmod +x "${SHIM_DIR}/openshell"
+mkdir -p "${FAKE_HOME}/.local/state/openshell/gateway"
+echo db > "${FAKE_HOME}/.local/state/openshell/gateway/state.db"
+run_setup install_openshell
+if [ "${RUN_SETUP_RC}" -eq 0 ] && [ ! -s "${INSTALL_ENV_LOG}" ] \
+  && [ -e "${FAKE_HOME}/.local/state/openshell/gateway/state.db" ]; then
+  pass "install_openshell on the pinned version skips the install and keeps state"
+else
+  fail "install_openshell re-ran on the pinned version (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+fi
+rm -rf "${FAKE_HOME}/.local/state/openshell"
+printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${OPENSHELL_LOG}" > "${SHIM_DIR}/openshell"
+rm -f "${SHIM_DIR}/curl" "${SHIM_DIR}/podman"
 
 if [ "${FAILURES}" -ne 0 ]; then
   echo "${FAILURES} case(s) failed" >&2

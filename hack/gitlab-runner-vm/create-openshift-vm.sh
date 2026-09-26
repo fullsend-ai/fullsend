@@ -103,7 +103,8 @@ if [ -f "${_openshell_version_sh}" ]; then
   # shellcheck source=../../.github/scripts/openshell-version.sh
   source "${_openshell_version_sh}"
 fi
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
+# Fallback only when the pin file is absent; keep in step with openshell-version.sh.
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.1}"
 TEMPLATE="${SCRIPT_DIR}/vm.yaml"
 PREFIX="fullsend-gitlab-runner"
 
