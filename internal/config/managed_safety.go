@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -74,7 +75,15 @@ func CheckManagedSafetyGateFromLayers(currentYAML []byte, candidate PerRepoConfi
 // so omitted vs explicit local fields can be distinguished.
 func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfigWriter) []SafetyRelaxation {
 	if current == nil || candidate == nil {
-		return nil
+		// A missing comparison operand must never read as "no
+		// relaxations" — callers treat an empty result as "gate passed"
+		// and allow the write. Fail closed with a synthetic relaxation
+		// naming the gate itself instead of silently permitting it.
+		return []SafetyRelaxation{{
+			Key:       "managed_safety_gate",
+			Current:   "unavailable",
+			Candidate: "unavailable",
+		}}
 	}
 	local := asPerRepo(candidate)
 	var out []SafetyRelaxation
@@ -119,12 +128,32 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 	if local != nil {
 		localAgents = local.LocalAgentEntries()
 	}
+	seenAgentNames := make(map[string]struct{}, len(currentAgents))
 	for _, a := range currentAgents {
-		if a.IsEnabled() {
+		name := a.DerivedName()
+		key := strings.ToLower(name)
+		if _, done := seenAgentNames[key]; done {
+			// Duplicate same-name entries only occur when the raw local
+			// list is returned unmerged (no parent agents to merge
+			// against); evaluate each distinct name once, using
+			// last-writer-wins, rather than once per raw entry.
 			continue
 		}
-		name := a.DerivedName()
-		if agentSuppressed(candidateAgents, name) {
+		seenAgentNames[key] = struct{}{}
+
+		if !IsAgentExplicitlyDisabled(currentAgents, name) {
+			continue
+		}
+		if agentEntryPresent(candidateAgents, name) {
+			if IsAgentExplicitlyDisabled(candidateAgents, name) {
+				continue
+			}
+		} else if !isBuiltinAgentName(name) {
+			// A custom (source-declared, non-built-in) agent that is
+			// entirely absent from the candidate was removed, not
+			// re-enabled. Built-in agents keep resolving through the
+			// agents-repo fallback even without an entry, so their
+			// absence still relaxes the suppression.
 			continue
 		}
 		if localAgentExplicitlyEnabled(localAgents, name) {
@@ -170,19 +199,35 @@ func setWidened(current, candidate []string) bool {
 	return false
 }
 
-func agentSuppressed(agents []AgentEntry, name string) bool {
+// agentEntryPresent reports whether any entry in agents matches name,
+// regardless of its enabled state. Used to distinguish "absent" (removal)
+// from "present but enabled" when the agent was disabled in current.
+func agentEntryPresent(agents []AgentEntry, name string) bool {
+	lower := strings.ToLower(name)
 	for _, a := range agents {
-		if strings.EqualFold(a.DerivedName(), name) && !a.IsEnabled() {
+		if strings.ToLower(a.DerivedName()) == lower {
 			return true
 		}
 	}
 	return false
 }
 
+// isBuiltinAgentName reports whether name is one of the built-in agents
+// fullsend dispatches by name (ValidAgentNames). Built-in agents keep
+// resolving through the agents-repo fallback even without a config entry,
+// so their absence from a candidate's agent list is not a removal.
+func isBuiltinAgentName(name string) bool {
+	return slices.Contains(ValidAgentNames(), strings.ToLower(name))
+}
+
+// localAgentExplicitlyEnabled reports whether the last entry matching name
+// in local has Enabled explicitly set to true. Iterates in reverse to
+// respect last-writer-wins ordering, like IsAgentExplicitlyDisabled.
 func localAgentExplicitlyEnabled(local []AgentEntry, name string) bool {
-	for _, a := range local {
-		if strings.EqualFold(a.DerivedName(), name) && a.Enabled != nil && *a.Enabled {
-			return true
+	lower := strings.ToLower(name)
+	for i := len(local) - 1; i >= 0; i-- {
+		if strings.ToLower(local[i].DerivedName()) == lower {
+			return local[i].Enabled != nil && *local[i].Enabled
 		}
 	}
 	return false

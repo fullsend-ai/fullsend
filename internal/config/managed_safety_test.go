@@ -131,6 +131,29 @@ func TestCheckManagedSafetyGate_AgentSuppressionKept(t *testing.T) {
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
 }
 
+func TestCheckManagedSafetyGate_AgentSuppressionDisableThenOverrideOnlyStillRelaxes(t *testing.T) {
+	current := mustLayer(t, "agents:\n  - name: review\n    enabled: false\n", "")
+	candidate := mustLayer(t, "agents:\n  - name: review\n    enabled: false\n  - name: review\n    runtime: claude\n", "")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1,
+		"last-writer-wins: the override-only entry doesn't restate enabled: false, so the agent is really enabled")
+	assert.Equal(t, "agents.review.enabled", got[0].Key)
+}
+
+func TestCheckManagedSafetyGate_AgentSuppressionDisableThenExplicitEnableAllowed(t *testing.T) {
+	current := mustLayer(t, "agents:\n  - name: review\n    enabled: false\n", "")
+	candidate := mustLayer(t, "agents:\n  - name: review\n    enabled: false\n  - name: review\n    enabled: true\n", "")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"the last entry explicitly re-enables the agent, an authorized relaxation")
+}
+
+func TestCheckManagedSafetyGate_CustomAgentRemovalNotFlaggedAsRelaxation(t *testing.T) {
+	current := mustLayer(t, "agents:\n  - source: https://example.com/agents/custom.yaml\n    enabled: false\n", "")
+	candidate := mustLayer(t, "", "")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a disabled custom agent absent from the candidate was removed, not re-enabled")
+}
+
 func TestCheckManagedSafetyGate_CreateIssuesImplicitWidenViaParent(t *testing.T) {
 	base := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n"
 	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", base)
@@ -160,8 +183,13 @@ func TestCheckManagedSafetyGate_CreateIssuesDropToUnsetIsNarrowing(t *testing.T)
 }
 
 func TestCheckManagedSafetyGate_NilInputs(t *testing.T) {
-	assert.Nil(t, CheckManagedSafetyGate(nil, NewEmptyPerRepoOverlay()))
-	assert.Nil(t, CheckManagedSafetyGate(NewEmptyPerRepoOverlay(), nil))
+	got := CheckManagedSafetyGate(nil, NewEmptyPerRepoOverlay())
+	require.Len(t, got, 1, "a missing comparison operand must fail closed, not read as \"no relaxations\"")
+	assert.Equal(t, "managed_safety_gate", got[0].Key)
+
+	got = CheckManagedSafetyGate(NewEmptyPerRepoOverlay(), nil)
+	require.Len(t, got, 1, "a missing comparison operand must fail closed, not read as \"no relaxations\"")
+	assert.Equal(t, "managed_safety_gate", got[0].Key)
 }
 
 func TestCheckManagedSafetyGateFromLayers_CurrentYAMLAndInvalid(t *testing.T) {

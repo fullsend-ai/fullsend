@@ -482,7 +482,7 @@ github:
 	assert.True(t, strings.HasPrefix(text, "kill_switch:"), "body must start with config content, not a header; the ownership marker is prefixed by install (#7632)")
 }
 
-func TestRenderManagedConfig_InvalidOverlay(t *testing.T) {
+func TestRenderManagedConfig_InvalidManaged(t *testing.T) {
 	input := `
 version: 1
 github:
