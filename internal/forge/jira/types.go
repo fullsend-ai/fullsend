@@ -21,6 +21,7 @@ type IssueFields struct {
 	Created     string       `json:"created"`
 	Updated     string       `json:"updated"`
 	Comment     *CommentPage `json:"comment,omitempty"`
+	Components  []Component  `json:"components,omitempty"`
 }
 
 // Status represents the status of a Jira issue.
@@ -169,4 +170,24 @@ type changelogPage struct {
 	MaxResults int              `json:"maxResults"`
 	StartAt    int              `json:"startAt"`
 	IsLast     bool             `json:"isLast"`
+}
+
+// Component represents a component assigned to a Jira issue.
+type Component struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// RemoteLink represents an external web link attached to a Jira issue.
+type RemoteLink struct {
+	ID     int              `json:"id,omitempty"`
+	Self   string           `json:"self,omitempty"`
+	Object RemoteLinkObject `json:"object"`
+}
+
+// RemoteLinkObject contains the target details of a remote issue link.
+type RemoteLinkObject struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
