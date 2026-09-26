@@ -71,7 +71,7 @@ version = 2
 compute_driver = "podman"
 
 [openshell.drivers.podman]
-supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.1"
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.1"  # match your openshell --version
 health_check_interval_secs = 10
 ```
 

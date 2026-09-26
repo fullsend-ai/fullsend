@@ -743,7 +743,7 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 		if delErr := sandbox.DeleteProvider(name); delErr != nil && !errors.Is(delErr, sandbox.ErrProviderNotFound) {
 			var expireErr error
 			for _, k := range keys {
-				if expireErr = sandbox.SetProviderCredentialExpiry(ctx, name, k, time.Now()); expireErr != nil {
+				if expireErr = sandbox.SetProviderCredentialExpiry(context.Background(), name, k, time.Now()); expireErr != nil {
 					break
 				}
 			}
