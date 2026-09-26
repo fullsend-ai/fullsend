@@ -28,7 +28,13 @@ codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs}):
       be forwarded verbatim: codex treats any exit other than 0 and 2 as
       `Failed`, and a failed hook does **not** block (`events/pre_tool_use.rs`
       `parse_completed`), so exit 1 would be fail-open. An exit 2 with empty
-      stderr is also `Failed`, so the reason is never allowed to be empty.
+      stderr is also `Failed`, so `block()` always also writes the reason
+      directly to fd 2 — the fd codex actually reads — rather than trusting
+      a successful `sys.stderr` write alone, to keep the reason non-empty
+      on every path where the fd itself is still live. If fd 2 has actually
+      been torn down at the OS level, no process-local write can put bytes
+      on the other end of it; that residual case still exits 2 but is
+      indistinguishable from `Failed` to codex — see `block()`'s docstring.
     - **allow** → exit 0 with stdout empty. On PostToolUse this is limited to
       rewrites whose metadata identifies them as context suppression or
       ANSI-only cleanup; every security-sensitive or unclassified rewrite
@@ -346,17 +352,57 @@ def log_finding(name: str, severity: str, detail: str, action: str) -> None:
 def block(reason: str) -> None:
     """Exit 2 with a non-empty reason on stderr — codex's blocking contract.
 
-    An empty stderr on exit 2 is reported as `Failed`, which does not block,
-    so a missing reason is replaced rather than passed through.
+    An empty stderr on exit 2 is reported as `Failed`, which does not block
+    (`events/pre_tool_use.rs` `parse_completed` requires `trimmed_non_empty`
+    stderr), so codex only honors this as a block when the reason actually
+    reaches fd 2 — the exit code alone is not enough.
 
-    The write is suppressed rather than allowed to raise: a stderr that is
-    already a broken pipe would otherwise take the interpreter down with exit
-    1, which codex records as `Failed` — and a failed hook does not block. A
-    block without its reason still beats a block that never happens."""
+    `sys.stderr` is not trusted to be the live fd: something upstream may
+    have set it to `None`, left a `TextIOWrapper`/`BufferedWriter` around an
+    fd that no longer refers to the process's real stderr, or left a working
+    wrapper around some other, unrelated fd — codex only ever reads the
+    process's real fd 2, never the Python object, so a visibly successful
+    `sys.stderr` write says nothing about whether it actually reached fd 2.
+    A best-effort write through `sys.stderr` (when present) is therefore
+    always followed by a raw `os.write(2, ...)` straight to the real fd,
+    unconditionally, rather than treating the `sys.stderr` write as
+    sufficient on its own. That recovers the reason whenever fd 2 itself is
+    still a live pipe — a broken, nulled, or misdirected Python wrapper
+    around an otherwise-working fd — which is the recoverable half of
+    "unwritable stderr".
+
+    The other half is not recoverable: if fd 2 itself has been closed (the
+    OS-level pipe torn down, not just the Python object), no write from this
+    process — buffered or raw — can put bytes on the other end, because the
+    transport itself is gone. `os.write(2, ...)` then raises `OSError`
+    (EBADF) exactly like the buffered path did, and is suppressed the same
+    way. In that case codex necessarily sees exit 2 with empty stderr and
+    records `Failed`, not a block — no in-process fix changes that. This
+    still writes the reason to the findings log (see call sites) so the
+    attempted block is not silently lost, and still exits 2 rather than
+    propagating an exception, which is strictly no worse than the
+    alternative and correct whenever the fd is not the one that's broken.
+
+    All writes are suppressed rather than allowed to raise: an unhandled
+    exception here would take the interpreter down with exit 1, which codex
+    also records as `Failed`. After writing, the stream is closed and
+    detached — on interpreters that leave a live `TextIOWrapper` around a
+    closed fd 2 (pyenv-built CPython), an unclosed wrapper's shutdown flush
+    fails and overrides this exit 2 with 120, which is also `Failed`.
+    Closing and dropping the wrapper keeps the exit code fail-closed on
+    every CPython build regardless of which path delivered the reason.
+    """
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
+    truncated = text[:MAX_TEXT]
     with contextlib.suppress(BaseException):
-        sys.stderr.write(text[:MAX_TEXT])
-        sys.stderr.flush()
+        if sys.stderr is not None:
+            sys.stderr.write(truncated)
+            sys.stderr.flush()
+    with contextlib.suppress(BaseException):
+        os.write(2, truncated.encode("utf-8", "replace"))
+    with contextlib.suppress(BaseException):
+        sys.stderr.close()
+    sys.stderr = None
     sys.exit(2)
 
 
@@ -606,6 +652,13 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
                 )
             if context_was_suppressed(verdict["output"]):
                 if script != CHAIN_SCRIPT or not stage_enabled("secret_redact_posttool.py"):
+                    log_finding(
+                        "codex_posttool_unverified_suppression",
+                        "critical",
+                        f"{script} suppressed context in the {tool_name} result without the "
+                        "redact stage available to verify it",
+                        "block",
+                    )
                     block(
                         "fullsend: context suppression could not prove the original tool output "
                         "safe on codex, so the result was withheld"
