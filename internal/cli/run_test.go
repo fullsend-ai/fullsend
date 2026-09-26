@@ -5152,12 +5152,14 @@ func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
 	var agg aggregateMetrics
 
 	// Simulate a cancelled run: metrics populated via TokensEvent (no
-	// ResultEvent, so NumTurns/TotalCostUSD stay zero).
+	// ResultEvent, so TotalCostUSD stays zero). NumTurns is counted from
+	// message_start and carried on TokensEvent (#6806).
 	m := agentruntime.RunMetrics{
 		InputTokens:              599,
 		OutputTokens:             119,
 		CacheCreationInputTokens: 148_943,
 		CacheReadInputTokens:     583_298,
+		NumTurns:                 3,
 		Model:                    "claude-opus-4-6",
 	}
 	m.ToolCalls.Store(10)
@@ -5182,11 +5184,11 @@ func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
 	if agg.Model != "claude-opus-4-6" {
 		t.Errorf("model = %q, want claude-opus-4-6", agg.Model)
 	}
-	if agg.NumTurns != 0 {
-		t.Errorf("num_turns = %d, want 0 (cancelled run has no ResultEvent)", agg.NumTurns)
+	if agg.NumTurns != 3 {
+		t.Errorf("num_turns = %d, want 3 (TokensEvent carries turns when ResultEvent is missing)", agg.NumTurns)
 	}
 	if agg.TotalCostUSD != 0 {
-		t.Errorf("total_cost_usd = %f, want 0 (cancelled run has no ResultEvent)", agg.TotalCostUSD)
+		t.Errorf("total_cost_usd = %f, want 0 (dollar cost is only on ResultEvent)", agg.TotalCostUSD)
 	}
 }
 
@@ -5213,11 +5215,13 @@ func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
 	aggregateRunMetrics(&agg, &m1, 1)
 
 	// Iteration 2: cancelled — TokensEvent only (no ResultEvent).
+	// NumTurns is still counted from message_start (#6806); cost is not.
 	m2 := agentruntime.RunMetrics{
 		InputTokens:              599,
 		OutputTokens:             119,
 		CacheCreationInputTokens: 148_943,
 		CacheReadInputTokens:     583_298,
+		NumTurns:                 2,
 		Model:                    "claude-opus-4-6",
 	}
 	m2.ToolCalls.Store(3)
@@ -5241,8 +5245,8 @@ func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
 	if agg.TotalCostUSD != 0.42 {
 		t.Errorf("total_cost_usd = %f, want 0.42", agg.TotalCostUSD)
 	}
-	if agg.NumTurns != 5 {
-		t.Errorf("num_turns = %d, want 5 (cancelled iteration contributes zero turns)", agg.NumTurns)
+	if agg.NumTurns != 7 {
+		t.Errorf("num_turns = %d, want 7 (cancelled iteration still contributes TokensEvent turns)", agg.NumTurns)
 	}
 	if agg.ToolCalls != 11 {
 		t.Errorf("tool_calls = %d, want 11", agg.ToolCalls)
