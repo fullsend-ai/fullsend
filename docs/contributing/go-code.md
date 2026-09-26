@@ -656,6 +656,14 @@ agents:
     enabled: true
 ```
 
+This section documents `AgentEntries()`'s keyed merge by `DerivedName()`
+from the caller side — how code that reads composed entries afterward
+must interpret duplicates. The implementation side of that same merge
+(what to update when adding or modifying an `AgentEntry` field) is
+covered by [Checklist for `AgentEntry` field
+changes](harness-composition.md#checklist-for-agententry-field-changes)
+in `docs/contributing/harness-composition.md`.
+
 The established resolution convention is **last-writer-wins**: the last
 matching entry is the effective one. That convention is implemented
 centrally in `config.IsAgentExplicitlyDisabled`
