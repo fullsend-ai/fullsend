@@ -40,7 +40,7 @@ The following items benefit any team regardless of how far you go with fullsend.
 
 Tools like [agentready](https://github.com/ambient-code/agentready) can help assess your repo's readiness for agent-driven development.
 
-**Resource note for public repos** — Fullsend requires write access to trigger agents, so external contributors can't trigger agent runs. However, PRs from unknown authors still trigger CI workflows that consume runner minutes. If your repo accepts external contributions, consider a gating workflow that closes PRs from non-approved contributors before other workflows fire. See the fullsend repo's [vouch system](../../contributing/vouch-system.md) for an example.
+**Resource note for public repos** — Fullsend requires write access to trigger agents, so external contributors can't trigger agent runs. To extend trigger access to users listed in a Prow-style OWNERS file, see [Agent dispatch authorization](customizing-agents.md#agent-dispatch-authorization). However, PRs from unknown authors still trigger CI workflows that consume runner minutes. If your repo accepts external contributions, consider a gating workflow that closes PRs from non-approved contributors before other workflows fire. See the fullsend repo's [vouch system](../../contributing/vouch-system.md) for an example.
 
 ## Crawl — Observe and Evaluate
 

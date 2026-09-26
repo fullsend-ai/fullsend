@@ -12,6 +12,7 @@ so you can pick the right one.
 | Teach agents your coding style, test commands, or architecture rules | [AGENTS.md](#agentsmd) | Low |
 | Give an agent domain-specific knowledge or a new capability | [Skills](#skills) | Low |
 | Change model, timeout, image, or add env vars to an existing agent | [Harness configuration](#harness-configuration) | Medium |
+| Control who can trigger agents (e.g. via OWNERS file) | [Authorization](customizing-agents.md#agent-dispatch-authorization) | Low |
 | Build a completely new agent with its own trigger, scripts, and schema | [Bring Your Own Agent](#bring-your-own-agent) | High |
 
 Start at the top and move down only when a lighter option doesn't cover your
