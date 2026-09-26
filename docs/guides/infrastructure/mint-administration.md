@@ -60,9 +60,9 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
   | `roles/resourcemanager.projectIamAdmin` | \* | | | | | | |
   | `roles/secretmanager.admin` | \* | x | \*\* | \*\*\* | | | |
   | `roles/cloudfunctions.developer` | x | x | | | | | |
-  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x |
+  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x‡ |
   | `roles/run.admin` | x | | x | x | x | x | |
-  | `roles/secretmanager.viewer` | | | § | | | | x |
+  | `roles/secretmanager.viewer` | | | § | | | | x‡ |
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
@@ -71,6 +71,8 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
   \*\*\* `roles/secretmanager.admin` is required for `mint remove-role` unless `--keep-pem` is passed (default deletes the PEM secret).
 
   § `roles/secretmanager.viewer` is required for `mint add-role` when using `--use-existing-pem-secret` (checks that the PEM secret exists).
+
+  ‡ `roles/cloudfunctions.viewer` and `roles/secretmanager.viewer` are required for `mint status` only when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
 
   Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
@@ -381,17 +383,70 @@ Read-only — makes no changes.
 
 ## Checking mint status
 
-`fullsend mint status` inspects the deployed mint function, Cloud Run revision state, enrolled orgs, and PEM health. This is a read-only operation requiring only viewer-level access.
+`fullsend mint status` inspects the mint's state and PEM health. Two modes are available:
+
+### API-based mode (recommended)
+
+When `--mint-url` (or `FULLSEND_MINT_URL`) is provided, the command queries
+the mint's `/v1/status` endpoint using auto-discovered GitHub credentials.
+No GCP IAM roles are required.
+
+Authentication is attempted in order: GitHub Actions OIDC first, then
+`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`.
+
+> The `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token` fallback only succeeds
+> against a mint deployed with `--status-auth=github
+> --status-github-group=ORG/TEAM` (see
+> [infrastructure-reference.md](infrastructure-reference.md#status-endpoint)).
+> A default (OIDC-only) mint rejects it with HTTP 401 — only GitHub Actions
+> OIDC works there.
+
+```bash
+# Query via the mint API
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+
+# Or set the env var and omit the flag
+export FULLSEND_MINT_URL="https://mint.example.com"
+fullsend mint status
+```
+
+API-based mode returns the following fields:
+
+- **version** — the mint's build version
+- **commit** — the mint's build commit hash
+- **org** — the calling workflow's organization (OIDC auth only)
+- **allowed_orgs** — all configured allowed organizations (non-OIDC auth)
+- **roles** — configured role names
+- **workflow_host_repos** — repositories allowed as workflow hosts
+
+### GCP-based mode
+
+When `--project` is provided (and `--mint-url` is not), the command reads
+mint state directly from GCP infrastructure. This requires GCP viewer IAM
+roles (see the [IAM table above](#prerequisites)).
 
 ```bash
 # Overview of all enrolled orgs
-fullsend mint status --project="$GCP_PROJECT"
+fullsend mint status --mint-url= --project="$GCP_PROJECT"
 
 # Drill into a specific org's PEM status
-fullsend mint status acme-corp --project="$GCP_PROJECT"
+fullsend mint status acme-corp --mint-url= --project="$GCP_PROJECT"
 ```
 
+When `FULLSEND_MINT_URL` is set and `--project` is also provided, the
+command returns an error to prevent silent mode ambiguity — either unset
+the env var or pass `--mint-url=` to force GCP-based mode, as in the
+examples above.
+
+> **Note:** The IAM roles listed in the [table above](#prerequisites) apply
+> only to `--project` (GCP-based) mode. API-based mode requires only valid
+> GitHub credentials.
+
 ### What status reports
+
+> The fields below are reported by `--project` (GCP-based) mode.
+> API-based mode (`--mint-url`) returns a different payload — see the
+> field listing in the [API-based mode](#api-based-mode-recommended) section above.
 
 **Cloud Run revision section:**
 
@@ -461,9 +516,13 @@ fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
 fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
 
 # 4. Configure GitHub with public apps (installable by other orgs)
+# $MINT_URL: the "Mint deployed at ..." URL printed by step 1.
+# $WIF_PROVIDER: the FULLSEND_GCP_WIF_PROVIDER value from step 3 — run
+#   `fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" --format=env`
+#   and copy it, or parse it from `--format=json`.
 fullsend github setup "$FIRST_ORG" \
-  --mint-url "$(fullsend mint status --project="$GCP_PROJECT" -o url)" \
-  --inference-wif-provider "$(fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" -o provider)" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
   --public
 ```
@@ -537,7 +596,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
 2. Re-run `fullsend mint enroll` for any org — this triggers a new revision and routes traffic to it
 3. If no enrollment is needed, manually route traffic with:
 
@@ -555,7 +614,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status --project="$GCP_PROJECT"` to check revision state
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to check revision state
 2. If the template diverges from traffic, re-run the enrollment command — the CLI will detect the org is already in the template and route traffic to the new revision
 3. Check the CLI output for partial failure messages — if the traffic PATCH failed, the new revision name is reported for manual recovery
 
@@ -575,7 +634,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Resolution:**
 
-1. Run `fullsend mint status` to confirm which org is missing
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which org is missing
 2. Re-run `fullsend mint enroll` for the missing org
 3. Always enroll orgs serially — one at a time
 
