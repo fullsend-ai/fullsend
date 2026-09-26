@@ -651,6 +651,13 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
                 )
             if context_was_suppressed(verdict["output"]):
                 if script != CHAIN_SCRIPT or not stage_enabled("secret_redact_posttool.py"):
+                    log_finding(
+                        "codex_posttool_unverified_suppression",
+                        "critical",
+                        f"{script} suppressed context in the {tool_name} result without the "
+                        "redact stage available to verify it",
+                        "block",
+                    )
                     block(
                         "fullsend: context suppression could not prove the original tool output "
                         "safe on codex, so the result was withheld"
