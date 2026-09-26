@@ -636,10 +636,14 @@ integration test.
 ## Last-writer-wins AgentEntries resolution
 
 `perRepoConfig.AgentEntries()` can return **duplicate same-name entries**.
-A keyed merge by `DerivedName()` runs only when a parent agent list
-exists; when the local `agents:` list has no matching parent entry to
-merge against (no parent agents, or a name the parent does not define),
-the raw local slice is returned as-is. Local YAML may legally list the
+When the parent agent list is empty, the local `agents:` slice is
+returned unchanged, so duplicate names in it pass through as-is. When
+the parent list is non-empty, entries are keyed-merged by
+`DerivedName()`: parent agents whose name matches a local entry are
+merged (later-listed local entries for that name win per field), and
+only the local entries that did not match any parent agent are
+appended afterward — so duplicates can still arise there when the same
+unmatched name appears more than once. Local YAML may legally list the
 same name twice — the disable-then-enable pattern that replaces a
 default agent with a custom one:
 
@@ -675,11 +679,15 @@ Grep for the current call sites before adding a new one:
 - `internal/cli/lock.go`
 - `internal/config/managed_safety.go` (`CheckManagedSafetyGate`)
 
-The same reuse rule applies to other layered-config accessors
-(`ConfigRoles()`, `AllowedResources()`, and similar getters): do not
-re-derive comparison or diff semantics that already exist in the config
-package. New comparison logic over those lists should call the existing
-helper rather than walking the raw slice.
+This reuse rule is specific to `AgentEntries()` (and `AgentSettingsFor`
+for settings lookups). Other layered-config accessors have their own,
+different merge semantics — for example `ConfigRoles()` is nil-inherit /
+non-nil-replace, and `AllowedResources()` is nil-inherit / empty-as-is /
+non-empty-union-with-parent. Neither returns `[]AgentEntry`, and there
+is no exported last-writer-wins helper for either, so
+`IsAgentExplicitlyDisabled` does not apply to them. New comparison logic
+over those getters should follow their own documented merge rules
+rather than being routed through the `AgentEntries()` helpers.
 
 ### Why this matters
 
@@ -692,8 +700,7 @@ through `IsAgentExplicitlyDisabled` was the fix.
 
 ### When reviewing PRs
 
-When reviewing a PR that compares or diffs `AgentEntries()` (or adds
-new comparison logic over similarly-shaped layered-config lists),
+When reviewing a PR that compares or diffs `AgentEntries()`,
 flag a first-match scan or per-raw-entry loop as a **high-severity**
 logic error if it does not reuse `IsAgentExplicitlyDisabled` /
 `AgentSettingsFor` or equivalent last-matching-entry logic. The fix is
