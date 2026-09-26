@@ -78,6 +78,7 @@ func TestNewFakeGCFClient_OptionsAndMethods(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.UpdateServiceEnvVars(ctx, "p", "r", "fn", map[string]string{"D": "4"})
 	require.NoError(t, err)
+	require.NoError(t, client.PinServiceTraffic(ctx, "p", "r", "fn", "rev-2"))
 
 	gotTraffic, err := client.GetServiceTrafficEnvVars(ctx, "p", "r", "fn")
 	require.NoError(t, err)

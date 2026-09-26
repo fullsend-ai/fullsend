@@ -3953,9 +3953,10 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 			"ALLOWED_ORGS": "acme",
 		}),
 		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
-			TrafficRevisionShort:   "fullsend-mint-00001",
-			TemplateRevision:       "projects/p/locations/r/services/s/revisions/fullsend-mint-00002",
-			TemplateMatchesTraffic: false,
+			TrafficRevisionShort:     "fullsend-mint-00001",
+			LatestReadyRevisionShort: "fullsend-mint-00002",
+			TemplateRevision:         "projects/p/locations/r/services/s/revisions/fullsend-mint-00002",
+			TemplateMatchesTraffic:   false,
 		}),
 	)
 	withMintGCFClient(t, client)
@@ -3964,6 +3965,9 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "diverges")
+	assert.Contains(t, out.String(), "Newer revision exists but is not serving")
+	assert.Contains(t, out.String(), "Latest ready:")
+	assert.Contains(t, out.String(), "fullsend-mint-00002")
 }
 
 func TestRunMintEnrollRepo_Success(t *testing.T) {

@@ -36,7 +36,7 @@ fullsend mint deploy \
   --region "us-central1"
 ```
 
-The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
+The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration. After a source deploy (and on a hash-skip when traffic is still pinned to an older revision), the CLI pins Cloud Run traffic to the latest ready revision. If that pin fails, deploy fails and the error includes the `gcloud run services update-traffic` command to recover.
 
 Use `--public` to deploy a **public mint** (`PER_REPO_WIF_REPOS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
 
@@ -296,7 +296,7 @@ Read-only — makes no changes.
 
 ## `mint status`
 
-Inspects the mint's current state: deployed function, registered roles, enrolled orgs, and PEM health.
+Inspects the mint's current state: deployed function, Cloud Run revision/traffic routing, registered roles, enrolled orgs, and PEM health. When a newer Cloud Run revision exists but is not serving, status reports health as degraded and warns "Newer revision exists but is not serving".
 
 ```bash
 fullsend mint status \
