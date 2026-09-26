@@ -596,6 +596,17 @@ func (f *FakeClient) CreateForkInOrg(_ context.Context, owner, repo, org, forkNa
 	}
 
 	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
+
+	// Auto-populate the fork in Repos so GetRepo (and therefore
+	// waitForFork) finds it immediately instead of hanging for the
+	// full timeout. Mirrors CreateFork.
+	f.Repos = append(f.Repos, Repository{
+		FullName:      targetFullName,
+		Name:          forkName,
+		DefaultBranch: "main",
+		Fork:          true,
+	})
+
 	return forkName, nil
 }
 
