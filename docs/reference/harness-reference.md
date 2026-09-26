@@ -11,6 +11,7 @@ role: triage                        # A role the mint serves (built-in on the ho
 slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
+schema_version: 1                   # Planned (ADR 0115) — not yet implemented; absent = 1, ignored until the Go field lands
 trigger: "event.entity.kind == 'work_item'"  # Optional CEL expression over NormalizedEvent (see CEL Triggers Reference)
 
 # ── Composition ───────────────────────────────────────────────
@@ -46,6 +47,9 @@ pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
 agent_input: inputs/my-input.md     # File passed as initial input to the agent
 
+# ── Host-dependency preflight (ADR 0116 / ADR 0117) ───────────
+preflight_check: 'python3 -c "import jsonschema"'  # Planned (ADR 0117) — not yet implemented; literal sh -c command, NOT a script path; single gate for all scripts, run before pre_script
+
 # ── Mint privilege per run-stage (ADR 0073) ───────────────────
 privilege_levels:
   pre_script: write                 # host-side deterministic automation
@@ -56,6 +60,7 @@ privilege_levels:
 # ── Validation ────────────────────────────────────────────────
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
                                      # previous iteration's validation failure to
@@ -152,6 +157,8 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
+**`preflight_check`** — A host-dependency probe run as a literal `sh -c` command before sandbox creation. Top-level `preflight_check` is planned ([ADR 0117](../ADRs/0117-extend-preflight-coverage-to-pre-and-post-scripts.md)) but **not yet implemented** — a top-level `preflight_check` key is currently ignored; when it lands it will run once before `pre_script` and gate `pre_script`, `post_script`, and `validation_loop`. `validation_loop.preflight_check` is implemented and runs before the validation loop ([ADR 0116](../ADRs/0116-preflight-check-literal-command.md)). The value is a command, not a script path — it is executed verbatim with no working directory and is not resolved through the resource-fetch pipeline, so a value like `scripts/common-preflight.sh` fails at runtime today; the path-pattern lint rule that will flag it is planned under ADR 0116, not yet implemented. Author self-contained probes such as `python3 -c "import jsonschema"`.
+
 **`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
@@ -241,6 +248,8 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 ```
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
+
+**`preflight_check` is a command, not a script** — `validation_loop.preflight_check` is a literal `sh -c` command executed on the trusted runner with no working directory. It is not a file path and is not resource-resolved; a value like `scripts/common-preflight.sh` fails at runtime today, and the path-pattern lint rule that will flag it is planned under [ADR 0116](../ADRs/0116-preflight-check-literal-command.md), not yet implemented. Author self-contained probes such as `python3 -c "import jsonschema"`. The top-level `preflight_check` field is planned ([ADR 0117](../ADRs/0117-extend-preflight-coverage-to-pre-and-post-scripts.md)) but not yet implemented.
 
 ## See also
 
