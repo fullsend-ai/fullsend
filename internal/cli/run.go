@@ -2157,7 +2157,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	{
 		preflightStart := time.Now()
 		printer.StepStart("Checking GitHub API connectivity from sandbox")
-		result, connectErr := checkSandboxGitHubConnectivity(sandboxName)
+		result, connectErr := checkSandboxGitHubConnectivity(sandboxName, printer)
 		if connectErr != nil {
 			printer.StepFail("GitHub API unreachable from sandbox")
 			return fmt.Errorf("pre-flight connectivity check: %w", connectErr)
