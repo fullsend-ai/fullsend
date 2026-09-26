@@ -3166,6 +3166,7 @@ func writeValScript(t *testing.T, dir, name string) string {
 
 func TestPostLoopValidationSweep_LatestIterPasses(t *testing.T) {
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 	script := writeValScript(t, scriptDir, "validate.sh")
 
@@ -3183,14 +3184,15 @@ func TestPostLoopValidationSweep_LatestIterPasses(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 3, map[int]bool{3: true}, printer)
 	assert.True(t, result.passed, "sweep should pass when latest iteration passes")
 	assert.Equal(t, 3, result.validatedIter, "validated iteration should be runCount")
-	assert.True(t, result.repoExtractedOK, "repoExtractedOK should stay true when i == runCount")
+	assert.True(t, result.repoExtractedOK, "repoExtractedOK should stay true when i == runCount and that iter extracted")
 }
 
 func TestPostLoopValidationSweep_EarlierIterPasses(t *testing.T) {
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 	script := writeValScript(t, scriptDir, "validate.sh")
 
@@ -3207,14 +3209,15 @@ func TestPostLoopValidationSweep_EarlierIterPasses(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 3, map[int]bool{1: true}, printer)
 	assert.True(t, result.passed, "sweep should pass when earlier iteration passes")
 	assert.Equal(t, 1, result.validatedIter, "validated iteration should be 1")
-	assert.False(t, result.repoExtractedOK, "repoExtractedOK must be false when i != runCount")
+	assert.True(t, result.repoExtractedOK, "repoExtractedOK should be true when the earlier iteration itself extracted")
 }
 
 func TestPostLoopValidationSweep_NonePass(t *testing.T) {
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 	script := writeValScript(t, scriptDir, "validate.sh")
 
@@ -3230,19 +3233,18 @@ func TestPostLoopValidationSweep_NonePass(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 2, false, printer)
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 2, map[int]bool{2: true}, printer)
 	assert.False(t, result.passed, "sweep should not pass when no iteration passes")
 	assert.Equal(t, 0, result.validatedIter, "validatedIter should be 0 when none pass")
-	assert.False(t, result.repoExtractedOK, "repoExtractedOK should propagate input value")
+	assert.False(t, result.repoExtractedOK, "repoExtractedOK should be false when no iteration passes")
 }
 
-func TestPostLoopValidationSweep_EarlierIterClearsRepoOK(t *testing.T) {
-	// Verifies the key security invariant: when the sweep validates an
-	// earlier iteration (i != runCount), repoExtractedOK is cleared even
-	// if the caller passed true (meaning the last SafeDownload succeeded).
-	// This prevents the post-script from receiving REPO_DIR pointing to
-	// a different iteration's checkout than what was validated.
+func TestPostLoopValidationSweep_EarlierIterUsesOwnCheckout(t *testing.T) {
+	// When the sweep validates an earlier iteration that extracted, that
+	// iteration's own checkout is used — not the last iteration's. A last-
+	// only extract must not leak into REPO_DIR for a different iteration.
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 	script := writeValScript(t, scriptDir, "validate.sh")
 
@@ -3259,18 +3261,19 @@ func TestPostLoopValidationSweep_EarlierIterClearsRepoOK(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	// currentRepoExtractedOK=true simulates a successful last SafeDownload.
-	result := postLoopValidationSweep(h, runDir, 2, true, printer)
+	// Last iteration extracted, earlier one did not — fail closed.
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 2, map[int]bool{2: true}, printer)
 	assert.True(t, result.passed)
 	assert.Equal(t, 1, result.validatedIter)
 	assert.False(t, result.repoExtractedOK,
-		"repoExtractedOK must be false when validated iteration != runCount, even if last SafeDownload succeeded")
+		"repoExtractedOK must be false when the validated iteration itself did not extract")
 }
 
-func TestPostLoopValidationSweep_PassesEmptyTargetRepoDir(t *testing.T) {
-	// Verifies that the sweep always passes TARGET_REPO_DIR="" to the
-	// validation script (hostRepositoryDownloadDir is unreliable during sweep).
+func TestPostLoopValidationSweep_PassesEmptyTargetRepoDirWhenNotExtracted(t *testing.T) {
+	// Output-only rescue: when the passing iteration did not extract, the
+	// sweep still validates against output files with TARGET_REPO_DIR="".
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 
 	// Script that checks TARGET_REPO_DIR is empty and writes it to a file.
@@ -3289,18 +3292,89 @@ func TestPostLoopValidationSweep_PassesEmptyTargetRepoDir(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 1, true, printer)
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 1, map[int]bool{}, printer)
 	require.True(t, result.passed)
+	assert.False(t, result.repoExtractedOK)
 
 	got, err := os.ReadFile(checkFile)
 	require.NoError(t, err)
-	assert.Equal(t, "\n", string(got), "TARGET_REPO_DIR should be empty during sweep")
+	assert.Equal(t, "\n", string(got), "TARGET_REPO_DIR should be empty when the iteration did not extract")
 }
 
-func TestSweepResult_RepoExtractedOK_PreservesWhenRunCount(t *testing.T) {
-	// When the latest iteration (runCount) passes, the input
-	// currentRepoExtractedOK should be preserved.
+func TestPostLoopValidationSweep_PassesIterationCheckoutWhenExtracted(t *testing.T) {
+	// When the passing iteration extracted, TARGET_REPO_DIR is that
+	// iteration's per-iteration checkout — not empty and not another
+	// iteration's path (#5553).
 	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
+	scriptDir := t.TempDir()
+
+	script := filepath.Join(scriptDir, "validate.sh")
+	checkFile := filepath.Join(scriptDir, "target_repo_dir.txt")
+	require.NoError(t, os.WriteFile(script, []byte(fmt.Sprintf(
+		"#!/bin/sh\necho \"$TARGET_REPO_DIR\" > %s\n[ -f pass ]\n", checkFile)), 0o755))
+
+	iterDir := filepath.Join(runDir, "iteration-1")
+	require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(iterDir, "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 1, map[int]bool{1: true}, printer)
+	require.True(t, result.passed)
+	assert.True(t, result.repoExtractedOK)
+
+	got, err := os.ReadFile(checkFile)
+	require.NoError(t, err)
+	assert.Equal(t, iterationHostRepoDir(hostRepoRoot, 1)+"\n", string(got),
+		"TARGET_REPO_DIR should be the passing iteration's checkout")
+}
+
+func TestPostLoopValidationSweep_EarlierIterCheckoutNotLast(t *testing.T) {
+	// When a non-final iteration passes and both iterations extracted,
+	// TARGET_REPO_DIR must be the passing iteration's path — never the
+	// last iteration's (#5553).
+	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
+	scriptDir := t.TempDir()
+
+	script := filepath.Join(scriptDir, "validate.sh")
+	checkFile := filepath.Join(scriptDir, "target_repo_dir.txt")
+	require.NoError(t, os.WriteFile(script, []byte(fmt.Sprintf(
+		"#!/bin/sh\necho \"$TARGET_REPO_DIR\" > %s\n[ -f pass ]\n", checkFile)), 0o755))
+
+	for i := 1; i <= 2; i++ {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		require.NoError(t, os.MkdirAll(iterDir, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "iteration-1", "pass"), nil, 0o644))
+
+	h := &harness.Harness{
+		RunnerEnv:      map[string]string{},
+		ValidationLoop: &harness.ValidationLoop{Script: script},
+	}
+	printer := ui.New(io.Discard)
+
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 2, map[int]bool{1: true, 2: true}, printer)
+	require.True(t, result.passed)
+	assert.Equal(t, 1, result.validatedIter)
+	assert.True(t, result.repoExtractedOK)
+
+	got, err := os.ReadFile(checkFile)
+	require.NoError(t, err)
+	assert.Equal(t, iterationHostRepoDir(hostRepoRoot, 1)+"\n", string(got),
+		"TARGET_REPO_DIR should be iteration-1's checkout, not iteration-2's")
+}
+
+func TestSweepResult_RepoExtractedOK_UsesPassingIteration(t *testing.T) {
+	// repoExtractedOK follows the passing iteration's own extract flag,
+	// not a leftover last-iteration flag.
+	runDir := t.TempDir()
+	hostRepoRoot := t.TempDir()
 	scriptDir := t.TempDir()
 	script := writeValScript(t, scriptDir, "validate.sh")
 
@@ -3314,23 +3388,26 @@ func TestSweepResult_RepoExtractedOK_PreservesWhenRunCount(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	// With currentRepoExtractedOK=false (last SafeDownload failed).
-	result := postLoopValidationSweep(h, runDir, 1, false, printer)
+	result := postLoopValidationSweep(h, runDir, hostRepoRoot, 1, map[int]bool{}, printer)
 	assert.True(t, result.passed)
 	assert.Equal(t, 1, result.validatedIter)
 	assert.False(t, result.repoExtractedOK,
-		"repoExtractedOK should remain false when input was false, even when i == runCount")
+		"repoExtractedOK should be false when the passing iteration did not extract")
 
-	// With currentRepoExtractedOK=true (last SafeDownload succeeded).
-	result2 := postLoopValidationSweep(h, runDir, 1, true, printer)
+	result2 := postLoopValidationSweep(h, runDir, hostRepoRoot, 1, map[int]bool{1: true}, printer)
 	assert.True(t, result2.passed)
 	assert.True(t, result2.repoExtractedOK,
-		"repoExtractedOK should remain true when input was true and i == runCount")
+		"repoExtractedOK should be true when the passing iteration extracted")
+}
+
+func TestIterationHostRepoDir(t *testing.T) {
+	assert.Equal(t, filepath.Join("/tmp/sb", "iteration-1"), iterationHostRepoDir("/tmp/sb", 1))
+	assert.Equal(t, filepath.Join("/tmp/sb", "iteration-12"), iterationHostRepoDir("/tmp/sb", 12))
 }
 
 func TestPostScriptRepoEnv(t *testing.T) {
 	runDir := "/run"
-	hostRepoDir := "/host/repo"
+	hostRepoRoot := "/host/repo"
 	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
 	noLoop := &harness.Harness{}
 
@@ -3339,6 +3416,7 @@ func TestPostScriptRepoEnv(t *testing.T) {
 		h                *harness.Harness
 		repoExtractedOK  bool
 		validatedIterNum int
+		runCount         int
 		wantRepoDir      string
 		wantIterDir      string
 	}{
@@ -3347,7 +3425,8 @@ func TestPostScriptRepoEnv(t *testing.T) {
 			h:                withLoop,
 			repoExtractedOK:  true,
 			validatedIterNum: 2,
-			wantRepoDir:      hostRepoDir,
+			runCount:         2,
+			wantRepoDir:      iterationHostRepoDir(hostRepoRoot, 2),
 			wantIterDir:      filepath.Join(runDir, "iteration-2/output"),
 		},
 		{
@@ -3355,14 +3434,25 @@ func TestPostScriptRepoEnv(t *testing.T) {
 			h:                withLoop,
 			repoExtractedOK:  false,
 			validatedIterNum: 0,
+			runCount:         2,
 			wantRepoDir:      "",
 			wantIterDir:      "",
 		},
 		{
-			name:             "sweep validated an earlier iteration: REPO_DIR empty, iteration dir still set",
+			name:             "sweep validated an earlier iteration with its own checkout: REPO_DIR is that iteration",
+			h:                withLoop,
+			repoExtractedOK:  true,
+			validatedIterNum: 1,
+			runCount:         3,
+			wantRepoDir:      iterationHostRepoDir(hostRepoRoot, 1),
+			wantIterDir:      filepath.Join(runDir, "iteration-1/output"),
+		},
+		{
+			name:             "sweep validated an earlier iteration without a checkout: REPO_DIR empty, iteration dir still set",
 			h:                withLoop,
 			repoExtractedOK:  false,
 			validatedIterNum: 1,
+			runCount:         3,
 			wantRepoDir:      "",
 			wantIterDir:      filepath.Join(runDir, "iteration-1/output"),
 		},
@@ -3371,14 +3461,15 @@ func TestPostScriptRepoEnv(t *testing.T) {
 			h:                noLoop,
 			repoExtractedOK:  true,
 			validatedIterNum: 3,
-			wantRepoDir:      hostRepoDir,
+			runCount:         1,
+			wantRepoDir:      iterationHostRepoDir(hostRepoRoot, 1),
 			wantIterDir:      "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoDir, tt.repoExtractedOK, tt.validatedIterNum)
+			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoRoot, tt.repoExtractedOK, tt.validatedIterNum, tt.runCount)
 			assert.Equal(t, tt.wantRepoDir, repoDir, "REPO_DIR")
 			assert.Equal(t, tt.wantIterDir, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR")
 			if repoDir != "" {
@@ -3425,21 +3516,21 @@ func TestPostScriptRepoEnv_RelativeOutputBaseYieldsAbsoluteIterDir(t *testing.T)
 	require.True(t, filepath.IsAbs(absBase))
 
 	runDir := filepath.Join(absBase, "fs-test-sandbox")
-	hostRepoDir := filepath.Join(t.TempDir(), "host-repo")
+	hostRepoRoot := filepath.Join(t.TempDir(), "host-repo")
 	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
 	noLoop := &harness.Harness{}
 
 	t.Run("validation loop", func(t *testing.T) {
-		repoDir, iterDir := postScriptRepoEnv(withLoop, runDir, hostRepoDir, true, 2)
-		assert.Equal(t, hostRepoDir, repoDir)
+		repoDir, iterDir := postScriptRepoEnv(withLoop, runDir, hostRepoRoot, true, 2, 2)
+		assert.Equal(t, iterationHostRepoDir(hostRepoRoot, 2), repoDir)
 		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
 		assert.True(t, filepath.IsAbs(iterDir), "FULLSEND_VALIDATED_ITERATION_DIR must be absolute, got %q", iterDir)
 		assert.Equal(t, filepath.Join(runDir, "iteration-2/output"), iterDir)
 	})
 
 	t.Run("no validation loop", func(t *testing.T) {
-		repoDir, iterDir := postScriptRepoEnv(noLoop, runDir, hostRepoDir, true, 3)
-		assert.Equal(t, hostRepoDir, repoDir)
+		repoDir, iterDir := postScriptRepoEnv(noLoop, runDir, hostRepoRoot, true, 3, 1)
+		assert.Equal(t, iterationHostRepoDir(hostRepoRoot, 1), repoDir)
 		assert.True(t, filepath.IsAbs(repoDir), "REPO_DIR must be absolute, got %q", repoDir)
 		assert.Empty(t, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR is unset without a validation loop")
 	})
