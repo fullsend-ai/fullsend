@@ -28,8 +28,9 @@ codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs}):
       be forwarded verbatim: codex treats any exit other than 0 and 2 as
       `Failed`, and a failed hook does **not** block (`events/pre_tool_use.rs`
       `parse_completed`), so exit 1 would be fail-open. An exit 2 with empty
-      stderr is also `Failed`, so `block()` falls back to a raw write on fd 2
-      whenever `sys.stderr` cannot be trusted, to keep the reason non-empty
+      stderr is also `Failed`, so `block()` always also writes the reason
+      directly to fd 2 — the fd codex actually reads — rather than trusting
+      a successful `sys.stderr` write alone, to keep the reason non-empty
       on every path where the fd itself is still live. If fd 2 has actually
       been torn down at the OS level, no process-local write can put bytes
       on the other end of it; that residual case still exits 2 but is
@@ -357,15 +358,18 @@ def block(reason: str) -> None:
     reaches fd 2 — the exit code alone is not enough.
 
     `sys.stderr` is not trusted to be the live fd: something upstream may
-    have set it to `None`, or left a `TextIOWrapper`/`BufferedWriter` around
-    an fd that no longer refers to the process's real stderr (both are
-    reproduced in the test suite). When the buffered write/flush through
-    `sys.stderr` does not visibly succeed, this falls back to a raw
-    `os.write(2, ...)` straight to the real fd, bypassing whatever the
-    Python-level object is doing. That recovers the reason whenever fd 2
-    itself is still a live pipe — a broken or nulled Python wrapper around
-    an otherwise-working fd — which is the recoverable half of "unwritable
-    stderr".
+    have set it to `None`, left a `TextIOWrapper`/`BufferedWriter` around an
+    fd that no longer refers to the process's real stderr, or left a working
+    wrapper around some other, unrelated fd — codex only ever reads the
+    process's real fd 2, never the Python object, so a visibly successful
+    `sys.stderr` write says nothing about whether it actually reached fd 2.
+    A best-effort write through `sys.stderr` (when present) is therefore
+    always followed by a raw `os.write(2, ...)` straight to the real fd,
+    unconditionally, rather than treating the `sys.stderr` write as
+    sufficient on its own. That recovers the reason whenever fd 2 itself is
+    still a live pipe — a broken, nulled, or misdirected Python wrapper
+    around an otherwise-working fd — which is the recoverable half of
+    "unwritable stderr".
 
     The other half is not recoverable: if fd 2 itself has been closed (the
     OS-level pipe torn down, not just the Python object), no write from this
@@ -390,15 +394,12 @@ def block(reason: str) -> None:
     """
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
     truncated = text[:MAX_TEXT]
-    delivered = False
     with contextlib.suppress(BaseException):
         if sys.stderr is not None:
             sys.stderr.write(truncated)
             sys.stderr.flush()
-            delivered = True
-    if not delivered:
-        with contextlib.suppress(BaseException):
-            os.write(2, truncated.encode("utf-8", "replace"))
+    with contextlib.suppress(BaseException):
+        os.write(2, truncated.encode("utf-8", "replace"))
     with contextlib.suppress(BaseException):
         sys.stderr.close()
     sys.stderr = None
