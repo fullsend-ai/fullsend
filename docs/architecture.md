@@ -243,6 +243,18 @@ flowchart TB
 
 End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` (with live-test infrastructure in `internal/e2etest/`); the in-repo runner and Gherkin features live under `e2e/behaviour/`. They validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy and dummy-playback runtimes. Tests exercise real GitHub (and GitLab) SCM and GitHub Actions CI through pluggable drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
 
+**Decided:**
+
+- Repo and org lifecycle for behaviour tests: ephemeral per-scenario repos
+  (`bt-{run-id}-{uuid8}`), retained and batch-pruned on GitHub to raise the
+  org's rate-limit cap but deleted per-scenario on GitLab, replacing the
+  reused fixed-name repo pool ([ADR 0114](ADRs/0114-ephemeral-repo-lifecycle-for-testing.md)).
+  Cross-run concurrency within a testing org is coordinated by a per-org pool
+  of lock repos acting as a counting semaphore, with liveness-based stale-lock
+  recovery, replacing [ADR 0040](ADRs/0040-org-pool-for-parallel-e2e-tests.md)'s
+  single exclusive lock for behaviour tests; admin e2e continues using ADR
+  0040 unchanged ([ADR 0115](ADRs/0115-lock-based-pool-coordination-for-testing-orgs.md)).
+
 **Open questions:**
 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
