@@ -1082,6 +1082,38 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+// TestActionInstallOnlyUnpinnedVersionWarning locks the detect-step wiring
+// that warns when agent __install_only__ would silently install latest.
+func TestActionInstallOnlyUnpinnedVersionWarning(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	idx := strings.Index(s, "name: Detect install method")
+	require.NotEqual(t, -1, idx, "action.yml must contain Detect install method step")
+	step := s[idx:]
+	if end := strings.Index(step, "name: Install vendored binary"); end > 0 {
+		step = step[:end]
+	}
+
+	assert.Contains(t, step, "AGENT: ${{ inputs.agent }}",
+		"detect step must pass AGENT so __install_only__ can be recognized")
+	assert.Contains(t, step, "ACTION_REF: ${{ github.action_ref }}",
+		"detect step must expose github.action_ref via env (composite-action rule)")
+	assert.Contains(t, step, "warn-install-only-unpinned-version.sh",
+		"detect step must invoke the unpinned-version warning script")
+
+	script := strings.Index(step, "warn-install-only-unpinned-version.sh")
+	vendored := strings.Index(step, "install-method=vendored")
+	latest := strings.Index(step, "Resolve 'latest' to the actual tag")
+	require.Greater(t, script, 0, "unpinned-version warning script must be invoked")
+	require.Greater(t, vendored, 0, "vendored early-exit must still exist")
+	require.Greater(t, script, vendored,
+		"unpinned-version warning must run after the vendored early-exit")
+	require.Greater(t, latest, script,
+		"unpinned-version warning must run before latest is rewritten to a tag")
+}
+
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in
 // reusable-dispatch.yml pass pr-head-sha to the action.
 func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {

@@ -550,9 +550,12 @@ jobs:
         run: bash .fullsend/scripts/prepare-sandbox-credentials.sh
 
       - name: Install fullsend CLI
-        uses: fullsend-ai/fullsend@main
+        uses: fullsend-ai/fullsend@<YOUR_RELEASE_TAG>
         with:
           agent: __install_only__
+          # SHA-pinning the action does not pin the CLI. Match version to
+          # the uses: ref (tag or SHA) so the CLI and action stay aligned.
+          version: <YOUR_RELEASE_TAG>
 
       - name: Run my-agent
         env:
