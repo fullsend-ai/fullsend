@@ -141,6 +141,12 @@ from pushing commits to your branch without your consent. You can still use
 `/fs-fix` at any time regardless of the label — the label only controls
 automatic (bot-triggered) runs.
 
+On GitHub, bot-triggered fix runs are also skipped when the PR branch HEAD is
+a human-authored commit pushed in the last 30 minutes. That avoids spending a
+full agent run that is likely to lose a push race with someone actively
+editing the branch. Use `/fs-fix` once you are done; explicit `/fs-fix` is
+not subject to this recency check.
+
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
@@ -152,9 +158,9 @@ non-coder-bot MRs — enforced on GitHub by
 [`check-fix-eligibility.sh`](../../.github/scripts/check-fix-eligibility.sh) —
 is not yet implemented for GitLab: the router does not currently have
 enough MR-author identity information to distinguish the fullsend code
-agent from other authors. Until that parity lands, bot-triggered fix
-runs on GitLab MRs are gated only by `fullsend-no-fix`, not by
-`fullsend-fix`.
+agent from other authors. The recent-human-push recency check is also
+GitHub-only. Until that parity lands, bot-triggered fix runs on GitLab MRs
+are gated only by `fullsend-no-fix`, not by `fullsend-fix` or HEAD recency.
 
 ## Control labels
 
