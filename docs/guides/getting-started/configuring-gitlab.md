@@ -587,14 +587,14 @@ target project or a parent group, or the job never gets a runner.
 Use the Fullsend runner hub on the **same GitLab instance** you pass to
 `--gitlab-url`. A hub on a different instance cannot pick up the job.
 
-- **GitLab.com** (`https://gitlab.com`): use the
+* **GitLab.com** (`https://gitlab.com`) — use the
   [GitLab.com Fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
   Follow that project's
   [README](https://gitlab.com/fullsend/runner-hub/-/blob/main/README.md)
   to have its runners assigned to your project or group. The hub README
   is the source of truth for onboarding; this guide does not repeat those
   steps.
-- **Self-managed instances**: use that instance's own Fullsend runner
+* **Self-managed instances** — use that instance's own Fullsend runner
   hub, typically a `fullsend/runner-hub` project on the same host.
   Follow **that** project's `README.md`, not the GitLab.com one.
   Onboarding tokens, groups, and runner registration are instance-local.
