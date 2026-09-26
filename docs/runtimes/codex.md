@@ -95,6 +95,7 @@ fullsend run triage \
   --env-file fullsend-gcp.env \
   --env-file fullsend-openai.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime codex \
   --model openai/gpt-5.6-luna
 ```
@@ -149,10 +150,15 @@ What a local codex run needs, beyond the guide:
 - **No permission prompts.** Codex, like pi, expects to run inside a container: the sandbox and its
   egress policy are what contain the agent, not a tool-approval dialog
   ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md)).
-- **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected.
-- **The repository's own `.codex/` is never loaded.** Codex reads a project config layer only for a
-  directory it has been told to trust, and fullsend does not trust the cloned repo — so a target
-  repo cannot change how the agent runs.
+- **Reads the repo's root `AGENTS.md` through `$CODEX_HOME`.** Codex skips a project's own
+  `AGENTS.md` while the project is untrusted, so the runner copies the repo's root `AGENTS.md` (or
+  the org-level one fullsend injects when the repo has none) to `$CODEX_HOME/AGENTS.md`, which codex
+  loads as instructions. Only the root file is read, cut at 32 KiB: nested `AGENTS.md` files and
+  `AGENTS.override.md` are not, and a symlinked `AGENTS.md` is skipped. No `CLAUDE.md` bridge is
+  injected.
+- **The repository's own `.codex/` config is never loaded.** fullsend pins the cloned repo's
+  project trust to untrusted, so `.codex/config.toml` and `.codex/hooks.json` (model, instructions,
+  MCP servers, hooks) never apply. A target repo cannot change how the agent runs.
 - **Two tools, not a menu.** Codex works through a shell and `apply_patch`, so a harness `tools:`
   list has no native allowlist to map onto. A `Bash(...)` allowlist is **recorded but not enforced**
   on codex, and the run says so:
@@ -178,8 +184,11 @@ What a local codex run needs, beyond the guide:
   artifacts are redacted either way — `output.jsonl`, the transcripts and `codex-debug.log` are all
   scrubbed before they are written.
 - **Skills** work as they do on Claude Code: the harness's skills, plus your repository's own
-  `.agents/skills`, both scanned for injected content before the agent sees them. Codex's bundled
-  skills (`skill-installer`, `imagegen` and friends) are switched off, so an agent sees only yours.
+  `.agents/skills` (codex's documented location for repository skills), both scanned for injected
+  content before the agent sees them. Codex 0.157.0 also picks up `.codex/skills` even though the
+  project is untrusted; that is not documented upstream and may change, so keep repository skills
+  in `.agents/skills`. Codex's bundled skills (`skill-installer`, `imagegen` and friends) are
+  switched off, so an agent sees only yours.
 - **No cost in metrics** — see [At a glance](#at-a-glance).
 
 ## Not yet exercised

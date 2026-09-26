@@ -79,11 +79,14 @@ const codexAuthTimeoutMS = 5000
 // (codex-rs/model-provider-info/src/lib.rs,
 // codex-rs/protocol/src/config_types.rs).
 //
+// `[projects."<repo>"] trust_level = "untrusted"` pins the target repo's trust
+// decision, so its own `.codex/` layer (settings, hooks, instructions) never
+// loads. It has to be stated: codex records a trust level for a git checkout
+// it starts in when none is set, and "none" is not the same as untrusted.
+// This is the codex equivalent of pi's defaultProjectTrust "never".
+//
 // Deliberately absent:
 //
-//   - `[projects]` — with no trust entry the target repo stays untrusted, so
-//     its own `.codex/` layer (settings, hooks, instructions) never loads.
-//     This is the codex equivalent of pi's defaultProjectTrust "never".
 //   - `model` — the model is a `--model` flag and a `-c` override so no lower
 //     layer can move it.
 //   - `supports_websockets` — custom providers default to false, which keeps
@@ -135,6 +138,9 @@ enabled = false
 [features]
 plugins = false
 
+[projects.{{ .ProjectKey }}]
+trust_level = "untrusted"
+
 [model_providers.{{ .ProviderID }}]
 name = "OpenAI via the fullsend run-scoped provider"
 base_url = "{{ .BaseURL }}"
@@ -158,20 +164,26 @@ type codexConfigData struct {
 	BaseURL               string
 	DeveloperInstructions string
 	AuthCommand           string
+	ProjectKey            string
 	RefreshIntervalMS     int
 	TimeoutMS             int
 }
 
 // renderCodexConfig produces $CODEX_HOME/config.toml for one agent run.
-// developerInstructions is the agent definition's body, which is arbitrary
-// markdown from the harness.
-func renderCodexConfig(configDir, developerInstructions string) ([]byte, error) {
+// repoDir is the target repository's path inside the sandbox, the directory
+// codex runs in. developerInstructions is the agent definition's body, which
+// is arbitrary markdown from the harness.
+func renderCodexConfig(configDir, repoDir, developerInstructions string) ([]byte, error) {
+	if repoDir == "" {
+		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
+	}
 	var buf strings.Builder
 	err := codexConfigTemplate.Execute(&buf, codexConfigData{
 		ProviderID:            codexProviderID,
 		BaseURL:               codexBaseURL,
 		DeveloperInstructions: codexTOMLString(developerInstructions),
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
+		ProjectKey:            codexTOMLString(repoDir),
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	})

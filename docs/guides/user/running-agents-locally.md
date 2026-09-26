@@ -117,7 +117,7 @@ Then pick a GPT model when you run:
 
 ```bash
 fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
-  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
 
 Codex takes the same key and the same harness requirements — swap `--runtime pi` for
@@ -164,6 +164,13 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`),
+because the clone's `config.yaml` sets no `forge:`. Without a forge, the harness's
+GitHub settings (`ISSUE_URL`, the GitHub provider) never apply and the pre-script
+stops with `ISSUE_URL must be set`. `fullsend run` takes the forge from `--forge`, then
+`forge:` in the `config.yaml` at the root of `--fullsend-dir`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -189,7 +196,8 @@ fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env
+  --env-file fullsend-triage.env \
+  --forge github
 ```
 
 ### Review agent
@@ -201,9 +209,13 @@ Add to an env file:
 # In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
 # For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
+GH_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
 REPO_FULL_NAME="{org}/{repo}"
+# Set by CI on a re-review; leave empty for a first review.
+PRIOR_REVIEW_SHA=
+PRIOR_REVIEW_PROVENANCE=
 ```
 
 ```bash
@@ -211,7 +223,8 @@ fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-review.env
+  --env-file fullsend-review.env \
+  --forge github
 ```
 
 ### Code agent
@@ -231,6 +244,8 @@ ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
+# Author and committer email for the agent's commits.
+GIT_BOT_EMAIL={bot-or-your-email}
 ```
 
 ```bash
@@ -238,7 +253,8 @@ fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-code.env
+  --env-file fullsend-code.env \
+  --forge github
 ```
 
 ### Choosing the runtime
@@ -255,6 +271,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
 
@@ -276,7 +293,7 @@ you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). Auto-detected from CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`) when omitted |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -319,7 +336,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
-| `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
+| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
 
@@ -329,6 +346,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --status-repo myorg/myrepo \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
@@ -368,7 +386,8 @@ podman run --rm -it --network=host \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
     --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
+    --env-file fullsend-triage.env \
+    --forge github
 ```
 
 The image's working directory is `/work`, so relative paths in `--env-file`
@@ -479,6 +498,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --output-dir /tmp/my-debug-output
 ```
 
@@ -535,6 +555,7 @@ or gateway routing issues).
      --target-repo /tmp/target-repo/ \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
+     --forge github \
      --keep-sandbox \
      --no-post-script
    ```

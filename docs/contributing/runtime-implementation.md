@@ -1020,7 +1020,7 @@ One iteration, end to end:
 ```mermaid
 flowchart TB
   B["Bootstrap (once per run)\nagent .md → config.toml developer_instructions\nhooks.json + adapter + auth script\ncodex --version preflight"]
-  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nno openai_base_url / env_key / [projects]?"}
+  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nproject trust pinned untrusted?"}
   X["exit 97 / 98\ncodex never starts unhooked\nor pointed at another endpoint"]
   T["seed $CODEX_HOME/openai-token\nplaceholder shape or exit 1"]
   E["source .env\nre-pin CODEX_HOME\nunset OPENAI_* CODEX_API_KEY NODE_*\nre-run both guards"]
@@ -1045,22 +1045,30 @@ flowchart TB
   its L7 egress policy and the credential placeholders are the boundary ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
   [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)); the hook adapter is defense in depth
   ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)).
-- **The project is never trusted.** No `[projects]` entry is written, so the target repo's own
-  `.codex/` layer — settings, instructions and repo-authored hooks — is never loaded. This is
-  codex's equivalent of pi's `defaultProjectTrust: "never"`.
+- **The project is pinned untrusted.** `config.toml` carries
+  `[projects."<repo>"] trust_level = "untrusted"` for the target repo, so its own `.codex/` layer —
+  settings, instructions and repo-authored hooks — is never loaded. The entry has to be written:
+  codex records a trust level for a git checkout it starts in when none is set, and only skips
+  that when one already is. This is codex's equivalent of pi's `defaultProjectTrust: "never"`.
 - **Config layering.** The sandbox image bakes a root-owned managed `/etc/codex/config.toml`; the
   runner's `$CODEX_HOME/config.toml` layers above it, and the `-c` SessionFlags above that. Only
   the `-c` layer is beyond an agent's reach between iterations, which is why the security-relevant
   keys are passed there as well as written to the file.
-- **Reads AGENTS.md natively** (cwd chain plus `$CODEX_HOME/AGENTS.md`) — so `CodexRuntime` does not
-  implement `ContextBridger` and the runner injects no `CLAUDE.md` pointer.
+- **No `CLAUDE.md` pointer.** `CodexRuntime` does not implement `ContextBridger`; it gets the repo's
+  `AGENTS.md` through `$CODEX_HOME/AGENTS.md` instead (see **AGENTS.md** below).
 - **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
   and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
   `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the
   `Bash` groups already cover it.
 - **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
-  repo's `.agents/skills`; whether the untrusted-project setting suppresses that is an open item for
-  the first fleet run.
+  repo's `.agents/skills`, and (verified live at 0.157.0) its `.codex/skills` even with the project
+  untrusted; both are covered by the host-side and in-sandbox context scans, which match `SKILL.md`
+  anywhere in the repo.
+- **AGENTS.md** — codex skips a project's own `AGENTS.md` while the project is untrusted
+  (`codex-rs/core/src/agents_md.rs`), but always loads `$CODEX_HOME/AGENTS.md` as user
+  instructions. The runner copies the repo's root `AGENTS.md` (or the injected org-level one) there
+  after the repo is in place (`HomeInstructionsBridger`), refusing a symlink and keeping the first
+  32 KiB, codex's default `project_doc_max_bytes`.
 
 ### Process and exit codes
 
@@ -1361,4 +1369,5 @@ Two artefacts of the run are worth knowing about:
 | The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.157.0) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
+| Project trust and `AGENTS.md` | the pinned untrusted entry must still stop codex recording its own trust level, the repo's `.codex/` layer must stay unloaded, and `$CODEX_HOME/AGENTS.md` must still load while the project is untrusted, or the bridge stops reaching the agent | `codex-rs/app-server/src/request_processors/thread_processor.rs` (trust write), `codex-rs/config/src/loader/mod.rs`, `codex-rs/core/src/agents_md.rs`, `codex-rs/codex-home/src/instructions/mod.rs` |
 | JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |

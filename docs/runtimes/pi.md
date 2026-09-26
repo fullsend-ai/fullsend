@@ -160,6 +160,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
 
