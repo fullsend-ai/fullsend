@@ -632,3 +632,69 @@ check that validation fires on the run path — not only in `Validate()`.
 Flag a missing run-path validation call as a **medium-severity** finding.
 The fix is to add inline validation in `runAgent()` and a corresponding
 integration test.
+
+## Last-writer-wins AgentEntries resolution
+
+`perRepoConfig.AgentEntries()` can return **duplicate same-name entries**.
+A keyed merge by `DerivedName()` runs only when a parent agent list
+exists; when the local `agents:` list has no matching parent entry to
+merge against (no parent agents, or a name the parent does not define),
+the raw local slice is returned as-is. Local YAML may legally list the
+same name twice — the disable-then-enable pattern that replaces a
+default agent with a custom one:
+
+```yaml
+agents:
+  - name: retro
+    enabled: false
+  - name: retro
+    source: harness/custom-retro.yaml
+    enabled: true
+```
+
+The established resolution convention is **last-writer-wins**: the last
+matching entry is the effective one. That convention is implemented
+centrally in `config.IsAgentExplicitlyDisabled`
+(`internal/config/agents.go`), which iterates in reverse and returns
+whether the last entry matching the name has `Enabled` explicitly set
+to false. `config.AgentSettingsFor` (`internal/config/config.go`) is
+the equivalent last-matching lookup for reading settings
+(runtime/model/effort) rather than enabled state.
+
+Any new code that compares, diffs, or otherwise interprets agent-entry
+state **must reuse those helpers** (or equivalent last-matching-entry
+logic: iterate reverse, stop at the first name match) rather than
+scanning `AgentEntries()` from the front or treating every same-name
+entry as independent. A first-match scan, or a loop that emits one
+result per raw entry, misclassifies disable-then-enable pairs.
+
+Grep for the current call sites before adding a new one:
+
+- `internal/cli/poll.go` (`buildRouter`)
+- `internal/cli/run.go` (`resolveAgentSource`)
+- `internal/cli/lock.go`
+- `internal/config/managed_safety.go` (`CheckManagedSafetyGate`)
+
+The same reuse rule applies to other layered-config accessors
+(`ConfigRoles()`, `AllowedResources()`, and similar getters): do not
+re-derive comparison or diff semantics that already exist in the config
+package. New comparison logic over those lists should call the existing
+helper rather than walking the raw slice.
+
+### Why this matters
+
+PR [#7755](https://github.com/fullsend-ai/fullsend/pull/7755) added
+`CheckManagedSafetyGate` with an ad-hoc scan of `AgentEntries()` that
+treated each raw entry independently. Duplicate same-name entries were
+evaluated twice, and last-writer-wins was not applied, so a
+disable-then-enable pair was reported as still disabled. Routing
+through `IsAgentExplicitlyDisabled` was the fix.
+
+### When reviewing PRs
+
+When reviewing a PR that compares or diffs `AgentEntries()` (or adds
+new comparison logic over similarly-shaped layered-config lists),
+flag a first-match scan or per-raw-entry loop as a **high-severity**
+logic error if it does not reuse `IsAgentExplicitlyDisabled` /
+`AgentSettingsFor` or equivalent last-matching-entry logic. The fix is
+to call the existing helper rather than reimplement the scan.
