@@ -285,17 +285,21 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				case "thinking_delta":
 					onEvent(ThinkingEvent{Text: d.Thinking})
 				case "input_json_delta":
-					if toolInputJSON.Len() < maxToolInputSize {
-						toolInputJSON.WriteString(d.PartialJSON)
+					// Cut the delta that crosses the cap: the input is
+					// incomplete past it either way, and Arguments
+					// carries whatever accumulated.
+					if room := maxToolInputSize - toolInputJSON.Len(); room > 0 {
+						toolInputJSON.WriteString(d.PartialJSON[:min(room, len(d.PartialJSON))])
 					}
 				}
 
 			case "content_block_stop":
 				if currentToolName != "" {
 					onEvent(ToolUseEvent{
-						ID:      currentToolID,
-						Name:    currentToolName,
-						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						ID:        currentToolID,
+						Name:      currentToolName,
+						Summary:   extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						Arguments: toolInputJSON.String(),
 					})
 					currentToolName = ""
 					currentToolID = ""
@@ -424,9 +428,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				case "tool_use":
 					onEvent(ToolUseEvent{
-						ID:      item.ID,
-						Name:    item.Name,
-						Summary: extractSafeContext(item.Name, item.Input),
+						ID:        item.ID,
+						Name:      item.Name,
+						Summary:   extractSafeContext(item.Name, item.Input),
+						Arguments: string(item.Input),
 					})
 				}
 			}

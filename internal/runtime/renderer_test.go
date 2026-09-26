@@ -68,6 +68,17 @@ func TestRendererToolResultEventIgnored(t *testing.T) {
 	}
 }
 
+func TestRendererToolUseEventNeverPrintsArguments(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ToolUseEvent{Name: "Bash", Summary: "make", Arguments: `{"command":"make SECRET=hunter2"}`})
+
+	if strings.Contains(buf.String(), "hunter2") {
+		t.Errorf("arguments must not reach the console, got %q", buf.String())
+	}
+}
+
 func TestRendererToolUseEventCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 

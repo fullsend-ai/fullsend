@@ -12,7 +12,7 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls, and — on Claude runs — tool results) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
@@ -74,7 +74,29 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 
 Fullsend assembles Level 3 content from the normalized event stream the
 console renders, redacts it through the security output pipeline, and
-attaches it to the per-iteration `agent` span. The agent runtime's own
+attaches it to the per-iteration `agent` span. The one input it records,
+a retry's validation-feedback prompt, is composed by the runner — fixed
+framing around the previous iteration's validation output — rather than
+read from the stream, and goes through the same redaction. On both sides
+of the pipeline — on the text as written, and again on what the pipeline
+returns, since its normalization can join a value the stream split or
+spelled in compatibility characters — the value of each sensitive runner
+environment key (`env.runner`, or the deprecated `runner_env`; 8 bytes or
+longer) is replaced with `[REDACTED:<key>]`, the marker validation
+feedback uses. A key counts one redaction for each of the two passes that
+replaced it in a string, however often its value occurs there; in an
+assignment, an authorization header or a secret-named field the patterns
+then mask the marker as well and count again. Not covered: a value split
+or spelled that way which a pattern also recognises — in one of those
+contexts, in a connection string, or by its own prefix — is masked by
+that pattern, and shows what the pattern's mask shows. A tool call loses
+its `summary` when redaction found a secret in its arguments: the parser
+cut the summary out of them before anything scanned it, so the secret
+could be there as a beginning. Where a runtime reports a summary and no
+arguments (pi, codex, OpenCode), its parser has already run the patterns
+over the summary and, for pi and codex, cut it: a value that straddles a
+cut stays in part, and one a pattern recognised stays as that pattern's
+mask. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -87,31 +109,64 @@ The variable name and accepted values follow the
 Fullsend records content on span attributes only, so `event_only` stays
 off. An unrecognized value disables capture; telemetry never fails a run.
 
-**Captured:** assistant text, reasoning, tool calls (name plus short
-summary), and tool results — including any sub-agent activity,
+**Captured:** assistant text, reasoning, tool calls (name, short summary
+and `arguments`), and tool results — including any sub-agent activity,
 unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-with a `finish_reason` of `stop` or `error`. Tool results, and the `id` that correlates each with its call, are captured
+with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
 only when the runtime's stream provides them: Claude runs do; the pi and
-codex parsers emit neither yet
+codex parsers emit none of the three yet
 ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
+`arguments` is the call's input decoded, redacted string by string (a
+number that redacts becomes the redacted string), and
+encoded again, so key order, spacing and escapes are not the stream's.
 
-**Not captured:** model input (`gen_ai.input.messages`) and
-pre/post-script content. First-iteration runs have no meaningful
-runner-side input; retry iterations carry the injected validation
-feedback, a natural input-capture follow-up.
+On a retry iteration under `validation_loop.feedback_mode: append`, the
+prompt the runner composed — its fixed framing around the previous
+iteration's validation output — is recorded as `gen_ai.input.messages`: one
+`user` message with one text part, following the
+[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-input-messages.json).
+The attribute is absent on the first iteration and on a retry without
+feedback, which send the runtime's fixed default prompt.
+
+**Not captured:** the rest of the model's input, and pre/post-script
+content. The fixed default prompt is a constant that carries no task and
+is left out by choice; the system prompt and per-request context the
+runtime builds from the agent definition are not visible to fullsend,
+which sees the runtime's stream, not its API requests.
 
 **Redaction and size:** every part passes through security redaction
-(Unicode normalization, then secret masking) before reaching the span.
-Content is bounded at 256 KiB per iteration — each tool result at 8 KiB —
+(runner environment values, Unicode normalization, secret masking, then
+runner environment values again) before reaching the span.
+Content is bounded at 256 KiB per iteration — each tool result at 8 KiB,
+each call's arguments at 8 KiB —
 kept as an ordered suffix; overflow drops the oldest content first. Those
-bounds count raw bytes; the exported JSON string is bounded as well, at
-255,000 bytes, because encoding adds 9–11% at these bounds on real runs
+bounds count raw bytes, except that arguments count as the
+re-encoded JSON described above, against their own bound and against the
+total. That encoding writes `<`, `>` and `&` as six bytes each, so
+arguments dense in those characters reach their bound at about a sixth of
+that size on the stream. The exported JSON string is bounded as well, at
+255,000 bytes, because encoding adds 8–10% at these bounds on real runs
 and up to six times on escape-dense content — a record over that is trimmed again,
 oldest first.
 Truncation is marked via `fullsend.content.truncated` on the span and
-`fullsend.truncated` on each cut part. A tool result whose stream line
+`fullsend.truncated` on each cut part. A tool result over its bound keeps
+its tail; arguments over theirs, not a complete JSON value, or with two
+keys of one object that redact to the same string, are dropped
+whole — a cut object is not JSON — and the marked `tool_call` part keeps
+its `id`, name and summary — not the summary when redaction found a
+secret in the arguments. Arguments also go, charged and marked, when
+the call's name redacts to nothing; that part survives only if it has a
+summary. So `fullsend.truncated` means different things by part type: on a
+tool result, part of the response is kept; on a tool call, none of the
+arguments is. Read it together with the part's `type`. The input message is not cut at this stage:
+the validation output inside it is cut at 10 KiB when the prompt is
+composed (the prompt then says `[truncated]`), and the two markers above
+do not describe it. The recorded copy is the redacted one, so it can
+differ from the prompt the agent received: compatibility characters are
+folded, which can make it about eleven times longer, and its encoded size
+counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
@@ -135,10 +190,14 @@ its own, and the file sink has none. The bounds stay because guessing
 wrong is costly — a backend that refuses an oversized request refuses the
 whole batch, up to 512 spans with their Level 1 metadata, and the exporter
 does not retry a refusal. On three captured review runs (117–255 tool
-results per iteration, sub-agents included) these bounds evict 28–56% of
-tool results. A 1 MiB total with the same per-result bound evicts none
-(records of 412–938 KB); raising only the per-result bound to 32 KiB
-evicts 47–91%; keeping every result whole takes 1.1–2.2 MB. So the total
+calls per iteration and as many results, sub-agents included; 41–100 KB
+of arguments, with the arguments of 0–3 calls over their bound) these
+bounds evict 31–63% of tool results — 28–56% before arguments shared the
+total. A 1 MiB total with the same per-part bounds evicts none
+(records of 456–1,011 KB); raising only the per-result bound to 32 KiB
+evicts 47–91%; keeping every result whole takes 1.1–2.3 MB. No run of an
+agent that writes files was measured; a `Write` call carries the file
+body as an argument. So the total
 is the bound to raise first, once the size is proven on the target
 backend: send attributes of increasing size and read each back whole
 ([#7415](https://github.com/fullsend-ai/fullsend/issues/7415)).
@@ -182,8 +241,9 @@ result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
 emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
-names and call ids pass through the same sanitizer as span content (Unicode
-normalization, then secret redaction): a name is redacted in place and
+names and call ids pass through the output pipeline span content gets (Unicode
+normalization, then secret redaction; the collector's runner environment
+pass is not applied to them): a name is redacted in place and
 bounded to 256 bytes for the attribute and 128 for the span name; an id with
 any finding is dropped from the span. At most 1,024 `execute_tool`
 spans are recorded per iteration; calls past that are counted in
@@ -249,10 +309,11 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
+| `gen_ai.input.messages` | `agent` | Level 3 only, on a retry iteration that carries validation feedback: the prompt the runner composed, as a JSON string (see Content capture) |
 | `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
-| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count) |
-| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, and the fixed footprint of an errored-empty or oversized stand-in part — in raw bytes whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |
-| `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, a tool call lost its arguments, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count for the last two) |
+| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, dropped arguments (counted as re-encoded JSON — on a key collision, without the member the later key (in sorted key order, not stream order) replaced — or as redacted text when they were not a JSON value), and the fixed footprint of an errored-empty or oversized stand-in part — otherwise in raw bytes, whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |
+| `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly, the input message included (and findings from parts the size budget later dropped) |
 | `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |

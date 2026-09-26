@@ -2970,6 +2970,19 @@ func TestTruncateUTF8_ShortInputUnchanged(t *testing.T) {
 	assert.NotContains(t, truncateUTF8("short", maxFeedbackBytes), "[truncated]")
 }
 
+func TestReplaceEnvSecrets_LongerValuesGoFirst(t *testing.T) {
+	// One value inside another: replacing the short one first would leave
+	// the rest of the long one in the text, and map order would pick.
+	short := strings.Repeat("v", minRedactableSecretLen)
+	long := short + "-and-more"
+	env := map[string]string{"A_TOKEN": short, "B_TOKEN": long}
+	for range 50 {
+		got, keys := replaceEnvSecrets("x "+long+" y "+short, env)
+		require.Equal(t, "x [REDACTED:B_TOKEN] y [REDACTED:A_TOKEN]", got)
+		require.Equal(t, []string{"B_TOKEN", "A_TOKEN"}, keys)
+	}
+}
+
 func TestRedactFeedback_RedactsRunnerCredentialLiterals(t *testing.T) {
 	// The validation script runs with the full runner env, which for the code
 	// and fix harnesses includes PUSH_TOKEN \u2014 a credential that must never

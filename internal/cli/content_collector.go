@@ -2,7 +2,10 @@ package cli
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -38,11 +41,15 @@ import (
 const maxContentBytes = 256 * 1024
 
 // maxEncodedContentBytes bounds gen_ai.output.messages as exported — the
-// JSON string the backend receives, syntax and escaping included. It sits
+// JSON string the backend receives, syntax and escaping included. On a
+// retry that records gen_ai.input.messages, attachInput charges that
+// attribute's encoded size against it first, so the output gets what the
+// input left and the two together stay under it; the input itself is cut
+// upstream (maxFeedbackBytes), not here. It sits
 // just under the one size the pilot backend is proven to accept (see
 // maxContentBytes), so no record is ever larger than the proof. The raw
-// budget runs first; on live streams a budget-binding record encodes 9 to
-// 11% larger than its raw bytes, and escape-dense content ('<', control
+// budget runs first; on live streams a budget-binding record encodes 8 to
+// 10% larger than its raw bytes, and escape-dense content ('<', control
 // bytes, invalid UTF-8) up to six times larger, so Result trims the
 // oldest content again until the encoding fits.
 const maxEncodedContentBytes = 255_000
@@ -73,12 +80,34 @@ const maxToolIDBytes = 256
 // results; no consumer requirement has confirmed either direction yet.
 const maxToolResultBytes = 8 * 1024
 
+// maxToolArgumentsBytes bounds one tool call's arguments, measured on
+// their redacted encoding. Arguments over it are dropped whole, not cut:
+// a cut object is not JSON, and the part keeps its id, name and summary
+// (not the summary when redaction found a secret in the arguments; see
+// Handle).
+// Like maxToolResultBytes it exists because the total above is small;
+// what blocks raising it is the same unproven backend ceiling named on
+// maxContentBytes.
+// Measured on the three live review-agent streams behind that constant
+// (2026-09-18, sub-agent calls included): 117-255 calls per iteration
+// carry 41-100KB of arguments in all (p50 about 110 bytes, p90 under 300),
+// and 0-3 calls per iteration exceed 8KiB, each an Agent dispatch prompt
+// (largest 24KB). No stream from an agent that writes files was
+// measured; a Write call carries the file body as an argument.
+const maxToolArgumentsBytes = 8 * 1024
+
 // newContentCollectorIfEnabled returns a live collector when the Level 3
 // gate is on and nil otherwise — nil is the off state and is inert at
 // every call site, so the gate needs no second check.
-func newContentCollectorIfEnabled() *contentCollector {
+//
+// runnerEnv is the harness runner environment. The sandbox is not meant to
+// hold its credentials, but the record leaves the runner, so their values
+// get the same literal pass redactFeedback gives script output.
+func newContentCollectorIfEnabled(runnerEnv map[string]string) *contentCollector {
 	if telemetry.ContentCaptureEnabled() {
-		return newContentCollector(maxContentBytes)
+		c := newContentCollector(maxContentBytes)
+		c.runnerEnv = runnerEnv
+		return c
 	}
 	return nil
 }
@@ -87,7 +116,8 @@ func newContentCollectorIfEnabled() *contentCollector {
 // renderer, the tool-span tracker and the Level 3 collector, in that
 // order. The tracker stamps a span's start and end when it handles the
 // event, so it runs ahead of the collector, whose redaction pass scales
-// with the size of a tool result. It is always non-nil: tool spans are metadata and are emitted
+// with the size of a tool result or a call's arguments. It is always
+// non-nil: tool spans are metadata and are emitted
 // with the content gate off, and supplying any OnEvent replaces the
 // runtime's default renderer — losing it silences CI output — so the
 // renderer runs first whatever else is off. A nil collector (gate off)
@@ -125,27 +155,75 @@ func attachContent(span trace.Span, res contentResult) {
 	}
 }
 
+// attachInput records the prompt the runner composed for this iteration
+// as gen_ai.input.messages: one user message with one text part. Only a
+// retry under feedback_mode: append composes a prompt; otherwise prompt
+// is empty and nothing is recorded, as with a nil collector (gate off).
+//
+// The recorded copy goes through the same redaction as output content.
+// redactFeedback already scanned the feedback, before it was sanitized,
+// cut and framed; when neither sanitizing nor the pipeline's folding
+// changes the text, the pattern scan here repeats that one. Sanitizing can
+// join a token that scan saw split by a zero-width character, and folding
+// can spell out one it saw in fullwidth; then this scan is the first to
+// see it whole.
+// It masks the recorded copy only — the agent is sent the prompt as
+// composed. redact repeats redactFeedback's literal pass over runner env
+// values, once more after the fold, which can spell out a value that pass
+// saw in compatibility forms. The mask that first scan leaves for a
+// connection-string password of ten or more bytes ("abcd...") matches its
+// own pattern again, so such a prompt counts a finding here; a shorter
+// password is masked "***", which does not.
+// The pipeline also folds compatibility characters the agent received
+// unfolded. Findings join the iteration's and surface through Result.
+//
+// The prompt is cut upstream (maxFeedbackBytes), not here. Folding can
+// grow the copy about elevenfold, so its encoded size is charged to
+// maxEncoded: the two content attributes of one span together stay
+// within the size maxEncodedContentBytes is proven for.
+func (c *contentCollector) attachInput(span trace.Span, prompt string) {
+	if c == nil {
+		return
+	}
+	text := c.redact(prompt, &c.findings)
+	if text == "" {
+		return
+	}
+	raw, err := json.Marshal([]struct {
+		Role  string        `json:"role"`
+		Parts []contentPart `json:"parts"`
+	}{{"user", []contentPart{{Type: "text", Content: text}}}})
+	if err != nil {
+		return // strings marshal unconditionally
+	}
+	c.maxEncoded -= len(raw)
+	span.SetAttributes(stringAttr("gen_ai.input.messages", string(raw)))
+}
+
 // contentPart is one part of the assembled assistant output message,
 // shaped for the GenAI output-messages JSON schema: TextPart
 // ({type:"text",content}), the schema's GenericPart extension point
 // ({type:"reasoning",content}), ToolCallRequestPart
-// ({type:"tool_call",id,name}+summary), and ToolCallResponsePart
+// ({type:"tool_call",id,name,arguments}+summary), and ToolCallResponsePart
 // ({type:"tool_call_response",id,response}). A tool summary is not the
-// tool's arguments, so no arguments field is ever fabricated from it.
+// tool's arguments, so no arguments field is ever fabricated from it;
+// arguments come only from an event that carries them (toolArguments).
 type contentPart struct {
-	Type     string `json:"type"`
-	Content  string `json:"content,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Summary  string `json:"summary,omitempty"`
-	Response string `json:"response,omitempty"`
+	Type      string          `json:"type"`
+	Content   string          `json:"content,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Summary   string          `json:"summary,omitempty"`
+	Response  string          `json:"response,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 	// IsError mirrors the wire's is_error on failed tool calls; it is
 	// content-bearing (an errored empty result is signal, not absence)
 	// and accounts a fixed footprint. Truncated marks a part whose bulk
 	// field was cut, so a consumer never reads a fragment as a whole
-	// result; it is set by the collector's own cuts and by parser-side
-	// loss (Partial, Oversized), and stays outside the accounting except
-	// for an oversized stand-in's fixed footprint (see oversized).
+	// result, and a tool_call whose arguments were dropped; it is set by
+	// the collector's own cuts and by parser-side loss (Partial,
+	// Oversized), and stays outside the accounting except for an oversized
+	// stand-in's fixed footprint (see oversized).
 	IsError   bool `json:"is_error,omitempty"`
 	Truncated bool `json:"fullsend.truncated,omitempty"`
 	// bulkScanned records that the bulk field was already redacted at
@@ -190,7 +268,7 @@ func (p contentPart) MarshalJSON() ([]byte, error) {
 // content: a failed call with empty output must survive, so it counts
 // its serialized footprint.
 func contentBytes(p contentPart) int {
-	n := len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
+	n := len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response) + len(p.Arguments)
 	if p.IsError {
 		n += isErrorFootprint
 	}
@@ -253,10 +331,16 @@ type contentResult struct {
 	// when the iteration produced no content.
 	OutputMessages string
 	// DroppedBytes counts raw part bytes removed by the size budget
-	// (content, tool name, summary, tool response, and id bytes alike).
+	// (content, tool name, summary, tool response, and id bytes alike) and
+	// the bytes of dropped tool arguments: as re-encoded JSON (on a key
+	// collision, without the member the later key in sorted order
+	// replaced), or as
+	// redacted text when they were not one JSON value.
 	DroppedBytes int
-	// Truncated reports whether the budget cut or dropped anything, or a
-	// kept tool result was a parser-side fragment (its part is marked).
+	// Truncated reports whether the budget cut or dropped anything, a tool
+	// call's arguments were dropped (toolArguments, or Result when the name
+	// redacted away; a kept part is marked), or a kept tool result was a
+	// parser-side fragment (its part is marked).
 	Truncated bool
 	// Findings are the security findings raised during redaction.
 	Findings []security.Finding
@@ -276,23 +360,32 @@ type contentCollector struct {
 	// maxEncoded bounds the marshaled attribute; see maxEncodedContentBytes.
 	maxEncoded int
 	pipeline   *security.Pipeline
-	parts      []contentPart
-	total      int
-	// evicted counts bytes of old parts discarded during accumulation.
+	// secrets is the pipeline's pattern stage alone, for secretNamed.
+	secrets *security.SecretRedactor
+	// runnerEnv feeds redact's literal pass; see newContentCollectorIfEnabled.
+	runnerEnv map[string]string
+	parts     []contentPart
+	total     int
+	// evicted counts bytes discarded before Result's budget runs: old
+	// parts and a lone oversized part's head (evictOverflow), the head a
+	// tool result loses to maxToolResultBytes, and dropped tool arguments
+	// (toolArguments).
 	// Eviction keeps memory bounded on long sessions by approximating the
 	// Result budget on sizes as accumulated — pre-redaction — so it can
 	// drop content the post-redaction suffix budget would have kept.
 	// Discarded content is always redacted first: its findings land in
 	// findings below, and no cut ever runs on raw bytes.
 	evicted int
-	// findings raised while redacting content during eviction; merged
-	// into the contentResult at Result so eviction-time redactions are
-	// counted exactly like assembly-time ones.
+	// findings raised by redaction that runs before Result: on evicted or
+	// capped content, on tool arguments — kept or dropped; Result does
+	// not scan them again — and on the input message (attachInput).
+	// Merged into the contentResult at Result so they count exactly like
+	// assembly-time ones.
 	findings []security.Finding
 }
 
 func newContentCollector(maxBytes int) *contentCollector {
-	return &contentCollector{maxBytes: maxBytes, maxEncoded: maxEncodedContentBytes, pipeline: security.OutputPipeline()}
+	return &contentCollector{maxBytes: maxBytes, maxEncoded: maxEncodedContentBytes, pipeline: security.OutputPipeline(), secrets: security.NewSecretRedactor()}
 }
 
 // Handle consumes one normalized event. Contiguous text and reasoning
@@ -309,7 +402,22 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ThinkingEvent:
 		c.appendText("reasoning", e.Text)
 	case agentruntime.ToolUseEvent:
-		c.appendPart(contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary})
+		p := contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary}
+		if e.Name != "" {
+			// The schema requires a name on a tool_call part. Arguments
+			// alone must not keep a nameless call, nor charge for one that
+			// appendPart then refuses.
+			scanned := len(c.findings)
+			p.Arguments, p.Truncated = c.toolArguments(e.Arguments)
+			if slices.ContainsFunc(c.findings[scanned:], func(f security.Finding) bool { return f.Scanner != "unicode_normalizer" }) {
+				// The parser cut the summary out of these arguments
+				// before anything scanned it, so a secret found in them
+				// can be in the summary as a beginning that neither the
+				// literal pass nor a pattern matches.
+				p.Summary = ""
+			}
+		}
+		c.appendPart(p)
 	case agentruntime.ToolResultEvent:
 		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result, IsError: e.IsError, oversized: e.Oversized}
 		// A parser-side partial flatten (non-text blocks skipped) is a
@@ -442,14 +550,14 @@ func bulkField(p *contentPart) *string {
 // failed. Redaction runs before the size budget: truncating first could
 // split a secret so the redactor no longer recognizes it.
 func (c *contentCollector) Result(finishReason string) contentResult {
-	if c == nil || len(c.parts) == 0 {
+	if c == nil {
 		return contentResult{}
 	}
 
 	res := contentResult{
 		DroppedBytes: c.evicted,
 		Truncated:    c.evicted > 0,
-		// Findings raised while redacting evicted content count exactly
+		// Findings raised before Result (see findings) count exactly
 		// like assembly-time ones — a consumer must see every redaction,
 		// including ones inside content the budget dropped.
 		Findings: append([]security.Finding(nil), c.findings...),
@@ -468,6 +576,14 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 			p.Response = c.redact(p.Response, &res.Findings)
 		}
 		p.Name = c.redact(p.Name, &res.Findings)
+		if p.Name == "" && p.Arguments != nil {
+			// As in Handle, for a name that redacts to nothing — but these
+			// arguments were accepted, so losing them is charged and
+			// marked. Ones Handle had already dropped stay as they were.
+			res.DroppedBytes += len(p.Arguments)
+			res.Truncated = true
+			p.Arguments, p.Truncated = nil, true
+		}
 		p.Summary = c.redact(p.Summary, &res.Findings)
 		p.ID = c.redactID(p.ID, &res.Findings)
 		if contentBytes(p) == 0 {
@@ -602,8 +718,8 @@ func encodedTail(s string, allow int) string {
 	return tailToRuneBoundary(s, len(s)-start)
 }
 
-// redact runs text through the output pipeline, returning the sanitized
-// form and accumulating findings. ScanResult.Sanitized is empty when
+// redact runs text through the runner env literal pass and the output
+// pipeline, returning the sanitized form and accumulating findings. ScanResult.Sanitized is empty when
 // nothing changed — but also when sanitization removed everything (an
 // all-invisible-bytes input), so an empty Sanitized WITH findings means
 // fully redacted, not unchanged.
@@ -611,13 +727,144 @@ func (c *contentCollector) redact(text string, findings *[]security.Finding) str
 	if text == "" {
 		return text
 	}
+	// The literal pass runs on both sides of the pipeline. Ahead of it, on
+	// the text as the stream wrote it, so a pattern does not mask part of
+	// a value and keep its first bytes. After it, because the normalizer
+	// joins a value the stream split with an invisible character or
+	// spelled in compatibility forms. Not covered: a value written that way
+	// which a pattern also recognises — in an assignment, an auth header, a
+	// secret-named field or a connection string, or by its own prefix — is
+	// masked by that pattern, which shows what its mask shows; and a value
+	// the normalizer itself rewrites is matched only as the env has it.
+	text = c.replaceEnv(text, findings)
 	scanned := c.pipeline.Scan(text)
 	*findings = append(*findings, scanned.Findings...)
 	if scanned.Sanitized != "" {
-		return scanned.Sanitized
+		return c.replaceEnv(scanned.Sanitized, findings)
 	}
 	if len(scanned.Findings) > 0 {
 		return ""
+	}
+	return text
+}
+
+// toolArguments returns a tool call's arguments redacted and re-encoded,
+// and whether they were dropped instead. There are none to return when
+// the event carries none or JSON null.
+//
+// The redactor's patterns are written for plain text: run over serialised
+// JSON they miss an assignment that opens a string or follows an escaped
+// newline, a value behind escaped quotes, and JSON nested in a string, and
+// Unicode folding can turn a fullwidth quotation mark into one that closes
+// the string. So the value is decoded, each string, number and object key
+// is redacted on its own (redactValue), and the result is encoded again —
+// key order, spacing and escapes are the encoder's, not the wire's.
+//
+// Text that is not one JSON value (see ToolUseEvent.Arguments) cannot be
+// redacted that way. It is scanned as text so its findings count, then
+// dropped and charged like any other discarded content. Arguments whose
+// redacted encoding exceeds maxToolArgumentsBytes, or in which two keys
+// of one object redact to the same string, are dropped the same way and
+// charged as encoded. On a collision that is the encoding after the later
+// key (in sorted order) replaced the earlier member, so the replaced
+// member is not counted.
+func (c *contentCollector) toolArguments(args string) (json.RawMessage, bool) {
+	if args == "" {
+		return nil, false
+	}
+	if !json.Valid([]byte(args)) {
+		c.evicted += len(c.redact(args, &c.findings))
+		return nil, true
+	}
+	dec := json.NewDecoder(strings.NewReader(args))
+	dec.UseNumber() // float64 would rewrite integers past 2^53
+	var v any
+	if err := dec.Decode(&v); err != nil || v == nil {
+		return nil, false
+	}
+	collided := false
+	out, err := json.Marshal(c.redactValue(v, &collided))
+	if err != nil {
+		return nil, false // decoded JSON values marshal unconditionally
+	}
+	if collided || len(out) > maxToolArgumentsBytes {
+		c.evicted += len(out)
+		return nil, true
+	}
+	return out, false
+}
+
+// redactValue redacts every string, number and object key under v; a
+// number that redacts becomes the redacted string. A pattern
+// keyed on a member name ("password": "...") cannot see the pair that
+// way, so each string member is scanned once more, already redacted,
+// beside its redacted key (secretNamed) and masked whole on a match.
+// Keys are walked in sorted order, so neither the findings nor a dropped
+// value's charge follow map order. *collided reports two keys of one
+// object that redact to the same string: keeping either member would
+// show a call the agent did not make.
+func (c *contentCollector) redactValue(v any, collided *bool) any {
+	switch t := v.(type) {
+	case string:
+		return c.redact(t, &c.findings)
+	case json.Number:
+		// Digits can be a credential too; a number that redacts is
+		// recorded as the redacted string.
+		if s := c.redact(t.String(), &c.findings); s != t.String() {
+			return s
+		}
+	case []any:
+		for i := range t {
+			t[i] = c.redactValue(t[i], collided)
+		}
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			rk := c.redact(k, &c.findings)
+			e := c.redactValue(t[k], collided)
+			if s, ok := e.(string); ok && c.secretNamed(rk, s) {
+				e = "***"
+			}
+			if _, dup := out[rk]; dup {
+				*collided = true
+			}
+			out[rk] = e
+		}
+		return out
+	}
+	return v
+}
+
+// secretNamed reports whether the redactor's member-name pattern
+// (json_field) matches the pair, and records that finding. Any other
+// finding of this second scan is discarded: both strings were scanned
+// already, and a connection-string mask of the "abcd..." form (a password
+// of ten or more bytes) matches its own pattern again. The scanned text
+// is never exported, and it goes to the pattern stage alone: both strings
+// are normalized already, and the normalizer is not idempotent over
+// escape sequences — run again over the pair it can strip one the first
+// pass left open, and the value or the key's keyword with it. A double
+// quote would end the pattern's quoted run early, so ',' stands in for it: like the quote it is outside every
+// pattern's token class, so it joins no two runs into a token that a
+// prefix pattern would mask ahead of the member-name pattern.
+func (c *contentCollector) secretNamed(key, value string) bool {
+	unquote := strings.NewReplacer(`"`, ",")
+	pair := `"` + unquote.Replace(key) + `":"` + unquote.Replace(value) + `"`
+	for _, f := range c.secrets.Scan(pair).Findings {
+		if f.Name == "json_field" {
+			c.findings = append(c.findings, f)
+			return true
+		}
+	}
+	return false
+}
+
+// replaceEnv is redact's literal pass (replaceEnvSecrets over runnerEnv),
+// with one finding for each key it replaced.
+func (c *contentCollector) replaceEnv(text string, findings *[]security.Finding) string {
+	text, keys := replaceEnvSecrets(text, c.runnerEnv)
+	for _, key := range keys {
+		*findings = append(*findings, security.Finding{Scanner: "runner_env", Name: key, Severity: "critical", Position: -1})
 	}
 	return text
 }
@@ -626,12 +873,9 @@ func (c *contentCollector) redact(text string, findings *[]security.Finding) str
 // any finding the id is dropped entirely — a substituted id could
 // falsely collide with another call's.
 func (c *contentCollector) redactID(id string, findings *[]security.Finding) string {
-	if id == "" {
-		return id
-	}
-	scanned := c.pipeline.Scan(id)
-	*findings = append(*findings, scanned.Findings...)
-	if len(scanned.Findings) > 0 {
+	before := len(*findings)
+	c.redact(id, findings)
+	if len(*findings) > before {
 		return ""
 	}
 	return id

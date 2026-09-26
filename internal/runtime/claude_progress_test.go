@@ -825,6 +825,73 @@ func TestParseClaudeStreamAssistantFallbackToolUseCarriesID(t *testing.T) {
 	}
 }
 
+func collectToolUses(t *testing.T, input string) []ToolUseEvent {
+	t.Helper()
+	var tools []ToolUseEvent
+	for _, e := range collectEvents(t, input) {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	return tools
+}
+
+func TestParseClaudeStreamToolUseCarriesArguments(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	tools := collectToolUses(t, strings.Join(lines, "\n"))
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if want := `{"file_path":"/src/main.go"}`; tools[0].Arguments != want {
+		t.Errorf("expected the joined input deltas %q, got %q", want, tools[0].Arguments)
+	}
+}
+
+func TestParseClaudeStreamArgumentsStopAtTheInputCap(t *testing.T) {
+	// Each delta fits a stream line; the third crosses maxToolInputSize.
+	delta := `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"` + strings.Repeat("x", 400*1024) + `"}}}`
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"Write"}}}`,
+		delta, delta, delta,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	tools := collectToolUses(t, strings.Join(lines, "\n"))
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if got := len(tools[0].Arguments); got != maxToolInputSize {
+		t.Errorf("expected the arguments cut at the %d-byte cap, got %d bytes", maxToolInputSize, got)
+	}
+}
+
+func TestParseClaudeStreamAssistantToolUseCarriesArguments(t *testing.T) {
+	// Key order, escapes and spacing are the wire's: the parser passes the
+	// input through without decoding it.
+	const input = `{"timeout": 5, "command":"grep -n \"a\u003cb\" x\nls"}`
+	tools := collectToolUses(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":`+input+`}]}}`)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Arguments != input {
+		t.Errorf("expected the input as written %q, got %q", input, tools[0].Arguments)
+	}
+}
+
+func TestParseClaudeStreamToolUseWithoutInputHasNoArguments(t *testing.T) {
+	tools := collectToolUses(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"Bash"}]}}`)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Arguments != "" {
+		t.Errorf("expected no arguments, got %q", tools[0].Arguments)
+	}
+}
+
 func collectToolResults(t *testing.T, input string) []ToolResultEvent {
 	t.Helper()
 	var results []ToolResultEvent
