@@ -438,56 +438,45 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │               GCF Provisioner: Provision() Flow                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌───────────────────┐                                          │
-│  │ Get GCP project   │ resourcemanager.projects.get             │
-│  │ number            │                                          │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Create Service    │ fullsend-mint@{project}.iam              │
-│  │ Account           │ (skip if exists)                         │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Create WIF Pool   │ fullsend-inference (or fullsend-pool)    │
-│  │                   │ (skip if exists)                         │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Create WIF        │ github-oidc                              │
-│  │ Provider          │ OIDC issuer:                             │
-│  │                   │   token.actions.githubusercontent.com    │
-│  │                   │ (skip if exists)                         │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Grant Agent       │ roles/aiplatform.user                    │
-│  │ Platform access   │ on the inference project                 │
-│  │ to federated IDs  │                                          │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
-│  │ Secret Manager    │ once per agent role (shared)             │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Deploy Cloud      │ Source: embedded mint code               │
-│  │ Function          │ SHA256 hash comparison to skip           │
-│  │                   │ redundant deploys                        │
-│  │                   │ Env vars:                                │
-│  │                   │   ALLOWED_ORGS                           │
-│  │                   │   GCP_PROJECT_NUMBER                     │
-│  │                   │   WIF_POOL_NAME                          │
-│  │                   │   WIF_PROVIDER_NAME                      │
-│  │                   │   ROLE_APP_IDS                           │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Health check      │ Exponential backoff polling              │
-│  │                   │ POST /v1/token (expect 401)              │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
+│  ┌─────────────────────────┐                                    │
+│  │ Create Service Account  │ fullsend-mint@{project}.iam        │
+│  │                         │ (skip if exists)                   │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
+│  ┌─────────────────────────┐                                    │
+│  │ ensureWIFPoolAndProvider│ Get project number; create or      │
+│  │                         │ update pool + github-oidc          │
+│  │                         │ provider. Merges installing orgs   │
+│  │                         │ with existing provider condition.  │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
+│  ┌─────────────────────────┐                                    │
+│  │ Grant Agent Platform    │ roles/aiplatform.user              │
+│  │ access                  │ on the inference project           │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
+│  ┌─────────────────────────┐                                    │
+│  │ Store PEMs in Secret    │ fullsend-{role}-app-pem            │
+│  │ Manager                 │ once per agent role (shared)       │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
+│  ┌─────────────────────────┐                                    │
+│  │ Deploy Cloud Function   │ Source: embedded mint code         │
+│  │                         │ SHA256 hash comparison to skip     │
+│  │                         │ redundant deploys                  │
+│  │                         │ Env vars:                          │
+│  │                         │   ALLOWED_ORGS                     │
+│  │                         │   GCP_PROJECT_NUMBER               │
+│  │                         │   WIF_POOL_NAME                    │
+│  │                         │   WIF_PROVIDER_NAME                │
+│  │                         │   ROLE_APP_IDS                     │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
+│  ┌─────────────────────────┐                                    │
+│  │ Health check            │ Exponential backoff polling        │
+│  │                         │ GET /health (expect 200)           │
+│  └────────────┬────────────┘                                    │
+│               ▼                                                 │
 │  Return: FULLSEND_MINT_URL = https://{region}-{project}.        │
 │          cloudfunctions.net/fullsend-mint                       │
 │                                                                 │
