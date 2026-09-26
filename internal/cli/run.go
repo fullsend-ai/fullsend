@@ -1971,6 +1971,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	// Detect Co-authored-by prohibitions before Bootstrap writes Claude
+	// Code's --settings file, so includeCoAuthoredBy: false can land in
+	// hooks.json (#2905). The org default AGENTS.md is consulted only when
+	// the repo has none (the same file step 8a injects).
+	boot, suppressCoAuthoredBy := prepareCoAuthorSuppress(
+		hostRepositoryDir, filepath.Join(absFullsendDir, "AGENTS.md"), boot)
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
@@ -2046,6 +2052,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
 	}
+
+	// 8a-1b. When the repo forbids Co-authored-by trailers, install a
+	// commit-msg hook so every runtime strips them at git commit time.
+	// Claude Code also gets includeCoAuthoredBy: false via --settings
+	// (prepareCoAuthorSuppress above). SafeDownload removes .git/hooks.
+	maybeInstallCoAuthorStripHook(sandboxName, remoteRepositoryDir, suppressCoAuthoredBy, printer, sandbox.Exec)
 
 	// 8a-2. Exclude agent working directories from git tracking.
 	// Agents may create working directories (e.g. .agentready/) during
@@ -4757,7 +4769,7 @@ func excludeAgentWorkingDirs(sandboxName, repoDir string, extra []string, printe
 // hasAgentsMD checks whether the repo directory contains an AGENTS.md file
 // in any common casing.
 func hasAgentsMD(repoDir string) bool {
-	for _, name := range []string{"AGENTS.md", "agents.md", "Agents.md"} {
+	for _, name := range agentsMDFilenames {
 		if _, err := os.Stat(filepath.Join(repoDir, name)); err == nil {
 			return true
 		}
@@ -4768,7 +4780,7 @@ func hasAgentsMD(repoDir string) bool {
 // hasClaudeMD checks whether the repo directory contains a CLAUDE.md file
 // in any common casing.
 func hasClaudeMD(repoDir string) bool {
-	for _, name := range []string{"CLAUDE.md", "claude.md", "Claude.md", ".claude.md"} {
+	for _, name := range claudeMDFilenames {
 		if _, err := os.Stat(filepath.Join(repoDir, name)); err == nil {
 			return true
 		}

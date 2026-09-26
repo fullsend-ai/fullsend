@@ -35,6 +35,9 @@ func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	var settings map[string]any
 	require.NoError(t, json.Unmarshal(data, &settings))
 
+	_, hasCoAuthor := settings["includeCoAuthoredBy"]
+	assert.False(t, hasCoAuthor, "includeCoAuthoredBy must be omitted so Claude Code keeps its default")
+
 	hooks := settings["hooks"].(map[string]any)
 	assert.Contains(t, hooks, "PreToolUse")
 	assert.Contains(t, hooks, "PostToolUse")
@@ -578,6 +581,26 @@ func TestSandboxHookConfig_ForgeEgressEntry(t *testing.T) {
 
 	cfg = cfg.WithForgeEgressEntry("gitlab.cee.redhat.com:443")
 	assert.Equal(t, "gitlab.cee.redhat.com:443", cfg.ForgeEgressEntry())
+}
+
+func TestGenerateHooksConfig_SuppressCoAuthoredBy(t *testing.T) {
+	cfg := SandboxHookConfigFromHarness(&harness.Harness{Agent: "test.md"}).
+		WithForgeEgressEntry("gitlab.example:443")
+	assert.False(t, cfg.SuppressCoAuthoredBy())
+
+	cfg = cfg.WithSuppressCoAuthoredBy()
+	assert.True(t, cfg.SuppressCoAuthoredBy())
+	assert.Equal(t, "gitlab.example:443", cfg.ForgeEgressEntry(), "suppress flag must not drop other fields")
+
+	data, err := GenerateHooksConfig(cfg)
+	require.NoError(t, err)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	v, ok := settings["includeCoAuthoredBy"]
+	require.True(t, ok)
+	assert.Equal(t, false, v)
+	assert.Contains(t, settings, "hooks")
 }
 
 func countPhase(plan []HookGroup, phase HookPhase) int {
