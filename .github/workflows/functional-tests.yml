@@ -174,10 +174,14 @@ jobs:
           echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
           cat > "$HOME/.config/openshell/gateway.toml" << EOF
           [openshell]
-          version = 1
+          version = 2
 
           [openshell.gateway]
+          compute_driver = "podman"
+
+          [openshell.drivers.podman]
           supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          health_check_interval_secs = 10
           EOF
 
       - name: Install OpenShell CLI

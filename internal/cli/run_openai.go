@@ -524,17 +524,6 @@ func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Prin
 	return nil
 }
 
-// emptyCredentialRefusedRe matches the gateway's rejection of an empty
-// credential value on create — today "provider.credentials must not be
-// empty" (only for an empty map); a future value-level check is expected
-// to keep the words. Anything else is a real failure, not a cue to send the
-// value without its expiry.
-var emptyCredentialRefusedRe = regexp.MustCompile(`(?i)credential[^\n]*(empty|required|missing|invalid)`)
-
-func emptyCredentialRefused(err error) bool {
-	return err != nil && emptyCredentialRefusedRe.MatchString(err.Error())
-}
-
 // openAICredentialKeys returns the credential keys the run-scoped provider
 // carries. The profile declares exactly one, OPENAI_API_KEY, and that is all
 // a definition may ask for: the token is never copied under another name
@@ -738,28 +727,16 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 
 	start := time.Now()
 	printer.StepStart("Ensuring run-scoped provider: " + name)
-	// Two steps, so the value is never on the gateway without its expiry:
-	// create the instance with empty credentials (nothing secret involved),
-	// then store value and expiry together in one update.
+	// OpenShell requires a declared credential's value on create and takes
+	// an expiry only on update, so the value is stored first and its expiry
+	// in the very next call.
 	empty := make(map[string]string, len(keys))
 	for _, k := range keys {
 		empty[k] = ""
 	}
-	if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, empty); err != nil {
-		// OpenShell 0.0.115 accepts an empty credential value on create
-		// (only an empty credential *map* is rejected — the same gap the
-		// _NOOP_* providers use). Should a later release validate values,
-		// fall back to creating with the value and attaching the expiry in
-		// the very next call: a one-call window instead of a hard failure.
-		if !emptyCredentialRefused(err) {
-			printer.StepFail("Failed to create run-scoped provider " + name)
-			return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
-		}
-		printer.StepWarn("Gateway refused an empty credential on create; creating with the value and attaching the expiry immediately")
-		if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, creds); err != nil {
-			printer.StepFail("Failed to create run-scoped provider " + name)
-			return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
-		}
+	if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, creds); err != nil {
+		printer.StepFail("Failed to create run-scoped provider " + name)
+		return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
 	}
 	if err := sandbox.UpdateProviderLiteralWithExpiry(ctx, name, creds, cred.expiresAt); err != nil {
 		// The caller only registers the deferred delete once this function
