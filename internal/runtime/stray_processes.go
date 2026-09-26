@@ -34,15 +34,13 @@ const killStrayProcessesTimeout = 15 * time.Second
 // where such a survivor keeps files open, burns CPU/memory and writes into
 // the workspace the next iteration reads.
 //
-// Process-view assumptions, verified against OpenShell 0.0.116 and its
-// source: `sandbox exec` runs `sh -c <command>` as the sandbox user after
-// the supervisor drops privileges
-// (crates/openshell-supervisor-process/src/process.rs). With the podman
-// driver the supervisor is PID 1 owned by root
-// (crates/openshell-driver-podman/src/container.rs sets `user: "0:0"` and
-// the supervisor entrypoint), so it never appears in `ps -u <sandbox user>`;
-// on any driver it is an ancestor of this shell, which is what the
-// ancestry walk below spares — the root/PID 1 detail is not load-bearing.
+// Process-view assumptions, verified live on OpenShell 0.1.1 with podman:
+// `sandbox exec` runs `sh -c <command>` as the sandbox user, each exec in
+// its own process group, parented to the workload's PID 1
+// (`openshell-sandbox --bootstrap ...`), which also runs as the sandbox user
+// and so appears in `ps -u`. PID 1 is an ancestor of this shell, which is
+// what the ancestry walk below spares; the supervisor runs in a separate
+// container and is not visible here.
 // The keep-alive main process (sandbox.KeepAliveCommand) does run as the
 // sandbox user with ppid 1, indistinguishable from a reparented stray by
 // tree shape, so it is excluded by argv: the command word is compared

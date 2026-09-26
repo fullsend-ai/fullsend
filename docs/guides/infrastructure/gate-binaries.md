@@ -207,15 +207,11 @@ Create a provider definition that references the profile by its `id`:
 
 ```yaml
 # providers/gate-query.yaml
+# The gate binary handles its own authentication or needs no credentials, so
+# the provider carries none: it exists only to attach the profile's network
+# policy.
 name: gate-query
 type: gate-query
-# The gate binary handles its own authentication or needs no credentials.
-# This placeholder credential exists only to satisfy OpenShell's requirement
-# that every provider declares at least one credential key. The provider
-# definition's sole purpose is to attach the network policy from the profile.
-# See: https://github.com/NVIDIA/OpenShell/issues/1978
-credentials:
-  _PLACEHOLDER_GATE_QUERY: ""
 ```
 
 ### Harness configuration

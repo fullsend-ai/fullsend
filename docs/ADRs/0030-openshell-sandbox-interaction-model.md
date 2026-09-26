@@ -79,7 +79,7 @@ the gateway's gRPC API.
 
 > **Note (2026-09, [#7229](https://github.com/fullsend-ai/fullsend/issues/7229)):**
 > `sandbox exec` cannot deliver a signal to the process it started, and
-> `sandbox stop` sends SIGKILL, not SIGINT — but a *second* `sandbox exec`
+> `sandbox stop` never sends SIGINT — but a *second* `sandbox exec`
 > that runs `kill -INT <pid>` against a known guest PID does work. See
 > [Signal and lifecycle semantics](#signal-and-lifecycle-semantics).
 
@@ -191,14 +191,16 @@ entry command (`true`) exits; fullsend explicitly deletes after extraction.
 > `killStrayProcessesTemplate` (`internal/runtime/stray_processes.go`) to
 > send TERM/KILL to known guest PIDs.
 >
-> `openshell sandbox stop` is not a graceful alternative to either exec path.
-> Stop sends SIGKILL, not SIGINT. On the pinned OpenShell 0.0.116 release,
-> the stop waits ~45s for a SIGTERM that never arrives (`CAP_KILL` dropped,
+> `openshell sandbox stop` is not a graceful alternative to either exec path:
+> it never sends SIGINT. On OpenShell 0.0.x it waited ~45s for a SIGTERM
+> that never arrived (`CAP_KILL` dropped,
 > [NVIDIA/OpenShell#2855](https://github.com/NVIDIA/OpenShell/issues/2855))
-> and then SIGKILLs the container.
-> [NVIDIA/OpenShell#3036](https://github.com/NVIDIA/OpenShell/pull/3036)
-> restores SIGTERM to the canonical process group, but still not SIGINT, and
-> exec'd process trees still receive SIGKILL.
+> and then SIGKILLed the container. From 0.1.0
+> ([NVIDIA/OpenShell#3036](https://github.com/NVIDIA/OpenShell/pull/3036))
+> it SIGTERMs the canonical process group and returns in under a second
+> (0.15–0.28s measured on 0.1.1 with podman). Each exec'd process tree now
+> runs in its own process group rather than the supervisor's; whether stop
+> signals those trees gracefully has not been measured.
 >
 > Token-count persistence is the accepted partial fix for cancelled-run
 > telemetry ([#6936](https://github.com/fullsend-ai/fullsend/issues/6936) /
