@@ -2389,6 +2389,44 @@ func TestResolveHarness_LocalProfileReadError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading profile")
+	// #7567: this is the actual error a `fullsend run` user sees for a
+	// missing local profile — ResolveHarness's own read fails before
+	// ValidateFilesExist's stat check ever runs, so the actionable hint
+	// must be attached here too, not only in ValidateFilesExist.
+	assert.Contains(t, err.Error(), "commit the profile file at that path")
+}
+
+// TestResolveHarness_MissingLocalProfileMatchesRunCallOrder mirrors the
+// exact call order `fullsend run` uses in internal/cli/run.go:
+// ResolveRelativeTo makes the harness's relative profile path absolute,
+// then the local ResolveHarness pass runs. In run.go, a non-nil error here
+// is returned immediately (wrapped as "resolving local profiles/providers:
+// %w") — ValidateFilesExist's stat check is never reached on this path, so
+// ResolveHarness's own read error is what the user actually sees and it
+// must carry the same actionable hint ValidateFilesExist would have used
+// (#7567).
+func TestResolveHarness_MissingLocalProfileMatchesRunCallOrder(t *testing.T) {
+	root := t.TempDir()
+	agentPath := filepath.Join(root, "agents", "test.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(agentPath), 0755))
+	require.NoError(t, os.WriteFile(agentPath, []byte("# agent\n"), 0644))
+
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"profiles/missing.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo(root))
+	require.Greater(t, len(h.OpenShellProfiles()), 0)
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading profile")
+	assert.Contains(t, err.Error(), "commit the profile file at that path")
 }
 
 func TestResolveHarness_LocalProfileBadID(t *testing.T) {
@@ -2425,6 +2463,9 @@ func TestResolveHarness_LocalProviderReadError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading provider")
+	// #7567: matches the profile case above — this is the error a
+	// `fullsend run` user actually sees for a missing local provider path.
+	assert.Contains(t, err.Error(), "commit the provider file at that path")
 }
 
 func TestResolveHarness_LocalProviderParseError(t *testing.T) {

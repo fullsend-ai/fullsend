@@ -2,8 +2,6 @@ package harness
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 )
 
 // CheckGenerated validates a harness that was just constructed in memory and
@@ -34,47 +32,5 @@ func CheckGenerated(h *Harness, absDir string) ([]Diagnostic, error) {
 	if err := h.ValidateFilesExist(); err != nil {
 		return diags, fmt.Errorf("validating files: %w", err)
 	}
-	if err := h.validateResourceFilesExist(); err != nil {
-		return diags, err
-	}
 	return diags, nil
-}
-
-// validateResourceFilesExist stats the provider and profile files the
-// harness names by path.
-//
-// ValidateFilesExist deliberately skips these — ResolveHarness reads them
-// later, during the run's resolve step, and reports its own error. But a
-// generator has no resolve step, so without this check the one failure it
-// most needs to catch is invisible: a harness naming providers/vertex-ai.yaml
-// with no such file validates cleanly here and then fails at run time as
-// "reading profile ...: no such file or directory", or worse, degrades to a
-// warning and a sandbox that cannot reach Vertex.
-func (h *Harness) validateResourceFilesExist() error {
-	check := func(field, p string) error {
-		if p == "" || IsURL(p) || !IsProviderPath(p) {
-			return nil
-		}
-		path := p
-		if !filepath.IsAbs(path) {
-			return nil // ResolveRelativeTo has already made these absolute
-		}
-		if _, err := os.Stat(path); err != nil {
-			return fmt.Errorf("%s: %w", field, err)
-		}
-		return nil
-	}
-	for i, p := range h.Providers {
-		if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
-			return err
-		}
-	}
-	if h.OpenShell != nil {
-		for i, p := range h.OpenShell.Profiles {
-			if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

@@ -457,6 +457,15 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			}
 			content, err := os.ReadFile(localPath)
 			if err != nil {
+				// This is the read that actually fires on the `fullsend run`
+				// path for a hand-written harness: ResolveHarness runs before
+				// ValidateFilesExist whenever local profiles/providers are
+				// present, so its own os.ReadFile error — not
+				// ValidateFilesExist's stat — is what a missing profile
+				// surfaces first (#7567).
+				if os.IsNotExist(err) {
+					err = harness.MissingProfileHint(err)
+				}
 				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", localPath, err)
 			}
 			id, err := ParseProfileID(content)
@@ -488,6 +497,14 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				}
 				content, err := os.ReadFile(p)
 				if err != nil {
+					// Same rationale as the profile read above: this is the
+					// error a `fullsend run` user actually sees for a missing
+					// local provider path, since ResolveHarness strips
+					// path-shaped entries out of h.Providers before
+					// ValidateFilesExist's stat check ever runs (#7567).
+					if os.IsNotExist(err) {
+						err = harness.MissingProviderHint(err)
+					}
 					return ResolveResult{}, fmt.Errorf("reading provider %s: %w", p, err)
 				}
 				def, w, err := parseProviderDef(content, i, p)

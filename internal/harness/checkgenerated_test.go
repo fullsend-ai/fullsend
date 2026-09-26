@@ -64,9 +64,8 @@ func TestCheckGeneratedHappyPath(t *testing.T) {
 	}
 }
 
-// TestCheckGeneratedMissingFiles covers both halves of the file checking:
-// ValidateFilesExist for the agent/policy/script, and the extra provider and
-// profile stat that ValidateFilesExist deliberately skips.
+// TestCheckGeneratedMissingFiles covers file checking for the agent, policy,
+// script, provider, and profile paths ValidateFilesExist stats.
 func TestCheckGeneratedMissingFiles(t *testing.T) {
 	for _, victim := range []string{
 		"agents/demo.md",
