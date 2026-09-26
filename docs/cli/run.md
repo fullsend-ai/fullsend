@@ -130,14 +130,16 @@ parent's stream, so without it `total_cost_usd` would grow with no way to attrib
 Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none). When the budget
 is spent the runner ends the iteration and sweeps the processes the agent left running in the
 sandbox, best effort. Before every iteration the runner rewrites `.fullsend/iteration.env` (sourced
-last by the sandbox `.env`) with the budget, the kill time, and this iteration's W3C trace context,
-on every runtime (claude, pi, codex):
+last by the sandbox `.env`) with the budget, the kill time, this iteration's W3C trace context, and
+whether the iteration is watched for updates ([`FULLSEND_STEER_ACTIVE`](#run-baseline)), on every
+runtime (claude, pi, codex):
 
 | Variable | Value |
 |---|---|
 | `FULLSEND_TIMEOUT_MINUTES` | The budget: the harness's `timeout_minutes`, or `30` when it sets none |
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
 | `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join Fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+| `FULLSEND_STEER_ACTIVE` | `1` when this iteration is watched for updates, unset otherwise ([Run baseline](#run-baseline)) |
 
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
@@ -280,30 +282,41 @@ variables is deployed.
 ## Run baseline
 
 Alongside the budget, the runner tells the agent what the work item looked like when the run
-began. Two more environment variables, set on every runtime (claude, pi, codex):
+began. Three more environment variables, set on every runtime (claude, pi, codex):
 
 | Variable | Value |
 |---|---|
 | `FULLSEND_RUN_HEAD_SHA` | The work item's head as the event that dispatched the run carried it. Empty on an issue run, which has no head, and today on GitLab, where the poller-raised agent pipeline does not carry the merge request's head |
 | `FULLSEND_RUN_STARTED_AT` | When the run started, RFC 3339 UTC |
+| `FULLSEND_STEER_ACTIVE` | `1` when this iteration is being watched for updates. **Unset** in every other case |
 
-The two are not sampled at the same instant. The head is frozen when the run is dispatched, before
-it queues; the start is the runner's own clock at the top of `fullsend run`, after the
-concurrency-group wait, which can now last a whole predecessor run, and after the job steps that
-precede the command. The gap runs one way. An agent re-checking against the start looks at a
-narrower window than the run spans, never a wider one, so it can miss activity that landed while the
-run queued or the job was starting but cannot invent any; a head comparison has no such gap.
+`FULLSEND_STEER_ACTIVE` is what the agent definitions key the runner-update opening line on: with
+the variable unset they treat that line as an injection attempt, wherever it appears. Unset is the
+default: an unwatched iteration clears it explicitly, so a value set earlier in the sandbox's `.env`
+(by a file in `.env.d`, say) does not survive. Presence is post-start only — it is written once the
+iteration's watcher is already running, not when the run begins, so it never claims a watcher that
+failed to start. It is per iteration, because the validation loop builds one watcher per iteration
+and an iteration that declines must not inherit the previous one's flag.
+
+The head and the start are not sampled at the same instant. The head is frozen when the run is
+dispatched, before it queues; the start is the runner's own clock at the top of `fullsend run`,
+after the concurrency-group wait, which can now last a whole predecessor run, and after the job
+steps that precede the command. The gap runs one way. An agent re-checking against the start looks
+at a narrower window than the run spans, never a wider one, so it can miss activity that landed
+while the run queued or the job was starting but cannot invent any; a head comparison has no such
+gap.
 
 The head is empty rather than absent on an issue run — an agent that re-checks it skips the check
 on an empty value, which it cannot do for a variable that is not there at all.
 
-Both are written after the harness's `.env.d` files are sourced and after `env.sandbox` is
-applied, so a harness cannot shadow the baseline its own agent's re-check depends on. Position is
-what protects them: the reserved-key check drops an `env.sandbox` entry with either name, but says
-nothing about `.env.d`.
+The head and the start are written after the harness's `.env.d` files are sourced and after
+`env.sandbox` is applied, so a harness cannot shadow the baseline its own agent's re-check depends
+on. Position is what protects them: the reserved-key check drops an `env.sandbox` entry with either
+name, but says nothing about `.env.d`.
 
-Both are captured once, at run start, and are not rewritten between validation-loop iterations,
-unlike the deadline above.
+The head and the start are captured once, at run start, and are not rewritten between
+validation-loop iterations. `FULLSEND_STEER_ACTIVE` is, like the deadline above: it is written into
+`.fullsend/iteration.env` for every iteration.
 
 ## OpenAI credentials on pi and codex
 

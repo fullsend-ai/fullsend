@@ -8,7 +8,9 @@ This page is the contributor reference for the mechanics.
 [ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md) is the
 decision to steer at all, and
 [ADR 0117](../ADRs/0117-steer-interface-in-sandbox-mailbox.md)
-decides the interface described here. The byte-level envelope the agent
+decides the interface described here, and
+[ADR 0119](../ADRs/0119-learn-of-later-events-by-listing-run-records.md) decides
+how a run learns there is an update to absorb. The byte-level envelope the agent
 receives is a versioned contract of its own, in
 [normative/steer-envelope/v1](../normative/steer-envelope/v1/README.md).
 
@@ -20,7 +22,11 @@ On this page:
 - [Transport](#transport) — how an update reaches the running session, and the bound on retrying one
 - [Provenance: what the runner verifies](#provenance-what-the-runner-verifies) — the seven checks
 - [The work item's baseline](#the-work-items-baseline)
+- [Settle](#settle) — how a steered run ends
+- [Ceilings](#ceilings) — token life, cost, and the per-process guards
+- [The fleet-agent backstop](#the-fleet-agent-backstop)
 - [Configuration](#configuration)
+- [Known limits](#known-limits)
 
 ## Concurrency
 
@@ -125,6 +131,10 @@ type Steerer interface {
 after `Settle` and the agent's current turn. A runtime that does not implement `Steerer` ignores
 the field, and its command line is unchanged.
 
+A `Steerer` that refuses some runs outright also implements `runtime.SteerDecliner`. The runner
+asks `SteerDeclineReason` before it starts the watcher, so the refusal is announced once and no
+poll or steer slot is spent discovering it. Pi uses it for a run that can fall back across models.
+
 Both methods are called **with `sandboxMu` held**. They write into the sandbox — a mailbox
 append, or on Codex the sandbox stop and start that interrupt the turn — and would otherwise race
 the credential refreshers the runner already serializes through that lock. The lock lives in
@@ -163,8 +173,24 @@ fallback every other failure path takes.
 
 On pi, steering and model fallback are exclusive, and fallback wins. A steered pi session and its
 mailbox are bound to one launch of pi, and a fallback relaunches pi on the next model. So a pi run
-that can fall back is not steerable. It logs one line naming the reason, and its updates go to
-the queued run. A pi run with no fallback models steers as described above.
+that can fall back is not steerable: the runner declines it before its watcher starts, logs one
+line naming the reason, and its updates go to the queued run. A pi run with no fallback models steers as described above.
+
+The runner learns there is something to send by listing the platform's own records rather than by
+being told: it polls `GET /repos/{repo}/actions/workflows/{shim}/runs?created>=<my start>` with
+the **job token** — the `GH_TOKEN` the action passed in, which every stage job already grants
+`actions: write` — and turns the runs that pass provenance into steers. No mailbox from outside,
+no relay, and no re-implementation of the routing predicate.
+
+A human on a workstation reaches the same transport with `fullsend steer <url> "<text>"`, which
+posts the stage's own slash command — `/fs-review` for a pull request, `/fs-triage` for an issue,
+or `--stage` to choose — and the comment fires the shim like any other event. There is no
+steer-specific command: the watcher accepts follow-up runs on provenance alone, never on which
+words the comment opened with. The existing arms already carry the right floor for each stage,
+`/fs-fix` keeping the write floor that makes it a mutation stage.
+
+Dispatch is never suppressed while a run is in flight. A route arm that skipped whenever
+something was running would lose a steer that lands after the in-flight run's last check.
 
 ### Why stop, and what it costs
 
@@ -182,7 +208,10 @@ together. The runner holds its sandbox lock for that time, so the credential ref
 out. The OIDC token is refreshed every 4 minutes and lives 5, so a refresh can wait 60 seconds
 before the token expires. A typical interrupt fits in that margin; one that runs to its bound does
 not. So the caller that delivers steers refreshes the OIDC token inside the same hold, immediately
-before it interrupts; otherwise the token can expire before the delayed refresh lands. The fix
+before it interrupts; otherwise the token can expire before the delayed refresh lands. The runner
+meets that obligation: a codex steer fetches a fresh OIDC token first and uploads it inside the
+same lock hold, just before the stop, so the interrupt starts on a new token. The OpenAI credential
+needs no such step: it is rotated at least 5 minutes before it expires. The fix
 ([NVIDIA/OpenShell#3036](https://github.com/NVIDIA/OpenShell/pull/3036)) ships in OpenShell
 v0.1.0; a stop measured 0.25 to 0.48 seconds on the v0.1.0-pre.12 build. fullsend's CI still pins
 0.0.116, so the 45-second cost holds until a separate bump moves the pin, and goes away with it.
@@ -274,9 +303,90 @@ edited and every label as added on every delta, so the run never settles. A head
 environment *does* supply still wins: it is the head at run start, which is what a head move is
 measured against.
 
+A pull request's baseline is its head SHA and its labels, read from the issue record GitHub keeps
+for every pull request. Labels count on both kinds of item: a label added to a pull request
+mid-run reaches the agent as `Labels changed: added …`, the same state context an issue's does,
+rather than leaving an accepted `labeled` follow-up with an empty delta.
+
+## Settle
+
+On a turn end — `runtime.ResultEvent`, which Claude's `result`, pi's `agent_settled` (on a
+steerable run) and Codex's `turn.completed` all normalize to — the watcher polls once. A Codex
+turn the runner interrupted emits no result; the resumed turn's result is its turn end. If something
+new arrived it steers and the agent takes another turn.
+
+It settles only when that poll finds nothing conclusively new. A poll that reached no verdict
+leaves the session open for the next tick: a listing that failed transiently, and a candidate
+whose Route or stage job has not finished, are both runs the watcher deliberately left judgeable.
+A candidate counts as pending only while its own run is queued or in progress — one that finished
+without a Route job has already answered. A failure that can never succeed is not pending either:
+a 403, a 404 or a shim path that does not resolve reads the same way on every poll, so it settles
+like an empty one. And because no further turn end is coming once the agent has finished, a run
+waiting on a verdict settles after four consecutive polls that reach none, about a minute and a
+half at the default interval, rather than holding its sandbox to the deadline.
+
+A steer consumed mid-turn produces no turn end of its own, so turn ends are a settle signal and
+are never counted against the steer budget.
+
+Those three bounds are one rule. A candidate whose run finished without a Route job, a wait that
+has reached four verdict-less polls, and a Codex resume that has failed twice all end the wait
+rather than extend it, because none of them resolves by waiting longer. The costs are not
+symmetric: settling early costs one redundant run, while waiting on an answer that is not coming
+costs the sandbox until the deadline. A permanent condition is therefore never treated as
+retryable.
+
+The watcher settles on every exit path, including a cancelled context, on a context of its own —
+otherwise `Run` would hold a session open for a watcher that has stopped watching.
+
+## Ceilings
+
+- **Forge token life.** The stage mints a GitHub App installation token at job start; those live
+  one hour and the runner has no refresher for them. The budget is
+  `min(agent timeout, token life − margin)`, owned by the runner: `internal/runtime` knows
+  nothing about forge token life.
+- **Cost.** A steered turn on a large diff can cost as much as a fresh run. `steer.max_steers`
+  defaults to 2, which covers the burst patterns in #6573 and #4960; beyond the cap the run
+  settles and the queued run does the work. The cap counts the **run**, not the iteration: a
+  validation loop builds one watcher per iteration and carries the count into each, so a
+  three-iteration run still absorbs `max_steers` updates in total.
+- **Session files are agent-writable.** A resume reads a session store the agent controls, so a
+  poisoned session is a prompt-injection vector into the next turn. It is not a credential leak,
+  and the hooks still gate tools ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)).
+  This is documented, not signed.
+- **Per-process guards.** pi's config-dir guard, Codex's hook-digest re-assert and Claude's
+  `--settings` hooks run once per process. A live steer keeps the process, so they have already
+  run and the hooks stay loaded; interrupt-and-resume re-runs them. Neither weakens ADR 0090.
+
+
+## The fleet-agent backstop
+
+The runner exports `FULLSEND_RUN_HEAD_SHA` and `FULLSEND_RUN_STARTED_AT` into the sandbox
+unconditionally, so an agent definition can re-read the work item once before writing its result.
+This is a backstop under the harness steer, not an alternative: the steer is deterministic and
+lands during the run, while the re-check depends on the model following the instruction and lands
+only at the end. It costs one or two API calls when nothing changed.
+
+Both are written from `bootstrapEnv`, not from `env.sandbox` or an `env/*.env` file: `.env.d`
+files are sourced later and would expand the references host-side to empty, and a `${VAR}` in
+harness `env.sandbox` hard-fails `ValidateRunnerEnvWith` for consumers that do not define it.
+
+`FULLSEND_RUN_STARTED_AT` is the runner's own clock at the top of `runAgent`, not the run's
+server-side `created_at`, so the two halves reference different instants: the watcher compares
+server-side timestamps, the agent's re-check this host-side one. The gap is the setup before
+`runAgent` — checkout, sandbox create, bootstrap — and it runs one way, because the exported
+instant is *later* than the run's true start. The re-check can miss an update that landed during
+setup; it cannot invent one.
+
 ## Configuration
 
 Per-agent, off by default while the surfaces steering depends on land. A harness opts in by name:
+
+The runner also exports `FULLSEND_STEER_ACTIVE=1` into the sandbox for an iteration whose watcher
+is running, and clears it otherwise, so a value set earlier in the sandbox's `.env` does not
+survive. The agent definitions treat the envelope's opening line as an injection attempt unless
+it is set, so unset is the default and presence is written only
+after the watcher has actually started — a watcher that declines, or whose first API calls fail,
+leaves the variable unset. See [`fullsend run` § Run baseline](../cli/run.md#run-baseline).
 
 ```yaml
 steer:
@@ -285,16 +395,49 @@ steer:
   poll_interval_seconds: 30   # default: 30
 ```
 
-`max_steers` and `poll_interval_seconds` are parsed and validated by this change; the code that
-spends the cap and paces the interval arrives with the change that looks for updates.
+The watcher polls every `poll_interval_seconds` and spends `max_steers` across the whole run; see
+[Ceilings](#ceilings).
 
 `enabled` is a pointer internally so that absent and `false` mean different things: a block setting
 only `max_steers` says nothing about whether steering is on, so it takes the default rather than
 being read as either an opt-in or an opt-out, and the same config keeps its meaning when the
 default changes.
 
-No caller reads `enabled` yet. Nothing in this change sets `RunParams.Steerable`, so a harness that
-opts in today gets an ordinary single-turn run — the block is accepted and validated, and the code
-that consults it arrives with the change that looks for updates. When it does, `Steerable` will be
-set only where the harness has opted in AND the runtime implements `Steerer`; otherwise it stays
-false and `Run` is single-turn exactly as before.
+The runner sets `RunParams.Steerable` only when the harness has opted in and the runtime implements
+`Steerer`. Otherwise `Steerable` stays false and `Run` is single-turn exactly as before.
+
+## Known limits
+
+**Parsers see N results per run.** A steered run emits one `ResultEvent` per completed turn, so anything
+that assumed one result per iteration — the Claude parser's `seenResult`
+([#6932](https://github.com/fullsend-ai/fullsend/issues/6932)), `RunMetrics`, the agent span,
+`eval-measure` — is now 1:N. `RunMetrics.Steers` records every acknowledged steer, written by
+`Run` alone so the watcher's goroutine never races it.
+
+**The prompt-injection surface grows.** The steer text is built from PR bodies, comments and
+commit messages, and under a stage command from an authorized human — the same trust dispatch
+already places in that person. The sanitizer and the sandbox hooks remain the controls.
+
+**The sandbox checkout is not refreshed.** It stays a snapshot of the head the run started on,
+because refreshing it from the runner would clobber uncommitted work for the fix and code stages,
+which write to that tree. On a head move the envelope names the new SHA and carries what changed
+as context; the agent does not fetch it.
+
+**A poll sees the newest 400 shim runs.** The listing asks for one workflow file and everything
+created at or after the run's start, and reads at most four pages of 100, newest first. A
+repository that fires more than 400 shim runs inside one agent run's lifetime can therefore push
+an older follow-up out of every poll's view, and that update falls to the queued run. Raising the
+page cap costs a request per page on every poll against the job token's budget; carrying a
+position between polls would make the listing a cursor, which is the thing
+[ADR 0119](../ADRs/0119-learn-of-later-events-by-listing-run-records.md) exists to avoid. The
+bound is accepted rather than worked around.
+
+**GitLab is not wired.** GitLab pipelines already queue rather than cancel, and the provenance
+join is different — `GET /pipelines/:id/variables` exposes the poller-set `STAGE` and
+`RESOURCE_KEY`, already covered by the HMAC dispatch signature. The watcher is GitHub-only for now,
+and on GitLab it declines quietly unless the harness set `enabled: true` itself.
+
+**A steer needs time left.** The exec hosting a live session cannot be extended once running, so
+the watcher settles rather than steering when less than `MinRemaining` (default five minutes) of
+the run budget remains, and the update falls to the queued run. On Codex the floor adds `runtime.CodexSteerInterruptCost`,
+because the interrupt spends that time before the resumed turn starts.

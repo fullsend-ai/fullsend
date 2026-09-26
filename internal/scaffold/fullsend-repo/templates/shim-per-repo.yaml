@@ -18,6 +18,21 @@
 # pending run (ADR 0106). Roles operate independently (#2452).
 name: fullsend
 
+# run-name carries the work item this run is about, which the Actions API
+# returns as display_title (ADR 0113). issue_comment and issues runs expose
+# no pull_requests[], so without this an in-flight agent run has no
+# server-side way to tell a follow-up run on its own work item from one on
+# another. For a comment on a PR, github.event.issue.number IS the PR number,
+# so the pair covers every event this shim listens for.
+#
+# A comment-triggered run appends " comment:<id>". Pairing a command to its
+# run by timestamp alone can cross when runs are queued out of order, so the
+# id makes the link exact; the reader splits at the first " comment:" and
+# takes the id as everything after it. The suffix must therefore stay LAST —
+# do not append anything to run-name. Other events render no suffix at all,
+# so the leading <owner>/<repo>#<number> is unchanged for them.
+run-name: ${{ github.repository }}#${{ github.event.issue.number || github.event.pull_request.number }}${{ github.event.comment.id && format(' comment:{0}', github.event.comment.id) || '' }}
+
 on:
   issues:
     types: [opened, edited, labeled]

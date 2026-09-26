@@ -99,6 +99,17 @@ type Steerer interface {
 	Settle(ctx context.Context, sandboxName string) error
 }
 
+// SteerDecliner is implemented by a Steerer that refuses some runs up front.
+// The runner asks it before starting the follow-up run watcher, so a run the
+// runtime would refuse is announced once and spends no poll or steer slot
+// finding that out from Steer.
+type SteerDecliner interface {
+	// SteerDeclineReason reports why a run over params will not take
+	// steers. It reads SandboxName, Model, FallbackModels and ModelAliases,
+	// and is called after Bootstrap.
+	SteerDeclineReason(params RunParams) (reason string, declined bool)
+}
+
 // Steer modes recorded on SteerResult.
 const (
 	// SteerModeLive and SteerModeResume are the values of SteerResult.Mode:

@@ -330,8 +330,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   mailbox the agent's own stdin is tailing, with delivery acknowledged by the
   agent's echo of that specific message
   ([ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md)). Steering is off
-  by default; a harness will opt in with `steer: {enabled: true}`, which is accepted and
-  validated but not yet consulted by any caller.
+  by default; a harness opts in with `steer: {enabled: true}`.
 - A steer delivered to a run in flight is authorized once, by the follow-up
   run's `Route` job; the runner verifies only provenance, from run records the
   sender cannot write. Text from an actor that job authorized is an amendment
@@ -341,6 +340,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   login — so a repository-installed App's review reaches the agent as context
   ([ADR 0118](ADRs/0118-take-steer-authority-from-the-route-job.md), rules in
   [steering.md](contributing/steering.md#amendments-and-context)).
+- A run in flight learns of later events by **listing the execution platform's
+  own run records** for its own shim, with the job token, rather than by polling
+  forge events: no input driver, no cursor, and no scheduling inside
+  `fullsend run`. Delivery is at-least-once and state-based — an update the run
+  misses is done by the pending run behind it
+  ([ADR 0119](ADRs/0119-learn-of-later-events-by-listing-run-records.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
