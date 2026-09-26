@@ -228,17 +228,17 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same 
 The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns pool leasing and lazy create+install internally:
 
 1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
-2. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
-3. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
-4. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+2. If the repo already exists, deletes it (and any leftover `{name}-fork`) so the scenario cannot inherit labels, branches, PRs, workflow runs, or config from a previous lessee.
+3. Creates the repo (the forge's `auto_init` provides the initial commit) and runs `fullsend github setup` (and inference provision when configured).
+4. Caches the successful ensure for the duration of this lease so duplicate `EnsureRepo` calls skip redundant work.
 
-The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
+The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting repos) and then `Driver.DeallocateRepo`, which deletes the leased base — after in-scenario debug collection has written workflow logs and agent artifacts under `BEHAVIOUR_ARTIFACT_DIR` — and returns the name to the pool. The next lessee of that name recreates the repo from scratch. Mint enrollment of the numbered *names* can remain pre-provisioned; the GitHub repos themselves are ephemeral around a lease. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
-**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each lease of `test-repo-NN` pays create + inference provision + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -275,7 +275,7 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
 | Write access | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs (ephemeral, rebuilt each CI run) and the `halfsend` STAGE org (durable repos reused across runs). No write access extends beyond these test-only organisations.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs and the `halfsend` STAGE org — the STAGE organisation/mint itself is durable, but its `test-repo-NN` repos now follow the same ephemeral per-lease lifecycle as DEV (deleted and recreated on each lease). No write access extends beyond these test-only organisations.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 
@@ -390,9 +390,9 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 ### CI timeout budgeting for lazy provisioning
 
-Each lazily provisioned repo adds approximately 3–5 minutes of overhead (create + inference provision + `github setup` + Actions settle). The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leased repos in the suite.
+Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + inference provision + `github setup` + Actions settle), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos, verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
@@ -437,7 +437,7 @@ URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`
 
 The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
-The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
+`doEnsure` always resets (delete + recreate), installs, and settles: every lease starts from a freshly created repo, so there is no re-vendor path that skips the settle wait — the settle step runs on every ensure.
 
 ## Version pinning for `fullsend-ai/agents`
 

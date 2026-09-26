@@ -34,23 +34,31 @@ const (
 var resetRetryDelay = time.Second
 
 // ensurer lazily creates and installs repos on demand for behaviour
-// scenarios. Results are cached by org/repo key so that a second scenario
-// leasing the same name within a suite run skips redundant work.
+// scenarios. Successful ensures are cached by org/repo key for the
+// duration of a lease so duplicate EnsureRepo calls skip redundant
+// work. DeleteRepo invalidates that cache so the next lease recreates
+// the repo from scratch and cannot inherit leftover state.
 //
 // This is an unexported interface used internally by composedDriver.
 // The suite does not construct or reference it directly.
 //
-// Thread safety: EnsureRepo is safe for concurrent callers.
-// A singleflight.Group serializes in-flight ensures per key so that
-// concurrent first-calls for the same repo only perform create+install
-// once; other callers wait and share the result.
+// Thread safety: EnsureRepo and DeleteRepo are safe for concurrent
+// callers. A singleflight.Group serializes in-flight ensures per key
+// so that concurrent first-calls for the same repo only perform
+// create+install once; other callers wait and share the result.
 type ensurer interface {
 	// EnsureRepo guarantees org/repoName exists and has fullsend installed.
-	// If the repo does not exist it is created (the forge's auto_init
-	// provides the initial commit). If fullsend is not installed (per
-	// post-install validation) it runs the per-repo install flow
+	// If the repo already exists it is deleted and recreated so the
+	// scenario starts from a clean base (the forge's auto_init provides
+	// the initial commit). Then the per-repo install flow runs
 	// (inference provision + github setup).
 	EnsureRepo(ctx context.Context, org, repoName string) error
+
+	// DeleteRepo removes org/repoName (and a leftover org/repoName-fork
+	// if present) and invalidates the ensure cache for that key so the
+	// next EnsureRepo recreates it. Idempotent: a missing repo is not
+	// an error.
+	DeleteRepo(ctx context.Context, org, repoName string) error
 }
 
 // SettleFunc is called after a repo is freshly created or installed to
@@ -120,7 +128,7 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) erro
 	e.mu.Lock()
 	if _, ok := e.ensured[key]; ok {
 		e.mu.Unlock()
-		e.logf("[ensure] %s already ensured this run, skipping", key)
+		e.logf("[ensure] %s already ensured this lease, skipping", key)
 		return nil
 	}
 	e.mu.Unlock()
@@ -149,6 +157,22 @@ func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) erro
 	})
 
 	return err
+}
+
+// DeleteRepo removes the leased pool base (and any leftover fork) after
+// a scenario so the next lessee cannot inherit labels, branches, PRs,
+// workflow runs, or config drift. The ensure cache is invalidated
+// before the delete so a failed delete still forces the next
+// EnsureRepo to reset+recreate.
+func (e *repoEnsurer) DeleteRepo(ctx context.Context, org, repoName string) error {
+	key := org + "/" + repoName
+	e.mu.Lock()
+	delete(e.ensured, key)
+	e.mu.Unlock()
+
+	target := org + "/" + repoName
+	e.logf("[ensure] deleting %s after lease", target)
+	return e.resetRepo(ctx, org, repoName, target)
 }
 
 // doEnsure performs the actual create-if-missing + install work.
@@ -243,13 +267,13 @@ func (e *repoEnsurer) resetRepo(ctx context.Context, org, repoName, target strin
 	_, err := e.client.GetRepo(ctx, org, repoName)
 	if err != nil {
 		if forge.IsNotFound(err) {
-			e.logf("[ensure] %s does not exist, no history to reset", target)
+			e.logf("[ensure] %s does not exist, nothing to delete", target)
 			return nil
 		}
 		return fmt.Errorf("checking repo %s for reset: %w", target, err)
 	}
 
-	e.logf("[ensure] deleting %s to reset accumulated git history", target)
+	e.logf("[ensure] deleting %s", target)
 	if err := e.client.DeleteRepo(ctx, org, repoName); err != nil {
 		if forge.IsNotFound(err) {
 			return nil // race: deleted between check and delete

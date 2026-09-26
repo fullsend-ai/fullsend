@@ -23,9 +23,11 @@ import (
 // It lets callers verify caching and call-count behaviour without a
 // real forge client or CLI binary.
 type fakeEnsurer struct {
-	calls atomic.Int32
-	mu    sync.Mutex
-	cache map[string]struct{}
+	calls       atomic.Int32
+	deleteCalls atomic.Int32
+	deleteErr   error
+	mu          sync.Mutex
+	cache       map[string]struct{}
 }
 
 func newFakeEnsurer() *fakeEnsurer {
@@ -48,6 +50,15 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) error 
 	f.mu.Unlock()
 
 	return nil
+}
+
+func (f *fakeEnsurer) DeleteRepo(_ context.Context, org, repoName string) error {
+	key := org + "/" + repoName
+	f.mu.Lock()
+	delete(f.cache, key)
+	f.mu.Unlock()
+	f.deleteCalls.Add(1)
+	return f.deleteErr
 }
 
 var _ ensurer = (*fakeEnsurer)(nil)
@@ -80,6 +91,18 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-02"))
 
 	assert.Equal(t, int32(2), e.calls.Load())
+}
+
+func TestFakeEnsurer_DeleteRepoClearsCache(t *testing.T) {
+	e := newFakeEnsurer()
+	ctx := context.Background()
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+	assert.Equal(t, int32(2), e.calls.Load(), "ensure after delete should not hit cache")
 }
 
 // --- repoEnsurer unit tests (caching layer + create logic) ---
@@ -871,6 +894,79 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for Actions readiness")
 	assert.Contains(t, err.Error(), "Actions not ready")
+}
+
+// --- DeleteRepo unit tests ---
+
+func TestEnsurer_DeleteRepo_MissingRepo_OK(t *testing.T) {
+	sc := &stubClient{getRepoErr: forge.ErrNotFound}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), sc.deleteRepoCalled.Load(), "should not delete missing repo")
+}
+
+func TestEnsurer_DeleteRepo_DeletesExistingAndClearsCache(t *testing.T) {
+	sc := &stubClient{}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "ensure cache must be invalidated on delete")
+}
+
+func TestEnsurer_DeleteRepo_InvalidatesCacheOnGetRepoError(t *testing.T) {
+	sc := &stubClient{getRepoErr: assert.AnError}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.Error(t, err)
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "cache must be invalidated even when delete fails")
+}
+
+func TestEnsurer_DeleteRepo_DeletesFork(t *testing.T) {
+	sc := &stubClient{forkExists: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+}
+
+func TestEnsurer_DeleteThenEnsure_Recreates(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: true}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	ctx := context.Background()
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	createsAfterFirst := sc.createRepoCalled.Load()
+
+	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	assert.Greater(t, sc.createRepoCalled.Load(), createsAfterFirst,
+		"re-ensure after delete must recreate rather than hit the lease cache")
 }
 
 // --- resetRepo unit tests ---
