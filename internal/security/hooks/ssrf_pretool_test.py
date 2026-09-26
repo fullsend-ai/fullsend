@@ -988,6 +988,100 @@ class TestProcessToolCallWebFetchUnchanged:
         assert result is not None
 
 
+class TestProcessToolCallMergeQueueScripts:
+    """Regression coverage for issue #7640 (merge-queue skill scripts).
+
+    #7640 originally proposed fixing the false-positive block by having
+    ``enqueue-pr.sh`` / ``await-and-enqueue.sh`` regex-parse a PR URL
+    argument internally before calling ``gh pr view``. That does not help:
+    this hook validates the *outer* Bash tool command before the script
+    ever runs, and ``bash`` is not an inert command, so a URL literal on
+    that command line is still extracted and validated no matter what the
+    script does with its own argv. The actual fix (see
+    skills/merge-queue/SKILL.md) documents a URL-free invocation — a PR
+    number plus an optional ``-R owner/repo`` — so an agent following the
+    skill never puts a raw github.com URL on the Bash tool command line
+    for these scripts. ``dequeue-reason.sh`` was updated with the same
+    ``-R``/``--repo`` flag and documentation for the same reason.
+    """
+
+    def test_documented_number_and_repo_invocation_not_blocked(self, hook):
+        for script in ("enqueue-pr.sh", "await-and-enqueue.sh", "dequeue-reason.sh"):
+            tool_input = {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": f"bash skills/merge-queue/scripts/{script} 652 -R owner/repo",
+                },
+            }
+            assert hook.process_tool_call(tool_input) is None
+
+    def test_documented_omitted_argument_invocation_not_blocked(self, hook):
+        for script in ("enqueue-pr.sh", "await-and-enqueue.sh"):
+            tool_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"bash skills/merge-queue/scripts/{script}"},
+            }
+            assert hook.process_tool_call(tool_input) is None
+
+    def test_documented_dequeue_bare_number_invocation_not_blocked(self, hook):
+        """dequeue-reason.sh requires a PR number (no current-branch default),
+        so its primary documented form is the bare number, not an omitted
+        argument."""
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "bash skills/merge-queue/scripts/dequeue-reason.sh 652",
+            },
+        }
+        assert hook.process_tool_call(tool_input) is None
+
+    def test_raw_pr_url_argument_is_still_blocked(self, hook):
+        """A PR URL pasted directly onto the Bash tool command line is the
+        exact shape #7640 reported. It is still blocked — which is why
+        SKILL.md must document the number/-R form instead, per the class
+        docstring above."""
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
+            for script in ("enqueue-pr.sh", "await-and-enqueue.sh", "dequeue-reason.sh"):
+                tool_input = {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            f"bash skills/merge-queue/scripts/{script} "
+                            "https://github.com/owner/repo/pull/652"
+                        ),
+                    },
+                }
+                result = hook.process_tool_call(tool_input)
+                assert result is not None
+                assert "github.com" in result
+
+    def test_documented_url_extraction_recipe_not_blocked(self, hook):
+        """SKILL.md's URL-extraction recipe (for when an agent only has a PR
+        URL, not a number) must itself pass the hook. An earlier version of
+        this recipe wrapped every stage in `$()` command substitution to
+        assign the match to a shell variable; `_pipeline_is_inert` treats any
+        command substitution as automatically non-inert (see
+        `test_dollar_paren_not_inert` above), so that recipe fell through to
+        full URL validation and was blocked on the exact `github.com` literal
+        it was meant to extract — reproducing the #7640 false positive one
+        layer up. The documented recipe is now a single assignment-free
+        `echo <URL> | grep` pipeline with no `$()`/backticks anywhere in the
+        command text; the agent reads and splits the printed match itself
+        instead of capturing it into a shell variable.
+        """
+        command = (
+            'echo "https://github.com/owner/repo/pull/652/files" '
+            "| grep -oE '[^/]+/[^/]+/pull/[0-9]+'"
+        )
+        assert hook._pipeline_is_inert(command)
+        tool_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
+            assert hook.process_tool_call(tool_input) is None
+
+
 # ---------------------------------------------------------------------------
 # Egress allowlist tests
 # ---------------------------------------------------------------------------
