@@ -77,7 +77,7 @@ See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Automerge
 
-The end-state goal where PRs that pass all agent review and CI checks are merged to the target branch without human intervention. Automerge is gated by the [autonomy spectrum](problems/autonomy-spectrum.md) — most workflows start with human-in-the-loop approval and graduate toward automerge as confidence increases. The team has explicitly decided not to implement automerge in the MVP; agents will comment that they approve, but a human must merge.
+The end-state goal where PRs that pass all agent review and CI checks are merged to the target branch without human intervention. Automerge is gated by the [autonomy spectrum](problems/autonomy-spectrum.md) — most workflows start with human-in-the-loop approval and graduate toward automerge as confidence increases. [ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md) defines a planned dedicated Auto-Merge stage with final merge control in trusted Fullsend runtime code outside the agent sandbox. Until that stage is operational, agents may recommend approval, but a human must merge.
 See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## B

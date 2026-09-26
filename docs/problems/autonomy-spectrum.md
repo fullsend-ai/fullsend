@@ -4,6 +4,12 @@ When should agents auto-merge, and when should they escalate to humans?
 
 ## The model: binary with CODEOWNERS
 
+> **Note:** [ADR 0110](../ADRs/0110-dedicated-auto-merge-authority-boundary.md)
+> decides the merge mechanism: a dedicated `auto-merge` stage. The agent
+> recommends whether to merge, while trusted Fullsend runtime code performs the
+> final checks and GitHub action. Code and Review do not merge the change. The
+> graduation and cohort questions in this document remain open.
+
 The autonomy model is **binary per-repo** with **CODEOWNERS as the escape hatch**:
 
 - A repo is either "agent-autonomous" or it isn't
