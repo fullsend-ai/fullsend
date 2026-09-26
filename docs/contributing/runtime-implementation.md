@@ -1054,8 +1054,8 @@ flowchart TB
   runner's `$CODEX_HOME/config.toml` layers above it, and the `-c` SessionFlags above that. Only
   the `-c` layer is beyond an agent's reach between iterations, which is why the security-relevant
   keys are passed there as well as written to the file.
-- **Reads AGENTS.md natively** (cwd chain plus `$CODEX_HOME/AGENTS.md`) — so `CodexRuntime` does not
-  implement `ContextBridger` and the runner injects no `CLAUDE.md` pointer.
+- **No `CLAUDE.md` pointer.** `CodexRuntime` does not implement `ContextBridger`; it gets the repo's
+  `AGENTS.md` through `$CODEX_HOME/AGENTS.md` instead (see **AGENTS.md** below).
 - **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
   and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
   `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the

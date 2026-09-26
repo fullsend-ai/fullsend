@@ -4825,14 +4825,16 @@ func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, print
 	cmd := fmt.Sprintf(
 		"for f in AGENTS.md agents.md Agents.md; do p=%s/\"$f\"; if [ -f \"$p\" ] && [ ! -L \"$p\" ]; then head -c %d \"$p\" > %s; exit $?; fi; done; exit 3",
 		shellQuote(remoteRepositoryDir), agentsMDHomeMaxBytes, shellQuote(dest))
-	_, _, code, err := execFn(sandboxName, cmd, 10*time.Second)
+	_, stderr, code, err := execFn(sandboxName, cmd, 10*time.Second)
 	switch {
 	case err == nil && code == 0:
 		printer.StepDone("Copied AGENTS.md to " + dest + " (the runtime does not read the repo's)")
 	case code == 3:
 		printer.StepWarn("AGENTS.md not bridged: no regular AGENTS.md at the repo root (symlinks are refused)")
-	default:
+	case err != nil:
 		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: %v", dest, err))
+	default:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: exit %d: %s", dest, code, strings.TrimSpace(stderr)))
 	}
 }
 

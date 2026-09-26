@@ -8215,3 +8215,13 @@ func TestDoBridgeAgentsMDToHome(t *testing.T) {
 		assert.NoFileExists(t, dest)
 	})
 }
+
+func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
+	var buf bytes.Buffer
+	execFn := func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "head: write error: No space left on device\n", 1, nil
+	}
+	doBridgeAgentsMDToHome("sb", "/sandbox/workspace/repo", "/sandbox/codex-config/AGENTS.md", ui.New(&buf), execFn)
+	assert.Contains(t, buf.String(), "exit 1: head: write error: No space left on device")
+	assert.NotContains(t, buf.String(), "<nil>")
+}
