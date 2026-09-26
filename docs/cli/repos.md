@@ -122,7 +122,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
-| `--runtime` | | Agent runtime (`claude`, `pi`, `codex`) recorded for repos this command adds; existing entries keep their `runtime` / `defaults.runtime` |
+| `--runtime` | | Agent runtime (`claude`, `pi`, `codex`, `opencode`) recorded for repos this command adds; existing entries keep their `runtime` / `defaults.runtime` |
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. By default, the binary is auto-resolved from `--fullsend-ref`; use `--fullsend-binary` or `--fullsend-source` to provide it explicitly. |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving (requires `--vendor`) |
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
@@ -349,7 +349,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 | Key | Type | Description |
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition) |
-| `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
+| `defaults.runtime` | `claude`, `pi`, `codex` or `opencode` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
 | `defaults.config_base.source` | local path or HTTPS URL | Configuration preset written as `.fullsend/config.base.yaml`; a per-entry `config_base.source` overrides it (`none` disables inheritance). A local path is resolved relative to `repos.yaml`'s directory and must not escape it; manifests loaded from an HTTPS URL must use an HTTPS preset URL. Fetch/validation semantics otherwise match `github setup --config`. |
 | `defaults.config_base.sha256` | 64-character SHA-256 hex | Optional digest that validates the fetched preset; a per-entry `config_base.sha256` overrides it (`none` skips validation). Same semantics as `github setup --config-hash`. |
