@@ -158,11 +158,20 @@ Each enrolled or unenrolled repository will have an open PR adding or removing t
 
 ### Syncing workflow templates
 
-After upgrading the fullsend CLI, update workflow templates across all enrolled repositories:
+After upgrading the fullsend CLI, update workflow templates in `.fullsend`:
 
 ```bash
 fullsend github sync-scaffold "$ORG_NAME"
 ```
+
+`sync-scaffold` only rewrites workflow files. It does not create `FULLSEND_MINT_URL`. Current templates require that variable; if it is missing (for example after upgrading from PAT dispatch), the command refuses to write workflows. Create it first, then retry:
+
+```bash
+fullsend github setup "$ORG_NAME" --mint-url=<MINT_URL> --skip-app-setup
+fullsend github sync-scaffold "$ORG_NAME"
+```
+
+Hosted community mint users can omit `--mint-url`.
 
 ### Checking status
 

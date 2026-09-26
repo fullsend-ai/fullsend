@@ -131,7 +131,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GitHub Maintainer | `fullsend github unenroll <org> [repo...]` | Remove repositories from agent enrollment |
 | GitHub Maintainer | `fullsend github set <org\|owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
-| GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
+| GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version (refuses if `FULLSEND_MINT_URL` is missing) |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
