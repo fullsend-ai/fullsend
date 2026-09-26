@@ -143,7 +143,11 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		return err
 	}
 
-	configTOML, err := renderCodexConfig(cfg, codexDeveloperInstructions(agentName, def))
+	repoInput, ok := input.(RepoDirInput)
+	if !ok || repoInput.RepoDir() == "" {
+		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
+	}
+	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(), codexDeveloperInstructions(agentName, def))
 	if err != nil {
 		return err
 	}

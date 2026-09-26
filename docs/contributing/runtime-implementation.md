@@ -1020,7 +1020,7 @@ One iteration, end to end:
 ```mermaid
 flowchart TB
   B["Bootstrap (once per run)\nagent .md → config.toml developer_instructions\nhooks.json + adapter + auth script\ncodex --version preflight"]
-  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nno openai_base_url / env_key / [projects]?"}
+  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nproject trust pinned untrusted?"}
   X["exit 97 / 98\ncodex never starts unhooked\nor pointed at another endpoint"]
   T["seed $CODEX_HOME/openai-token\nplaceholder shape or exit 1"]
   E["source .env\nre-pin CODEX_HOME\nunset OPENAI_* CODEX_API_KEY NODE_*\nre-run both guards"]
@@ -1045,9 +1045,11 @@ flowchart TB
   its L7 egress policy and the credential placeholders are the boundary ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
   [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)); the hook adapter is defense in depth
   ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)).
-- **The project is never trusted.** No `[projects]` entry is written, so the target repo's own
-  `.codex/` layer — settings, instructions and repo-authored hooks — is never loaded. This is
-  codex's equivalent of pi's `defaultProjectTrust: "never"`.
+- **The project is pinned untrusted.** `config.toml` carries
+  `[projects."<repo>"] trust_level = "untrusted"` for the target repo, so its own `.codex/` layer —
+  settings, instructions and repo-authored hooks — is never loaded. The entry has to be written:
+  codex records a trust level for a git checkout it starts in when none is set, and only skips
+  that when one already is. This is codex's equivalent of pi's `defaultProjectTrust: "never"`.
 - **Config layering.** The sandbox image bakes a root-owned managed `/etc/codex/config.toml`; the
   runner's `$CODEX_HOME/config.toml` layers above it, and the `-c` SessionFlags above that. Only
   the `-c` layer is beyond an agent's reach between iterations, which is why the security-relevant

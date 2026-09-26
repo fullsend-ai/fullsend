@@ -29,6 +29,7 @@ type bootstrapInput struct {
 	skillDirs    []string
 	plugins      []PluginInput
 	modelAliases map[string]string
+	repoDir      string
 }
 
 func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
@@ -39,6 +40,12 @@ func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
 func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
 func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
 func (b bootstrapInput) ParentModel() string                { return "" }
+func (b bootstrapInput) RepoDir() string {
+	if b.repoDir == "" {
+		return "/sandbox/workspace/repo"
+	}
+	return b.repoDir
+}
 
 // claudePlugins and piPlugins build the two kinds of plugin input from
 // host directories, so a test names the format it means.

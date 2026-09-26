@@ -588,3 +588,24 @@ func TestCodexBootstrap_PinsTheHarnessHookEnv(t *testing.T) {
 		assert.Greater(t, at, envAt, "%s must be re-exported after .env", key)
 	}
 }
+
+// noRepoDirInput hides bootstrapInput's RepoDir: only the interface's methods
+// are promoted from the embedded field.
+type noRepoDirInput struct{ BootstrapInput }
+
+func TestCodexRuntimeBootstrap_RequiresRepoDir(t *testing.T) {
+	fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+
+	for name, in := range map[string]BootstrapInput{
+		"no RepoDir method": noRepoDirInput{bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestAgentDef), agentName: "triage"}},
+		"empty RepoDir":     emptyRepoDirInput{bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestAgentDef), agentName: "triage"}},
+	} {
+		err := CodexRuntime{}.Bootstrap(in)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "target repository's sandbox path is required", name)
+	}
+}
+
+type emptyRepoDirInput struct{ bootstrapInput }
+
+func (emptyRepoDirInput) RepoDir() string { return "" }

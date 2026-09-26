@@ -10,6 +10,13 @@ import (
 // BootstrapInput is the portable contract every runtime needs to provision
 // agent content into the sandbox. Implementations live outside this package
 // (runner adapter, tests).
+// RepoDirInput is implemented by bootstrap inputs that know the target
+// repository's path inside the sandbox. The codex runtime requires it: the
+// project's trust level is pinned in the config it renders.
+type RepoDirInput interface {
+	RepoDir() string
+}
+
 type BootstrapInput interface {
 	SandboxName() string
 	// AgentPath returns the local filesystem path to the agent definition file.
