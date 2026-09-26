@@ -105,6 +105,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		Effort:         opts.Effort,
 		PostScript:     "scripts/post-" + opts.Name + ".sh",
 		TimeoutMinutes: opts.TimeoutMinutes,
+		ReadonlyRepo:   role.ReadonlyRepo,
 		Trigger:        opts.Trigger,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{
