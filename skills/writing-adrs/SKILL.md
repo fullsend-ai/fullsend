@@ -27,6 +27,8 @@ fact are welcome and encouraged:
 
 - Changing its `status` (e.g., from Accepted to Deprecated or Superseded)
 - Adding cross-reference links to related or superseding ADRs
+- Adding a short cross-reference to living documentation that holds
+  current-state operational detail
 - Adding short notes that connect the ADR to newer decisions or clarifications
 - Fixing typos, broken links, or formatting
 
@@ -41,9 +43,22 @@ help them find the current state of thinking.
 - Modifying Consequences based on what actually happened
 - Turning the ADR into a running log of how the decision evolved
 
+**Not acceptable -- use living documentation instead:**
+
+- Adding or updating evolving operational details (field tables, struct
+  definitions, merge rules, configuration examples) in an accepted ADR
+
 If a decision turned out to be wrong, that is what supersession is for. The
 original ADR remains as a historical record of what was decided and why. For
-ongoing design narrative, use `docs/architecture.md`.
+ongoing design narrative, use `docs/architecture.md`. Current-state operational
+detail belongs in living documentation, not in the ADR: `docs/architecture.md`
+for architectural truth, `docs/reference/` for field and config tables,
+`docs/contributing/harness-fields.md` or `docs/contributing/harness-composition.md`
+for `Harness`/`ForgeConfig`/`AgentEntry` field detail, `docs/normative/` for
+versioned field contracts, or another existing contributing guide the ADR
+already links to. If the ADR doesn't yet link to that home, add a short
+cross-reference annotation (see "Acceptable modifications" above) to create
+the link.
 
 ### docs/architecture.md is always current
 
@@ -200,6 +215,11 @@ If the ADR partially answers a question, add a parenthetical:
   accepted ADR -- write a new superseding ADR instead
 - You're turning an old ADR into a running changelog -- use
   `docs/architecture.md` for evolving design narrative
+- You're adding evolving operational details (field tables, struct definitions,
+  merge rules) to an accepted ADR -- put them in living documentation
+  (`docs/architecture.md`, `docs/reference/`, `docs/contributing/harness-fields.md`,
+  `docs/contributing/harness-composition.md`, `docs/normative/`, or an existing
+  contributing guide the ADR already links to) instead
 
 ## Common Mistakes
 
@@ -215,5 +235,6 @@ If the ADR partially answers a question, add a parenthetical:
 | Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
 | Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
+| Adding evolving operational details to an accepted ADR | Put them in living documentation (`docs/architecture.md`, `docs/reference/`, `docs/contributing/harness-fields.md`, `docs/contributing/harness-composition.md`, `docs/normative/`, or an existing contributing guide the ADR already links to) |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
