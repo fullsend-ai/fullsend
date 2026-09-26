@@ -110,7 +110,9 @@ Until then, agent-specific math still lands as a named Go scorer in fullsend,
 enabled only for the agents that list it.
 
 First scorer: **`trace_fitness`** (catalog id `em-001`) — span tree + expected
-attributes so later scorers can trust the trace.
+attributes so later scorers can trust the trace. Mixed-model Pi traces put
+`gen_ai.usage.*` on `usage <model>` children rather than the `agent` span;
+the usage check follows those children (`fullsend.usage.component`).
 
 Second scorer: **`run_health`** (catalog id `em-002`) — deterministic
 tool-call defect detection over the always-on `execute_tool` spans

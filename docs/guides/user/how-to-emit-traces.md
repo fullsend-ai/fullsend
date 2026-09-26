@@ -135,7 +135,10 @@ With the `claude` runtime, id-bearing tool calls are visible at every level as
 `execute_tool` child spans of each `agent` span (tool name, call id, timing,
 error) — that is metadata, not content, and this variable does not affect
 it. The pi and codex runtimes emit none yet (see
-[Runtimes](../../runtimes.md)).
+[Runtimes](../../runtimes.md)). Mixed-model Pi runs additionally emit one
+`usage <model>` child per `per_model_usage` entry so child-provider tokens
+and cost are not attributed to the parent; see
+[Per-model usage components](../infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ## Disable trace export
 

@@ -29,7 +29,11 @@ publisher and not the runtime name: `anthropic-vertex`, `google-vertex`,
 `xai-vertex`, `openai`. A Claude model on Vertex is `anthropic-vertex` even
 though the publisher is Anthropic; `fullsend.runtime` stays `pi`. An explicit
 `anthropic/...` spec reports `anthropic` because that is the endpoint the run
-actually called.
+actually called. When an iteration's `per_model_usage` has more than one spec
+(parent plus children on other vendors), the agent span stays the parent
+identity and one `usage <model>` child is emitted per spec so dashboards can
+attribute tokens and cost to the child provider; see
+[Per-model usage components](../guides/infrastructure/distributed-tracing.md#per-model-usage-components).
 
 > **Grok's spec has three segments on purpose.** pi sends the model id on the wire verbatim and
 > Vertex wants the publisher-qualified `xai/grok-4.6`, so the id keeps its slash. Use the full
@@ -585,7 +589,9 @@ and falls back to `medium`.
 - **`metrics.json`** — the totals include the children, and `per_model_usage` attributes them per
   model spec, with the parent's own iteration as one entry so the breakdown sums to the totals
   ([`fullsend run` § metrics.json](../cli/run.md#per-model-usage)). A record with no model spec is
-  bucketed under `unknown`.
+  bucketed under `unknown`. The same breakdown is exported on the trace as `usage <model>` children
+  of the `agent` span when more than one spec is present
+  ([Per-model usage components](../guides/infrastructure/distributed-tracing.md#per-model-usage-components)).
 - **Run log** — `[fullsend-agent] #<seq> <model> start "<description>"` and
   `[fullsend-agent] #<seq> done <ms>ms <stopReason>` per child.
 
