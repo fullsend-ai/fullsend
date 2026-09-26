@@ -8155,3 +8155,63 @@ func TestWithSandboxLock_AbandonsTheWaitWhenCancelled(t *testing.T) {
 	}
 	assert.False(t, ran, "the critical section ran without the lock")
 }
+
+// runBridgeInShell runs the bridge's command under /bin/sh against real
+// directories, so the quoting, the symlink refusal and the size bound are
+// what is tested rather than the command's spelling.
+func runBridgeInShell(t *testing.T, repoDir, dest string) {
+	t.Helper()
+	execFn := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		out, err := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); ok {
+			return "", string(out), ee.ExitCode(), err
+		}
+		return string(out), "", 0, err
+	}
+	doBridgeAgentsMDToHome("sb", repoDir, dest, ui.New(io.Discard), execFn)
+}
+
+func TestDoBridgeAgentsMDToHome(t *testing.T) {
+	t.Run("copies the repo's AGENTS.md", func(t *testing.T) {
+		repo := filepath.Join(t.TempDir(), "re'po dir")
+		require.NoError(t, os.MkdirAll(repo, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("rules\n"), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		got, err := os.ReadFile(dest)
+		require.NoError(t, err)
+		assert.Equal(t, "rules\n", string(got))
+	})
+	t.Run("accepts the other casings", func(t *testing.T) {
+		repo := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "agents.md"), []byte("lower\n"), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		got, err := os.ReadFile(dest)
+		require.NoError(t, err)
+		assert.Equal(t, "lower\n", string(got))
+	})
+	t.Run("refuses a symlink", func(t *testing.T) {
+		repo := t.TempDir()
+		secret := filepath.Join(t.TempDir(), "secret")
+		require.NoError(t, os.WriteFile(secret, []byte("do not copy"), 0o644))
+		require.NoError(t, os.Symlink(secret, filepath.Join(repo, "AGENTS.md")))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		assert.NoFileExists(t, dest)
+	})
+	t.Run("bounds the size", func(t *testing.T) {
+		repo := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "AGENTS.md"), bytes.Repeat([]byte("a"), agentsMDHomeMaxBytes+100), 0o644))
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, repo, dest)
+		info, err := os.Stat(dest)
+		require.NoError(t, err)
+		assert.Equal(t, int64(agentsMDHomeMaxBytes), info.Size())
+	})
+	t.Run("writes nothing without an AGENTS.md", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "AGENTS.md")
+		runBridgeInShell(t, t.TempDir(), dest)
+		assert.NoFileExists(t, dest)
+	})
+}

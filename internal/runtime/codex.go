@@ -39,6 +39,11 @@ func (CodexRuntime) System() string { return "openai" }
 // must be checksum-guarded before each launch rather than trusted.
 func (CodexRuntime) ConfigDir() string { return sandbox.SandboxCodexConfig }
 
+// HomeAgentsMDPath is $CODEX_HOME/AGENTS.md. codex skips a project's own
+// AGENTS.md while the project is untrusted, which it always is here, but
+// loads this one as user instructions regardless of trust.
+func (r CodexRuntime) HomeAgentsMDPath() string { return r.ConfigDir() + "/AGENTS.md" }
+
 func (CodexRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
 // EnvExports pins codex's config location to the runner-owned path. codex

@@ -2047,6 +2047,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
 	}
 
+	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
+	// the repo will load it (codex: the project is pinned untrusted).
+	if dest := agentruntime.HomeAgentsMDPath(rt); dest != "" && agentsMDAvailable {
+		bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer)
+	}
+
 	// 8a-2. Exclude agent working directories from git tracking.
 	// Agents may create working directories (e.g. .agentready/) during
 	// execution. These must never appear in commits. Adding them to
@@ -4802,6 +4808,32 @@ func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *u
 		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
 	}
 	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
+}
+
+// agentsMDHomeMaxBytes matches codex's default project_doc_max_bytes, so
+// the copy is bounded the way native AGENTS.md loading is.
+const agentsMDHomeMaxBytes = 32 * 1024
+
+func bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer) {
+	doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer, sandbox.Exec)
+}
+
+// doBridgeAgentsMDToHome is the testable core of bridgeAgentsMDToHome. It
+// takes the first regular file among hasAgentsMD's names; a symlink is
+// refused so the repo cannot point the copy at another file in the sandbox.
+func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer, execFn sandboxExecFunc) {
+	cmd := fmt.Sprintf(
+		"for f in AGENTS.md agents.md Agents.md; do p=%s/\"$f\"; if [ -f \"$p\" ] && [ ! -L \"$p\" ]; then head -c %d \"$p\" > %s; exit $?; fi; done; exit 3",
+		shellQuote(remoteRepositoryDir), agentsMDHomeMaxBytes, shellQuote(dest))
+	_, _, code, err := execFn(sandboxName, cmd, 10*time.Second)
+	switch {
+	case err == nil && code == 0:
+		printer.StepDone("Copied AGENTS.md to " + dest + " (the runtime does not read the repo's)")
+	case code == 3:
+		printer.StepWarn("AGENTS.md not bridged: no regular AGENTS.md at the repo root (symlinks are refused)")
+	default:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: %v", dest, err))
+	}
 }
 
 // scanRepoContextFiles walks the target repo directory for known context

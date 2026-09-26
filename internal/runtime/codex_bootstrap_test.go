@@ -609,3 +609,8 @@ func TestCodexRuntimeBootstrap_RequiresRepoDir(t *testing.T) {
 type emptyRepoDirInput struct{ bootstrapInput }
 
 func (emptyRepoDirInput) RepoDir() string { return "" }
+
+func TestHomeAgentsMDPath(t *testing.T) {
+	assert.Equal(t, sandbox.SandboxCodexConfig+"/AGENTS.md", HomeAgentsMDPath(CodexRuntime{}))
+	assert.Empty(t, HomeAgentsMDPath(ClaudeRuntime{}), "Claude reads the repo's own context files")
+}

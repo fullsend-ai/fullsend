@@ -209,6 +209,23 @@ func WantsClaudeMDBridge(rt Runtime) bool {
 	return false
 }
 
+// HomeInstructionsBridger is implemented by runtimes that do not read the
+// target repo's AGENTS.md natively and load instructions from a file of their
+// own instead. HomeAgentsMDPath is where the runner copies the repo's
+// AGENTS.md (or the injected org-level one) inside the sandbox.
+type HomeInstructionsBridger interface {
+	HomeAgentsMDPath() string
+}
+
+// HomeAgentsMDPath returns rt's HomeAgentsMDPath, or "" for runtimes that
+// read AGENTS.md themselves.
+func HomeAgentsMDPath(rt Runtime) string {
+	if b, ok := rt.(HomeInstructionsBridger); ok {
+		return b.HomeAgentsMDPath()
+	}
+	return ""
+}
+
 // ProviderResolver is an optional Runtime extension for multi-provider
 // backends. ProviderFor returns the OTEL GenAI provider identity
 // (gen_ai.system / gen_ai.provider.name) for the model that run will call,
